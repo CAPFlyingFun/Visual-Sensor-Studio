@@ -49,8 +49,41 @@ test('service worker accepts immediate activation request', () => {
   assert.match(swSource, /skipWaiting\(\)/);
 });
 
-test('settings version is 0.2.0', () => {
-  assert.match(htmlSource, /Visual Sensor Studio v0\.2\.0/);
-  assert.match(mainSource, /APP_VERSION\s*=\s*['"]0\.2\.0['"]/);
-  assert.match(swSource, /visual-sensor-studio-v0\.2\.0/);
+test('settings version is 0.3.0 everywhere it is stated', () => {
+  assert.match(htmlSource, /Visual Sensor Studio v0\.3\.0/);
+  assert.match(mainSource, /APP_VERSION\s*=\s*['"]0\.3\.0['"]/);
+  assert.match(swSource, /visual-sensor-studio-v0\.3\.0/);
+});
+
+test('the service worker update check bypasses the HTTP cache', () => {
+  // A stale sw.js served from the HTTP cache can pin an installed PWA to an
+  // old build, which is one way a fixed camera bug appears not to be fixed.
+  assert.match(mainSource, /updateViaCache:\s*['"]none['"]/);
+  assert.doesNotMatch(mainSource, /register\(['"]\.\/sw\.js['"]\)/);
+});
+
+test('camera assets are served network-first so a stale copy cannot linger', () => {
+  assert.match(swSource, /networkFirst[\s\S]*camera-bootstrap\.js/);
+  assert.match(swSource, /networkFirst[\s\S]*app\/sensors\/camera\.js/);
+  assert.match(swSource, /cache:\s*['"]no-store['"]/);
+  // Offline use must survive: a cached copy still answers when fetch fails.
+  assert.match(swSource, /\.catch\(\(\)\s*=>\s*caches\.match\(event\.request\)\)/);
+});
+
+test('diagnostics expose the camera recovery controls and honest liveness data', () => {
+  for (const id of [
+    'settingsCameraState',
+    'settingsCameraStage',
+    'settingsTrackState',
+    'settingsVideoState',
+    'settingsFirstFrame',
+    'settingsZoomSupport',
+    'settingsProcessingFps',
+    'settingsStorage',
+    'hardResetCameraButton'
+  ]) {
+    assert.match(htmlSource, new RegExp(`id=["']${id}["']`), `missing #${id}`);
+  }
+  assert.match(mainSource, /navigator\.storage/);
+  assert.match(mainSource, /hardReset\(\)/);
 });

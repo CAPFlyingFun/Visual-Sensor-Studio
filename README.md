@@ -57,7 +57,7 @@ Open `http://localhost:8080`. Camera APIs work on localhost as a secure-context 
 src/
   core/             shared math and data types
   sensors/          camera, motion/orientation, GPS
-  vision/           image processing and parallax matching
+  vision/           frame source interface, image processing, flow, parallax
   visualization/    Three.js 3D sensor viewer
 public/
   index.html        mobile UI shell
@@ -72,6 +72,31 @@ tests/              Node test suite for pure sensor/vision math
 
 Visual Sensor Studio has no application backend. Camera frames and image-processing work stay in the browser. The app does not upload camera images, GPS coordinates, or motion data. Three.js is fetched from jsDelivr and cached by the service worker after first use.
 
+## Architecture
+
+The data flow is one-directional, and deliberately so:
+
+```text
+camera acquisition -> FrameSource -> vision processing -> sensor state -> optional Three.js
+```
+
+- `public/camera-bootstrap.js` is plain JavaScript, loads before the compiled
+  app, and owns the `<video>` element, every `getUserMedia` call and the whole
+  camera lifecycle. A TypeScript or Three.js failure cannot take the camera
+  down with it. `src/sensors/camera.ts` is only a typed bridge to it.
+- `src/vision/frame-source.ts` defines the acquisition boundary. Processing
+  modes consume generic `AnalysisFrame`s and never touch `getUserMedia`, a
+  `<video>` element or a `MediaStreamTrack`, so a future native provider is a
+  new `FrameSource` rather than a rewrite.
+- Three.js is a visualization consumer only. It never captures anything.
+
+Vision work runs on a downsampled analysis frame (~176/256/384 px wide for
+Battery Saver / Balanced / Fast), throttled by preset, into buffers that are
+allocated once per frame geometry and reused.
+
 ## Next experiments
 
-Potential follow-ons include multi-frame optical-flow tracking, guided panorama capture, improved parallax confidence filtering, point-cloud reconstruction, exportable height/disparity maps, and optional native iOS experiments if direct TrueDepth APIs are ever needed.
+Potential follow-ons include feeding flow and parallax summaries into the 3D
+sensor scene, guided panorama capture, improved parallax confidence filtering,
+point-cloud reconstruction, exportable height/disparity maps, and a native iOS
+camera provider for multi-lens capture.

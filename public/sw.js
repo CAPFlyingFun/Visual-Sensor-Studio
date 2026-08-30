@@ -1,4 +1,4 @@
-const CACHE = 'visual-sensor-studio-v0.2.0';
+const CACHE = 'visual-sensor-studio-v0.3.0';
 const APP_SHELL = [
   './',
   './index.html',
@@ -16,7 +16,10 @@ const APP_SHELL = [
   './app/sensors/camera.js',
   './app/sensors/motion.js',
   './app/sensors/gps.js',
+  './app/sensors/zoom.js',
   './app/vision/frame-processing.js',
+  './app/vision/frame-source.js',
+  './app/vision/optical-flow.js',
   './app/vision/parallax.js',
   './app/visualization/scene.js'
 ];
@@ -60,13 +63,21 @@ self.addEventListener('fetch', (event) => {
   }
 
   if (url.origin === self.location.origin) {
+    // The camera path is served network-first so a stale cached copy can never
+    // be the reason the camera misbehaves. A cached copy is still kept and
+    // still answers when the network is gone, so offline use is unaffected.
     const networkFirst = event.request.mode === 'navigate'
       || url.pathname.endsWith('/index.html')
       || url.pathname.endsWith('/styles.css')
       || url.pathname.endsWith('/settings.css')
       || url.pathname.endsWith('/camera-bootstrap.js')
+      || url.pathname.endsWith('/manifest.webmanifest')
       || url.pathname.endsWith('/app/main.js')
-      || url.pathname.endsWith('/app/sensors/camera.js');
+      || url.pathname.endsWith('/app/sensors/camera.js')
+      || url.pathname.endsWith('/app/sensors/zoom.js')
+      || url.pathname.endsWith('/app/vision/frame-processing.js')
+      || url.pathname.endsWith('/app/vision/frame-source.js')
+      || url.pathname.endsWith('/app/vision/optical-flow.js');
 
     if (networkFirst) {
       event.respondWith(
