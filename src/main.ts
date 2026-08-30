@@ -27,6 +27,7 @@ import {
   sobelEdges
 } from './vision/frame-processing.js';
 import { computeBlockFlow, flowVectorColor, type FlowField } from './vision/optical-flow.js';
+import { estimateEffectiveResolution } from './vision/sharpness.js';
 import { FrameRateMeter, type PresentedFrame } from './vision/frame-rate.js';
 import { AdaptiveGovernor, type AdaptiveState } from './vision/adaptive.js';
 import { ObjectTracker, type TrackedObject } from './vision/tracking.js';
@@ -42,7 +43,7 @@ import {
 import { StabilityMonitor } from './sensors/stability.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 
-const APP_VERSION = '0.6.0';
+const APP_VERSION = '0.6.1';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -1847,6 +1848,60 @@ function setViewerOpen(open: boolean): void {
 let stillCanvas: HTMLCanvasElement | null = null;
 let stillContext: CanvasRenderingContext2D | null = null;
 
+/**
+ * Ask whether the track's reported resolution is carrying real detail.
+ *
+ * `width: { ideal: 3840 }` is satisfiable by a scaler, so a track can report
+ * 4K truthfully while a smaller sensor mode is being stretched to fill it —
+ * "the pixels are high but the resolution is poor". This measures it instead of
+ * guessing.
+ *
+ * The sample is a centre crop taken at 1:1 PIXEL SCALE, never the analysis
+ * buffer: that buffer is downsampled to a processing budget, so measuring it
+ * would only rediscover our own downsampling. One crop is a few milliseconds,
+ * so this runs on request rather than per frame.
+ */
+const DETAIL_SAMPLE = 256;
+let detailCanvas: HTMLCanvasElement | null = null;
+let detailContext: CanvasRenderingContext2D | null = null;
+
+function measureEffectiveDetail(): string {
+  const sourceWidth = video.videoWidth;
+  const sourceHeight = video.videoHeight;
+  if (!sourceWidth || !sourceHeight) return 'no video';
+
+  const size = Math.min(DETAIL_SAMPLE, sourceWidth, sourceHeight);
+  detailCanvas ??= document.createElement('canvas');
+  detailContext ??= detailCanvas.getContext('2d', { willReadFrequently: true });
+  if (!detailContext) return 'unavailable';
+
+  detailCanvas.width = size;
+  detailCanvas.height = size;
+  detailContext.drawImage(
+    video,
+    Math.floor((sourceWidth - size) / 2),
+    Math.floor((sourceHeight - size) / 2),
+    size,
+    size,
+    0,
+    0,
+    size,
+    size
+  );
+
+  const sample = detailContext.getImageData(0, 0, size, size);
+  const gray = rgbaToGray(sample.data);
+  const report = estimateEffectiveResolution(gray, size, size);
+
+  if (report.detailRatio >= 1) return 'too flat to judge — aim at some texture';
+  if (!report.likelyUpscaled) {
+    return `${sourceWidth}×${sourceHeight} · detail at full pixel scale`;
+  }
+  const effectiveWidth = Math.round(sourceWidth * report.effectiveScale);
+  const effectiveHeight = Math.round(sourceHeight * report.effectiveScale);
+  return `${sourceWidth}×${sourceHeight} reported · ≈${effectiveWidth}×${effectiveHeight} real detail (upscaled)`;
+}
+
 /** Grab the live video at native resolution, honouring any digital crop. */
 function grabFullFrame(): ImageData | null {
   const sourceWidth = video.videoWidth;
@@ -2625,6 +2680,11 @@ on('focusDistance', 'input', (event) => {
   void camera.applyCameraSetting('focusDistance', Number((event.target as HTMLInputElement).value));
 });
 on('runBenchmarkButton', 'click', () => void runBenchmark());
+on('measureDetailButton', 'click', () => {
+  setText('benchEffective', 'measuring…');
+  // A frame later, so the placeholder actually paints before the readback.
+  requestAnimationFrame(() => setText('benchEffective', measureEffectiveDetail()));
+});
 on('resetPeakButton', 'click', () => {
   frameRateMeter.resetPeak();
   void refreshSettingsDiagnostics();

@@ -49,10 +49,10 @@ test('service worker accepts immediate activation request', () => {
   assert.match(swSource, /skipWaiting\(\)/);
 });
 
-test('settings version is 0.6.0 everywhere it is stated', () => {
-  assert.match(htmlSource, /Visual Sensor Studio v0\.6\.0/);
-  assert.match(mainSource, /APP_VERSION\s*=\s*['"]0\.6\.0['"]/);
-  assert.match(swSource, /visual-sensor-studio-v0\.6\.0/);
+test('settings version is 0.6.1 everywhere it is stated', () => {
+  assert.match(htmlSource, /Visual Sensor Studio v0\.6\.1/);
+  assert.match(mainSource, /APP_VERSION\s*=\s*['"]0\.6\.1['"]/);
+  assert.match(swSource, /visual-sensor-studio-v0\.6\.1/);
 });
 
 test('the service worker update check bypasses the HTTP cache', () => {
@@ -89,4 +89,14 @@ test('diagnostics expose the camera recovery controls and honest liveness data',
   }
   assert.match(mainSource, /navigator\.storage/);
   assert.match(mainSource, /hardReset\(\)/);
+});
+test('the effective-detail measurement is wired end to end', () => {
+  // The estimator is useless if the button and its readout drift apart from
+  // main.ts, which is exactly how a control ends up looking functional while
+  // doing nothing.
+  for (const id of ['measureDetailButton', 'benchEffective']) {
+    assert.match(htmlSource, new RegExp(`id=["']${id}["']`), `missing #${id}`);
+    assert.match(mainSource, new RegExp(`'${id}'`), `#${id} not referenced by main.ts`);
+  }
+  assert.match(mainSource, /estimateEffectiveResolution/, 'estimator not imported');
 });

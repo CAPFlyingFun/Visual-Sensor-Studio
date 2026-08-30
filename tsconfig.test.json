@@ -24,6 +24,7 @@
     "src/vision/tracking.ts",
     "src/vision/integration.ts",
     "src/vision/histogram.ts",
+    "src/vision/sharpness.ts",
     "src/vision/overlays.ts"
   ]
 }
