@@ -38,6 +38,7 @@ import {
   MotionSpeedField,
   MotionTrailBuffer,
   renderMotionIronbow,
+  upscaleSpeedField,
   ironbowColor,
   UNRESOLVED_COLOR,
   type MotionSpeedReport,
@@ -58,7 +59,7 @@ import {
 import { StabilityMonitor } from './sensors/stability.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 
-const APP_VERSION = '0.8.0';
+const APP_VERSION = '0.8.1';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -576,6 +577,9 @@ function applyCameraStatus(status: CameraStatus): void {
   trace.textContent = `stage: ${status.stage}`;
 
   switchButton.disabled = !live;
+  // Re-label on every status change, so the toggle also stays correct when the
+  // side changes for a reason other than the button — a lens pick, a restart.
+  switchButton.textContent = status.facing === 'user' ? 'Use Rear Camera' : 'Use Front Camera';
   parallaxButton.disabled = !live;
   syncZoomControls();
 
@@ -1042,16 +1046,36 @@ function setNightMode(active: boolean): void {
   byId('nightPanel').hidden = !active;
 }
 
+/**
+ * Label the switch with where it will GO, not with what it is.
+ *
+ * "Switch Camera" gives no way to tell which side is live, so a press that
+ * silently failed looks the same as one that worked.
+ */
+function syncCameraSwitchLabel(): void {
+  const button = byId<HTMLButtonElement>('switchCameraButton');
+  const onFront = camera.diagnostics.facing === 'user';
+  button.textContent = onFront ? 'Use Rear Camera' : 'Use Front Camera';
+  button.disabled = !camera.active;
+}
+
 async function switchCamera(): Promise<void> {
   const button = byId<HTMLButtonElement>('switchCameraButton');
+  const before = camera.diagnostics.facing;
   button.disabled = true;
   resetVisionState();
   try {
     const facing = await camera.switchCamera();
-    setText('cameraMessage', `Switched to the ${facing === 'environment' ? 'rear' : 'front'} camera.`);
+    setText('cameraMessage', facing === before
+      // The engine reports the track's real facing, so this is a genuine
+      // "it did not move", not a guess.
+      ? `This device reports only one ${facing === 'environment' ? 'rear' : 'front'} camera, so the view did not change.`
+      : `Switched to the ${facing === 'environment' ? 'rear' : 'front'} camera.`);
   } catch (error) {
     setText('cameraMessage', describeCameraError(error, isStandalone()));
   } finally {
+    syncCameraSwitchLabel();
+    void renderLensPicker();
     void refreshSettingsDiagnostics();
   }
 }
@@ -2446,12 +2470,7 @@ function nextFrame(): Promise<void> {
 }
 
 /** Render one mode at full resolution into an RGBA buffer. */
-function renderStill(
-  mode: VisionMode,
-  frame: ImageData,
-  previous: ImageData | null,
-  dtSeconds = 0
-): Uint8ClampedArray {
+function renderStill(mode: VisionMode, frame: ImageData, previous: ImageData | null): Uint8ClampedArray {
   const { width, height } = frame;
   const gray = rgbaToGray(frame.data);
 
@@ -2484,26 +2503,23 @@ function renderStill(
       return drawFlowIntoRgba(rgba, field, width, height);
     }
     case 'speed': {
-      if (!previous || dtSeconds <= 0) return frame.data;
-      const scale = width / Math.max(1, latestMetrics?.analysisWidth ?? 256);
-      const options = flowOptionsForPreset();
-      const field = computeBlockFlow(rgbaToGray(previous.data), gray, width, height, {
-        cellSize: Math.round(options.cellSize * scale),
-        patchRadius: Math.max(2, Math.round(options.patchRadius * scale)),
-        maxShift: Math.max(2, Math.round(options.maxShift * scale))
-      });
-      const difference = absoluteDifference(gray, rgbaToGray(previous.data));
-      // A separate mapper, and the live full scale pinned into it: sharing the
-      // running one would let a still shift the preview's colours, and letting
-      // it auto-scale afresh would save a picture in different colours from the
-      // one on screen.
-      const stillField = new MotionSpeedField();
-      stillField.update(difference, field, width, height, dtSeconds, {
-        motionThreshold: settings.motionSensitivity,
-        fullScale: latestSpeed?.fullScale,
-        autoScale: false
-      });
-      return renderMotionIronbow(gray, stillField.speed, stillField.state, new Uint8ClampedArray(width * height * 4));
+      // Deliberately NOT a fresh full-resolution flow. Cell size, patch radius
+      // and search range all scale with the image, so matching at this size
+      // either paints 125-pixel cells as flat rectangles or costs hundreds of
+      // millions of operations. The measurement stays where it was made and
+      // only the picture is enlarged, so the saved frame is the one that was on
+      // screen — at full size, over a full-resolution scene.
+      const analysis = visionBuffers;
+      if (!analysis) return frame.data;
+      const scaled = upscaleSpeedField(
+        speedField.speed,
+        speedField.state,
+        analysis.width,
+        analysis.height,
+        width,
+        height
+      );
+      return renderMotionIronbow(gray, scaled.speed, scaled.state, new Uint8ClampedArray(width * height * 4));
     }
     case 'night': {
       const rgba = Uint8ClampedArray.from(frame.data);
@@ -2571,22 +2587,20 @@ async function captureStill(): Promise<void> {
   }
 
   let previous: ImageData | null = null;
-  if (visionMode === 'motion' || visionMode === 'difference'
-    || visionMode === 'flow' || visionMode === 'speed') {
+  // Speed is absent on purpose: it reuses the live measurement rather than
+  // re-deriving one, so a second frame would be grabbed and thrown away.
+  if (visionMode === 'motion' || visionMode === 'difference' || visionMode === 'flow') {
     setText('cameraMessage', 'Capturing two frames for the motion comparison…');
-    const startedAt = performance.now();
     await nextFrame();
     previous = frame;
     const second = grabFullFrame();
-    // Speed is a per-second measurement, so the gap between these two grabs is
-    // part of the measurement rather than an implementation detail.
-    if (second) return finishStill(second, previous, (performance.now() - startedAt) / 1000);
+    if (second) return finishStill(second, previous);
   }
   finishStill(frame, previous);
 }
 
-function finishStill(frame: ImageData, previous: ImageData | null, dtSeconds = 0): void {
-  const rgba = renderStill(visionMode, frame, previous, dtSeconds);
+function finishStill(frame: ImageData, previous: ImageData | null): void {
+  const rgba = renderStill(visionMode, frame, previous);
   const output = document.createElement('canvas');
   output.width = frame.width;
   output.height = frame.height;

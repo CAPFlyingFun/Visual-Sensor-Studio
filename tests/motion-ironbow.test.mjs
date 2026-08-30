@@ -5,6 +5,7 @@ import {
   MotionTrailBuffer,
   ironbowColor,
   renderMotionIronbow,
+  upscaleSpeedField,
   INFERRED,
   RESOLVED,
   STILL,
@@ -320,4 +321,57 @@ test('an inferred speed is never counted as a measured one', () => {
   }
   assert.ok(inferred > measured, 'one cell of measurement should seed more inference than itself');
   assert.ok(Math.abs(report.inferredFraction - inferred / (W * H)) < 0.02);
+});
+
+test('a speed field enlarges smoothly but keeps its categories intact', () => {
+  // Speed is a quantity and interpolates; measured/inferred/unknown are
+  // categories and cannot be averaged — a pixel half way between measured and
+  // unknown is not "half measured".
+  const speed = new Float32Array([0, 1, 1, 0]);
+  const state = new Uint8Array([STILL, RESOLVED, RESOLVED, STILL]);
+  const out = upscaleSpeedField(speed, state, 2, 2, 8, 8);
+
+  assert.equal(out.speed.length, 64);
+  assert.equal(out.state.length, 64);
+  // Every state in the output must be one that existed in the input.
+  for (const s of out.state) assert.ok(s === STILL || s === RESOLVED, `invented state ${s}`);
+  // And the speed must take intermediate values rather than only 0 and 1.
+  const distinct = new Set([...out.speed].map((v) => v.toFixed(3)));
+  assert.ok(distinct.size > 2, `expected a gradient, got ${distinct.size} levels`);
+  for (const v of out.speed) assert.ok(v >= 0 && v <= 1, `out of range ${v}`);
+});
+
+test('enlarging a field with nothing in it stays empty', () => {
+  const out = upscaleSpeedField(new Float32Array(4), new Uint8Array(4), 2, 2, 16, 16);
+  assert.ok(out.speed.every((v) => v === 0));
+  assert.ok(out.state.every((v) => v === STILL));
+});
+
+test('speed varies smoothly across cells instead of in flat blocks', () => {
+  // Painting each flow cell one colour draws the sampling grid rather than the
+  // scene: a saved frame came back as large flat rectangles of solid colour.
+  // The cells are samples of a continuous motion field, so the value between
+  // them is interpolated.
+  const field = new MotionSpeedField();
+  const diff = new Uint8ClampedArray(W * H).fill(90);
+  // Three cells in a row with clearly different speeds.
+  const flow = {
+    cellSize: 16,
+    vectors: [
+      { x: 8, y: 24, magnitude: 2 },
+      { x: 24, y: 24, magnitude: 8 },
+      { x: 40, y: 24, magnitude: 3 }
+    ]
+  };
+  field.update(diff, flow, W, H, 1 / 30, { fullScale: 20, autoScale: false });
+
+  const row = [];
+  for (let x = 8; x <= 40; x++) row.push(field.speed[24 * W + x]);
+  const levels = new Set(row.map((v) => v.toFixed(4)));
+  assert.ok(levels.size > 12, `expected a gradient across the cells, got ${levels.size} levels`);
+
+  // And it must actually rise toward the fast cell and fall away from it.
+  const at = (x) => field.speed[24 * W + x];
+  assert.ok(at(24) > at(16), 'speed should climb toward the fast cell');
+  assert.ok(at(24) > at(32), 'and fall away from it');
 });

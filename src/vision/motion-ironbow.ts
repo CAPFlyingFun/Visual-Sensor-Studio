@@ -147,6 +147,47 @@ const MAX_AUTO_SCALE = 4;
 const AUTO_RISE = 0.5;
 const AUTO_FALL = 0.04;
 
+/**
+ * Bilinear sample of the cell grid at a continuous cell coordinate.
+ *
+ * Corners with no value are dropped from the weighting rather than counted as
+ * zero — a missing neighbour means "not measured here", and averaging it in as
+ * a zero would drag every speed near the edge of a moving object down toward
+ * still. `fallback` is used when every corner is empty, which cannot happen for
+ * a pixel that reached this function but keeps it total.
+ */
+function sampleCells(
+  cells: ArrayLike<number>,
+  cellsX: number,
+  cellsY: number,
+  cellX: number,
+  cellY: number,
+  fallback: number
+): number {
+  const x0 = Math.floor(cellX);
+  const y0 = Math.floor(cellY);
+  const fx = cellX - x0;
+  const fy = cellY - y0;
+
+  let total = 0;
+  let weight = 0;
+  for (let dy = 0; dy <= 1; dy++) {
+    const cy = y0 + dy;
+    if (cy < 0 || cy >= cellsY) continue;
+    const wy = dy ? fy : 1 - fy;
+    for (let dx = 0; dx <= 1; dx++) {
+      const cx = x0 + dx;
+      if (cx < 0 || cx >= cellsX) continue;
+      const value = cells[cy * cellsX + cx];
+      if (value < 0) continue;
+      const w = wy * (dx ? fx : 1 - fx);
+      total += value * w;
+      weight += w;
+    }
+  }
+  return weight > 0 ? total / weight : fallback;
+}
+
 export interface FlowLike {
   vectors: ReadonlyArray<{ x: number; y: number; magnitude: number }>;
   cellSize: number;
@@ -317,10 +358,15 @@ export class MotionSpeedField {
     const { cellSpeed, cellFilled, cellsX, cellsY, originX, originY, cellSize } = this;
 
     for (let y = 0; y < height; y++) {
-      // A pixel takes the cell whose centre it is nearest, which bounds a
-      // direct reading to half a cell and a carried one to one and a half.
-      const row = hasFlow ? Math.round((y - originY) / cellSize) : -1;
-      const rowInside = row >= 0 && row < cellsY;
+      // Continuous cell coordinate. The NEAREST cell decides the pixel's state,
+      // which keeps a direct reading bounded to half a cell and a carried one
+      // to one and a half. The VALUE is interpolated between cells instead of
+      // taken flat from one, because painting each cell a single colour draws
+      // the sampling grid rather than the scene — 16-pixel rectangles of solid
+      // colour, which is not what the motion looked like.
+      const cellY = hasFlow ? (y - originY) / cellSize : -1;
+      const row = Math.round(cellY);
+      const rowInside = hasFlow && row >= 0 && row < cellsY;
       for (let x = 0; x < width; x++) {
         const i = y * width + x;
         if ((difference[i] ?? 0) < threshold) continue;
@@ -331,7 +377,8 @@ export class MotionSpeedField {
           state[i] = UNRESOLVED;
           continue;
         }
-        const col = Math.round((x - originX) / cellSize);
+        const cellX = (x - originX) / cellSize;
+        const col = Math.round(cellX);
         if (col < 0 || col >= cellsX) {
           unresolved++;
           state[i] = UNRESOLVED;
@@ -341,23 +388,24 @@ export class MotionSpeedField {
         const index = row * cellsX + col;
         const measured = cellSpeed[index];
         const carried = cellFilled[index];
-        if (measured >= 0) {
-          state[i] = RESOLVED;
-          speed[i] = measured;
-          speedSum += measured;
-          speedCount++;
-          if (measured > peak) peak = measured;
-        } else if (carried >= 0) {
-          inferred++;
-          state[i] = INFERRED;
-          speed[i] = carried;
-          speedSum += carried;
-          speedCount++;
-          if (carried > peak) peak = carried;
-        } else {
+        if (measured < 0 && carried < 0) {
           unresolved++;
           state[i] = UNRESOLVED;
+          continue;
         }
+
+        const value = sampleCells(cellFilled, cellsX, cellsY, cellX, cellY,
+          measured >= 0 ? measured : carried);
+        if (measured >= 0) {
+          state[i] = RESOLVED;
+        } else {
+          inferred++;
+          state[i] = INFERRED;
+        }
+        speed[i] = value;
+        speedSum += value;
+        speedCount++;
+        if (value > peak) peak = value;
       }
     }
 
@@ -589,4 +637,68 @@ export class MotionTrailBuffer {
     }
     return out;
   }
+}
+
+/**
+ * Resample a speed field onto a larger frame.
+ *
+ * A full-resolution still cannot re-run the flow at full resolution: cell size,
+ * patch radius and search range all scale with the image, so a 4K still would
+ * either match 125-pixel cells — which paints the sampling grid as huge flat
+ * rectangles rather than the motion — or cost hundreds of millions of
+ * operations to keep them fine.
+ *
+ * So the measurement stays at analysis resolution, where it was made, and only
+ * the picture is enlarged: speed is interpolated smoothly, state is taken from
+ * the nearest source pixel because "measured" and "inferred" are categories
+ * that cannot be averaged. The saved frame is then the one that was on screen,
+ * at full size, over a full-resolution scene.
+ */
+export function upscaleSpeedField(
+  speed: ArrayLike<number>,
+  state: ArrayLike<number>,
+  sourceWidth: number,
+  sourceHeight: number,
+  targetWidth: number,
+  targetHeight: number
+): { speed: Float32Array; state: Uint8Array } {
+  const outSpeed = new Float32Array(targetWidth * targetHeight);
+  const outState = new Uint8Array(targetWidth * targetHeight);
+  if (sourceWidth < 1 || sourceHeight < 1) return { speed: outSpeed, state: outState };
+
+  const scaleX = sourceWidth / targetWidth;
+  const scaleY = sourceHeight / targetHeight;
+
+  for (let y = 0; y < targetHeight; y++) {
+    // Clamped at both ends. Half-pixel centring puts the first sample below
+    // zero, and an unclamped negative fraction extrapolates past the edge of
+    // the data instead of interpolating within it — which produced speeds
+    // below zero and above full scale along every border.
+    const sy = clamp((y + 0.5) * scaleY - 0.5, 0, sourceHeight - 1);
+    const y0 = Math.max(0, Math.floor(sy));
+    const y1 = Math.min(sourceHeight - 1, y0 + 1);
+    const fy = sy - y0;
+    const ny = Math.min(sourceHeight - 1, Math.max(0, Math.round(sy)));
+
+    for (let x = 0; x < targetWidth; x++) {
+      const sx = clamp((x + 0.5) * scaleX - 0.5, 0, sourceWidth - 1);
+      const x0 = Math.max(0, Math.floor(sx));
+      const x1 = Math.min(sourceWidth - 1, x0 + 1);
+      const fx = sx - x0;
+      const nx = Math.min(sourceWidth - 1, Math.max(0, Math.round(sx)));
+
+      const target = y * targetWidth + x;
+      outState[target] = state[ny * sourceWidth + nx] ?? STILL;
+
+      const a = speed[y0 * sourceWidth + x0] ?? 0;
+      const b = speed[y0 * sourceWidth + x1] ?? 0;
+      const c = speed[y1 * sourceWidth + x0] ?? 0;
+      const d = speed[y1 * sourceWidth + x1] ?? 0;
+      const top = a + (b - a) * fx;
+      const bottom = c + (d - c) * fx;
+      outSpeed[target] = top + (bottom - top) * fy;
+    }
+  }
+
+  return { speed: outSpeed, state: outState };
 }

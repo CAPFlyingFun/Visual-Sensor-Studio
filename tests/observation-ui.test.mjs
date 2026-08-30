@@ -398,9 +398,19 @@ test('temporal modes capture two frames so the still is a real comparison', () =
   // Every mode whose picture depends on a PAIR of frames has to grab two, or
   // the saved still is a comparison against nothing.
   const capture = mainSource.slice(mainSource.indexOf('async function captureStill'));
-  for (const mode of ['motion', 'difference', 'flow', 'speed']) {
+  for (const mode of ['motion', 'difference', 'flow']) {
     assert.match(capture, new RegExp(`visionMode === '${mode}'`), `${mode} must grab two frames`);
   }
+});
+
+test('a full-size still enlarges the measurement rather than remaking it', () => {
+  // Cell size, patch radius and search range all scale with the image, so
+  // re-running the flow at full resolution paints the sampling grid as huge
+  // flat rectangles — which is exactly what a saved Speed frame looked like.
+  assert.match(mainSource, /upscaleSpeedField\(/);
+  const still = mainSource.slice(mainSource.indexOf("case 'speed': {"));
+  assert.doesNotMatch(still.slice(0, still.indexOf("case 'night'")), /computeBlockFlow/,
+    'the speed still must not recompute flow at full resolution');
 });
 
 test('a stacked night exposure is saved at its own resolution and said so', () => {
@@ -477,10 +487,42 @@ test('a pinned camera that vanishes cannot leave the app with none', () => {
   // pin, so an unplugged or renamed camera degrades instead of failing.
   const profiles = cameraSource.slice(cameraSource.indexOf('function buildProfiles('));
   const body = profiles.slice(0, profiles.indexOf('\n  }'));
-  const pinned = body.indexOf('withRate(device)');
-  const unpinned = body.indexOf('withRate({})');
-  assert.ok(pinned >= 0 && unpinned > pinned, 'an unpinned fallback must follow the pinned requests');
+  // Scoped to the ideal-facing chain: the strict-facing profiles above it are
+  // a different fallback ladder and carry no device pin at all.
+  const chain = body.slice(body.indexOf('{ ideal: facing }'));
+  const pinned = chain.indexOf('}, device)');
+  const unpinned = chain.indexOf('}, {})');
+  assert.ok(pinned >= 0, 'the pinned request should still be there');
+  assert.ok(unpinned > pinned, 'an unpinned fallback must follow the pinned requests');
   assert.match(body, /\{ audio: false, video: true \}/);
+});
+
+test('an explicit side change binds the facing and drops the device pin', () => {
+  // `ideal` facing is a hint, and a hint the running camera already satisfies
+  // leaves the same device selected — a Switch Camera button that does nothing.
+  // A pinned deviceId names one physical camera, so carrying it into a request
+  // for the other side pins the request back to the camera being left.
+  assert.match(cameraSource, /if \(strictFacing\) \{/);
+  assert.match(cameraSource, /withRate\(\{ exact: facing \}/);
+  assert.match(cameraSource, /await start\(next, null\);/);
+  const build = cameraSource.slice(cameraSource.indexOf('function buildProfiles('));
+  const body = build.slice(0, build.indexOf('\n  }'));
+  assert.ok(body.indexOf('{ exact: facing }') < body.indexOf('{ ideal: facing }'),
+    'the exact request must be tried before the ideal fallback');
+});
+
+test('the recorded facing comes from the track, not from the request', () => {
+  // A constraint is a request, not a result. Believing the request lets the app
+  // show one camera while reporting the other, and then the NEXT toggle picks
+  // the wrong direction too.
+  assert.match(cameraSource, /function readActualFacing\(\)/);
+  assert.match(cameraSource, /videoTrack\.getSettings\(\)\.facingMode/);
+  assert.match(cameraSource, /readActualFacing\(\);\s*\n\s*stage = 'live';/);
+});
+
+test('the camera toggle says which side it will go to', () => {
+  assert.match(mainSource, /'Use Rear Camera' : 'Use Front Camera'/);
+  assert.match(mainSource, /only one \$\{facing === 'environment' \? 'rear' : 'front'\} camera/);
 });
 
 test('a zoom that changes capture geometry is reported', () => {

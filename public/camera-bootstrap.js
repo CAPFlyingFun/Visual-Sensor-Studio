@@ -132,6 +132,8 @@
    * gets its real optics at its own native resolution.
    */
   let requestedDeviceId = null;
+  /** Set only while an explicit side change is in flight. See buildProfiles(). */
+  let strictFacing = false;
   let negotiatedFrameRate = 0;
   let frameRateCapability = null;
   let deliveryHandle = 0;
@@ -682,29 +684,40 @@
 
   function buildProfiles(requested) {
     const rate = frameRateConstraint(requested);
-    const base = { facingMode: { ideal: facing } };
-    const withRate = (extra) => {
-      const video = Object.assign({}, base, extra);
+    const withRate = (facingConstraint, extra) => {
+      const video = Object.assign({ facingMode: facingConstraint }, extra);
       if (rate) video.frameRate = rate;
       return { audio: false, video };
     };
 
-    // `ideal` throughout, so a resolution the device cannot provide is
+    // `ideal` for resolution throughout, so a size the device cannot provide is
     // negotiated down rather than failing the request outright.
     const height = Number(requestedHeight) || 720;
     const width = Math.round(height * (16 / 9));
+    const size = { width: { ideal: width }, height: { ideal: height } };
     const device = requestedDeviceId ? { deviceId: { exact: requestedDeviceId } } : {};
 
-    return [
-      withRate(Object.assign({ width: { ideal: width }, height: { ideal: height } }, device)),
-      withRate(device),
-      // Then the same request without the device pin, so a camera that has
-      // disappeared since it was chosen cannot leave the app with no camera.
-      withRate({}),
-      // Final fallback drops the frame-rate request entirely: a rate the
-      // device cannot honour must never be the reason the camera fails.
-      { audio: false, video: true }
-    ];
+    const profiles = [];
+
+    // An explicit side change has to BIND the facing. `ideal` is only a hint,
+    // and a hint is free to be satisfied by the camera already running — which
+    // is a Switch Camera button that appears to do nothing. `exact` is tried
+    // first and the ideal profiles below remain as the fallback, so a device
+    // with only one camera still starts.
+    if (strictFacing) {
+      profiles.push(withRate({ exact: facing }, size));
+      profiles.push(withRate({ exact: facing }, {}));
+    }
+
+    profiles.push(withRate({ ideal: facing }, Object.assign({}, size, device)));
+    profiles.push(withRate({ ideal: facing }, device));
+    // Then the same request without the device pin, so a camera that has
+    // disappeared since it was chosen cannot leave the app with no camera.
+    profiles.push(withRate({ ideal: facing }, {}));
+    // Final fallback drops the frame-rate request entirely: a rate the
+    // device cannot honour must never be the reason the camera fails.
+    profiles.push({ audio: false, video: true });
+    return profiles;
   }
 
   function readFrameRateCapability() {
@@ -998,6 +1011,7 @@
             .then(readFrameRateCapability)
             .catch(() => undefined);
         }
+        readActualFacing();
         stage = 'live';
         settleAttempt('live');
         setState('live', '');
@@ -1044,10 +1058,40 @@
     prepareVideo();
   }
 
+  /**
+   * Correct the recorded facing from the track that actually started.
+   *
+   * A constraint is a request, not a result. Trusting the request means the
+   * app can believe it is on the front camera while showing the back one, and
+   * every later decision built on that — the label, the next toggle — is wrong
+   * in the same direction.
+   */
+  function readActualFacing() {
+    if (!videoTrack || typeof videoTrack.getSettings !== 'function') return;
+    try {
+      const actual = videoTrack.getSettings().facingMode;
+      if (actual === 'user' || actual === 'environment') facing = actual;
+    } catch {
+      // Settings are not always readable; the requested value stands.
+    }
+  }
+
   async function switchCamera() {
     const next = facing === 'environment' ? 'user' : 'environment';
-    await start(next);
-    return next;
+    strictFacing = true;
+    try {
+      // The device pin is cleared explicitly rather than inherited. A deviceId
+      // names ONE physical camera, so carrying a chosen back lens into a
+      // request for the front camera pins the request straight back to the
+      // camera being switched away from.
+      await start(next, null);
+    } finally {
+      strictFacing = false;
+    }
+    // Report what the track actually is, not what was asked for. A wrong
+    // record here also picks the wrong direction for the NEXT press, which is
+    // how a toggle ends up only working one way.
+    return facing;
   }
 
   function stop() {
