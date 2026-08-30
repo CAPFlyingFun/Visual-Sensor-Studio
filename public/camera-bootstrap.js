@@ -4,33 +4,13 @@
   const video = document.getElementById('cameraVideo');
   if (!(video instanceof HTMLVideoElement)) return;
 
-  const visionCanvas = document.getElementById('visionCanvas');
   const captureCanvas = document.createElement('canvas');
   const captureContext = captureCanvas.getContext('2d', { willReadFrequently: true });
-  const photoCanvas = document.createElement('canvas');
-  const photoContext = photoCanvas.getContext('2d', { willReadFrequently: true });
-  if (!captureContext || !photoContext) return;
+  if (!captureContext) return;
 
   let stream = null;
   let facing = 'environment';
-  let sourceKind = 'none';
   let lastStage = 'idle';
-
-  function byId(id) {
-    return document.getElementById(id);
-  }
-
-  function setText(id, value) {
-    const element = byId(id);
-    if (element) element.textContent = value;
-  }
-
-  function setChip(id, state, text) {
-    const chip = byId(id);
-    if (!chip) return;
-    chip.dataset.state = state;
-    chip.textContent = text;
-  }
 
   function prepareVideo() {
     video.setAttribute('playsinline', 'true');
@@ -45,33 +25,17 @@
       for (const track of stream.getTracks()) track.stop();
     }
     stream = null;
-    try { video.pause(); } catch { /* WebKit can throw during teardown. */ }
-    video.srcObject = null;
-    if (sourceKind === 'live') sourceKind = 'none';
-  }
-
-  function showLiveVideoIfRgb() {
-    const rgb = document.querySelector('[data-vision-mode="camera"]');
-    if (rgb?.classList.contains('active')) {
-      video.hidden = false;
-      if (visionCanvas) visionCanvas.hidden = true;
+    try {
+      video.pause();
+    } catch {
+      // Some WebKit states can throw during teardown.
     }
-  }
-
-  function showNativePhotoPreview() {
-    if (!(visionCanvas instanceof HTMLCanvasElement) || !photoCanvas.width || !photoCanvas.height) return;
-    const context = visionCanvas.getContext('2d');
-    if (!context) return;
-    const preview = captureFrame(720);
-    visionCanvas.width = preview.width;
-    visionCanvas.height = preview.height;
-    context.putImageData(preview.imageData, 0, 0);
-    video.hidden = true;
-    visionCanvas.hidden = false;
+    video.srcObject = null;
   }
 
   function waitForMetadata(timeoutMs = 2400) {
     if (video.readyState >= HTMLMediaElement.HAVE_METADATA || video.videoWidth > 0) return Promise.resolve();
+
     return new Promise((resolve) => {
       let settled = false;
       const finish = () => {
@@ -105,46 +69,66 @@
   function describeError(error, standalone = false) {
     const name = errorName(error);
     const hint = standalone
-      ? ' iOS/WebKit can fail live camera capture in standalone PWAs even when the same page works in a browser tab. Try Native Photo or Open Live Camera in Edge.'
+      ? ' iOS/WebKit can fail live camera capture in standalone PWAs even when the same page works in a browser tab. Try Retry Camera or Open Live Camera in Edge.'
       : '';
+
     if (name === 'NotAllowedError' || name === 'SecurityError') return `Camera permission was blocked or unavailable.${hint}`;
     if (name === 'NotFoundError' || name === 'DevicesNotFoundError') return `No usable camera was reported.${hint}`;
     if (name === 'NotReadableError' || name === 'TrackStartError') return `The camera exists but WebKit could not deliver usable preview frames.${hint}`;
     if (name === 'OverconstrainedError' || name === 'ConstraintNotSatisfiedError') return `The requested camera mode was unavailable.${hint}`;
+    if (name === 'AbortError') return `Camera startup was interrupted.${hint}`;
+
     const message = error instanceof Error ? error.message : 'Unable to start the camera.';
     return `${message}${hint}`;
   }
 
   async function start(requestedFacing = facing) {
-    if (!navigator.mediaDevices?.getUserMedia) throw new Error('Camera access is not available in this browser context.');
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('Camera access is not available in this browser context.');
+    }
 
     releaseStream();
-    photoCanvas.width = 0;
-    photoCanvas.height = 0;
-    sourceKind = 'none';
     facing = requestedFacing === 'user' ? 'user' : 'environment';
     prepareVideo();
 
     const requestProfiles = [
-      { audio: false, video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } } },
-      { audio: false, video: { facingMode: { ideal: facing } } },
-      { audio: false, video: true }
+      {
+        audio: false,
+        video: {
+          facingMode: { ideal: facing },
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        }
+      },
+      {
+        audio: false,
+        video: { facingMode: { ideal: facing } }
+      },
+      {
+        audio: false,
+        video: true
+      }
     ];
 
     let lastError = new Error('Unable to start the camera.');
+
     for (const constraints of requestProfiles) {
       releaseStream();
       prepareVideo();
+
       try {
         lastStage = 'getUserMedia';
         const nextStream = await navigator.mediaDevices.getUserMedia(constraints);
         stream = nextStream;
         video.srcObject = nextStream;
+
         lastStage = 'metadata';
         await waitForMetadata();
+
         lastStage = 'playback';
         const playPromise = video.play();
         if (playPromise) await Promise.race([playPromise, playbackTimeout()]);
+
         const track = nextStream.getVideoTracks()[0];
         const hasFrames = video.videoWidth > 0 || video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
         if (!track || track.readyState !== 'live' || !hasFrames) {
@@ -152,9 +136,8 @@
           error.name = 'NotReadableError';
           throw error;
         }
-        sourceKind = 'live';
+
         lastStage = 'live';
-        showLiveVideoIfRgb();
         return facing;
       } catch (error) {
         lastError = error;
@@ -163,6 +146,7 @@
         if (name === 'NotAllowedError' || name === 'SecurityError') throw error;
       }
     }
+
     lastStage = 'failed';
     throw lastError;
   }
@@ -175,71 +159,24 @@
 
   function stop() {
     releaseStream();
-    lastStage = sourceKind === 'photo' ? 'photo' : 'idle';
-  }
-
-  async function loadNativePhoto(file) {
-    if (!(file instanceof Blob)) throw new Error('Choose a photo first.');
-    releaseStream();
-    lastStage = 'photo-loading';
-
-    let source;
-    let objectUrl = '';
-    try {
-      if ('createImageBitmap' in window) {
-        source = await createImageBitmap(file);
-      } else {
-        objectUrl = URL.createObjectURL(file);
-        source = await new Promise((resolve, reject) => {
-          const image = new Image();
-          image.onload = () => resolve(image);
-          image.onerror = () => reject(new Error('Could not decode the selected photo.'));
-          image.src = objectUrl;
-        });
-      }
-
-      const sourceWidth = source.width || source.naturalWidth;
-      const sourceHeight = source.height || source.naturalHeight;
-      if (!sourceWidth || !sourceHeight) throw new Error('The selected photo has no usable dimensions.');
-
-      const maxDimension = 1920;
-      const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
-      photoCanvas.width = Math.max(1, Math.round(sourceWidth * scale));
-      photoCanvas.height = Math.max(1, Math.round(sourceHeight * scale));
-      photoContext.clearRect(0, 0, photoCanvas.width, photoCanvas.height);
-      photoContext.drawImage(source, 0, 0, photoCanvas.width, photoCanvas.height);
-      sourceKind = 'photo';
-      lastStage = 'photo';
-      showNativePhotoPreview();
-      return captureFrame(640).imageData;
-    } finally {
-      if (source && typeof source.close === 'function') source.close();
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    }
+    lastStage = 'idle';
   }
 
   function captureFrame(targetWidth = 192) {
-    const safeWidth = Math.max(32, Math.min(960, Math.round(targetWidth)));
-    let source;
-    let sourceWidth;
-    let sourceHeight;
+    const sourceWidth = video.videoWidth;
+    const sourceHeight = video.videoHeight;
+    const track = stream?.getVideoTracks()[0];
 
-    if (stream?.getVideoTracks().some((track) => track.readyState === 'live') && video.videoWidth && video.videoHeight) {
-      source = video;
-      sourceWidth = video.videoWidth;
-      sourceHeight = video.videoHeight;
-    } else if (sourceKind === 'photo' && photoCanvas.width && photoCanvas.height) {
-      source = photoCanvas;
-      sourceWidth = photoCanvas.width;
-      sourceHeight = photoCanvas.height;
-    } else {
-      throw new Error('No camera frame or native photo is ready yet.');
+    if (!track || track.readyState !== 'live' || !sourceWidth || !sourceHeight) {
+      throw new Error('No live camera frame is ready yet.');
     }
 
+    const safeWidth = Math.max(32, Math.min(960, Math.round(targetWidth)));
     const height = Math.max(24, Math.round((sourceHeight / sourceWidth) * safeWidth));
     captureCanvas.width = safeWidth;
     captureCanvas.height = height;
-    captureContext.drawImage(source, 0, 0, safeWidth, height);
+    captureContext.drawImage(video, 0, 0, safeWidth, height);
+
     return {
       imageData: captureContext.getImageData(0, 0, safeWidth, height),
       width: safeWidth,
@@ -252,21 +189,24 @@
     switchCamera,
     stop,
     captureFrame,
-    loadNativePhoto,
     describeError,
     get active() {
       return Boolean(stream?.getVideoTracks().some((track) => track.readyState === 'live'));
     },
     get ready() {
-      return this.active || (sourceKind === 'photo' && photoCanvas.width > 0 && photoCanvas.height > 0);
+      return this.active;
     },
-    get currentFacing() { return facing; },
-    get sourceKind() { return sourceKind; },
+    get currentFacing() {
+      return facing;
+    },
+    get sourceKind() {
+      return this.active ? 'live' : 'none';
+    },
     get diagnostics() {
       const track = stream?.getVideoTracks()[0] || null;
       return {
         stage: lastStage,
-        sourceKind,
+        sourceKind: this.active ? 'live' : 'none',
         trackState: track?.readyState || 'none',
         videoWidth: video.videoWidth || 0,
         videoHeight: video.videoHeight || 0,
@@ -277,42 +217,4 @@
 
   prepareVideo();
   window.VisualCamera = VisualCamera;
-
-  const nativePhotoButton = byId('nativePhotoButton');
-  const nativePhotoInput = byId('nativePhotoInput');
-  if (nativePhotoButton && nativePhotoInput instanceof HTMLInputElement) {
-    nativePhotoButton.addEventListener('click', () => nativePhotoInput.click());
-    nativePhotoInput.addEventListener('change', async () => {
-      const file = nativePhotoInput.files?.[0];
-      if (!file) return;
-      nativePhotoButton.disabled = true;
-      setChip('cameraChip', 'warn', 'Loading photo…');
-      try {
-        await loadNativePhoto(file);
-        setChip('cameraChip', 'good', 'Native photo ready');
-        setText('cameraMessage', 'Native photo loaded without a live MediaStream. Relief, Edges and parallax can use this frame. Take another photo when you need frame B.');
-        const overlay = byId('cameraOverlayButton');
-        if (overlay) overlay.hidden = true;
-        const switchButton = byId('switchCameraButton');
-        if (switchButton) switchButton.disabled = true;
-        const parallaxButton = byId('captureParallaxButton');
-        if (parallaxButton) parallaxButton.disabled = false;
-      } catch (error) {
-        setChip('cameraChip', 'warn', 'Photo unavailable');
-        setText('cameraMessage', error instanceof Error ? error.message : 'Could not load the selected photo.');
-      } finally {
-        nativePhotoButton.disabled = false;
-        nativePhotoInput.value = '';
-      }
-    });
-  }
-
-  for (const button of document.querySelectorAll('[data-vision-mode]')) {
-    button.addEventListener('click', () => {
-      if (button.dataset.visionMode !== 'camera') return;
-      setTimeout(() => {
-        if (sourceKind === 'photo') showNativePhotoPreview();
-      }, 0);
-    });
-  }
 })();
