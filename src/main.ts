@@ -29,6 +29,12 @@ import {
 import { computeBlockFlow, flowVectorColor, type FlowField } from './vision/optical-flow.js';
 import { estimateEffectiveResolution } from './vision/sharpness.js';
 import {
+  EventDetector,
+  degreesPerSecond,
+  type EventPhase,
+  type ObservationEvent
+} from './vision/observation.js';
+import {
   MotionSpeedField,
   MotionTrailBuffer,
   renderMotionIronbow,
@@ -52,7 +58,7 @@ import {
 import { StabilityMonitor } from './sensors/stability.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 
-const APP_VERSION = '0.7.0';
+const APP_VERSION = '0.8.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -84,6 +90,9 @@ interface AppSettings {
   motionSensitivity: number;
   motionKeepFastest: boolean;
   motionFadeTrails: boolean;
+  motionEventTrigger: boolean;
+  /** Horizontal field of view in degrees, entered by hand. 0 means unknown. */
+  motionFovDegrees: number;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -107,7 +116,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   motionExposureSeconds: 5,
   motionSensitivity: 18,
   motionKeepFastest: true,
-  motionFadeTrails: true
+  motionFadeTrails: true,
+  motionEventTrigger: false,
+  motionFovDegrees: 0
 };
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -212,7 +223,13 @@ function loadSettings(): AppSettings {
         : DEFAULT_SETTINGS.motionKeepFastest,
       motionFadeTrails: typeof parsed.motionFadeTrails === 'boolean'
         ? parsed.motionFadeTrails
-        : DEFAULT_SETTINGS.motionFadeTrails
+        : DEFAULT_SETTINGS.motionFadeTrails,
+      motionEventTrigger: typeof parsed.motionEventTrigger === 'boolean'
+        ? parsed.motionEventTrigger
+        : DEFAULT_SETTINGS.motionEventTrigger,
+      motionFovDegrees: Number.isFinite(parsed.motionFovDegrees)
+        ? clamp(Number(parsed.motionFovDegrees), 0, 180)
+        : DEFAULT_SETTINGS.motionFovDegrees
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -305,6 +322,11 @@ let latestSpeed: MotionSpeedReport | null = null;
 let latestTrail: MotionTrailReport | null = null;
 /** When the previous analysed frame was captured, for per-second speeds. */
 let lastAnalysisAt = 0;
+/** Holds the trail for inspection. The camera keeps running underneath. */
+let trailFrozen = false;
+let eventPhase: EventPhase = 'idle';
+let activeEvent: ObservationEvent | null = null;
+let lastCompletedEvent: ObservationEvent | null = null;
 let zoomState: CameraZoomState = { value: 1, min: 1, max: 1, step: 0.1, kind: 'none' };
 const frameRateMeter = new FrameRateMeter();
 const governor = new AdaptiveGovernor();
@@ -312,6 +334,7 @@ const tracker = new ObjectTracker();
 const integrator = new FrameIntegrator();
 const speedField = new MotionSpeedField();
 const motionTrails = new MotionTrailBuffer();
+const eventDetector = new EventDetector();
 const histogram = createHistogram();
 const stability = new StabilityMonitor();
 
@@ -702,6 +725,255 @@ function setMotionPanel(active: boolean, mode: VisionMode): void {
   }
 }
 
+/**
+ * Everything the app can honestly say about this instant.
+ *
+ * The point of writing it down is that a screenshot on its own is unusable
+ * later: two trails look identical whether one was a 5 second window and the
+ * other 60, and a colour means nothing without the scale it was mapped
+ * against. Fields the app does not actually know are omitted rather than
+ * filled with a plausible value.
+ */
+interface ObservationSnapshot {
+  capturedAt: string;
+  app: string;
+  mode: VisionMode;
+  motion?: {
+    trailWindowSeconds?: number;
+    trailFrozen: boolean;
+    peakWidthsPerSecond: number;
+    meanWidthsPerSecond: number;
+    peakPixelsPerSecond: number;
+    fullScaleWidthsPerSecond: number;
+    movingPercent: number;
+    measuredPercent: number;
+    inferredPercent: number;
+    unknownPercent: number;
+    angular?: {
+      peakDegreesPerSecond: number;
+      assumedHorizontalFovDegrees: number;
+      note: string;
+    };
+  };
+  event?: {
+    state: EventPhase;
+    startedAt: string;
+    peakAt: string;
+    endedAt: string | null;
+    durationMs: number;
+    peakWidthsPerSecond: number;
+    meanWidthsPerSecond: number;
+    frames: number;
+  };
+  camera: {
+    resolution: string;
+    analysisWidth: number;
+    zoom: string;
+    processingFps: number;
+    deliveredFps: number;
+  };
+  position?: {
+    latitude: number;
+    longitude: number;
+    accuracyMetres: number;
+    altitudeMetres: number | null;
+    headingDegrees: number | null;
+  };
+  orientation?: {
+    compassDegrees: number | null;
+    pitchDegrees: number | null;
+    rollDegrees: number | null;
+  };
+  limits: string[];
+}
+
+function buildSnapshot(): ObservationSnapshot {
+  const diagnostics = camera.diagnostics;
+  const rates = frameRateMeter.report;
+  const event = activeEvent ?? lastCompletedEvent;
+
+  const snapshot: ObservationSnapshot = {
+    capturedAt: new Date().toISOString(),
+    app: `Visual Sensor Studio ${APP_VERSION}`,
+    mode: visionMode,
+    camera: {
+      resolution: `${diagnostics.videoWidth}×${diagnostics.videoHeight}`,
+      analysisWidth: latestMetrics?.analysisWidth ?? 0,
+      zoom: `${zoomState.value.toFixed(1)}× ${zoomState.kind}`,
+      processingFps: Number((latestMetrics?.processingFps ?? 0).toFixed(1)),
+      deliveredFps: Number(rates.deliveredFps.toFixed(1))
+    },
+    // Written into the file itself, because a record that travels without its
+    // caveats is a record that will eventually be read without them.
+    limits: [
+      'Colour maps image speed, not temperature. This camera has no infrared sensitivity.',
+      'Speeds are image speeds. Nothing here measures distance, size or real-world velocity.',
+      'No object identification of any kind is performed.'
+    ]
+  };
+
+  if (latestSpeed) {
+    const measured = 1 - latestSpeed.unresolvedFraction - latestSpeed.inferredFraction;
+    snapshot.motion = {
+      trailWindowSeconds: visionMode === 'motiontrails' ? settings.motionExposureSeconds : undefined,
+      trailFrozen,
+      peakWidthsPerSecond: Number(latestSpeed.peakWidthsPerSecond.toFixed(4)),
+      meanWidthsPerSecond: Number(latestSpeed.meanWidthsPerSecond.toFixed(4)),
+      peakPixelsPerSecond: Math.round(latestSpeed.peakPixelsPerSecond),
+      fullScaleWidthsPerSecond: Number(latestSpeed.fullScale.toFixed(4)),
+      movingPercent: Number((latestSpeed.movingFraction * 100).toFixed(2)),
+      measuredPercent: Number((measured * 100).toFixed(1)),
+      inferredPercent: Number((latestSpeed.inferredFraction * 100).toFixed(1)),
+      unknownPercent: Number((latestSpeed.unresolvedFraction * 100).toFixed(1))
+    };
+
+    const angular = degreesPerSecond(
+      latestSpeed.peakWidthsPerSecond,
+      settings.motionFovDegrees,
+      zoomState.value
+    );
+    if (angular !== null) {
+      snapshot.motion.angular = {
+        peakDegreesPerSecond: Number(angular.toFixed(3)),
+        assumedHorizontalFovDegrees: settings.motionFovDegrees,
+        note: 'Derived from a field of view entered by hand. WebKit exposes no lens '
+          + 'geometry, so this figure is exactly as good as that number.'
+      };
+    }
+  }
+
+  if (event) {
+    snapshot.event = {
+      state: eventPhase,
+      startedAt: new Date(event.startedAt).toISOString(),
+      peakAt: new Date(event.peakAt).toISOString(),
+      endedAt: event.endedAt ? new Date(event.endedAt).toISOString() : null,
+      durationMs: Math.round(event.durationMs),
+      peakWidthsPerSecond: Number(event.peakWidthsPerSecond.toFixed(4)),
+      meanWidthsPerSecond: Number(event.meanWidthsPerSecond.toFixed(4)),
+      frames: event.frames
+    };
+  }
+
+  if (latestGps) {
+    snapshot.position = {
+      latitude: latestGps.latitude,
+      longitude: latestGps.longitude,
+      accuracyMetres: latestGps.accuracy,
+      altitudeMetres: latestGps.altitude,
+      headingDegrees: latestGps.heading
+    };
+  }
+
+  if (latestMotion) {
+    snapshot.orientation = {
+      compassDegrees: latestMotion.alpha,
+      pitchDegrees: latestMotion.beta,
+      rollDegrees: latestMotion.gamma
+    };
+  }
+
+  return snapshot;
+}
+
+/** The overlay lines, shortest useful form, for burning onto a saved frame. */
+function snapshotOverlayLines(snapshot: ObservationSnapshot): string[] {
+  const lines = [`${snapshot.app} · ${MODE_LABELS[snapshot.mode]}`];
+  lines.push(new Date(snapshot.capturedAt).toLocaleString());
+
+  if (snapshot.motion) {
+    const m = snapshot.motion;
+    if (m.trailWindowSeconds) lines.push(`Trail ${m.trailWindowSeconds}s${m.trailFrozen ? ' · FROZEN' : ''}`);
+    lines.push(`Peak ${m.peakWidthsPerSecond.toFixed(2)} w/s · mean ${m.meanWidthsPerSecond.toFixed(2)} w/s`);
+    if (m.angular) {
+      lines.push(`Peak ${m.angular.peakDegreesPerSecond.toFixed(2)}°/s (assumes ${m.angular.assumedHorizontalFovDegrees}° FOV)`);
+    }
+    lines.push(`Measured ${m.measuredPercent}% · inferred ${m.inferredPercent}% · unknown ${m.unknownPercent}%`);
+    lines.push(`Full scale ${m.fullScaleWidthsPerSecond.toFixed(2)} w/s = white`);
+  }
+  if (snapshot.event) {
+    lines.push(`Event ${snapshot.event.state} · ${(snapshot.event.durationMs / 1000).toFixed(1)}s · ${snapshot.event.frames} frames`);
+  }
+  lines.push(`${snapshot.camera.resolution} · analysis ${snapshot.camera.analysisWidth}px · ${snapshot.camera.zoom}`);
+  lines.push(`Proc ${snapshot.camera.processingFps} fps · delivered ${snapshot.camera.deliveredFps} fps`);
+  if (snapshot.position) {
+    lines.push(`${snapshot.position.latitude.toFixed(5)}, ${snapshot.position.longitude.toFixed(5)} ±${Math.round(snapshot.position.accuracyMetres)}m`);
+  }
+  if (snapshot.orientation?.compassDegrees !== null && snapshot.orientation?.compassDegrees !== undefined) {
+    lines.push(`Compass ${snapshot.orientation.compassDegrees.toFixed(0)}°`);
+  }
+  lines.push('Speed, not temperature. No object identification.');
+  return lines;
+}
+
+/**
+ * Burn the overlay into a copy of the frame.
+ *
+ * Scaled from the image's own width so a 256px trail and a 4032px still both
+ * come out readable; a fixed point size is unreadable on one and absurd on the
+ * other.
+ */
+function drawObservationOverlay(canvas: HTMLCanvasElement, lines: string[]): void {
+  const context = canvas.getContext('2d');
+  if (!context) return;
+
+  const size = Math.max(9, Math.round(canvas.width / 46));
+  const pad = Math.round(size * 0.7);
+  const lineHeight = Math.round(size * 1.42);
+  context.font = `600 ${size}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+  context.textBaseline = 'top';
+
+  const boxWidth = Math.min(
+    canvas.width - pad * 2,
+    Math.max(...lines.map((line) => context.measureText(line).width)) + pad * 2
+  );
+  const boxHeight = lines.length * lineHeight + pad * 2;
+
+  context.fillStyle = 'rgba(4, 8, 14, 0.72)';
+  context.fillRect(pad, pad, boxWidth, boxHeight);
+  context.fillStyle = '#eaf3ff';
+  lines.forEach((line, index) => {
+    context.fillText(line, pad * 2, pad * 2 + index * lineHeight, boxWidth - pad * 2);
+  });
+}
+
+function saveSnapshot(): void {
+  if (!camera.active) {
+    setText('cameraMessage', 'Enable the camera before saving a snapshot.');
+    return;
+  }
+
+  const snapshot = buildSnapshot();
+  const stamp = snapshot.capturedAt.replace(/[:.]/g, '-');
+
+  // The JSON is the record and the image is the illustration. Saving only the
+  // image would lose every number that makes it interpretable later.
+  const json = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
+  const jsonUrl = URL.createObjectURL(json);
+  const anchor = document.createElement('a');
+  anchor.href = jsonUrl;
+  anchor.download = `visual-sensor-observation-${stamp}.json`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(jsonUrl), 1000);
+
+  const source = overlayPainted && !visionCanvas.hidden ? visionCanvas : null;
+  if (!source) {
+    setText('cameraMessage', 'Saved the observation record. Select a processed mode to save the frame too.');
+    return;
+  }
+
+  const output = document.createElement('canvas');
+  output.width = source.width;
+  output.height = source.height;
+  const context = output.getContext('2d');
+  if (!context) return;
+  context.drawImage(source, 0, 0);
+  drawObservationOverlay(output, snapshotOverlayLines(snapshot));
+  saveCanvas(output, `${output.width}×${output.height} annotated observation`);
+}
+
 function renderMotionReadouts(): void {
   if (byId('motionPanel').hidden) return;
 
@@ -731,7 +1003,37 @@ function renderMotionReadouts(): void {
 
   setText('motionTrailCoverage', latestTrail
     ? `${(latestTrail.coverage * 100).toFixed(1)}% · ${latestTrail.framesAccumulated} frames`
-    : '—');
+      + (trailFrozen ? ' · FROZEN' : '')
+    : trailFrozen ? 'FROZEN' : '—');
+
+  const angular = latestSpeed
+    ? degreesPerSecond(latestSpeed.peakWidthsPerSecond, settings.motionFovDegrees, zoomState.value)
+    : null;
+  // Without an entered field of view there is no honest angular figure, and the
+  // readout says which rather than showing a dash that looks like a zero.
+  setText('motionAngular', angular === null
+    ? 'needs a FOV'
+    : `${angular.toFixed(2)}°/s · assumes ${settings.motionFovDegrees}°`);
+
+  if (!settings.motionEventTrigger) {
+    setText('motionEventState', 'Trigger off');
+  } else if (activeEvent) {
+    setText('motionEventState', `${eventPhase} · ${(activeEvent.durationMs / 1000).toFixed(1)}s`
+      + ` · peak ${activeEvent.peakWidthsPerSecond.toFixed(2)} w/s · ${activeEvent.frames} frames`);
+  } else if (lastCompletedEvent) {
+    const ended = lastCompletedEvent.endedAt ?? Date.now();
+    setText('motionEventState', `Last event ${(lastCompletedEvent.durationMs / 1000).toFixed(1)}s`
+      + ` · peak ${lastCompletedEvent.peakWidthsPerSecond.toFixed(2)} w/s`
+      + ` · ended ${new Date(ended).toLocaleTimeString()}`);
+  } else {
+    setText('motionEventState', 'Watching · nothing yet');
+  }
+}
+
+function setTrailFrozen(frozen: boolean): void {
+  trailFrozen = frozen;
+  byId<HTMLButtonElement>('motionFreezeButton').textContent = frozen ? 'Resume Trail' : 'Freeze Trail';
+  byId('motionFreezeButton').classList.toggle('active', frozen);
 }
 
 function setNightMode(active: boolean): void {
@@ -1077,8 +1379,12 @@ function updateVisionMode(mode: VisionMode): void {
   // at. Both start clean.
   motionTrails.reset();
   speedField.reset();
+  eventDetector.reset();
   latestSpeed = null;
   latestTrail = null;
+  activeEvent = null;
+  eventPhase = 'idle';
+  setTrailFrozen(false);
   lastAnalysisAt = 0;
   setNightMode(mode === 'night');
   setMotionPanel(mode === 'speed' || mode === 'motiontrails', mode);
@@ -1291,7 +1597,32 @@ function processVisionFrame(timestamp: number): boolean {
       usableDt,
       { motionThreshold: settings.motionSensitivity }
     );
-    if (visionMode === 'motiontrails') {
+    // The detector runs in BOTH motion modes, so Speed can arm a tripod watch
+    // without the trail buffer being the thing that notices.
+    if (settings.motionEventTrigger) {
+      const update = eventDetector.update(
+        latestSpeed.movingFraction,
+        latestSpeed.peakWidthsPerSecond,
+        timestamp,
+        Date.now()
+      );
+      eventPhase = update.phase;
+      activeEvent = update.current;
+      if (update.started) {
+        // The trail should hold THIS event, not a smear of everything since the
+        // mode was chosen, so a new event starts from a clean buffer.
+        motionTrails.reset();
+        setTrailFrozen(false);
+      }
+      if (update.ended && update.completed) {
+        lastCompletedEvent = update.completed;
+        // Freeze on the way out, so an unattended watch still has the event on
+        // screen when it is picked up rather than a buffer already fading.
+        setTrailFrozen(true);
+      }
+    }
+
+    if (visionMode === 'motiontrails' && !trailFrozen) {
       latestTrail = motionTrails.update(
         speedField.speed,
         speedField.state,
@@ -1669,6 +2000,11 @@ function syncSettingsControls(): void {
   setText('motionSensitivityValue', String(settings.motionSensitivity));
   byId<HTMLInputElement>('motionKeepFastest').checked = settings.motionKeepFastest;
   byId<HTMLInputElement>('motionFadeTrails').checked = settings.motionFadeTrails;
+  byId<HTMLInputElement>('motionEventTrigger').checked = settings.motionEventTrigger;
+  byId<HTMLInputElement>('motionFov').value = settings.motionFovDegrees > 0
+    ? String(settings.motionFovDegrees)
+    : '';
+  setText('motionFovValue', settings.motionFovDegrees > 0 ? `${settings.motionFovDegrees}°` : 'not set');
   byId<HTMLSelectElement>('cameraPreference').value = settings.cameraPreference;
   byId<HTMLSelectElement>('qualityPreference').value = settings.qualityPreference;
   byId<HTMLSelectElement>('visionRatePreference').value = settings.visionRatePreference;
@@ -2915,7 +3251,31 @@ on('motionFadeTrails', 'change', (event) => {
 on('motionClearButton', 'click', () => {
   motionTrails.reset();
   speedField.reset();
+  eventDetector.reset();
+  activeEvent = null;
+  lastCompletedEvent = null;
+  eventPhase = 'idle';
+  setTrailFrozen(false);
   setText('motionTrailCoverage', 'Cleared');
+});
+on('motionFreezeButton', 'click', () => setTrailFrozen(!trailFrozen));
+on('motionSnapshotButton', 'click', () => saveSnapshot());
+on('motionEventTrigger', 'change', (event) => {
+  settings.motionEventTrigger = (event.target as HTMLInputElement).checked;
+  if (!settings.motionEventTrigger) {
+    eventDetector.reset();
+    activeEvent = null;
+    eventPhase = 'idle';
+  }
+  saveSettings();
+});
+on('motionFov', 'change', (event) => {
+  const entered = Number((event.target as HTMLInputElement).value);
+  settings.motionFovDegrees = Number.isFinite(entered) ? clamp(entered, 0, 180) : 0;
+  setText('motionFovValue', settings.motionFovDegrees > 0
+    ? `${settings.motionFovDegrees}°`
+    : 'not set');
+  saveSettings();
 });
 on('nightRestartButton', 'click', () => {
   integrator.reset();

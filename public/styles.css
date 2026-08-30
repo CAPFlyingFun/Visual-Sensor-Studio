@@ -822,3 +822,8 @@ footer strong { color: #9fb2c3; }
   background: #000;
 }
 .night-status .readout.wide { grid-column: 1 / -1; }
+.secondary-button.active {
+  border-color: var(--cyan);
+  color: #eaf3ff;
+  box-shadow: inset 0 0 0 1px rgba(96, 208, 255, 0.35);
+}

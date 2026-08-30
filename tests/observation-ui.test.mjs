@@ -538,3 +538,44 @@ test('an accumulated motion trail is saved at its own resolution', () => {
 test('switching modes clears motion state that belongs to another scene', () => {
   assert.match(mainSource, /motionTrails\.reset\(\);\s*\n\s*speedField\.reset\(\);/);
 });
+
+test('the observation snapshot carries its own caveats', () => {
+  // A record that travels without them is a record that will eventually be
+  // read without them.
+  assert.match(mainSource, /limits: \[/);
+  assert.match(mainSource, /image speed, not temperature/);
+  assert.match(mainSource, /No object identification of any kind is performed/);
+});
+
+test('a snapshot saves the numbers, not just the picture', () => {
+  // Two trails look identical whether one covered five seconds or sixty, so
+  // the image alone is unreadable later.
+  assert.match(mainSource, /function buildSnapshot\(\): ObservationSnapshot/);
+  assert.match(mainSource, /application\/json/);
+  assert.match(mainSource, /drawObservationOverlay\(output, snapshotOverlayLines\(snapshot\)\)/);
+  for (const field of ['trailWindowSeconds', 'measuredPercent', 'inferredPercent',
+    'unknownPercent', 'fullScaleWidthsPerSecond', 'processingFps']) {
+    assert.match(mainSource, new RegExp(field), `snapshot is missing ${field}`);
+  }
+});
+
+test('freezing holds the trail without stopping the camera', () => {
+  assert.match(mainSource, /visionMode === 'motiontrails' && !trailFrozen/);
+  assert.match(mainSource, /function setTrailFrozen\(frozen: boolean\)/);
+  assert.match(htmlSource, /id=["']motionFreezeButton["']/);
+});
+
+test('an event trigger clears the trail so it holds that one event', () => {
+  assert.match(mainSource, /if \(update\.started\) \{/);
+  assert.match(mainSource, /motionTrails\.reset\(\);\s*\n\s*setTrailFrozen\(false\);/);
+  assert.match(mainSource, /setTrailFrozen\(true\);/);
+  assert.match(htmlSource, /id=["']motionEventTrigger["']/);
+});
+
+test('angular speed is never shown without the field of view it assumed', () => {
+  // WebKit exposes no lens geometry, so a degrees-per-second figure with no
+  // stated FOV behind it would be a number with no meaning.
+  assert.match(mainSource, /'needs a FOV'/);
+  assert.match(mainSource, /assumes \$\{settings\.motionFovDegrees\}°/);
+  assert.match(mainSource, /assumedHorizontalFovDegrees/);
+});

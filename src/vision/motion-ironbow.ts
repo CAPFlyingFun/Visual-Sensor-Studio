@@ -116,6 +116,8 @@ export interface MotionSpeedOptions {
 export interface MotionSpeedReport {
   /** Fastest resolved speed this frame, in frame widths per second. */
   peakWidthsPerSecond: number;
+  /** Mean speed across the moving pixels that had one, in frame widths per second. */
+  meanWidthsPerSecond: number;
   /** The same speed in analysis pixels per second, for readouts. */
   peakPixelsPerSecond: number;
   /** Fraction of the frame currently moving, 0..1. */
@@ -130,6 +132,7 @@ export interface MotionSpeedReport {
 
 const EMPTY_REPORT: MotionSpeedReport = {
   peakWidthsPerSecond: 0,
+  meanWidthsPerSecond: 0,
   peakPixelsPerSecond: 0,
   movingFraction: 0,
   unresolvedFraction: 0,
@@ -305,6 +308,8 @@ export class MotionSpeedField {
     }
 
     let peak = 0;
+    let speedSum = 0;
+    let speedCount = 0;
     let moving = 0;
     let unresolved = 0;
     let inferred = 0;
@@ -339,11 +344,15 @@ export class MotionSpeedField {
         if (measured >= 0) {
           state[i] = RESOLVED;
           speed[i] = measured;
+          speedSum += measured;
+          speedCount++;
           if (measured > peak) peak = measured;
         } else if (carried >= 0) {
           inferred++;
           state[i] = INFERRED;
           speed[i] = carried;
+          speedSum += carried;
+          speedCount++;
           if (carried > peak) peak = carried;
         } else {
           unresolved++;
@@ -370,6 +379,7 @@ export class MotionSpeedField {
 
     this.lastReport = {
       peakWidthsPerSecond: peak,
+      meanWidthsPerSecond: speedCount ? speedSum / speedCount : 0,
       peakPixelsPerSecond: peak * width,
       movingFraction: moving / pixels,
       unresolvedFraction: moving ? unresolved / moving : 0,
