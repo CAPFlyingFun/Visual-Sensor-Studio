@@ -1,11 +1,10 @@
-import { CameraController } from './sensors/camera.js';
+import { CameraController, describeCameraError } from './sensors/camera.js';
 import { MotionController } from './sensors/motion.js';
 import { GpsController } from './sensors/gps.js';
 import { clamp, median } from './core/math.js';
 import type { GpsSample, MotionSample, SensorSnapshot, VisionMode } from './core/types.js';
 import { disparityToRgba, grayToRgba, reliefFromGray, rgbaToGray, sobelEdges } from './vision/frame-processing.js';
 import { computeBlockDisparity } from './vision/parallax.js';
-import { FusionScene } from './visualization/scene.js';
 
 function byId<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -27,6 +26,10 @@ function format(value: number | null | undefined, digits = 1, suffix = ''): stri
   return Number.isFinite(value) ? `${Number(value).toFixed(digits)}${suffix}` : '—';
 }
 
+function isStandalone(): boolean {
+  return window.matchMedia('(display-mode: standalone)').matches || Boolean((navigator as Navigator & { standalone?: boolean }).standalone);
+}
+
 function drawImageData(canvas: HTMLCanvasElement, imageData: ImageData): void {
   canvas.width = imageData.width;
   canvas.height = imageData.height;
@@ -45,6 +48,20 @@ function rgbaToImageData(rgba: Uint8ClampedArray, width: number, height: number)
   return imageData;
 }
 
+interface FusionBridge {
+  setOrientation(value: MotionSample['quaternion']): void;
+  setAcceleration(value: MotionSample['acceleration']): void;
+  setGpsTrack(track: readonly GpsSample[]): void;
+  resetView(): void;
+}
+
+const fallbackFusion: FusionBridge = {
+  setOrientation: (_value) => undefined,
+  setAcceleration: (_value) => undefined,
+  setGpsTrack: (_track) => undefined,
+  resetView: () => undefined
+};
+
 const video = byId<HTMLVideoElement>('cameraVideo');
 const visionCanvas = byId<HTMLCanvasElement>('visionCanvas');
 const visionContext = visionCanvas.getContext('2d');
@@ -53,7 +70,7 @@ if (!visionContext) throw new Error('Canvas 2D is required.');
 const camera = new CameraController(video);
 const motion = new MotionController();
 const gps = new GpsController();
-const fusion = new FusionScene(byId('fusionScene'));
+let fusion: FusionBridge = fallbackFusion;
 
 let visionMode: VisionMode = 'camera';
 let latestMotion: MotionSample | null = null;
@@ -66,33 +83,84 @@ let medianDisparityPx: number | null = null;
 let lastVisionFrameAt = 0;
 let processingVision = false;
 
+async function initializeFusion(): Promise<void> {
+  const container = byId('fusionScene');
+  const resetButton = byId<HTMLButtonElement>('resetViewButton');
+  resetButton.disabled = true;
+  container.dataset.state = 'loading';
+  container.textContent = 'Loading interactive 3D sensor view…';
+
+  try {
+    const { FusionScene } = await import('./visualization/scene.js');
+    container.textContent = '';
+    fusion = new FusionScene(container);
+    container.dataset.state = 'ready';
+    if (latestMotion) {
+      fusion.setOrientation(latestMotion.quaternion);
+      fusion.setAcceleration(latestMotion.acceleration);
+    }
+    fusion.setGpsTrack(gps.track);
+    resetButton.disabled = false;
+  } catch (error) {
+    fusion = fallbackFusion;
+    container.dataset.state = 'fallback';
+    container.textContent = '3D view could not load. Camera, motion, GPS and parallax still work normally.';
+    setText('sceneMessage', error instanceof Error ? `3D viewer unavailable: ${error.message}` : '3D viewer unavailable. Core sensors still work.');
+  }
+}
+
 async function startCamera(): Promise<void> {
   const button = byId<HTMLButtonElement>('cameraButton');
+  const overlay = byId<HTMLButtonElement>('cameraOverlayButton');
+  const switchButton = byId<HTMLButtonElement>('switchCameraButton');
+  const parallaxButton = byId<HTMLButtonElement>('captureParallaxButton');
+
   button.disabled = true;
+  overlay.disabled = true;
+  overlay.hidden = false;
+  overlay.textContent = 'Requesting Camera…';
+  switchButton.disabled = true;
   setChip('cameraChip', 'warn', 'Camera requesting…');
+
   try {
     await camera.start();
     setChip('cameraChip', 'good', `Camera ${camera.currentFacing === 'environment' ? 'rear' : 'front'}`);
     button.textContent = 'Restart Camera';
-    byId<HTMLButtonElement>('switchCameraButton').disabled = false;
+    overlay.hidden = true;
+    switchButton.disabled = false;
+    parallaxButton.disabled = false;
+    setText('cameraMessage', 'Camera is live. The installed Edge app may use its own iOS camera permission prompt, separate from a normal browser tab.');
   } catch (error) {
-    setChip('cameraChip', 'warn', 'Camera unavailable');
-    setText('cameraMessage', error instanceof Error ? error.message : 'Unable to start camera.');
+    setChip('cameraChip', 'warn', 'Camera needs attention');
+    button.textContent = 'Retry Camera';
+    overlay.hidden = false;
+    overlay.textContent = 'Retry Camera';
+    switchButton.disabled = true;
+    parallaxButton.disabled = true;
+    setText('cameraMessage', describeCameraError(error, isStandalone()));
   } finally {
     button.disabled = false;
+    overlay.disabled = false;
   }
 }
 
 async function switchCamera(): Promise<void> {
   const button = byId<HTMLButtonElement>('switchCameraButton');
+  const overlay = byId<HTMLButtonElement>('cameraOverlayButton');
   button.disabled = true;
   try {
     const facing = await camera.switchCamera();
     setChip('cameraChip', 'good', `Camera ${facing === 'environment' ? 'rear' : 'front'}`);
+    overlay.hidden = true;
+    setText('cameraMessage', `Switched to the ${facing === 'environment' ? 'rear' : 'front'} camera.`);
   } catch (error) {
-    setText('cameraMessage', error instanceof Error ? error.message : 'Unable to switch camera.');
+    setChip('cameraChip', 'warn', 'Camera needs attention');
+    overlay.hidden = false;
+    overlay.textContent = 'Retry Camera';
+    byId<HTMLButtonElement>('captureParallaxButton').disabled = true;
+    setText('cameraMessage', describeCameraError(error, isStandalone()));
   } finally {
-    button.disabled = false;
+    button.disabled = !camera.active;
   }
 }
 
@@ -277,6 +345,7 @@ function downloadSnapshot(): void {
 }
 
 byId<HTMLButtonElement>('cameraButton').addEventListener('click', () => void startCamera());
+byId<HTMLButtonElement>('cameraOverlayButton').addEventListener('click', () => void startCamera());
 byId<HTMLButtonElement>('switchCameraButton').addEventListener('click', () => void switchCamera());
 byId<HTMLButtonElement>('motionButton').addEventListener('click', () => void enableMotion());
 byId<HTMLButtonElement>('gpsButton').addEventListener('click', toggleGps);
@@ -291,13 +360,22 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-vision-
 }
 
 setText('secureContextValue', window.isSecureContext ? 'Secure ✓' : 'Needs HTTPS');
-setChip('pwaChip', 'good', window.matchMedia('(display-mode: standalone)').matches ? 'PWA installed' : 'PWA ready');
+setChip('pwaChip', 'good', isStandalone() ? 'PWA installed' : 'PWA ready');
 updateVisionMode('camera');
 requestAnimationFrame((time) => void visionLoop(time));
+void initializeFusion();
+
+if (!window.isSecureContext) {
+  setChip('cameraChip', 'warn', 'Camera needs HTTPS');
+  setText('cameraMessage', 'Camera access requires a secure HTTPS context.');
+} else if (!navigator.mediaDevices?.getUserMedia) {
+  setChip('cameraChip', 'warn', 'Camera API unavailable');
+  setText('cameraMessage', 'This browser context is not exposing getUserMedia. Try opening the same URL directly in Edge to compare with the installed app.');
+}
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    void navigator.serviceWorker.register('./sw.js').catch(() => {
+    void navigator.serviceWorker.register('./sw.js').then((registration) => registration.update()).catch(() => {
       setChip('pwaChip', 'warn', 'PWA cache unavailable');
     });
   });
