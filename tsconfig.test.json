@@ -29,6 +29,7 @@
     "src/vision/observation.ts",
     "src/sensors/autostart.ts",
     "src/vision/baseline.ts",
+    "src/vision/layers.ts",
     "src/vision/overlays.ts"
   ]
 }

@@ -70,6 +70,10 @@
             <button class="segmented" type="button" data-vision-mode="difference">Difference</button>
             <button class="segmented" type="button" data-vision-mode="speed">Speed</button>
             <button class="segmented" type="button" data-vision-mode="motiontrails">Trails</button>
+            <button class="segmented" type="button" data-vision-mode="amplify">Amplify</button>
+            <button class="segmented" type="button" data-vision-mode="background">Background</button>
+            <button class="segmented" type="button" data-vision-mode="chrono">Chrono</button>
+            <button class="segmented" type="button" data-vision-mode="slitscan">Slit Scan</button>
             <button class="segmented" type="button" data-vision-mode="night">Night</button>
           </div>
 
@@ -88,6 +92,31 @@
             <div class="metric"><span>Processing</span><strong id="metricFps">&mdash;</strong></div>
             <div class="metric"><span>Zoom</span><strong id="metricZoom">&mdash;</strong></div>
           </div>
+
+          <section class="night-panel" id="layerPanel" hidden aria-label="Time layer controls">
+            <div class="night-heading">
+              <strong id="layerPanelTitle">Time layer</strong>
+              <span class="small-badge warning">Builds up over frames</span>
+            </div>
+            <p class="helper" id="layerHelp">These layers hold state across frames, so give them a few seconds before judging them.</p>
+            <div class="night-grid" id="layerControls">
+              <label>Amplifier gain <span class="range-value" id="amplifyGainValue">12×</span>
+                <input id="amplifyGain" type="range" min="1" max="40" step="1" value="12" />
+              </label>
+              <label>Chrono spacing <span class="range-value" id="chronoSpacingValue">4 frames</span>
+                <input id="chronoSpacing" type="range" min="1" max="12" step="1" value="4" />
+              </label>
+              <label>Slit position <span class="range-value" id="slitColumnValue">centre</span>
+                <input id="slitColumn" type="range" min="0" max="1" step="0.02" value="0.5" />
+              </label>
+            </div>
+            <div class="night-status">
+              <div class="readout wide"><span>State</span><strong id="layerState">—</strong></div>
+            </div>
+            <div class="button-row">
+              <button class="secondary-button" id="layerResetButton" type="button">Restart Layer</button>
+            </div>
+          </section>
 
           <section class="night-panel" id="motionPanel" hidden aria-label="Motion speed controls">
             <div class="night-heading">
@@ -339,7 +368,7 @@
       </section>
     </main>
 
-    <footer><strong>Visual Sensor Studio v0.11.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.12.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">

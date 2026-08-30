@@ -770,3 +770,37 @@ test('the baseline stops being integrated once the pair is captured', () => {
   assert.match(analyze.slice(0, 2500), /baseline\.stop\(\)/);
   assert.match(mainSource, /baseline\.start\(\)/);
 });
+
+test('the time layers are present and say what they do', () => {
+  for (const mode of ['amplify', 'background', 'chrono', 'slitscan']) {
+    assert.match(htmlSource, new RegExp(`data-vision-mode=["']${mode}["']`), `missing ${mode}`);
+  }
+  // Amplification magnifies noise along with movement, and a mode that hid
+  // that would have people reading sensor grain as a discovery.
+  assert.match(mainSource, /small movement magnified, noise with it/);
+  assert.match(mainSource, /noise is amplified too/);
+  assert.match(mainSource, /red oldest, blue newest, grey means still/);
+  assert.match(mainSource, /left to right is time/);
+});
+
+test('a background is learned before it is subtracted', () => {
+  // Subtracting a model built from two frames flags the entire scene.
+  assert.match(mainSource, /Learning the scene…/);
+  const layers = readFileSync(new URL('../src/vision/layers.ts', import.meta.url), 'utf8');
+  assert.match(layers, /BACKGROUND_WARMUP/);
+  assert.match(layers, /this\.frames >= BACKGROUND_WARMUP && delta > threshold/);
+});
+
+test('every time layer restarts when the mode changes', () => {
+  // An accumulation gathered while pointing somewhere else is not this mode's
+  // picture.
+  for (const fn of ['amplifier.reset()', 'backgroundModel.reset()',
+    'chronochrome.reset()', 'slitScan.reset()']) {
+    assert.ok(mainSource.includes(fn), `${fn} must run on a mode change`);
+  }
+});
+
+test('a layer control is never shown for a layer it cannot affect', () => {
+  assert.match(mainSource, /byId\('layerControls'\)\.hidden = visible === 0/);
+  assert.match(mainSource, /showing\[input\.id\] !== mode/);
+});

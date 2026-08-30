@@ -9,6 +9,10 @@ export type VisionMode =
   | 'flow'
   | 'speed'
   | 'motiontrails'
+  | 'amplify'
+  | 'background'
+  | 'chrono'
+  | 'slitscan'
   | 'night';
 
 export interface VisionMetrics {

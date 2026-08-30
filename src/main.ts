@@ -29,6 +29,13 @@ import {
 import { computeBlockFlow, flowVectorColor, type FlowField } from './vision/optical-flow.js';
 import { estimateEffectiveResolution } from './vision/sharpness.js';
 import {
+  BackgroundModel,
+  Chronochrome,
+  MotionAmplifier,
+  SlitScan,
+  type BackgroundReport
+} from './vision/layers.js';
+import {
   decideAutoStart,
   describeAutoStart,
   onFirstGesture,
@@ -80,7 +87,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.11.0';
+const APP_VERSION = '0.12.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -120,6 +127,9 @@ interface AppSettings {
   steadyGate: boolean;
   /** Horizontal field of view in degrees, entered by hand. 0 means unknown. */
   motionFovDegrees: number;
+  amplifyGain: number;
+  chronoSpacing: number;
+  slitColumn: number;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -149,7 +159,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoStartGps: false,
   autoStartMotion: false,
   steadyGate: false,
-  motionFovDegrees: 0
+  motionFovDegrees: 0,
+  amplifyGain: 12,
+  chronoSpacing: 4,
+  slitColumn: 0.5
 };
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -272,7 +285,16 @@ function loadSettings(): AppSettings {
         : DEFAULT_SETTINGS.steadyGate,
       motionFovDegrees: Number.isFinite(parsed.motionFovDegrees)
         ? clamp(Number(parsed.motionFovDegrees), 0, 180)
-        : DEFAULT_SETTINGS.motionFovDegrees
+        : DEFAULT_SETTINGS.motionFovDegrees,
+      amplifyGain: Number.isFinite(parsed.amplifyGain)
+        ? clamp(Number(parsed.amplifyGain), 1, 40)
+        : DEFAULT_SETTINGS.amplifyGain,
+      chronoSpacing: Number.isFinite(parsed.chronoSpacing)
+        ? clamp(Number(parsed.chronoSpacing), 1, 12)
+        : DEFAULT_SETTINGS.chronoSpacing,
+      slitColumn: Number.isFinite(parsed.slitColumn)
+        ? clamp(Number(parsed.slitColumn), 0, 1)
+        : DEFAULT_SETTINGS.slitColumn
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -380,6 +402,11 @@ const governor = new AdaptiveGovernor();
 const tracker = new ObjectTracker();
 const integrator = new FrameIntegrator();
 const speedField = new MotionSpeedField();
+const amplifier = new MotionAmplifier();
+const backgroundModel = new BackgroundModel();
+const chronochrome = new Chronochrome();
+const slitScan = new SlitScan();
+let latestBackground: BackgroundReport | null = null;
 const motionTrails = new MotionTrailBuffer();
 const eventDetector = new EventDetector();
 const histogram = createHistogram();
@@ -1097,6 +1124,65 @@ function setTrailFrozen(frozen: boolean): void {
   byId('motionFreezeButton').classList.toggle('active', frozen);
 }
 
+const LAYER_MODES: ReadonlySet<VisionMode> = new Set(['amplify', 'background', 'chrono', 'slitscan']);
+
+/**
+ * Show only the control that belongs to the layer on screen.
+ *
+ * A gain slider while Slit Scan is running is a control that does nothing, and
+ * an inert control is worse than an absent one.
+ */
+function setLayerPanel(mode: VisionMode): void {
+  const active = LAYER_MODES.has(mode);
+  byId('layerPanel').hidden = !active;
+  if (!active) return;
+
+  setText('layerPanelTitle', MODE_LABELS[mode].split(' • ')[0]);
+  setText('layerHelp', MODE_LABELS[mode].split(' • ')[1] ?? '');
+  const showing: Record<string, VisionMode> = {
+    amplifyGain: 'amplify',
+    chronoSpacing: 'chrono',
+    slitColumn: 'slitscan'
+  };
+  let visible = 0;
+  for (const label of byId('layerControls').querySelectorAll<HTMLElement>('label')) {
+    const input = label.querySelector('input');
+    label.hidden = !input || showing[input.id] !== mode;
+    if (!label.hidden) visible++;
+  }
+  // Background has nothing to tune, so its grid would otherwise be an empty
+  // box sitting where a control should be.
+  byId('layerControls').hidden = visible === 0;
+  renderLayerState();
+}
+
+function renderLayerState(): void {
+  if (byId('layerPanel').hidden) return;
+  switch (visionMode) {
+    case 'amplify':
+      setText('layerState', `Band ${amplifier.bandStrength.toFixed(2)} levels`
+        + ` · amplified ${settings.amplifyGain}× · noise is amplified too`);
+      break;
+    case 'background':
+      setText('layerState', latestBackground
+        ? latestBackground.ready
+          ? `${(latestBackground.foregroundFraction * 100).toFixed(1)}% does not belong`
+            + ` · ${latestBackground.frames} frames learned`
+          : `Learning the scene… ${latestBackground.frames} frames`
+        : '—');
+      break;
+    case 'chrono':
+      setText('layerState', `${settings.chronoSpacing} frames between channels`
+        + ' · grey means still, colour means it moved');
+      break;
+    case 'slitscan':
+      setText('layerState', `${slitScan.columnsCollected} columns of history`);
+      break;
+    default:
+      setText('layerState', '—');
+  }
+}
+
 function setNightMode(active: boolean): void {
   nightModeActive = active;
   if (!active) integrator.reset();
@@ -1689,6 +1775,10 @@ const MODE_LABELS: Record<VisionMode, string> = {
   flow: 'Optical flow • relative image motion',
   speed: 'Motion Ironbow • image speed, not temperature',
   motiontrails: 'Motion trails • hue = speed, fade = age',
+  amplify: 'Motion amplifier • small movement magnified, noise with it',
+  background: 'Background subtraction • what is not normally here',
+  chrono: 'Chronochrome • red oldest, blue newest, grey means still',
+  slitscan: 'Slit scan • one column per frame, left to right is time',
   night: 'Night • computational low-light, not infrared'
 };
 
@@ -1713,6 +1803,14 @@ function updateVisionMode(mode: VisionMode): void {
   motionTrails.reset();
   speedField.reset();
   eventDetector.reset();
+  // Each of these accumulates over time, and an accumulation gathered while
+  // pointing somewhere else is not this mode's picture.
+  amplifier.reset();
+  backgroundModel.reset();
+  chronochrome.reset();
+  slitScan.reset();
+  latestBackground = null;
+  eventDetector.reset();
   latestSpeed = null;
   latestTrail = null;
   activeEvent = null;
@@ -1721,6 +1819,7 @@ function updateVisionMode(mode: VisionMode): void {
   lastAnalysisAt = 0;
   setNightMode(mode === 'night');
   setMotionPanel(mode === 'speed' || mode === 'motiontrails', mode);
+  setLayerPanel(mode);
   setText('visionModeLabel', `${MODE_LABELS[mode]} • ${settings.visionRatePreference}`);
 }
 
@@ -2035,6 +2134,23 @@ function processVisionFrame(timestamp: number): boolean {
         fade: settings.motionFadeTrails
       }));
       break;
+    case 'amplify':
+      putBuffer(buffers, amplifier.render(buffers.gray, buffers.width, buffers.height, buffers.rgba, {
+        gain: settings.amplifyGain
+      }));
+      break;
+    case 'background':
+      latestBackground = backgroundModel.update(buffers.gray, buffers.width, buffers.height);
+      putBuffer(buffers, backgroundModel.render(buffers.gray, buffers.rgba));
+      break;
+    case 'chrono':
+      putBuffer(buffers, chronochrome.render(
+        buffers.gray, buffers.width, buffers.height, buffers.rgba, settings.chronoSpacing));
+      break;
+    case 'slitscan':
+      putBuffer(buffers, slitScan.render(
+        buffers.gray, buffers.width, buffers.height, buffers.rgba, settings.slitColumn));
+      break;
     case 'night':
       renderNightFrame(buffers, frame.data);
       break;
@@ -2086,6 +2202,7 @@ function processVisionFrame(timestamp: number): boolean {
   renderMetrics();
   renderObservationMetrics();
   renderMotionReadouts();
+  renderLayerState();
   drawHistogram();
   paintViewer();
   return true;
@@ -2418,6 +2535,13 @@ function syncSettingsControls(): void {
   byId<HTMLInputElement>('nightGamma').value = String(settings.nightGamma);
   setText('nightGainValue', `${settings.nightGain.toFixed(1)}×`);
   setText('nightGammaValue', settings.nightGamma.toFixed(2));
+  byId<HTMLInputElement>('amplifyGain').value = String(settings.amplifyGain);
+  setText('amplifyGainValue', `${settings.amplifyGain}×`);
+  byId<HTMLInputElement>('chronoSpacing').value = String(settings.chronoSpacing);
+  setText('chronoSpacingValue', `${settings.chronoSpacing} frames`);
+  byId<HTMLInputElement>('slitColumn').value = String(settings.slitColumn);
+  setText('slitColumnValue', settings.slitColumn < 0.34 ? 'left'
+    : settings.slitColumn > 0.66 ? 'right' : 'centre');
   byId<HTMLSelectElement>('motionExposure').value = String(settings.motionExposureSeconds);
   byId<HTMLInputElement>('motionSensitivity').value = String(settings.motionSensitivity);
   setText('motionSensitivityValue', String(settings.motionSensitivity));
@@ -3693,6 +3817,32 @@ on('clearCalibrationButton', 'click', () => {
   }
   renderCalibration();
 });
+on('amplifyGain', 'input', (event) => {
+  settings.amplifyGain = Number((event.target as HTMLInputElement).value);
+  setText('amplifyGainValue', `${settings.amplifyGain}×`);
+  saveSettings();
+});
+on('chronoSpacing', 'input', (event) => {
+  settings.chronoSpacing = Number((event.target as HTMLInputElement).value);
+  setText('chronoSpacingValue', `${settings.chronoSpacing} frames`);
+  chronochrome.reset();
+  saveSettings();
+});
+on('slitColumn', 'input', (event) => {
+  settings.slitColumn = Number((event.target as HTMLInputElement).value);
+  setText('slitColumnValue', settings.slitColumn < 0.34 ? 'left'
+    : settings.slitColumn > 0.66 ? 'right' : 'centre');
+  slitScan.reset();
+  saveSettings();
+});
+on('layerResetButton', 'click', () => {
+  amplifier.reset();
+  backgroundModel.reset();
+  chronochrome.reset();
+  slitScan.reset();
+  latestBackground = null;
+  setText('layerState', 'Restarted');
+});
 on('motionExposure', 'change', (event) => {
   settings.motionExposureSeconds = Number((event.target as HTMLSelectElement).value);
   saveSettings();
@@ -3713,6 +3863,14 @@ on('motionFadeTrails', 'change', (event) => {
 on('motionClearButton', 'click', () => {
   motionTrails.reset();
   speedField.reset();
+  eventDetector.reset();
+  // Each of these accumulates over time, and an accumulation gathered while
+  // pointing somewhere else is not this mode's picture.
+  amplifier.reset();
+  backgroundModel.reset();
+  chronochrome.reset();
+  slitScan.reset();
+  latestBackground = null;
   eventDetector.reset();
   activeEvent = null;
   lastCompletedEvent = null;
