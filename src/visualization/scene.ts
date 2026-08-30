@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { clamp, type QuaternionLike } from '../core/math.js';
 import type { GpsSample } from '../core/types.js';
+import type { TerrainMesh } from '../terrain/mesh.js';
 
 export type SceneQuality = 'low' | 'normal' | 'high';
 
@@ -16,13 +17,21 @@ export class FusionScene {
   private readonly gpsMarkers: any;
   private readonly resizeObserver: ResizeObserver;
   private animationFrame = 0;
+  private terrain: any = null;
+  private terrainWire: any = null;
+  private beacon: any = null;
+  private readonly phoneBaseScale = 1;
+  private readonly grid: any;
+  private readonly defaultFogDensity = 0.008;
 
   constructor(private readonly container: HTMLElement, quality: SceneQuality = 'normal') {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x080d16);
     this.scene.fog = new THREE.FogExp2(0x080d16, 0.008);
 
-    this.camera = new THREE.PerspectiveCamera(52, 1, 0.05, 500);
+    // The far plane has to clear a two-mile terrain, which is thousands of
+    // metres across in the same units the GPS track is measured in.
+    this.camera = new THREE.PerspectiveCamera(52, 1, 0.05, 40000);
     this.camera.position.set(7, 6, 9);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: quality !== 'low', alpha: false, powerPreference: 'high-performance' });
@@ -35,15 +44,16 @@ export class FusionScene {
     this.controls.target.set(0, 0.8, 0);
     this.controls.minDistance = 2;
     this.controls.maxDistance = 80;
+    this.controls.zoomSpeed = 1.1;
 
     this.scene.add(new THREE.HemisphereLight(0xa9c8ff, 0x162133, 2.1));
     const key = new THREE.DirectionalLight(0xffffff, 2.2);
     key.position.set(5, 9, 4);
     this.scene.add(key);
 
-    const grid = new THREE.GridHelper(100, 50, 0x37506f, 0x182638);
-    grid.position.y = -1.1;
-    this.scene.add(grid);
+    this.grid = new THREE.GridHelper(100, 50, 0x37506f, 0x182638);
+    this.grid.position.y = -1.1;
+    this.scene.add(this.grid);
     this.scene.add(new THREE.AxesHelper(2));
 
     this.phoneGroup = new THREE.Group();
@@ -98,6 +108,9 @@ export class FusionScene {
     this.animate();
   }
 
+  /** A constructed scene is by definition available; the fallback is not. */
+  readonly available = true;
+
   setQuality(quality: SceneQuality): void {
     const deviceRatio = window.devicePixelRatio || 1;
     const ratio = quality === 'low' ? 1 : quality === 'high' ? Math.min(deviceRatio, 2.5) : Math.min(deviceRatio, 2);
@@ -129,13 +142,124 @@ export class FusionScene {
     this.gpsMarkers.geometry = new THREE.BufferGeometry().setFromPoints(points);
   }
 
+  /**
+   * Put a real hillside under the track.
+   *
+   * The mesh arrives already in local ENU metres, so nothing here transforms
+   * it — the alignment is guaranteed by both having gone through the same
+   * projection rather than by a scale factor kept in step by hand.
+   */
+  setTerrain(mesh: TerrainMesh | null): void {
+    this.clearTerrain();
+    if (!mesh || mesh.indices.length === 0) return;
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(mesh.colors, 3));
+    geometry.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
+    geometry.computeVertexNormals();
+
+    this.terrain = new THREE.Mesh(
+      geometry,
+      new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.95,
+        metalness: 0,
+        // Both faces, so looking up from under a ridge shows ground rather
+        // than an invisible surface with the sky behind it.
+        side: THREE.DoubleSide,
+        flatShading: false
+      })
+    );
+    this.scene.add(this.terrain);
+
+    this.terrainWire = new THREE.LineSegments(
+      new THREE.WireframeGeometry(geometry),
+      new THREE.LineBasicMaterial({ color: 0x8fd3ff, transparent: true, opacity: 0.06 })
+    );
+    this.scene.add(this.terrainWire);
+
+    // The 100-metre helper grid is meaningless beside kilometres of ground,
+    // and exponential fog tuned for a desk scene renders terrain solid black.
+    this.grid.visible = false;
+    // Exponential fog squares its argument, so a density that reads as gentle
+    // at desk range turns kilometres of ground almost black. Tuned so the far
+    // edge of the loaded area keeps most of its colour rather than being an
+    // atmospheric effect applied to the whole scene.
+    this.scene.fog = new THREE.FogExp2(0x080d16, 0.5 / Math.max(1, mesh.spanMetres));
+
+    // The phone model is about 2.7 units tall, which against kilometres of
+    // ground is a single pixel — the whole point of the view is seeing where
+    // you are ON the terrain, so the marker is scaled to stay visible. It was
+    // never to scale (a 2.7 m phone), and at terrain range it is a pin rather
+    // than a model.
+    const markerScale = Math.max(1, mesh.spanMetres / 900);
+    this.phoneGroup.scale.setScalar(markerScale);
+    this.phoneGroup.position.y = markerScale * 0.6;
+    this.gpsMarkers.material.size = Math.max(0.22, mesh.spanMetres / 900);
+
+    // A vertical line, because a pin on a hillside is much easier to find than
+    // an object sitting in it.
+    const reach = mesh.spanMetres * 0.06;
+    this.beacon = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0, -reach * 0.35, 0),
+        new THREE.Vector3(0, reach, 0)
+      ]),
+      // Excluded from fog: a position marker that fades with distance is
+      // hardest to see exactly when it is most needed.
+      new THREE.LineBasicMaterial({ color: 0xff3b6b, transparent: true, opacity: 0.9, fog: false })
+    );
+    this.scene.add(this.beacon);
+
+    this.frameTerrain(mesh.spanMetres);
+  }
+
+  clearTerrain(): void {
+    for (const object of [this.terrain, this.terrainWire, this.beacon]) {
+      if (!object) continue;
+      this.scene.remove(object);
+      object.geometry.dispose();
+      object.material.dispose();
+    }
+    this.terrain = null;
+    this.terrainWire = null;
+    this.beacon = null;
+    this.grid.visible = true;
+    // Back to desk scale, or the phone stays the size of a mountain.
+    this.phoneGroup.scale.setScalar(this.phoneBaseScale);
+    this.phoneGroup.position.y = 0.6;
+    this.gpsMarkers.material.size = 0.22;
+    this.scene.fog = new THREE.FogExp2(0x080d16, this.defaultFogDensity);
+    this.controls.maxDistance = 80;
+  }
+
+  /** Pull the camera back far enough to see the whole loaded area. */
+  frameTerrain(spanMetres: number): void {
+    const span = Math.max(50, spanMetres);
+    this.controls.maxDistance = span * 2.5;
+    this.controls.minDistance = 2;
+    this.camera.position.set(span * 0.45, span * 0.35, span * 0.55);
+    this.controls.target.set(0, 0, 0);
+    this.controls.update();
+  }
+
+  get hasTerrain(): boolean {
+    return this.terrain !== null;
+  }
+
   resetView(): void {
+    if (this.terrain) {
+      this.frameTerrain(this.terrain.geometry.boundingSphere?.radius * 2 || 2000);
+      return;
+    }
     this.camera.position.set(7, 6, 9);
     this.controls.target.set(0, 0.8, 0);
     this.controls.update();
   }
 
   destroy(): void {
+    this.clearTerrain();
     cancelAnimationFrame(this.animationFrame);
     this.resizeObserver.disconnect();
     this.controls.dispose();

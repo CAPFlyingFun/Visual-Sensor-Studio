@@ -853,3 +853,54 @@ test('terrain resolution is stated rather than implied by the render', () => {
   assert.match(mainSource, /roughly 30 m resolution — good for a hillside, not for a kerb/);
   assert.match(htmlSource, /id=["']terrainResolution["']/);
 });
+
+test('terrain is placed in the same space the GPS track uses', () => {
+  // A mesh in its own coordinates sits beside the track rather than under it,
+  // and the error is invisible until the path floats off the hillside.
+  const mesh = readFileSync(new URL('../src/terrain/mesh.ts', import.meta.url), 'utf8');
+  assert.match(mesh, /gpsToLocalMeters/);
+  assert.match(mesh, /x east, y up, z NEGATIVE north/);
+  // The mesh is built around the TRACK's origin where one exists.
+  assert.match(mainSource, /const trackOrigin = gps\.track\[0\]/);
+});
+
+test('the vertical datum is the elevation at the origin, not the field centre', () => {
+  // A tile window is quantised to tile boundaries, so those are different
+  // places — the centre put the datum 1450 m below a summit.
+  const mesh = readFileSync(new URL('../src/terrain/mesh.ts', import.meta.url), 'utf8');
+  assert.match(mesh, /projectToField\(field, originLon, originLat\)/);
+  assert.doesNotMatch(mesh, /originPixel = \{[\s\S]{0,80}field\.width - 1\) \/ 2/);
+});
+
+test('the position marker is scaled to the terrain it sits on', () => {
+  // A 2.7-unit phone against kilometres of ground is one pixel, which defeats
+  // the point of showing where you are on it.
+  const scene = readFileSync(new URL('../src/visualization/scene.ts', import.meta.url), 'utf8');
+  assert.match(scene, /phoneGroup\.scale\.setScalar\(markerScale\)/);
+  assert.match(scene, /this\.beacon = new THREE\.Line/);
+  assert.match(scene, /fog: false/);
+  // And it goes back to desk scale when terrain is removed.
+  assert.match(scene, /phoneGroup\.scale\.setScalar\(this\.phoneBaseScale\)/);
+});
+
+test('the app never claims a surface the 3D view could not draw', () => {
+  // The fallback bridge exists for a blocked CDN or an old WebGL stack.
+  assert.match(mainSource, /readonly available: boolean/);
+  assert.match(mainSource, /available: false/);
+  assert.match(mainSource, /if \(!fusion\.available\)/);
+  assert.match(mainSource, /The 3D view could not load, so there is nowhere to put the/);
+});
+
+test('terrain reports the area actually fetched, not the area requested', () => {
+  // A tile window rounds out to whole tiles, so the two differ and the 2D and
+  // 3D readouts would otherwise disagree with each other.
+  assert.match(mainSource, /rounded out to whole tiles/);
+  assert.match(mainSource, /coveredMiles/);
+});
+
+test('GPS altitude and terrain elevation are shown as different things', () => {
+  // They disagree for real reasons — ellipsoid against geoid, and GPS vertical
+  // error is several times its horizontal error. Quietly picking one hides it.
+  assert.match(mainSource, /they use different vertical references/);
+  assert.match(htmlSource, /id=["']terrainDatumGap["']/);
+});

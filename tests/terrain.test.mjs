@@ -257,3 +257,154 @@ test('every rendered pixel is opaque and in range', () => {
     }
   }
 });
+
+// --- 3D mesh ---------------------------------------------------------------
+
+import { buildTerrainMesh } from '../.test-build/terrain/mesh.js';
+import { gpsToLocalMeters } from '../.test-build/core/math.js';
+import { fieldPixelToLonLat } from '../.test-build/terrain/tiles.js';
+
+/** A field built around a real place, so the projection has something to bite on. */
+function fieldAround(lat, lon, size = 32, filler = (x, y) => 100 + x * 5) {
+  const window = tilesForRadius(lon, lat, 3218, 12);
+  const data = new Float32Array(size * size);
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) data[y * size + x] = filler(x, y);
+  return {
+    data, width: size, height: size,
+    west: window.west, east: window.east, north: window.north, south: window.south,
+    zoom: 12, metresPerPixel: metresPerPixel(lat, 12)
+  };
+}
+
+test('field pixels and coordinates round-trip', () => {
+  const field = fieldAround(46.85, -121.76);
+  for (const [px, py] of [[0, 0], [15.5, 9.25], [31, 31]]) {
+    const { lon, lat } = fieldPixelToLonLat(field, px, py);
+    const back = projectToField(field, lon, lat);
+    assert.ok(Math.abs(back.x - px) < 1e-6, `x ${back.x} vs ${px}`);
+    assert.ok(Math.abs(back.y - py) < 1e-6, `y ${back.y} vs ${py}`);
+  }
+});
+
+test('the mesh is built in the same space the GPS track uses', () => {
+  // A mesh in its own coordinates would sit beside the track rather than under
+  // it, and that error is invisible until the path floats off the hillside.
+  const lat = 46.85;
+  const lon = -121.76;
+  const field = fieldAround(lat, lon);
+  const mesh = buildTerrainMesh(field, lat, lon, { resolution: 8 });
+  assert.ok(mesh);
+
+  // Every vertex must match what gpsToLocalMeters would give for its own
+  // coordinate, through the same projection rather than a parallel one.
+  for (const [column, row] of [[0, 0], [3, 5], [7, 7]]) {
+    const index = row * mesh.columns + column;
+    const px = (column / (mesh.columns - 1)) * (field.width - 1);
+    const py = (row / (mesh.rows - 1)) * (field.height - 1);
+    const { lon: vlon, lat: vlat } = fieldPixelToLonLat(field, px, py);
+    const expected = gpsToLocalMeters(
+      { latitude: vlat, longitude: vlon, altitude: 0 },
+      { latitude: lat, longitude: lon, altitude: 0 }
+    );
+    assert.ok(Math.abs(mesh.positions[index * 3] - expected.x) < 0.01, 'east must match');
+    assert.ok(Math.abs(mesh.positions[index * 3 + 2] - expected.z) < 0.01, 'north must match');
+  }
+});
+
+test('the surface meets zero where the track starts, not at the field centre', () => {
+  // A tile window is quantised to tile boundaries, so the requested point and
+  // the middle of the fetched block are DIFFERENT places. Anchoring to the
+  // centre put the datum 1450 m below a summit and buried the position marker
+  // inside the mountain — and a constant-elevation fixture cannot catch that,
+  // because both places read the same.
+  const lat = 46.8523;
+  const lon = -121.7603;
+  // A steep field, so centre and origin differ sharply.
+  const size = 64;
+  const field = fieldAround(lat, lon, size, (x, y) => 500 + x * 60 + y * 40);
+  const origin = projectToField(field, lon, lat);
+  const truth = sampleHeight(field, origin.x, origin.y);
+  const mesh = buildTerrainMesh(field, lat, lon, { resolution: 16 });
+  assert.ok(mesh && truth !== null);
+
+  assert.ok(Math.abs(mesh.datumMetres - truth) < 1,
+    `datum ${mesh.datumMetres} should be the elevation at the ORIGIN, ${truth}`);
+
+  const middlePixel = sampleHeight(field, (size - 1) / 2, (size - 1) / 2);
+  assert.ok(Math.abs(truth - middlePixel) > 50,
+    'the fixture must actually distinguish the two, or the test proves nothing');
+
+  // And a vertex at the origin's own position must sit at y = 0.
+  const local = gpsToLocalMeters(
+    { latitude: lat, longitude: lon, altitude: 0 },
+    { latitude: lat, longitude: lon, altitude: 0 }
+  );
+  assert.equal(local.x, 0);
+  let nearest = 0;
+  let best = Infinity;
+  for (let i = 0; i < mesh.positions.length / 3; i++) {
+    const d = Math.hypot(mesh.positions[i * 3], mesh.positions[i * 3 + 2]);
+    if (d < best) { best = d; nearest = i; }
+  }
+  const metresPerVertex = mesh.spanMetres / mesh.columns;
+  const rise = Math.abs(mesh.positions[nearest * 3 + 1]);
+  assert.ok(rise < metresPerVertex * 2,
+    `the vertex nearest the origin should be near y=0, got ${rise} m`);
+});
+
+test('exaggeration scales relief without moving the datum', () => {
+  const lat = 46.85;
+  const lon = -121.76;
+  const field = fieldAround(lat, lon);
+  const plain = buildTerrainMesh(field, lat, lon, { resolution: 8, exaggeration: 1 });
+  const tall = buildTerrainMesh(field, lat, lon, { resolution: 8, exaggeration: 4 });
+
+  assert.equal(plain.datumMetres, tall.datumMetres);
+  let scaled = 0;
+  for (let i = 1; i < plain.positions.length; i += 3) {
+    if (Math.abs(plain.positions[i]) < 0.01) continue;
+    assert.ok(Math.abs(tall.positions[i] / plain.positions[i] - 4) < 1e-4,
+      `expected 4x, got ${tall.positions[i] / plain.positions[i]}`);
+    scaled++;
+  }
+  assert.ok(scaled > 0, 'something should have been scaled');
+});
+
+test('water is a hole, not a flat lid at the datum', () => {
+  // Bridging a quad across missing data would draw a plateau over the sea.
+  const lat = 27.95;
+  const lon = -82.45;
+  const size = 16;
+  const field = fieldAround(lat, lon, size, (x) => (x < 8 ? NO_DATA : 40));
+  const mesh = buildTerrainMesh(field, lat, lon, { resolution: 8 });
+  assert.ok(mesh);
+  assert.ok(mesh.missingVertices > 0, 'the ocean half should be missing');
+
+  // No triangle may reference a vertex that had no elevation.
+  const hasData = new Uint8Array(mesh.columns * mesh.rows);
+  for (let i = 0; i < mesh.positions.length / 3; i++) {
+    hasData[i] = mesh.colors[i * 3] > 0.12 ? 1 : 0;
+  }
+  for (const index of mesh.indices) {
+    assert.equal(hasData[index], 1, `triangle uses no-data vertex ${index}`);
+  }
+});
+
+test('a field with no elevation anywhere builds nothing', () => {
+  const field = fieldAround(0, 0, 16, () => NO_DATA);
+  assert.equal(buildTerrainMesh(field, 0, 0, { resolution: 8 }), null);
+});
+
+test('mesh arrays are consistent and in range', () => {
+  const field = fieldAround(46.85, -121.76, 32);
+  const mesh = buildTerrainMesh(field, 46.85, -121.76, { resolution: 12 });
+  assert.equal(mesh.positions.length, mesh.columns * mesh.rows * 3);
+  assert.equal(mesh.colors.length, mesh.positions.length);
+  assert.equal(mesh.indices.length % 3, 0);
+  for (const index of mesh.indices) {
+    assert.ok(index >= 0 && index < mesh.columns * mesh.rows, `index ${index} out of range`);
+  }
+  for (const c of mesh.colors) assert.ok(c >= 0 && c <= 1, `colour ${c} out of range`);
+  for (const v of mesh.positions) assert.ok(Number.isFinite(v), 'positions must be finite');
+  assert.ok(mesh.spanMetres > 1000, `a two-mile field should span metres, got ${mesh.spanMetres}`);
+});

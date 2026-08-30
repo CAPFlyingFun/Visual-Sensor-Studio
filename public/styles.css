@@ -882,3 +882,4 @@ footer strong { color: #9fb2c3; }
   border-left: 2px solid var(--amber);
   padding-left: 10px;
 }
+.legend-swatch.terrain { background: linear-gradient(90deg, #35573f, #9e8a52, #e8ebef); }

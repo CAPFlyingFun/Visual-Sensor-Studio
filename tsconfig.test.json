@@ -32,6 +32,7 @@
     "src/vision/layers.ts",
     "src/terrain/tiles.ts",
     "src/terrain/render.ts",
+    "src/terrain/mesh.ts",
     "src/vision/overlays.ts"
   ]
 }

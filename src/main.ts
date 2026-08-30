@@ -88,6 +88,7 @@ import {
 } from './terrain/tiles.js';
 import { loadHeightfield } from './terrain/loader.js';
 import { contourInterval, renderTerrain, terrainStats } from './terrain/render.js';
+import { buildTerrainMesh, type TerrainMesh } from './terrain/mesh.js';
 import {
   BaselineTracker,
   MAX_BASELINE_ROTATION_DEGREES,
@@ -97,7 +98,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.13.0';
+const APP_VERSION = '0.14.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -324,7 +325,15 @@ interface FusionBridge {
   setAcceleration(value: MotionSample['acceleration']): void;
   setGpsTrack(track: readonly GpsSample[]): void;
   setQuality(value: QualityPreference): void;
+  setTerrain(mesh: TerrainMesh | null): void;
+  clearTerrain(): void;
   resetView(): void;
+  /**
+   * False when the 3D module could not load — a blocked CDN, an old WebGL
+   * stack. Callers have to check it rather than assume, or the app reports a
+   * surface it never drew.
+   */
+  readonly available: boolean;
 }
 
 const fallbackFusion: FusionBridge = {
@@ -332,7 +341,10 @@ const fallbackFusion: FusionBridge = {
   setAcceleration: (_value) => undefined,
   setGpsTrack: (_track) => undefined,
   setQuality: (_value) => undefined,
-  resetView: () => undefined
+  setTerrain: (_mesh) => undefined,
+  clearTerrain: () => undefined,
+  resetView: () => undefined,
+  available: false
 };
 
 const video = byId<HTMLVideoElement>('cameraVideo');
@@ -2529,9 +2541,16 @@ async function loadTerrain(lat: number, lon: number, source: string): Promise<vo
     terrainField = field;
     terrainOrigin = { lat, lon };
     drawTerrain();
+    pushTerrainToScene();
+    // The tiles cover at LEAST the radius asked for, and usually rather more,
+    // because a tile window is quantised to tile boundaries. Reporting the
+    // request rather than the result would disagree with the 3D readout.
+    const coveredMiles = ((field.east - field.west) * 111320
+      * Math.cos((lat * Math.PI) / 180)) / 1609.34;
     setText('terrainMessage', `Loaded from ${source}. ${progress.loaded} tile`
-      + `${progress.loaded === 1 ? '' : 's'} covering about`
-      + ` ${(radius / 1609).toFixed(0)} mile${radius > 1700 ? 's' : ''} around the point.`
+      + `${progress.loaded === 1 ? '' : 's'} covering ${coveredMiles.toFixed(1)} miles across`
+      + ` — at least the ${(radius / 1609).toFixed(0)} mile`
+      + `${radius > 1700 ? 's' : ''} requested, rounded out to whole tiles.`
       + ' Elevation data is roughly 30 m resolution — good for a hillside, not for a kerb.');
   } catch (error) {
     setText('terrainMessage', error instanceof Error ? error.message : 'Terrain could not be loaded.');
@@ -2594,6 +2613,64 @@ function drawTerrain(): void {
   context.beginPath();
   context.arc(point.x, point.y, reach * 0.55, 0, Math.PI * 2);
   context.stroke();
+}
+
+/**
+ * Put the loaded terrain into the fusion scene.
+ *
+ * The mesh is built around the GPS TRACK's origin rather than the terrain's
+ * centre, because the track is already positioned relative to that origin and
+ * the two have to share it. Loading terrain by hand with no GPS running uses
+ * the entered point instead, which is the only sensible origin available.
+ */
+function pushTerrainToScene(): void {
+  const field = terrainField;
+  if (!field || !terrainOrigin) return;
+
+  const trackOrigin = gps.track[0];
+  const lat = trackOrigin ? trackOrigin.latitude : terrainOrigin.lat;
+  const lon = trackOrigin ? trackOrigin.longitude : terrainOrigin.lon;
+
+  // Fewer vertices on the low quality setting: this is a phone, and a 512x512
+  // field is a quarter of a million of them.
+  const resolution = settings.qualityPreference === 'low' ? 96
+    : settings.qualityPreference === 'high' ? 256
+      : 160;
+
+  const mesh = buildTerrainMesh(field, lat, lon, {
+    resolution,
+    exaggeration: Number(byId<HTMLInputElement>('terrainExaggeration').value)
+  });
+  fusion.setTerrain(mesh);
+
+  if (!mesh) {
+    setText('terrainSceneState', 'No elevation to build a surface from.');
+    return;
+  }
+  if (!fusion.available) {
+    // The map above is still real; only the 3D view is missing. Saying a
+    // surface was built when nothing was drawn would be the worse failure.
+    setText('terrainSceneState', 'The 3D view could not load, so there is nowhere to put the'
+      + ' surface. The map above is unaffected.');
+    return;
+  }
+
+  setText('terrainSceneState', `${mesh.columns}×${mesh.rows} surface`
+    + ` · ${(mesh.spanMetres / 1609).toFixed(1)} miles across`
+    + ` · datum ${mesh.datumMetres.toFixed(0)} m`
+    + (mesh.missingVertices ? ` · ${mesh.missingVertices} vertices without data` : ''));
+
+  // GPS altitude and terrain elevation disagree for real reasons — GPS height
+  // is against an ellipsoid, terrain is against a geoid, and GPS vertical error
+  // is several times its horizontal error. Showing the gap is more useful than
+  // quietly picking one.
+  if (latestGps && latestGps.altitude !== null) {
+    const gap = latestGps.altitude - mesh.datumMetres;
+    setText('terrainDatumGap', `${gap >= 0 ? '+' : ''}${gap.toFixed(0)} m`
+      + ' (GPS altitude vs terrain; they use different vertical references)');
+  } else {
+    setText('terrainDatumGap', 'GPS altitude unavailable');
+  }
 }
 
 function compassPoint(degrees: number): string {
@@ -3861,6 +3938,15 @@ on('loadTerrainManualButton', 'click', () => {
 on('terrainExaggeration', 'input', (event) => {
   setText('terrainExaggerationValue', `${Number((event.target as HTMLInputElement).value).toFixed(1)}×`);
   drawTerrain();
+});
+on('terrainExaggeration', 'change', () => pushTerrainToScene());
+on('terrain3dButton', 'click', () => {
+  pushTerrainToScene();
+  byId('fusionScene').scrollIntoView({ behavior: 'smooth', block: 'center' });
+});
+on('terrainClear3dButton', 'click', () => {
+  fusion.clearTerrain();
+  setText('terrainSceneState', 'Cleared from the 3D view.');
 });
 on('terrainAzimuth', 'input', (event) => {
   setText('terrainAzimuthValue', `${(event.target as HTMLInputElement).value}°`);

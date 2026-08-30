@@ -200,15 +200,55 @@ export function sampleHeight(field: Heightfield, px: number, py: number): number
   return weight > 0 ? total / weight : null;
 }
 
+/**
+ * The tile-space extent a field covers, derived from its own declared bounds.
+ *
+ * Deliberately NOT "256 pixels per tile". That is true of a field the loader
+ * assembled and false of any other, and the failure is silent: every position
+ * lands somewhere plausible but wrong, scaled by whatever the real ratio was.
+ */
+function fieldTileSpan(field: Heightfield): { corner: { x: number; y: number }; spanX: number; spanY: number } {
+  const corner = lonLatToTile(field.west, field.north, field.zoom);
+  const far = lonLatToTile(field.east, field.south, field.zoom);
+  return {
+    corner,
+    spanX: far.x - corner.x || 1,
+    spanY: far.y - corner.y || 1
+  };
+}
+
 /** Where a coordinate falls inside a heightfield, in fractional pixels. */
 export function projectToField(
   field: Heightfield,
   lon: number,
   lat: number
 ): { x: number; y: number } {
-  const corner = lonLatToTile(field.west, field.north, field.zoom);
+  const { corner, spanX, spanY } = fieldTileSpan(field);
   const here = lonLatToTile(lon, lat, field.zoom);
-  return { x: (here.x - corner.x) * 256, y: (here.y - corner.y) * 256 };
+  return {
+    x: ((here.x - corner.x) / spanX) * field.width,
+    y: ((here.y - corner.y) / spanY) * field.height
+  };
+}
+
+/**
+ * The coordinate a field pixel sits at — the inverse of projectToField.
+ *
+ * Needed to place terrain in the same local metre space the GPS track uses: a
+ * vertex has to know its longitude and latitude before it can be turned into
+ * a position relative to the track's origin.
+ */
+export function fieldPixelToLonLat(
+  field: Heightfield,
+  px: number,
+  py: number
+): { lon: number; lat: number } {
+  const { corner, spanX, spanY } = fieldTileSpan(field);
+  return tileToLonLat(
+    corner.x + (px / Math.max(1, field.width)) * spanX,
+    corner.y + (py / Math.max(1, field.height)) * spanY,
+    field.zoom
+  );
 }
 
 export interface SlopeReading {
