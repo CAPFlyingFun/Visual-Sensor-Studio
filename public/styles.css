@@ -883,3 +883,50 @@ footer strong { color: #9fb2c3; }
   padding-left: 10px;
 }
 .legend-swatch.terrain { background: linear-gradient(90deg, #35573f, #9e8a52, #e8ebef); }
+
+/* The position + terrain card. GPS and terrain were two cards a scroll apart,
+   which made a one-idea task ("show me where I am") a three-stop journey on a
+   phone. Merged, with the tuning behind disclosures so the card stays short. */
+.single-panel { display: grid; grid-template-columns: 1fr; gap: 14px; min-width: 0; }
+.terrain-panel { padding: 15px; }
+.disclosure {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin-bottom: 10px;
+  background: rgba(8, 15, 24, 0.5);
+}
+.disclosure > summary {
+  cursor: pointer;
+  padding: 11px 13px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #9fb2c3;
+  list-style: none;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.disclosure > summary::-webkit-details-marker { display: none; }
+.disclosure > summary::before {
+  content: '▸';
+  font-size: 0.9rem;
+  transition: transform 0.15s ease;
+}
+.disclosure[open] > summary::before { transform: rotate(90deg); }
+.disclosure[open] > summary { color: #cfe2f1; }
+.disclosure > *:not(summary) { padding: 0 13px 13px; }
+.disclosure > .night-grid,
+.disclosure > .diagnostics-grid,
+.disclosure > .button-row { padding: 0 13px 13px; }
+@media (max-width: 720px) {
+  .terrain-panel { padding: 12px; }
+}
+/* The network disclosure has to be readable BEFORE the button that triggers
+   it, not only in the small print underneath. */
+.compact-warning { margin: 8px 0 10px; font-size: 0.72rem; }
+.compact-warning a { color: var(--cyan); }
+/* Bounded, so the square map cannot push everything else off a phone screen. */
+.terrain-output canvas { max-height: 45vh; }

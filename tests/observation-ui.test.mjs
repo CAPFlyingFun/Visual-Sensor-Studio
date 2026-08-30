@@ -808,8 +808,8 @@ test('a layer control is never shown for a layer it cannot affect', () => {
 test('terrain says exactly what leaves the device', () => {
   // The only network request the app makes, and the first thing derived from
   // location to leave at all. A vague claim here would be the worst kind.
-  assert.match(htmlSource, /only part of the app that uses the network/);
-  assert.match(htmlSource, /never a latitude,\s*\n?\s*a longitude, an accuracy or an identifier/);
+  assert.match(htmlSource, /only part of this app that uses the network/);
+  assert.match(htmlSource, /never a latitude, a\s*\n?\s*longitude, an accuracy or an identifier/);
   const loader = readFileSync(new URL('../src/terrain/loader.ts', import.meta.url), 'utf8');
   assert.match(loader, /credentials: 'omit'/);
   assert.match(loader, /referrerPolicy: 'no-referrer'/);
@@ -903,4 +903,54 @@ test('GPS altitude and terrain elevation are shown as different things', () => {
   // error is several times its horizontal error. Quietly picking one hides it.
   assert.match(mainSource, /they use different vertical references/);
   assert.match(htmlSource, /id=["']terrainDatumGap["']/);
+});
+
+test('position and terrain live in one card', () => {
+  // They were two cards a scroll apart, which turned one idea — "show me where
+  // I am" — into a three-stop journey on a phone.
+  const card = htmlSource.slice(
+    htmlSource.indexOf('POSITION &amp; TERRAIN'),
+    htmlSource.indexOf('EXPERIMENTAL DEPTH')
+  );
+  for (const id of ['gpsButton', 'resetGpsButton', 'locateAndLoadButton', 'latValue',
+    'terrainCanvas', 'terrainElevation', 'terrain3dButton', 'loadTerrainManualButton']) {
+    assert.ok(card.includes(`id="${id}"`), `#${id} should be in the same card`);
+  }
+});
+
+test('one tap goes from nothing to a map', () => {
+  // Start GPS, wait for a fix, load the terrain around it.
+  assert.match(mainSource, /async function locateAndLoadTerrain/);
+  const fn = mainSource.slice(mainSource.indexOf('async function locateAndLoadTerrain'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(body, /startGps\(\)/);
+  assert.match(body, /waitForGpsFix/);
+  assert.match(body, /loadTerrain\(/);
+});
+
+test('waiting for a fix is bounded and says what it is doing', () => {
+  // A first fix can take many seconds outdoors and never arrive indoors, so a
+  // silent button would look broken rather than busy.
+  assert.match(mainSource, /GPS_FIX_TIMEOUT_MS = 30_000/);
+  assert.match(mainSource, /Waiting for GPS…/);
+  assert.match(mainSource, /No GPS fix within 30 seconds/);
+  assert.match(mainSource, /Indoors this often will not arrive/);
+});
+
+test('the network disclosure appears before the button that triggers it', () => {
+  // Putting it only in the small print underneath means it is read after the
+  // request has already gone.
+  const card = htmlSource.slice(htmlSource.indexOf('POSITION &amp; TERRAIN'));
+  const button = card.indexOf('id="locateAndLoadButton"');
+  const warning = card.indexOf('compact-warning');
+  const map = card.indexOf('id="terrainCanvas"');
+  assert.ok(warning > button && warning < map,
+    'the short disclosure belongs between the button and the map');
+  assert.match(card, /only request this app makes/);
+  assert.match(card, /never your\s*\n?\s*coordinates/);
+});
+
+test('two loads cannot interleave into one heightfield', () => {
+  assert.match(mainSource, /for \(const button of buttons\) button\.disabled = true/);
+  assert.match(mainSource, /would interleave two sets of tiles/);
 });

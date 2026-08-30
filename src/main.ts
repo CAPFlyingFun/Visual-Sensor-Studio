@@ -98,7 +98,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.14.0';
+const APP_VERSION = '0.14.1';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -2516,10 +2516,12 @@ function analyzeParallax(): void {
  * the referrer, and the position is never sent in any form.
  */
 async function loadTerrain(lat: number, lon: number, source: string): Promise<void> {
-  const gpsButton = byId<HTMLButtonElement>('loadTerrainButton');
-  const manualButton = byId<HTMLButtonElement>('loadTerrainManualButton');
-  gpsButton.disabled = true;
-  manualButton.disabled = true;
+  // Both entry points into terrain loading, disabled together: a second load
+  // started while the first is fetching would interleave two sets of tiles into
+  // one field.
+  const buttons = ['locateAndLoadButton', 'loadTerrainManualButton']
+    .map((id) => byId<HTMLButtonElement>(id));
+  for (const button of buttons) button.disabled = true;
 
   const radius = Number(byId<HTMLSelectElement>('terrainRadius').value) || 3218;
   const window_ = tilesForRadius(lon, lat, radius, TERRAIN_ZOOM);
@@ -2555,8 +2557,7 @@ async function loadTerrain(lat: number, lon: number, source: string): Promise<vo
   } catch (error) {
     setText('terrainMessage', error instanceof Error ? error.message : 'Terrain could not be loaded.');
   } finally {
-    gpsButton.disabled = false;
-    manualButton.disabled = false;
+    for (const button of buttons) button.disabled = false;
   }
 }
 
@@ -2671,6 +2672,66 @@ function pushTerrainToScene(): void {
   } else {
     setText('terrainDatumGap', 'GPS altitude unavailable');
   }
+}
+
+/**
+ * Start GPS if needed, wait for a fix, then load the terrain around it.
+ *
+ * One tap for what used to be three, spread across two cards and a scroll. The
+ * wait is the part that needs care: a first fix can take many seconds outdoors
+ * and never arrive indoors, so it is bounded and the button says which stage it
+ * is in rather than sitting silent.
+ */
+async function locateAndLoadTerrain(): Promise<void> {
+  const button = byId<HTMLButtonElement>('locateAndLoadButton');
+
+  if (latestGps) {
+    await loadTerrain(latestGps.latitude, latestGps.longitude, 'your GPS position');
+    return;
+  }
+
+  if (!gps.active) {
+    startGps();
+    setText('terrainMessage', 'Started GPS. Waiting for a first fix…');
+  } else {
+    setText('terrainMessage', 'GPS is running but has no fix yet. Waiting…');
+  }
+
+  button.disabled = true;
+  button.textContent = 'Waiting for GPS…';
+  try {
+    const fix = await waitForGpsFix(GPS_FIX_TIMEOUT_MS);
+    if (!fix) {
+      setText('terrainMessage', 'No GPS fix within 30 seconds. Indoors this often will not arrive'
+        + ' at all — open "Pick a location by hand" and type coordinates instead.');
+      return;
+    }
+    await loadTerrain(fix.latitude, fix.longitude, 'your GPS position');
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Use My Location';
+  }
+}
+
+const GPS_FIX_TIMEOUT_MS = 30_000;
+
+/** Resolve on the first fix, or null once the deadline passes. */
+function waitForGpsFix(timeoutMs: number): Promise<GpsSample | null> {
+  return new Promise((resolve) => {
+    const deadline = performance.now() + timeoutMs;
+    const poll = (): void => {
+      if (latestGps) {
+        resolve(latestGps);
+        return;
+      }
+      if (performance.now() >= deadline) {
+        resolve(null);
+        return;
+      }
+      window.setTimeout(poll, 250);
+    };
+    poll();
+  });
 }
 
 function compassPoint(degrees: number): string {
@@ -3919,13 +3980,7 @@ on('motionButton', 'click', () => void enableMotion());
 on('gpsButton', 'click', toggleGps);
 on('resetGpsButton', 'click', resetGps);
 on('captureParallaxButton', 'click', captureParallaxReference);
-on('loadTerrainButton', 'click', () => {
-  if (!latestGps) {
-    setText('terrainMessage', 'No GPS fix yet. Start the GPS track first, or enter a location by hand.');
-    return;
-  }
-  void loadTerrain(latestGps.latitude, latestGps.longitude, 'your GPS position');
-});
+on('locateAndLoadButton', 'click', () => void locateAndLoadTerrain());
 on('loadTerrainManualButton', 'click', () => {
   const lat = Number(byId<HTMLInputElement>('terrainLat').value);
   const lon = Number(byId<HTMLInputElement>('terrainLon').value);
