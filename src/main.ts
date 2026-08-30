@@ -499,19 +499,15 @@ async function refreshSettingsDiagnostics(): Promise<void> {
     setText('settingsWorkerState', navigator.serviceWorker.controller ? 'Controlled' : 'Not registered');
   }
 
-  const mediaDevices = navigator.mediaDevices;
-  setText('settingsCameraApi', mediaDevices?.getUserMedia ? 'getUserMedia available' : 'Unavailable');
+  const mediaDevices = (navigator as Navigator & { mediaDevices?: MediaDevices }).mediaDevices;
+  setText('settingsCameraApi', mediaDevices ? 'getUserMedia available' : 'Unavailable');
 
-  if (mediaDevices?.getSupportedConstraints) {
+  if (mediaDevices) {
     const supported = mediaDevices.getSupportedConstraints();
     const useful = ['facingMode', 'width', 'height', 'frameRate', 'aspectRatio']
       .filter((key) => Boolean((supported as Record<string, boolean | undefined>)[key]));
     setText('settingsCameraConstraints', useful.length ? useful.join(', ') : 'None reported');
-  } else {
-    setText('settingsCameraConstraints', 'Not reported');
-  }
 
-  if (mediaDevices?.enumerateDevices) {
     try {
       const devices = await mediaDevices.enumerateDevices();
       const cameras = devices.filter((device) => device.kind === 'videoinput');
@@ -521,6 +517,7 @@ async function refreshSettingsDiagnostics(): Promise<void> {
       setText('settingsCameraDevices', 'Enumeration blocked');
     }
   } else {
+    setText('settingsCameraConstraints', 'Not reported');
     setText('settingsCameraDevices', 'Enumeration unavailable');
   }
 
