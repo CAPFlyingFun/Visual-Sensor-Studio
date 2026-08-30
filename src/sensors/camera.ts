@@ -55,6 +55,51 @@ export interface CameraAttempt {
   videoHeight: number;
 }
 
+export interface FrameRateInfo {
+  requested: 'auto' | number;
+  /** What the track claims. An intention, not a measurement. */
+  reported: number;
+  /** Range the active configuration advertises, where WebKit exposes it. */
+  capability: { min: number; max: number } | null;
+}
+
+export interface BenchmarkResult {
+  requested: number;
+  reported: number;
+  /** Frames per second actually counted. This is the number that matters. */
+  measuredFps: number;
+  uniqueFrames: number;
+  repeatedFrames: number;
+  verdict: 'accepted' | 'negotiated' | 'unsupported' | 'unstable';
+  reason: string;
+}
+
+export interface BenchmarkReport {
+  supported: boolean;
+  reason?: string;
+  results: BenchmarkResult[];
+}
+
+export interface CapabilityField {
+  /**
+   * `supported` — advertised and usable.
+   * `unsupported` — capabilities are reported but this one is not offered.
+   * `not exposed` — no capability reporting at all. Not the same as unsupported.
+   */
+  state: 'supported' | 'unsupported' | 'not exposed';
+  min?: number;
+  max?: number;
+  step?: number;
+  value?: unknown;
+  options?: unknown[];
+}
+
+export interface CapabilityReport {
+  available: boolean;
+  fields: Record<string, CapabilityField>;
+  settings: Record<string, unknown>;
+}
+
 export interface CameraDiagnostics {
   state: CameraState;
   stage: string;
@@ -98,6 +143,16 @@ interface CameraEngine {
   subscribe(listener: (status: CameraStatus) => void): () => void;
   clearAttempts(): void;
   permissionState(): Promise<string>;
+  setFrameRate(requested: 'auto' | number): Promise<{ applied: boolean; reason?: string; reported: number }>;
+  benchmarkFrameRates(
+    rates: number[],
+    sampleMs: number,
+    onProgress?: (progress: { rate: number; phase: string }) => void
+  ): Promise<BenchmarkReport>;
+  startFrameDelivery(listener: (frame: { now: number; mediaTime: number; presentedFrames?: number }) => void): boolean;
+  stopFrameDelivery(): void;
+  readonly frameRateInfo: FrameRateInfo;
+  readonly capabilityReport: CapabilityReport;
   readonly attempts: CameraAttempt[];
   readonly state: CameraState;
   readonly active: boolean;
@@ -171,6 +226,39 @@ export class CameraController {
 
   clearAttempts(): void {
     engine().clearAttempts();
+  }
+
+  get frameRateInfo(): FrameRateInfo {
+    return engine().frameRateInfo;
+  }
+
+  get capabilityReport(): CapabilityReport {
+    return engine().capabilityReport;
+  }
+
+  async setFrameRate(requested: 'auto' | number): Promise<{ applied: boolean; reason?: string; reported: number }> {
+    return engine().setFrameRate(requested);
+  }
+
+  async benchmarkFrameRates(
+    rates: number[],
+    sampleMs = 1200,
+    onProgress?: (progress: { rate: number; phase: string }) => void
+  ): Promise<BenchmarkReport> {
+    return engine().benchmarkFrameRates(rates, sampleMs, onProgress);
+  }
+
+  /**
+   * Drive a callback from presented video frames. Returns false where
+   * requestVideoFrameCallback is unavailable, so the caller can fall back
+   * rather than silently measuring the display instead of the camera.
+   */
+  startFrameDelivery(listener: (frame: { now: number; mediaTime: number; presentedFrames?: number }) => void): boolean {
+    return engine().startFrameDelivery(listener);
+  }
+
+  stopFrameDelivery(): void {
+    engine().stopFrameDelivery();
   }
 
   /** 'granted' | 'denied' | 'prompt', where WebKit exposes the Permissions API. */

@@ -27,15 +27,30 @@ import {
   sobelEdges
 } from './vision/frame-processing.js';
 import { computeBlockFlow, flowVectorColor, type FlowField } from './vision/optical-flow.js';
+import { FrameRateMeter, type PresentedFrame } from './vision/frame-rate.js';
+import { AdaptiveGovernor, type AdaptiveState } from './vision/adaptive.js';
+import { ObjectTracker, type TrackedObject } from './vision/tracking.js';
+import { FrameIntegrator, type StackMode } from './vision/integration.js';
+import { computeHistogram, createHistogram } from './vision/histogram.js';
+import {
+  applyFocusPeaking,
+  applyLightBoost,
+  applyPalette,
+  applyZebra,
+  type NightPalette
+} from './vision/overlays.js';
+import { StabilityMonitor } from './sensors/stability.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 
-const APP_VERSION = '0.3.3';
+const APP_VERSION = '0.4.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
 type CameraPreference = 'auto' | CameraFacing;
 type QualityPreference = 'low' | 'normal' | 'high';
-type VisionRatePreference = 'battery' | 'balanced' | 'fast';
+type VisionRatePreference = 'battery' | 'balanced' | 'fast' | 'adaptive';
+type CameraFrameRatePreference = 'auto' | '30' | '60' | '120' | '240';
+type TrailPreference = 'off' | 'short' | 'medium' | 'long';
 type GpsAccuracyPreference = 'balanced' | 'high';
 
 interface AppSettings {
@@ -43,13 +58,35 @@ interface AppSettings {
   qualityPreference: QualityPreference;
   visionRatePreference: VisionRatePreference;
   gpsAccuracyPreference: GpsAccuracyPreference;
+  cameraFrameRate: CameraFrameRatePreference;
+  trackingEnabled: boolean;
+  trailPreference: TrailPreference;
+  zebraEnabled: boolean;
+  focusPeakingEnabled: boolean;
+  nightPalette: NightPalette;
+  nightStackMode: StackMode;
+  nightIntegrationSeconds: number;
+  nightGain: number;
+  nightGamma: number;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
   cameraPreference: 'auto',
   qualityPreference: 'normal',
-  visionRatePreference: 'balanced',
-  gpsAccuracyPreference: 'high'
+  // Adaptive is the default: it idles lower than Balanced on a still scene and
+  // climbs far above it when something actually moves, which is the whole point.
+  visionRatePreference: 'adaptive',
+  gpsAccuracyPreference: 'high',
+  cameraFrameRate: 'auto',
+  trackingEnabled: true,
+  trailPreference: 'medium',
+  zebraEnabled: false,
+  focusPeakingEnabled: false,
+  nightPalette: 'natural',
+  nightStackMode: 'clean',
+  nightIntegrationSeconds: 4,
+  nightGain: 1,
+  nightGamma: 1
 };
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -107,12 +144,36 @@ function loadSettings(): AppSettings {
       qualityPreference: ['low', 'normal', 'high'].includes(String(parsed.qualityPreference))
         ? parsed.qualityPreference as QualityPreference
         : DEFAULT_SETTINGS.qualityPreference,
-      visionRatePreference: ['battery', 'balanced', 'fast'].includes(String(parsed.visionRatePreference))
+      visionRatePreference: ['battery', 'balanced', 'fast', 'adaptive'].includes(String(parsed.visionRatePreference))
         ? parsed.visionRatePreference as VisionRatePreference
         : DEFAULT_SETTINGS.visionRatePreference,
       gpsAccuracyPreference: ['balanced', 'high'].includes(String(parsed.gpsAccuracyPreference))
         ? parsed.gpsAccuracyPreference as GpsAccuracyPreference
-        : DEFAULT_SETTINGS.gpsAccuracyPreference
+        : DEFAULT_SETTINGS.gpsAccuracyPreference,
+      cameraFrameRate: ['auto', '30', '60', '120', '240'].includes(String(parsed.cameraFrameRate))
+        ? parsed.cameraFrameRate as CameraFrameRatePreference
+        : DEFAULT_SETTINGS.cameraFrameRate,
+      trackingEnabled: typeof parsed.trackingEnabled === 'boolean'
+        ? parsed.trackingEnabled
+        : DEFAULT_SETTINGS.trackingEnabled,
+      trailPreference: ['off', 'short', 'medium', 'long'].includes(String(parsed.trailPreference))
+        ? parsed.trailPreference as TrailPreference
+        : DEFAULT_SETTINGS.trailPreference,
+      zebraEnabled: typeof parsed.zebraEnabled === 'boolean' ? parsed.zebraEnabled : DEFAULT_SETTINGS.zebraEnabled,
+      focusPeakingEnabled: typeof parsed.focusPeakingEnabled === 'boolean'
+        ? parsed.focusPeakingEnabled
+        : DEFAULT_SETTINGS.focusPeakingEnabled,
+      nightPalette: ['natural', 'monochrome', 'green', 'falsecolor'].includes(String(parsed.nightPalette))
+        ? parsed.nightPalette as NightPalette
+        : DEFAULT_SETTINGS.nightPalette,
+      nightStackMode: ['clean', 'brighten', 'trails'].includes(String(parsed.nightStackMode))
+        ? parsed.nightStackMode as StackMode
+        : DEFAULT_SETTINGS.nightStackMode,
+      nightIntegrationSeconds: Number.isFinite(parsed.nightIntegrationSeconds)
+        ? clamp(Number(parsed.nightIntegrationSeconds), 0.5, 30)
+        : DEFAULT_SETTINGS.nightIntegrationSeconds,
+      nightGain: Number.isFinite(parsed.nightGain) ? clamp(Number(parsed.nightGain), 1, 6) : DEFAULT_SETTINGS.nightGain,
+      nightGamma: Number.isFinite(parsed.nightGamma) ? clamp(Number(parsed.nightGamma), 0.3, 2) : DEFAULT_SETTINGS.nightGamma
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -202,6 +263,21 @@ let smoothedFps = 0;
 let lastProcessedAt = 0;
 let latestFlow: FlowField | null = null;
 let zoomState: CameraZoomState = { value: 1, min: 1, max: 1, step: 0.1, kind: 'none' };
+const frameRateMeter = new FrameRateMeter();
+const governor = new AdaptiveGovernor();
+const tracker = new ObjectTracker();
+const integrator = new FrameIntegrator();
+const histogram = createHistogram();
+const stability = new StabilityMonitor();
+
+let nightModeActive = false;
+let trackedObjects: readonly TrackedObject[] = [];
+let adaptiveState: AdaptiveState = 'idle';
+let lastDeliveredAt = 0;
+let deliveryDriven = false;
+let boostLut: Uint8ClampedArray | undefined;
+let overlayPhase = 0;
+
 let zoomPointers = new Map<number, { x: number; y: number }>();
 let pinchStartDistance = 0;
 let pinchStartZoom = 1;
@@ -212,10 +288,42 @@ function preferredCameraFacing(): CameraFacing {
   return settings.cameraPreference === 'user' ? 'user' : 'environment';
 }
 
+/**
+ * Analysis interval for the fixed presets. Adaptive ignores this and asks the
+ * governor instead.
+ */
 function visionIntervalMs(): number {
+  if (settings.visionRatePreference === 'adaptive') return 1000 / Math.max(1, governor.targetFps);
   if (settings.visionRatePreference === 'battery') return 220;
   if (settings.visionRatePreference === 'fast') return 45;
   return 95;
+}
+
+/** Analysis rate ceiling per preset, in frames per second. */
+function maxAnalysisFps(): number {
+  if (settings.visionRatePreference === 'battery') return 12;
+  if (settings.visionRatePreference === 'balanced') return 24;
+  if (settings.visionRatePreference === 'fast') return 60;
+  return 60;
+}
+
+function trailLengthForPreference(): number {
+  if (settings.trailPreference === 'off') return 0;
+  if (settings.trailPreference === 'short') return 16;
+  if (settings.trailPreference === 'long') return 96;
+  return 40;
+}
+
+/**
+ * True when a mode needs per-frame motion analysis. Tracking and the Motion
+ * metric both need the frame difference, so it is computed whenever either is
+ * wanted and skipped entirely when neither is.
+ */
+function needsMotionAnalysis(): boolean {
+  return settings.trackingEnabled
+    || visionMode === 'motion'
+    || visionMode === 'difference'
+    || visionMode === 'flow';
 }
 
 /**
@@ -415,6 +523,8 @@ async function startCamera(): Promise<void> {
     // Nothing is awaited before this call, so the tap's transient activation
     // is still live when WebKit decides whether to show a permission prompt.
     await camera.start(preferredCameraFacing());
+    await applyCameraFrameRate();
+    startFrameDelivery();
     setText('cameraMessage', isStandalone()
       ? 'Camera is live inside the installed app. If it stops after backgrounding, tap Resume Camera — iOS releases the stream and it cannot be revived in place.'
       : 'Camera is live in browser mode.');
@@ -423,6 +533,30 @@ async function startCamera(): Promise<void> {
   } finally {
     void refreshSettingsDiagnostics();
   }
+}
+
+/** Ask the engine for the configured rate and report what it negotiated. */
+async function applyCameraFrameRate(): Promise<void> {
+  const requested = settings.cameraFrameRate === 'auto' ? 'auto' : Number(settings.cameraFrameRate);
+  try {
+    await camera.setFrameRate(requested);
+  } catch {
+    // A refused rate leaves the previous one in force; the camera keeps running.
+  }
+}
+
+function startFrameDelivery(): void {
+  frameRateMeter.reset();
+  governor.reset();
+  tracker.reset();
+  trackedObjects = [];
+  deliveryDriven = camera.startFrameDelivery(onFrameDelivered);
+}
+
+function setNightMode(active: boolean): void {
+  nightModeActive = active;
+  if (!active) integrator.reset();
+  byId('nightPanel').hidden = !active;
 }
 
 async function switchCamera(): Promise<void> {
@@ -594,6 +728,9 @@ async function enableMotion(): Promise<void> {
 
 function onMotionSample(sample: MotionSample): void {
   latestMotion = sample;
+  // The IMU is already running, so stacking stability is measured rather than
+  // assumed. A multi-second exposure is only meaningful if the camera held still.
+  stability.update({ rotationRate: sample.rotationRate, acceleration: sample.acceleration });
   fusion.setOrientation(sample.quaternion);
   fusion.setAcceleration(sample.acceleration);
   setText('alphaValue', format(sample.alpha, 1, '°'));
@@ -656,7 +793,8 @@ const MODE_LABELS: Record<VisionMode, string> = {
   edges: 'Edge map',
   motion: 'Motion mask • thresholded change',
   difference: 'Frame difference • raw change',
-  flow: 'Optical flow • relative image motion'
+  flow: 'Optical flow • relative image motion',
+  night: 'Night • computational low-light, not infrared'
 };
 
 function updateVisionMode(mode: VisionMode): void {
@@ -668,8 +806,9 @@ function updateVisionMode(mode: VisionMode): void {
   // The processed canvas is layered over the video rather than swapped with
   // it: hiding a <video> with display:none can stop WebKit decoding frames,
   // and the camera then never recovers when the mode is switched back.
-  visionCanvas.hidden = mode === 'camera';
+  visionCanvas.hidden = mode === 'camera' && !settings.zebraEnabled && !settings.focusPeakingEnabled;
   latestFlow = null;
+  setNightMode(mode === 'night');
   setText('visionModeLabel', `${MODE_LABELS[mode]} • ${settings.visionRatePreference}`);
 }
 
@@ -717,6 +856,80 @@ function drawFlowOverlay(buffers: VisionBuffers, field: FlowField): void {
   }
 }
 
+/** Render the accumulated night exposure, or the live frame before any stacking. */
+function renderNightFrame(buffers: VisionBuffers, source: Uint8ClampedArray): void {
+  const rgba = integrator.framesIntegrated > 0
+    ? integrator.render(buffers.rgba)
+    : (buffers.rgba.set(source), buffers.rgba);
+
+  applyLightBoost(rgba, settings.nightGain, settings.nightGamma, boostLut ??= new Uint8ClampedArray(256));
+  applyPalette(rgba, settings.nightPalette);
+  if (settings.focusPeakingEnabled) applyFocusPeaking(rgba, buffers.edges, 90);
+  if (settings.zebraEnabled) applyZebra(rgba, buffers.width, buffers.height, 0.95, overlayPhase);
+  putBuffer(buffers, rgba);
+}
+
+/** Paint the live frame so zebra and peaking can be shown over plain RGB. */
+function drawOverlaysOverRgb(buffers: VisionBuffers, source: Uint8ClampedArray): void {
+  buffers.rgba.set(source);
+  if (settings.focusPeakingEnabled) applyFocusPeaking(buffers.rgba, buffers.edges, 90);
+  if (settings.zebraEnabled) applyZebra(buffers.rgba, buffers.width, buffers.height, 0.95, overlayPhase);
+  putBuffer(buffers, buffers.rgba);
+  visionCanvas.hidden = false;
+}
+
+/** Re-apply overlays to whatever a processed mode already drew. */
+function applyCanvasOverlays(buffers: VisionBuffers): void {
+  const image = visionContext.getImageData(0, 0, buffers.width, buffers.height);
+  if (settings.focusPeakingEnabled) applyFocusPeaking(image.data, buffers.edges, 90);
+  if (settings.zebraEnabled) applyZebra(image.data, buffers.width, buffers.height, 0.95, overlayPhase);
+  visionContext.putImageData(image, 0, 0);
+}
+
+/**
+ * Bounding boxes, ids and trails for tracked objects.
+ *
+ * Labels stay strictly descriptive — an id, a speed in px/sec and a direction.
+ * The tracker has no idea what any of these are, and the overlay must not
+ * suggest otherwise.
+ */
+function drawTrackingOverlay(buffers: VisionBuffers): void {
+  const trailLength = trailLengthForPreference();
+  visionContext.lineWidth = Math.max(1, buffers.width / 320);
+  visionContext.font = `${Math.max(7, Math.round(buffers.width / 34))}px ui-monospace, monospace`;
+  visionContext.textBaseline = 'bottom';
+
+  for (const object of trackedObjects) {
+    const alpha = clamp(object.confidence, 0.2, 1);
+    const halfW = object.width / 2;
+    const halfH = object.height / 2;
+
+    if (trailLength > 0 && object.trail.length > 1) {
+      visionContext.strokeStyle = `rgba(118, 209, 255, ${alpha * 0.7})`;
+      visionContext.beginPath();
+      const start = Math.max(0, object.trail.length - trailLength);
+      for (let i = start; i < object.trail.length; i++) {
+        const point = object.trail[i];
+        if (i === start) visionContext.moveTo(point.x, point.y);
+        else visionContext.lineTo(point.x, point.y);
+      }
+      visionContext.stroke();
+    }
+
+    visionContext.strokeStyle = `rgba(115, 229, 173, ${alpha})`;
+    visionContext.strokeRect(object.centerX - halfW, object.centerY - halfH, object.width, object.height);
+
+    if (object.speedPxPerSec > 1) {
+      visionContext.fillStyle = `rgba(234, 255, 255, ${alpha})`;
+      visionContext.fillText(
+        `${object.id} · ${Math.round(object.speedPxPerSec)}px/s`,
+        object.centerX - halfW,
+        object.centerY - halfH - 2
+      );
+    }
+  }
+}
+
 function recordProcessingFps(timestamp: number): number {
   if (lastProcessedAt > 0) {
     const delta = timestamp - lastProcessedAt;
@@ -759,11 +972,21 @@ function processVisionFrame(timestamp: number): void {
   // scene read 8% in one mode and 0% in another, which is a worse readout
   // than a slightly cruder one that stays comparable as modes change.
   let motionValue = 0;
-  if (hadPrevious) {
+  const wantsMotion = needsMotionAnalysis();
+  if (hadPrevious && wantsMotion) {
     absoluteDifference(buffers.gray, buffers.previousGray, buffers.difference);
     motionValue = motionScore(buffers.difference, 18);
   } else {
     buffers.difference.fill(0);
+  }
+
+  // Tracking consumes the motion mask, making it a generic consumer of
+  // analysis output rather than anything wired to the camera.
+  if (settings.trackingEnabled && hadPrevious) {
+    trackedObjects = tracker.update(buffers.difference, buffers.width, buffers.height, timestamp);
+  } else if (!settings.trackingEnabled && trackedObjects.length) {
+    tracker.reset();
+    trackedObjects = [];
   }
 
   const flowOptions = flowOptionsForPreset();
@@ -771,6 +994,14 @@ function processVisionFrame(timestamp: number): void {
     latestFlow = computeBlockFlow(buffers.previousGray, buffers.gray, buffers.width, buffers.height, flowOptions);
   } else if (visionMode !== 'flow') {
     latestFlow = null;
+  }
+
+  // Night integration folds the frame in and discards it, so a longer
+  // exposure costs no extra memory.
+  if (nightModeActive) {
+    integrator.setMode(settings.nightStackMode);
+    integrator.setTarget(settings.nightIntegrationSeconds * 1000);
+    integrator.addFrame(frame.data, buffers.width, buffers.height, timestamp);
   }
 
   switch (visionMode) {
@@ -799,8 +1030,42 @@ function processVisionFrame(timestamp: number): void {
         meanMagnitude: 0, maxMagnitude: 0, coverage: 0
       });
       break;
+    case 'night':
+      renderNightFrame(buffers, frame.data);
+      break;
     default:
       break;
+  }
+
+  // Overlays annotate whatever the mode drew. In RGB the canvas is hidden, so
+  // the frame has to be painted for them to be visible at all.
+  const wantsOverlay = settings.zebraEnabled || settings.focusPeakingEnabled;
+  if (wantsOverlay && visionMode === 'camera') {
+    drawOverlaysOverRgb(buffers, frame.data);
+  } else if (wantsOverlay && visionMode !== 'night') {
+    applyCanvasOverlays(buffers);
+  }
+
+  computeHistogram(frame.data, histogram);
+
+  if (settings.trackingEnabled && trackedObjects.length && visionMode !== 'camera') {
+    drawTrackingOverlay(buffers);
+  }
+  overlayPhase = (overlayPhase + 1) % 10;
+
+  // Feed the governor from what the scene is actually doing.
+  if (settings.visionRatePreference === 'adaptive') {
+    const rates = frameRateMeter.report;
+    governor.update({
+      motionScore: motionValue * 4,
+      fastestObjectPxPerSec: settings.trackingEnabled ? tracker.fastestSpeed : 0,
+      objectCount: trackedObjects.length,
+      flowMagnitudePx: latestFlow?.meanMagnitude ?? 0,
+      processingCostMs: rates.averageProcessingMs,
+      deliveredFps: rates.deliveredFps,
+      droppedFrames: rates.droppedFrames
+    }, timestamp);
+    adaptiveState = governor.state;
   }
 
   latestMetrics = {
@@ -814,20 +1079,76 @@ function processVisionFrame(timestamp: number): void {
     analysisWidth: buffers.width
   };
   renderMetrics();
+  renderObservationMetrics();
+  drawHistogram();
 }
 
-function visionLoop(timestamp: number): void {
-  requestAnimationFrame(visionLoop);
-  if (!camera.active || processingVision || timestamp - lastVisionFrameAt < visionIntervalMs()) return;
-  lastVisionFrameAt = timestamp;
+/**
+ * Decide whether a delivered frame should be analysed.
+ *
+ * Rate limiting happens per DELIVERED frame rather than on a wall clock, so a
+ * skipped frame is a frame we chose not to analyse and can be counted as such.
+ * The old loop could not tell a skipped frame from a repeated one.
+ */
+function shouldAnalyse(now: number): boolean {
+  const interval = settings.visionRatePreference === 'adaptive'
+    ? 1000 / Math.max(1, Math.min(governor.targetFps, maxAnalysisFps()))
+    : visionIntervalMs();
+  // A small tolerance keeps a 60 fps target from dropping every other frame
+  // when delivery jitters either side of the interval.
+  return now - lastVisionFrameAt >= interval * 0.92;
+}
+
+function analyseDeliveredFrame(now: number): void {
+  if (!camera.active || processingVision) return;
+  if (!shouldAnalyse(now)) {
+    frameRateMeter.recordSkipped();
+    return;
+  }
+
+  lastVisionFrameAt = now;
   processingVision = true;
+  const startedAt = performance.now();
   try {
-    processVisionFrame(timestamp);
+    processVisionFrame(now);
+    frameRateMeter.recordProcessed(now, performance.now() - startedAt);
   } catch {
-    // A camera can briefly report no frame while switching; the next animation tick recovers.
+    // A camera can briefly report no frame while switching; the next delivered
+    // frame recovers without the loop stopping.
   } finally {
     processingVision = false;
   }
+}
+
+/**
+ * Frame delivery from requestVideoFrameCallback.
+ *
+ * This is the honest driver: it fires once per presented video frame, so the
+ * pipeline runs at the camera's rate rather than the display's. A repeated
+ * mediaTime means the same image again and is not analysed — re-running the
+ * pipeline on it would inflate the processing rate while adding nothing.
+ */
+function onFrameDelivered(frame: PresentedFrame): void {
+  deliveryDriven = true;
+  lastDeliveredAt = frame.now;
+  const isNew = frameRateMeter.recordDelivered(frame);
+  if (!isNew) return;
+  analyseDeliveredFrame(frame.now);
+}
+
+/**
+ * Fallback loop for browsers without requestVideoFrameCallback.
+ *
+ * It cannot know whether the video holds a new frame, so it measures the
+ * display and is explicitly reported as an estimate rather than a measurement.
+ */
+function fallbackVisionLoop(timestamp: number): void {
+  requestAnimationFrame(fallbackVisionLoop);
+  // Once real frame delivery is running this loop must not also analyse, or
+  // every frame would be processed twice.
+  if (deliveryDriven && timestamp - lastDeliveredAt < 1000) return;
+  if (!camera.active) return;
+  analyseDeliveredFrame(timestamp);
 }
 
 function percent(value: number): string {
@@ -962,6 +1283,18 @@ function downloadSnapshot(): void {
 }
 
 function syncSettingsControls(): void {
+  byId<HTMLSelectElement>('cameraFrameRate').value = settings.cameraFrameRate;
+  byId<HTMLInputElement>('trackingToggle').checked = settings.trackingEnabled;
+  byId<HTMLInputElement>('zebraToggle').checked = settings.zebraEnabled;
+  byId<HTMLInputElement>('focusPeakToggle').checked = settings.focusPeakingEnabled;
+  byId<HTMLSelectElement>('trailPreference').value = settings.trailPreference;
+  byId<HTMLSelectElement>('nightStackMode').value = settings.nightStackMode;
+  byId<HTMLSelectElement>('nightIntegration').value = String(settings.nightIntegrationSeconds);
+  byId<HTMLSelectElement>('nightPalette').value = settings.nightPalette;
+  byId<HTMLInputElement>('nightGain').value = String(settings.nightGain);
+  byId<HTMLInputElement>('nightGamma').value = String(settings.nightGamma);
+  setText('nightGainValue', `${settings.nightGain.toFixed(1)}×`);
+  setText('nightGammaValue', settings.nightGamma.toFixed(2));
   byId<HTMLSelectElement>('cameraPreference').value = settings.cameraPreference;
   byId<HTMLSelectElement>('qualityPreference').value = settings.qualityPreference;
   byId<HTMLSelectElement>('visionRatePreference').value = settings.visionRatePreference;
@@ -1055,6 +1388,39 @@ async function refreshSettingsDiagnostics(): Promise<void> {
   setText('settingsImageCapture', 'ImageCapture' in window ? 'Available' : 'Not exposed');
   setText('settingsLastAttempt', describeAttempt(camera.attempts[0]));
   setText('settingsPermission', await camera.permissionState());
+
+  const rates = frameRateMeter.report;
+  const info = camera.frameRateInfo;
+  setText('benchCapability', info.capability
+    ? `${info.capability.min}–${info.capability.max} FPS`
+    : 'Not exposed');
+  setText('benchRequested', info.requested === 'auto' ? 'Auto Max' : `${info.requested} FPS`);
+  setText('benchReported', info.reported > 0 ? `${info.reported} FPS` : 'Not reported');
+  setText('benchMeasured', rates.deliveredFps > 0
+    ? `${rates.deliveredFps.toFixed(1)} FPS${deliveryDriven ? '' : ' (estimated)'}`
+    : 'Not measured');
+  setText('benchProcessing', `${rates.processingFps.toFixed(1)} FPS`);
+  setText('benchAvgMs', `${rates.averageProcessingMs.toFixed(2)} ms`);
+  setText('benchPeakMs', `${rates.peakProcessingMs.toFixed(2)} ms`);
+  setText('benchSkipped', `${rates.skippedFrames} skipped / ${rates.droppedFrames} dropped`);
+  setText('benchAnalysis', latestMetrics
+    ? `${latestMetrics.analysisWidth} px wide`
+    : 'Not processing');
+  setText('benchResolution', diagnostics.videoWidth
+    ? `${diagnostics.videoWidth} × ${diagnostics.videoHeight}`
+    : 'Not live');
+
+  setText('settingsAdaptive', settings.visionRatePreference === 'adaptive'
+    ? `${adaptiveState} · target ${Math.round(governor.targetFps)} FPS`
+    : `Fixed · ${settings.visionRatePreference}`);
+  setText('settingsTracking', settings.trackingEnabled
+    ? `${trackedObjects.length} tracked · fastest ${Math.round(tracker.fastestSpeed)} px/s`
+    : 'Disabled');
+  const nightReport = integrator.report(performance.now());
+  setText('settingsNight', nightModeActive
+    ? `${nightReport.mode} · ${nightReport.framesIntegrated} frames · ${(nightReport.elapsedMs / 1000).toFixed(1)} s · stability ${Math.round(stability.report.score * 100)}%`
+    : 'Inactive');
+  renderCapabilityTable();
   await refreshStorageEstimate();
 }
 
@@ -1157,6 +1523,165 @@ async function refreshStorageEstimate(): Promise<void> {
   }
 }
 
+/** Live histogram, drawn as a compact luminance plot. */
+function drawHistogram(): void {
+  const canvas = byId<HTMLCanvasElement>('histogramCanvas');
+  const context = canvas.getContext('2d');
+  if (!context) return;
+
+  const { width, height } = canvas;
+  context.clearRect(0, 0, width, height);
+  context.fillStyle = 'rgba(5, 12, 19, 0.75)';
+  context.fillRect(0, 0, width, height);
+
+  const peak = histogram.peakLuminanceBin || 1;
+  context.fillStyle = 'rgba(118, 209, 255, 0.75)';
+  for (let bin = 0; bin < 256; bin++) {
+    // Square root compresses the tall midtone peak so shadow and highlight
+    // detail stay visible instead of being flattened against the axis.
+    const value = Math.sqrt(histogram.luminance[bin] / peak);
+    const barHeight = value * height;
+    context.fillRect(bin, height - barHeight, 1, barHeight);
+  }
+
+  if (histogram.clippedFraction > 0.001) {
+    context.fillStyle = 'rgba(255, 90, 120, 0.9)';
+    context.fillRect(width - 3, 0, 3, height);
+  }
+  if (histogram.crushedFraction > 0.02) {
+    context.fillStyle = 'rgba(255, 196, 107, 0.75)';
+    context.fillRect(0, 0, 3, height);
+  }
+}
+
+function renderObservationMetrics(): void {
+  const rates = frameRateMeter.report;
+  const info = camera.frameRateInfo;
+
+  setText('metricDelivered', rates.deliveredFps > 0
+    ? `${rates.deliveredFps.toFixed(1)} fps`
+    : deliveryDriven ? '—' : 'estimated');
+  setText('metricAnalysis', `${rates.processingFps.toFixed(1)} fps`);
+  setText('metricAdaptive', settings.visionRatePreference === 'adaptive'
+    ? `${adaptiveState} ${Math.round(governor.targetFps)}`
+    : settings.visionRatePreference);
+  setText('metricObjects', settings.trackingEnabled ? String(trackedObjects.length) : 'off');
+  setText('metricFastest', settings.trackingEnabled && tracker.fastestSpeed > 0
+    ? `${Math.round(tracker.fastestSpeed)} px/s`
+    : '—');
+  setText('metricDropped', `${rates.droppedFrames}/${rates.skippedFrames}`);
+
+  if (nightModeActive) {
+    const report = integrator.report(performance.now());
+    const stabilityReport = stability.report;
+    setText('nightIntegrationState', report.complete
+      ? `Complete · ${(report.elapsedMs / 1000).toFixed(1)} s`
+      : `${(report.elapsedMs / 1000).toFixed(1)} / ${settings.nightIntegrationSeconds} s`);
+    setText('nightFrames', String(report.framesIntegrated));
+    setText('nightStability', latestMotion
+      ? `${Math.round(stabilityReport.score * 100)}% ${stabilityReport.tripod ? '· tripod' : stabilityReport.disturbed ? '· moving' : ''}`
+      : 'Enable motion sensors');
+  }
+
+  void info;
+}
+
+/**
+ * Run the frame-rate benchmark.
+ *
+ * The camera keeps running throughout: each rate is applied to the live track
+ * with applyConstraints, never with a fresh getUserMedia call, so this cannot
+ * re-prompt for permission or drop the stream.
+ */
+async function runBenchmark(): Promise<void> {
+  const button = byId<HTMLButtonElement>('runBenchmarkButton');
+  const results = byId('benchmarkResults');
+  if (!camera.active) {
+    setText('benchmarkStatus', 'Enable the camera before benchmarking.');
+    return;
+  }
+
+  button.disabled = true;
+  results.textContent = '';
+  setText('benchmarkStatus', 'Testing frame rates on the live track…');
+
+  try {
+    const report = await camera.benchmarkFrameRates([30, 60, 120, 240], 1200, (progress) => {
+      setText('benchmarkStatus', `Testing ${progress.rate} FPS…`);
+    });
+
+    if (!report.supported) {
+      setText('benchmarkStatus', report.reason ?? 'Benchmarking is unavailable in this browser.');
+      return;
+    }
+
+    for (const row of report.results) {
+      const line = document.createElement('div');
+      line.className = `benchmark-row ${row.verdict}`;
+      const detail = row.verdict === 'unsupported'
+        ? row.reason || 'refused'
+        : `reports ${row.reported || '?'} · measured ${row.measuredFps} fps`;
+      line.textContent = `${row.requested} FPS · ${row.verdict} · ${detail}`;
+      results.appendChild(line);
+    }
+
+    const best = report.results
+      .filter((row) => row.verdict === 'accepted' || row.verdict === 'negotiated')
+      .reduce<number>((max, row) => Math.max(max, row.measuredFps), 0);
+    setText('benchmarkStatus', best > 0
+      ? `Highest rate this device actually delivered: ${best.toFixed(1)} FPS. Requested rates above that were negotiated down or refused.`
+      : 'No requested rate produced measurable frames.');
+  } catch (error) {
+    setText('benchmarkStatus', error instanceof Error ? error.message : 'Benchmark failed.');
+  } finally {
+    button.disabled = false;
+    await applyCameraFrameRate();
+  }
+}
+
+/** Render whatever WebKit exposes about the live track, without inventing any of it. */
+function renderCapabilityTable(): void {
+  const container = byId('capabilityTable');
+  const report = camera.capabilityReport;
+  container.textContent = '';
+
+  if (!report.available) {
+    container.textContent = camera.active
+      ? 'This browser exposes no track capabilities at all.'
+      : 'Enable the camera to read capabilities.';
+    return;
+  }
+
+  const labels: Record<string, string> = {
+    zoom: 'Zoom', torch: 'Torch', focusMode: 'Focus Mode', focusDistance: 'Focus Distance',
+    exposureMode: 'Exposure Mode', exposureCompensation: 'Exposure Compensation',
+    exposureTime: 'Exposure Time', iso: 'ISO', whiteBalanceMode: 'White Balance',
+    frameRate: 'Frame Rate', width: 'Width', height: 'Height'
+  };
+
+  for (const [name, field] of Object.entries(report.fields)) {
+    const row = document.createElement('div');
+    row.className = 'capability-row';
+    const label = document.createElement('span');
+    label.textContent = labels[name] ?? name;
+    const value = document.createElement('strong');
+    value.dataset.state = field.state;
+
+    if (field.state !== 'supported') {
+      value.textContent = field.state === 'unsupported' ? 'Unsupported' : 'Not exposed';
+    } else if (field.min !== undefined && field.max !== undefined) {
+      value.textContent = `Supported · ${field.min}–${field.max}`;
+    } else if (field.options) {
+      value.textContent = `Supported · ${field.options.join(', ')}`;
+    } else {
+      value.textContent = `Supported · ${String(field.value)}`;
+    }
+
+    row.append(label, value);
+    container.appendChild(row);
+  }
+}
+
 function openSettings(): void {
   syncSettingsControls();
   void refreshSettingsDiagnostics();
@@ -1165,11 +1690,16 @@ function openSettings(): void {
 }
 
 function saveSettingFromControls(): void {
+  // Spread the existing settings rather than rebuilding the object: the Night
+  // and overlay preferences live outside this dialog, and listing only the
+  // dialog's own fields here would silently reset them on every change.
   settings = {
+    ...settings,
     cameraPreference: byId<HTMLSelectElement>('cameraPreference').value as CameraPreference,
     qualityPreference: byId<HTMLSelectElement>('qualityPreference').value as QualityPreference,
     visionRatePreference: byId<HTMLSelectElement>('visionRatePreference').value as VisionRatePreference,
-    gpsAccuracyPreference: byId<HTMLSelectElement>('gpsAccuracyPreference').value as GpsAccuracyPreference
+    gpsAccuracyPreference: byId<HTMLSelectElement>('gpsAccuracyPreference').value as GpsAccuracyPreference,
+    cameraFrameRate: byId<HTMLSelectElement>('cameraFrameRate').value as CameraFrameRatePreference
   };
   saveSettings();
   fusion.setQuality(settings.qualityPreference);
@@ -1378,6 +1908,68 @@ on('copyDiagnosticsButton', 'click', () => void copyDiagnostics());
 on('zoomSlider', 'input', (event) => {
   void requestZoom(Number((event.target as HTMLInputElement).value));
 });
+on('runBenchmarkButton', 'click', () => void runBenchmark());
+on('resetPeakButton', 'click', () => {
+  frameRateMeter.resetPeak();
+  void refreshSettingsDiagnostics();
+});
+on('nightRestartButton', 'click', () => {
+  integrator.reset();
+  setText('nightIntegrationState', 'Restarted');
+});
+on('trackingToggle', 'change', (event) => {
+  settings.trackingEnabled = (event.target as HTMLInputElement).checked;
+  if (!settings.trackingEnabled) {
+    tracker.reset();
+    trackedObjects = [];
+  }
+  saveSettings();
+});
+on('zebraToggle', 'change', (event) => {
+  settings.zebraEnabled = (event.target as HTMLInputElement).checked;
+  saveSettings();
+  updateVisionMode(visionMode);
+});
+on('focusPeakToggle', 'change', (event) => {
+  settings.focusPeakingEnabled = (event.target as HTMLInputElement).checked;
+  saveSettings();
+  updateVisionMode(visionMode);
+});
+on('trailPreference', 'change', (event) => {
+  settings.trailPreference = (event.target as HTMLSelectElement).value as TrailPreference;
+  saveSettings();
+});
+on('nightStackMode', 'change', (event) => {
+  settings.nightStackMode = (event.target as HTMLSelectElement).value as StackMode;
+  integrator.setMode(settings.nightStackMode);
+  saveSettings();
+});
+on('nightIntegration', 'change', (event) => {
+  settings.nightIntegrationSeconds = Number((event.target as HTMLSelectElement).value) || 4;
+  integrator.reset();
+  saveSettings();
+});
+on('nightPalette', 'change', (event) => {
+  settings.nightPalette = (event.target as HTMLSelectElement).value as NightPalette;
+  saveSettings();
+});
+on('nightGain', 'input', (event) => {
+  settings.nightGain = Number((event.target as HTMLInputElement).value) || 1;
+  setText('nightGainValue', `${settings.nightGain.toFixed(1)}×`);
+  saveSettings();
+});
+on('nightGamma', 'input', (event) => {
+  settings.nightGamma = Number((event.target as HTMLInputElement).value) || 1;
+  setText('nightGammaValue', settings.nightGamma.toFixed(2));
+  saveSettings();
+});
+on('cameraFrameRate', 'change', () => {
+  saveSettingFromControls();
+  void applyCameraFrameRate().then(() => refreshSettingsDiagnostics());
+  setText('cameraMessage', settings.cameraFrameRate === 'auto'
+    ? 'Requesting the highest frame rate this camera configuration will negotiate. The Camera Performance panel reports what it actually delivered.'
+    : `Requested ${settings.cameraFrameRate} FPS. WebKit may negotiate a different rate — the measured value is what counts.`);
+});
 on('cameraPreference', 'change', handleCameraPreferenceChange);
 on('qualityPreference', 'change', handleQualityChange);
 on('visionRatePreference', 'change', handleVisionRateChange);
@@ -1416,7 +2008,7 @@ updateVisionMode('camera');
 installPinchZoom();
 camera.subscribe(applyCameraStatus);
 renderMetrics();
-requestAnimationFrame(visionLoop);
+requestAnimationFrame(fallbackVisionLoop);
 void initializeFusion();
 void refreshSettingsDiagnostics();
 

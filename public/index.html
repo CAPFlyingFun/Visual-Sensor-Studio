@@ -61,13 +61,14 @@
             <div class="horizon-wrap" aria-hidden="true"><div id="horizonLine" class="horizon-line"></div></div>
           </div>
 
-          <div class="mode-strip" aria-label="Camera visualization mode">
+          <div class="mode-strip wide" aria-label="Camera visualization mode">
             <button class="segmented active" type="button" data-vision-mode="camera">RGB</button>
             <button class="segmented" type="button" data-vision-mode="relief">Relief</button>
             <button class="segmented" type="button" data-vision-mode="edges">Edges</button>
             <button class="segmented" type="button" data-vision-mode="motion">Motion</button>
             <button class="segmented" type="button" data-vision-mode="flow">Flow</button>
             <button class="segmented" type="button" data-vision-mode="difference">Difference</button>
+            <button class="segmented" type="button" data-vision-mode="night">Night</button>
           </div>
 
           <div class="zoom-row" aria-label="Camera zoom">
@@ -84,6 +85,80 @@
             <div class="metric"><span>Motion</span><strong id="metricMotion">&mdash;</strong></div>
             <div class="metric"><span>Processing</span><strong id="metricFps">&mdash;</strong></div>
             <div class="metric"><span>Zoom</span><strong id="metricZoom">&mdash;</strong></div>
+          </div>
+
+          <section class="night-panel" id="nightPanel" hidden aria-label="Night and low light controls">
+            <div class="night-heading">
+              <strong>Night / Low Light</strong>
+              <span class="small-badge warning">Computational, not infrared</span>
+            </div>
+            <div class="night-grid">
+              <label>Stack Mode
+                <select id="nightStackMode">
+                  <option value="clean">Clean · average, less noise</option>
+                  <option value="brighten">Brighten · accumulate dim signal</option>
+                  <option value="trails">Light Trails · keep brightest</option>
+                </select>
+              </label>
+              <label>Integration
+                <select id="nightIntegration">
+                  <option value="0.5">0.5 sec</option>
+                  <option value="1">1 sec</option>
+                  <option value="2">2 sec</option>
+                  <option value="4">4 sec</option>
+                  <option value="8">8 sec</option>
+                  <option value="15">15 sec</option>
+                  <option value="30">30 sec</option>
+                </select>
+              </label>
+              <label>Palette
+                <select id="nightPalette">
+                  <option value="natural">Natural</option>
+                  <option value="monochrome">Monochrome</option>
+                  <option value="green">Green</option>
+                  <option value="falsecolor">False Color</option>
+                </select>
+              </label>
+              <label>Light Boost <span class="range-value" id="nightGainValue">1.0×</span>
+                <input id="nightGain" type="range" min="1" max="6" step="0.1" value="1" />
+              </label>
+              <label>Gamma <span class="range-value" id="nightGammaValue">1.00</span>
+                <input id="nightGamma" type="range" min="0.3" max="2" step="0.05" value="1" />
+              </label>
+            </div>
+            <div class="night-status">
+              <div class="readout"><span>Integration</span><strong id="nightIntegrationState">Idle</strong></div>
+              <div class="readout"><span>Frames stacked</span><strong id="nightFrames">0</strong></div>
+              <div class="readout"><span>Stability</span><strong id="nightStability">—</strong></div>
+            </div>
+            <div class="button-row">
+              <button class="secondary-button" id="nightRestartButton" type="button">Restart Exposure</button>
+            </div>
+          </section>
+
+          <div class="observe-row" aria-label="Observation tools">
+            <label class="toggle"><input type="checkbox" id="trackingToggle" checked /> Track objects</label>
+            <label class="toggle"><input type="checkbox" id="zebraToggle" /> Zebra</label>
+            <label class="toggle"><input type="checkbox" id="focusPeakToggle" /> Focus peak</label>
+            <label class="toggle inline-select">Trails
+              <select id="trailPreference">
+                <option value="off">Off</option>
+                <option value="short">Short</option>
+                <option value="medium">Medium</option>
+                <option value="long">Long</option>
+              </select>
+            </label>
+          </div>
+
+          <canvas class="histogram" id="histogramCanvas" width="256" height="46" aria-label="Live luminance histogram"></canvas>
+
+          <div class="metric-strip observe" aria-label="Observation measurements">
+            <div class="metric"><span>Delivered</span><strong id="metricDelivered">—</strong></div>
+            <div class="metric"><span>Analysis</span><strong id="metricAnalysis">—</strong></div>
+            <div class="metric"><span>Adaptive</span><strong id="metricAdaptive">—</strong></div>
+            <div class="metric"><span>Objects</span><strong id="metricObjects">—</strong></div>
+            <div class="metric"><span>Fastest</span><strong id="metricFastest">—</strong></div>
+            <div class="metric"><span>Dropped</span><strong id="metricDropped">—</strong></div>
           </div>
 
           <div class="button-row">
@@ -173,7 +248,7 @@
       </section>
     </main>
 
-    <footer><strong>Visual Sensor Studio v0.3.3</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.4.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <dialog class="settings-dialog" id="settingsDialog">
@@ -208,8 +283,18 @@
             <option value="high">High</option>
           </select>
         </label>
+        <label>Camera Frame Rate
+          <select id="cameraFrameRate">
+            <option value="auto">Auto Max</option>
+            <option value="30">30 FPS</option>
+            <option value="60">60 FPS</option>
+            <option value="120">120 FPS (experimental)</option>
+            <option value="240">240 FPS (experimental)</option>
+          </select>
+        </label>
         <label>Vision Processing
           <select id="visionRatePreference">
+            <option value="adaptive">Adaptive</option>
             <option value="battery">Battery Saver</option>
             <option value="balanced">Balanced</option>
             <option value="fast">Fast</option>
@@ -221,6 +306,34 @@
             <option value="high">High Accuracy</option>
           </select>
         </label>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-heading compact"><h3>Camera Performance</h3></div>
+        <div class="diagnostics-grid">
+          <div class="readout"><span>Capability range</span><strong id="benchCapability">—</strong></div>
+          <div class="readout"><span>Requested</span><strong id="benchRequested">—</strong></div>
+          <div class="readout"><span>Track reports</span><strong id="benchReported">—</strong></div>
+          <div class="readout"><span>Measured delivered</span><strong id="benchMeasured">—</strong></div>
+          <div class="readout"><span>Vision processing</span><strong id="benchProcessing">—</strong></div>
+          <div class="readout"><span>Average processing</span><strong id="benchAvgMs">—</strong></div>
+          <div class="readout"><span>Peak processing</span><strong id="benchPeakMs">—</strong></div>
+          <div class="readout"><span>Skipped / dropped</span><strong id="benchSkipped">—</strong></div>
+          <div class="readout"><span>Analysis resolution</span><strong id="benchAnalysis">—</strong></div>
+          <div class="readout"><span>Camera resolution</span><strong id="benchResolution">—</strong></div>
+        </div>
+        <p class="helper" id="benchmarkStatus">The benchmark applies each rate to the live track and counts presented frames. It never calls getUserMedia, so it cannot re-prompt for permission or drop the preview.</p>
+        <div class="settings-actions two">
+          <button class="secondary-button" id="runBenchmarkButton" type="button">Run Frame-Rate Benchmark</button>
+          <button class="secondary-button" id="resetPeakButton" type="button">Reset Peak</button>
+        </div>
+        <div id="benchmarkResults" class="benchmark-results"></div>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-heading compact"><h3>Manual Camera</h3></div>
+        <div id="capabilityTable" class="capability-table">Enable the camera to read capabilities.</div>
+        <p class="helper">Reported straight from <code>getCapabilities()</code>. <strong>Not exposed</strong> means WebKit reports nothing for that control, which is different from reporting that it is unsupported.</p>
       </section>
 
       <section class="settings-section">
@@ -244,6 +357,9 @@
           <div class="readout"><span>First frame</span><strong id="settingsFirstFrame">—</strong></div>
           <div class="readout"><span>Hardware zoom</span><strong id="settingsZoomSupport">—</strong></div>
           <div class="readout"><span>Processing FPS</span><strong id="settingsProcessingFps">—</strong></div>
+          <div class="readout"><span>Adaptive state</span><strong id="settingsAdaptive">—</strong></div>
+          <div class="readout"><span>Tracked objects</span><strong id="settingsTracking">—</strong></div>
+          <div class="readout"><span>Night integration</span><strong id="settingsNight">—</strong></div>
           <div class="readout"><span>Storage</span><strong id="settingsStorage">—</strong></div>
           <div class="readout"><span>ImageCapture API</span><strong id="settingsImageCapture">—</strong></div>
         </div>

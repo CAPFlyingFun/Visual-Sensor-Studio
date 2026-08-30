@@ -21,6 +21,9 @@ The first release is intentionally an **instrument playground**, not a fake LiDA
 - **PWA installability and offline shell caching** after the app has loaded once.
 - **Camera diagnostics and recovery**, including a hard reset and an attempt
   log that survives reloads.
+- **Observation tools** for fast or short-lived events: measured frame
+  delivery, an adaptive analysis rate, generic moving-object tracking with
+  trails, a frame-rate benchmark, and a computational Night/Low Light lab.
 - **GitHub Pages deployment** through GitHub Actions.
 
 ## The iOS standalone-PWA camera problem
@@ -83,6 +86,80 @@ display mode, secure context, and storage usage. **Hard Reset Camera** tears
 the media element fully down (stop tracks → pause → clear `srcObject` →
 `load()` → restore `playsinline`/`autoplay`/`muted`) for a clean restart.
 
+## Four different frame rates
+
+These get conflated constantly, and the app keeps them apart because only one
+of them is a measurement:
+
+| Rate | What it is |
+| --- | --- |
+| **Camera capture** | What the sensor is configured to run at. Not observable from the web platform — only the track's *claim* is. |
+| **Delivered** | Video frames the page actually receives. Counted from `requestVideoFrameCallback` and de-duplicated by `mediaTime`. **This is the honest number.** |
+| **Vision processing** | Frames the pipeline actually analysed. |
+| **Display** | `requestAnimationFrame` — the screen's refresh rate, which has nothing to do with the camera. |
+
+A 30 fps camera on a 60 Hz screen presents every frame twice. Counting
+callbacks reports 60; counting *distinct* `mediaTime` values reports 30. The
+old loop was driven by `requestAnimationFrame` and could not tell the
+difference, so analysis was capped by the display and a repeated frame was
+indistinguishable from a new one. Analysis is now driven by frame delivery.
+
+**Camera Frame Rate** offers Auto Max / 30 / 60 / 120 / 240. A rate is
+requested with `ideal`+`max`, never `exact` — on WebKit an unsatisfiable
+`exact` fails the whole `getUserMedia` call, which would take the camera down
+instead of falling back. Rate changes use `applyConstraints` on the live
+track, so they cannot re-prompt for permission or drop the stream.
+
+**Run the benchmark** (Settings → Camera Performance) to find out what this
+device really does. It applies 30/60/120/240 to the live track, counts
+presented frames for each, and reports `accepted`, `negotiated`, `unsupported`
+or `unstable` from the *measured* rate rather than the requested one. If
+WebKit only gives 60, it will say 60.
+
+## Adaptive analysis
+
+The camera stream stays at a stable rate; only the expensive analysis varies.
+Renegotiating camera constraints on every movement is slow, visible, and on
+WebKit can drop the stream.
+
+The rate comes from how far the fastest tracked object moves **between
+analyses**, not from a motion percentage — 30 fps is useless if the subject
+crosses 40 px per frame, and wasteful if it crosses a fraction of one. Rise is
+roughly 11× faster than fall: arriving at the right rate after the event has
+passed is the same as missing it, while falling slowly costs only power.
+Hysteresis stops a steady scene oscillating. The target is capped by measured
+delivery and by what the device can actually process.
+
+## Object tracking
+
+Connected regions of the motion mask, followed over time by predicted-position
+association. This is **not** semantic recognition — the tracker has no idea
+what anything is, and the app does not guess. It observes movement; it does
+not decide what caused it.
+
+Speeds are in **analysis-frame pixels per second** and stay that way.
+Converting to m/s or mph needs distance to the subject and the lens's angular
+scale, neither of which this app has.
+
+## Night / Low Light
+
+Computational low-light enhancement — **not** infrared. The camera does not
+become an IR sensor, and the Green palette is a colour scheme, not night
+vision.
+
+WebKit exposes no hardware shutter, so a 30-second exposure is assembled from
+the frames that arrive during those 30 seconds: each is folded into a fixed
+accumulator and discarded, so memory is constant in exposure length.
+
+| Stack mode | What it does |
+| --- | --- |
+| **Clean** | Averages frames. Random noise falls away, stationary detail survives. Best on a tripod. |
+| **Brighten** | Accumulates and tone-maps, so dim signal climbs out of the noise floor. |
+| **Light Trails** | Keeps the brightest value each pixel ever showed — headlights, torches, moving lights. |
+
+Stability is measured from the IMU rather than assumed, so a stack disturbed
+by a knock is flagged instead of silently blurred.
+
 ## Important limits
 
 - The iPhone 15 Plus does **not** have Apple's rear LiDAR scanner.
@@ -93,6 +170,9 @@ the media element fully down (stop tracks → pause → clear `srcObject` →
 - The **Optical Flow** view is relative image motion. It cannot separate camera motion from subject motion, and like all block matching it can only see motion along axes the scene actually has structure on — a plain wall or a set of vertical stripes yields no vertical flow.
 - **Brightness, Contrast, Detail and Motion are normalised indicators, not photometric measurements.** They are computed from the downsampled analysis frame, so their absolute values shift with the processing preset.
 - Simultaneous multi-lens capture (0.5x + 1x fusion) is **not** attempted in the browser; WebKit does not expose it. The `FrameSource` interface exists so a future native provider could supply it without rewriting the processing modes.
+- **Object tracking is motion-based, not recognition.** It follows regions that changed. It cannot identify anything, and an unexplained moving region is exactly that — the app stays neutral about what any object is.
+- **Reported frame rates are measurements, not requests.** If a rate was asked for and not delivered, the panel shows what arrived.
+- Manual camera controls are reported straight from `getCapabilities()`. **Not exposed** means WebKit reports nothing for that control, which is not the same as reporting that it is unsupported.
 - GPS and phone IMU data are not survey-grade. GPS can be noisy indoors, and accelerometer integration drifts too quickly to use as trustworthy position, so v0.1 visualizes acceleration rather than pretending it can reconstruct a stable inertial path.
 
 ## iPhone use
@@ -163,8 +243,16 @@ camera acquisition -> FrameSource -> vision processing -> sensor state -> option
 - Three.js is a visualization consumer only. It never captures anything.
 
 Vision work runs on a downsampled analysis frame (~176/256/384 px wide for
-Battery Saver / Balanced / Fast), throttled by preset, into buffers that are
-allocated once per frame geometry and reused.
+Battery Saver / Balanced / Fast), into buffers allocated once per frame
+geometry and reused. Tracking, integration and the overlays all consume
+analysis output rather than the camera, so a future native provider is a new
+`FrameSource` and nothing downstream changes.
+
+Measured per-frame cost at 256x144: tracking 0.13 ms, night integration
+0.11 ms, histogram 0.20 ms, optical flow 0.16 ms. In the browser the dominant
+cost is not any of these — it is capturing the frame at all (`drawImage` plus
+`getImageData`, a GPU-to-CPU readback), which is most of the ~10 ms measured
+per analysed frame. Optimising the algorithms further would not move that.
 
 ## Next experiments
 

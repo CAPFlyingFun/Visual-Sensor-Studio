@@ -226,6 +226,137 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
 .legend-swatch.accel { background: #ffc46b; }
 .legend-swatch.gps { background: #73e5ad; }
 
+/* --- Observation lab --- */
+
+.mode-strip.wide { grid-template-columns: repeat(7, 1fr); gap: 5px; }
+.mode-strip.wide .segmented { font-size: 0.74rem; padding: 0 2px; }
+
+.observe-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 9px;
+}
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: rgba(9, 17, 26, 0.8);
+  color: #9eb1c2;
+  font-size: 0.76rem;
+  cursor: pointer;
+}
+.toggle input { accent-color: var(--cyan); width: 16px; height: 16px; }
+.toggle.inline-select select {
+  min-height: 30px;
+  padding: 0 6px;
+  border-radius: 8px;
+  border: 1px solid rgba(153, 190, 222, 0.18);
+  background: #071019;
+  color: #eaf3ff;
+  font-size: 0.74rem;
+}
+
+.histogram {
+  display: block;
+  width: 100%;
+  height: 46px;
+  margin-bottom: 9px;
+  border: 1px solid rgba(144, 180, 210, 0.14);
+  border-radius: 10px;
+  background: rgba(5, 12, 19, 0.75);
+}
+
+.night-panel {
+  margin-bottom: 10px;
+  padding: 12px;
+  border: 1px solid rgba(153, 190, 222, 0.16);
+  border-radius: 14px;
+  background: rgba(9, 18, 28, 0.85);
+}
+.night-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 0.85rem;
+}
+.night-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+.night-grid label {
+  display: grid;
+  gap: 5px;
+  color: #9fb2c3;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.night-grid select {
+  min-height: 40px;
+  padding: 0 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(153, 190, 222, 0.18);
+  background: #071019;
+  color: #eaf3ff;
+  font-size: 0.8rem;
+}
+.night-grid input[type="range"] { accent-color: var(--cyan); width: 100%; }
+.range-value {
+  float: right;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 650;
+  color: #cfe2f1;
+}
+.night-status {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.benchmark-results { display: grid; gap: 6px; margin-top: 10px; }
+.benchmark-row {
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(144, 180, 210, 0.14);
+  background: rgba(5, 12, 19, 0.65);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.74rem;
+}
+.benchmark-row.accepted { border-color: rgba(115, 229, 173, 0.5); color: #cdf6e4; }
+.benchmark-row.negotiated { border-color: rgba(255, 196, 107, 0.45); color: #ffe6bd; }
+.benchmark-row.unsupported { border-color: rgba(255, 139, 139, 0.4); color: #ffd9d9; }
+.benchmark-row.unstable { border-color: rgba(255, 139, 139, 0.4); color: #ffd9d9; }
+
+.capability-table { display: grid; gap: 5px; }
+.capability-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  background: rgba(5, 12, 19, 0.6);
+  font-size: 0.76rem;
+  color: #9fb2c3;
+}
+.capability-row strong {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  text-align: right;
+}
+.capability-row strong[data-state="supported"] { color: var(--green); }
+.capability-row strong[data-state="unsupported"] { color: var(--amber); }
+.capability-row strong[data-state="not exposed"] { color: #7f96aa; }
+
 /* --- Camera Lab instrument controls --- */
 
 .zoom-row {
@@ -390,6 +521,7 @@ footer strong { color: #9fb2c3; }
 
 @media (max-width: 900px) {
   .metric-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .mode-strip.wide { grid-template-columns: repeat(4, 1fr); }
   .topbar { align-items: flex-start; flex-direction: column; }
   .status-row { justify-content: flex-start; }
   .primary-grid, .sensor-grid { grid-template-columns: 1fr; }
@@ -406,6 +538,8 @@ footer strong { color: #9fb2c3; }
   .fusion-scene { height: 320px; }
   .readout-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .mode-strip { grid-template-columns: repeat(3, 1fr); }
+  .mode-strip.wide { grid-template-columns: repeat(4, 1fr); }
+  .night-status { grid-template-columns: 1fr; }
   .metric-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .zoom-value { min-width: 96px; font-size: 0.78rem; }
   .zoom-slider { flex-basis: 100px; }

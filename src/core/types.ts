@@ -1,6 +1,6 @@
 import type { LocalPoint, QuaternionLike } from './math.js';
 
-export type VisionMode = 'camera' | 'relief' | 'edges' | 'motion' | 'difference' | 'flow';
+export type VisionMode = 'camera' | 'relief' | 'edges' | 'motion' | 'difference' | 'flow' | 'night';
 
 export interface VisionMetrics {
   /** Mean scene luminance, 0..1. */

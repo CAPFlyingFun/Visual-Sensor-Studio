@@ -1,4 +1,4 @@
-const CACHE = 'visual-sensor-studio-v0.3.3';
+const CACHE = 'visual-sensor-studio-v0.4.0';
 const APP_SHELL = [
   './',
   './index.html',
@@ -20,6 +20,13 @@ const APP_SHELL = [
   './app/vision/frame-processing.js',
   './app/vision/frame-source.js',
   './app/vision/optical-flow.js',
+  './app/vision/frame-rate.js',
+  './app/vision/adaptive.js',
+  './app/vision/tracking.js',
+  './app/vision/integration.js',
+  './app/vision/histogram.js',
+  './app/vision/overlays.js',
+  './app/sensors/stability.js',
   './app/vision/parallax.js',
   './app/visualization/scene.js'
 ];
