@@ -68,8 +68,9 @@
           <div class="button-row">
             <button class="primary-button" id="cameraButton" type="button">Enable Camera</button>
             <button class="secondary-button" id="switchCameraButton" type="button" disabled>Switch Camera</button>
+            <button class="secondary-button camera-browser-fallback" id="cameraBrowserFallback" type="button" hidden>Open Live Camera in Browser</button>
           </div>
-          <p class="helper" id="cameraMessage">Tap Enable Camera and allow access when iOS asks. Installed Edge web apps can have a separate camera-permission state from the normal browser tab.</p>
+          <p class="helper" id="cameraMessage">Tap Enable Camera and allow access when iOS asks. If an installed iOS web app hits the standalone camera bug, a browser fallback will appear here.</p>
         </article>
 
         <article class="panel scene-panel">
@@ -106,7 +107,7 @@
           </div>
           <div class="wide-readout"><span>Acceleration XYZ</span><strong id="accelValue">—</strong></div>
           <div class="wide-readout"><span>Rotation αβγ</span><strong id="rotationValue">—</strong></div>
-          <p class="helper" id="motionMessage">On iPhone, a tap is required before the app can ask for motion/orientation permission.</p>
+          <p class="helper" id="motionMessage">On iPhone, motion uses a special explicit permission request, so a tap can trigger its prompt directly.</p>
         </article>
 
         <article class="panel compact-panel">
@@ -127,7 +128,7 @@
             <div class="readout"><span>Speed</span><strong id="speedValue">—</strong></div>
           </div>
           <div class="wide-readout"><span>3D track points</span><strong id="trackValue">0</strong></div>
-          <p class="helper" id="gpsMessage">Outdoor GPS usually produces the most interesting 3D path. Accuracy can vary substantially indoors.</p>
+          <p class="helper" id="gpsMessage">GPS asks only when iOS still needs a permission decision. If location is already granted, it can start without another prompt. Outdoor GPS is usually more accurate.</p>
         </article>
       </section>
 
@@ -179,7 +180,7 @@
     </main>
 
     <footer>
-      <strong>Visual Sensor Studio v0.1.1</strong>
+      <strong>Visual Sensor Studio v0.1.2</strong>
       <span>Experimental instrument, not calibrated survey or safety equipment.</span>
     </footer>
   </div>
