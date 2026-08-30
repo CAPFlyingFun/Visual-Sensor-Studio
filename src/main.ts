@@ -29,7 +29,7 @@ import {
 import { computeBlockFlow, flowVectorColor, type FlowField } from './vision/optical-flow.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 
-const APP_VERSION = '0.3.2';
+const APP_VERSION = '0.3.3';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 

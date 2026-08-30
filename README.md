@@ -27,9 +27,22 @@ The first release is intentionally an **instrument playground**, not a fake LiDA
 
 The camera works in a normal Safari tab and from a browser-style Home Screen
 shortcut, but can fail when the site is installed as a standalone PWA — often
-without the permission prompt you would expect. This is a family of WebKit
-bugs, not something this app can fully fix from web code. What it does instead
-is detect the failure honestly and recover cleanly.
+without the permission prompt you would expect.
+
+**In the case this app was actually debugged against, the cause was an iOS
+setting, not a WebKit bug.** `Settings > Apps > Safari > Camera` was set to
+**Deny**. On Deny, `getUserMedia()` is refused in a couple of milliseconds
+with `NotAllowedError` and no prompt is ever shown — and because an installed
+web app does not inherit a per-site grant given to the same site in a Safari
+tab, it falls back to that global default. That is the whole of "works in the
+browser, fails in the installed app", with no exotic bug required.
+
+So check the settings first. The diagnostics below are built to tell you when
+that is what you are looking at: a refusal that returns in milliseconds cannot
+have involved a prompt anybody dismissed.
+
+The WebKit bugs below are real and the mitigations for them are worth having,
+but they are the second thing to suspect, not the first.
 
 | WebKit behaviour | What the app does |
 | --- | --- |
@@ -54,7 +67,8 @@ distinguishes three failures that otherwise look identical:
 
 | Reading | Meaning |
 | --- | --- |
-| `NotAllowedError at stage "getUserMedia"` | A real rejection — permission was refused |
+| `NotAllowedError at stage "getUserMedia"` after a few ms | Refused with no prompt shown — an iOS-level block. Check `Settings > Apps > Safari > Camera` first, then Screen Time |
+| `NotAllowedError at stage "getUserMedia"` after a second or more | A prompt was probably shown and dismissed |
 | `NotReadableError at stage "first-frame" … track live` | The WebKit fake-success: the track is live, the video has dimensions, and no frame ever arrived |
 | `getUserMedia never settled — no prompt, no resolve, no reject` | The call was entered and never came back. No live state can show this after a reload |
 

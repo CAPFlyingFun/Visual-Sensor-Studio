@@ -443,7 +443,15 @@
       // block, and telling the user to "allow the prompt" is useless advice
       // when there is no prompt to allow.
       if (lastFailureMs !== null && lastFailureMs < 400) {
-        return `iOS refused camera access in ${lastFailureMs} ms without showing a permission prompt, so this is a block outside the app rather than a choice you made in it. Check Settings > Screen Time > Content & Privacy Restrictions > Allowed Apps & Features and make sure Camera is on — when Camera is restricted there, every website request is refused instantly with no prompt. Then check Settings > Apps > Safari > Camera and set it to Ask. If both are already correct, delete this app from the Home Screen and add it again from Safari, which clears a remembered denial for the site.`;
+        // Ordered by what actually turned out to be the cause on a real
+        // device: Safari's global Camera default set to Deny. An installed
+        // web app does not inherit a per-site grant given to a Safari tab, so
+        // it falls back to that global default - which is why the same page
+        // can work in the browser and be refused here.
+        return `iOS refused camera access in ${lastFailureMs} ms without showing a permission prompt, so this is a block outside the app rather than a choice you made in it.`
+          + ' 1. Settings > Apps > Safari > Camera — set it to Ask. On Deny, every request is refused instantly with no prompt, and an installed web app does not inherit a grant you gave the same site in a Safari tab.'
+          + ' 2. Settings > Screen Time > Content & Privacy Restrictions > Allowed Apps & Features — Camera must be on.'
+          + ' 3. If both are already correct, delete this app from the Home Screen and add it again from Safari, which clears a remembered denial for the site.';
       }
       return `Camera permission was blocked or never granted.${standalone ? ' iOS does not persist camera permission for installed web apps, so the prompt can be expected again after each launch.' : ''}${hint}`;
     }
