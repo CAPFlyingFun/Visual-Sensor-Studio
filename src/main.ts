@@ -28,6 +28,15 @@ import {
 } from './vision/frame-processing.js';
 import { computeBlockFlow, flowVectorColor, type FlowField } from './vision/optical-flow.js';
 import { estimateEffectiveResolution } from './vision/sharpness.js';
+import {
+  MotionSpeedField,
+  MotionTrailBuffer,
+  renderMotionIronbow,
+  ironbowColor,
+  UNRESOLVED_COLOR,
+  type MotionSpeedReport,
+  type MotionTrailReport
+} from './vision/motion-ironbow.js';
 import { FrameRateMeter, type PresentedFrame } from './vision/frame-rate.js';
 import { AdaptiveGovernor, type AdaptiveState } from './vision/adaptive.js';
 import { ObjectTracker, type TrackedObject } from './vision/tracking.js';
@@ -43,7 +52,7 @@ import {
 import { StabilityMonitor } from './sensors/stability.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 
-const APP_VERSION = '0.6.1';
+const APP_VERSION = '0.7.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -71,6 +80,10 @@ interface AppSettings {
   nightIntegrationSeconds: number;
   nightGain: number;
   nightGamma: number;
+  motionExposureSeconds: number;
+  motionSensitivity: number;
+  motionKeepFastest: boolean;
+  motionFadeTrails: boolean;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -90,7 +103,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   nightStackMode: 'clean',
   nightIntegrationSeconds: 4,
   nightGain: 1,
-  nightGamma: 1
+  nightGamma: 1,
+  motionExposureSeconds: 5,
+  motionSensitivity: 18,
+  motionKeepFastest: true,
+  motionFadeTrails: true
 };
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -183,7 +200,19 @@ function loadSettings(): AppSettings {
         ? clamp(Number(parsed.nightIntegrationSeconds), 0.5, 30)
         : DEFAULT_SETTINGS.nightIntegrationSeconds,
       nightGain: Number.isFinite(parsed.nightGain) ? clamp(Number(parsed.nightGain), 1, 6) : DEFAULT_SETTINGS.nightGain,
-      nightGamma: Number.isFinite(parsed.nightGamma) ? clamp(Number(parsed.nightGamma), 0.3, 2) : DEFAULT_SETTINGS.nightGamma
+      nightGamma: Number.isFinite(parsed.nightGamma) ? clamp(Number(parsed.nightGamma), 0.3, 2) : DEFAULT_SETTINGS.nightGamma,
+      motionExposureSeconds: Number.isFinite(parsed.motionExposureSeconds)
+        ? clamp(Number(parsed.motionExposureSeconds), 1, 60)
+        : DEFAULT_SETTINGS.motionExposureSeconds,
+      motionSensitivity: Number.isFinite(parsed.motionSensitivity)
+        ? clamp(Number(parsed.motionSensitivity), 4, 60)
+        : DEFAULT_SETTINGS.motionSensitivity,
+      motionKeepFastest: typeof parsed.motionKeepFastest === 'boolean'
+        ? parsed.motionKeepFastest
+        : DEFAULT_SETTINGS.motionKeepFastest,
+      motionFadeTrails: typeof parsed.motionFadeTrails === 'boolean'
+        ? parsed.motionFadeTrails
+        : DEFAULT_SETTINGS.motionFadeTrails
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -272,11 +301,17 @@ let latestMetrics: VisionMetrics | null = null;
 let smoothedFps = 0;
 let lastProcessedAt = 0;
 let latestFlow: FlowField | null = null;
+let latestSpeed: MotionSpeedReport | null = null;
+let latestTrail: MotionTrailReport | null = null;
+/** When the previous analysed frame was captured, for per-second speeds. */
+let lastAnalysisAt = 0;
 let zoomState: CameraZoomState = { value: 1, min: 1, max: 1, step: 0.1, kind: 'none' };
 const frameRateMeter = new FrameRateMeter();
 const governor = new AdaptiveGovernor();
 const tracker = new ObjectTracker();
 const integrator = new FrameIntegrator();
+const speedField = new MotionSpeedField();
+const motionTrails = new MotionTrailBuffer();
 const histogram = createHistogram();
 const stability = new StabilityMonitor();
 
@@ -358,7 +393,9 @@ function needsMotionAnalysis(): boolean {
   return settings.trackingEnabled
     || visionMode === 'motion'
     || visionMode === 'difference'
-    || visionMode === 'flow';
+    || visionMode === 'flow'
+    || visionMode === 'speed'
+    || visionMode === 'motiontrails';
 }
 
 /**
@@ -633,6 +670,68 @@ function startFrameDelivery(): void {
   tracker.reset();
   trackedObjects = [];
   deliveryDriven = camera.startFrameDelivery(onFrameDelivered);
+}
+
+/**
+ * Show the motion panel and title it for whichever of the two modes is live.
+ *
+ * The legend swatches are filled from the SAME lookup table the pixels use
+ * rather than from CSS colours typed to match. A hand-copied legend is a
+ * legend that silently stops describing the picture the first time the ramp
+ * is touched.
+ */
+function setMotionPanel(active: boolean, mode: VisionMode): void {
+  byId('motionPanel').hidden = !active;
+  if (!active) return;
+
+  setText('motionPanelTitle', mode === 'motiontrails' ? 'Motion Trails' : 'Motion Ironbow');
+  byId('motionTrailControls').querySelectorAll<HTMLElement>('label').forEach((label) => {
+    // Trail length, keep-fastest and fade only mean anything to the trail
+    // buffer; showing them in Speed would be three controls that do nothing.
+    const trailOnly = label.querySelector('#motionExposure, #motionKeepFastest, #motionFadeTrails') !== null;
+    label.hidden = trailOnly && mode !== 'motiontrails';
+  });
+
+  for (const swatch of document.querySelectorAll<HTMLElement>('#speedLegend .swatch')) {
+    if (swatch.classList.contains('unresolved')) {
+      swatch.style.background = `rgb(${UNRESOLVED_COLOR.join(',')})`;
+      continue;
+    }
+    const [r, g, b] = ironbowColor(Number(swatch.dataset.speed ?? 0));
+    swatch.style.background = `rgb(${r},${g},${b})`;
+  }
+}
+
+function renderMotionReadouts(): void {
+  if (byId('motionPanel').hidden) return;
+
+  if (!latestSpeed) {
+    setText('motionPeakSpeed', '—');
+    setText('motionFullScale', '—');
+    setText('motionMovingFraction', '—');
+    setText('motionUnresolved', '—');
+  } else {
+    // Both units, because neither is enough on its own: widths/sec is what the
+    // colour actually maps and stays comparable as the pipeline retunes, while
+    // px/sec is what the object tracker reports beside it.
+    setText('motionPeakSpeed', latestSpeed.peakWidthsPerSecond > 0
+      ? `${latestSpeed.peakWidthsPerSecond.toFixed(2)} w/s · ${Math.round(latestSpeed.peakPixelsPerSecond)} px/s`
+      : 'still');
+    setText('motionFullScale', `${latestSpeed.fullScale.toFixed(2)} w/s = white`);
+    setText('motionMovingFraction', `${(latestSpeed.movingFraction * 100).toFixed(1)}%`);
+    // Measured, inherited from a neighbouring cell, and not established at all
+    // are three different claims, and the panel says which is which rather than
+    // letting an inference pass for a measurement.
+    setText('motionUnresolved', latestSpeed.movingFraction > 0
+      ? `${Math.round((1 - latestSpeed.unresolvedFraction - latestSpeed.inferredFraction) * 100)}% measured`
+        + ` · ${Math.round(latestSpeed.inferredFraction * 100)}% inferred`
+        + ` · ${Math.round(latestSpeed.unresolvedFraction * 100)}% unknown`
+      : '—');
+  }
+
+  setText('motionTrailCoverage', latestTrail
+    ? `${(latestTrail.coverage * 100).toFixed(1)}% · ${latestTrail.framesAccumulated} frames`
+    : '—');
 }
 
 function setNightMode(active: boolean): void {
@@ -953,6 +1052,8 @@ const MODE_LABELS: Record<VisionMode, string> = {
   motion: 'Motion mask • thresholded change',
   difference: 'Frame difference • raw change',
   flow: 'Optical flow • relative image motion',
+  speed: 'Motion Ironbow • image speed, not temperature',
+  motiontrails: 'Motion trails • hue = speed, fade = age',
   night: 'Night • computational low-light, not infrared'
 };
 
@@ -971,7 +1072,16 @@ function updateVisionMode(mode: VisionMode): void {
   overlayPainted = false;
   visionCanvas.hidden = true;
   latestFlow = null;
+  // Trails accumulated in another mode are not this mode's picture, and the
+  // speed mapper's auto scale was tuned to a scene it may no longer be looking
+  // at. Both start clean.
+  motionTrails.reset();
+  speedField.reset();
+  latestSpeed = null;
+  latestTrail = null;
+  lastAnalysisAt = 0;
   setNightMode(mode === 'night');
+  setMotionPanel(mode === 'speed' || mode === 'motiontrails', mode);
   setText('visionModeLabel', `${MODE_LABELS[mode]} • ${settings.visionRatePreference}`);
 }
 
@@ -1154,11 +1264,49 @@ function processVisionFrame(timestamp: number): boolean {
     trackedObjects = [];
   }
 
+  // Speed and Trails colour by measured velocity, so they need the same flow
+  // field Flow mode draws — the difference mask alone says only that something
+  // changed, never how fast.
+  const wantsFlow = visionMode === 'flow' || visionMode === 'speed' || visionMode === 'motiontrails';
   const flowOptions = flowOptionsForPreset();
-  if (visionMode === 'flow' && hadPrevious) {
+  if (wantsFlow && hadPrevious) {
     latestFlow = computeBlockFlow(buffers.previousGray, buffers.gray, buffers.width, buffers.height, flowOptions);
-  } else if (visionMode !== 'flow') {
+  } else if (!wantsFlow) {
     latestFlow = null;
+  }
+
+  // Elapsed time between the two frames being compared, which is what turns a
+  // per-frame displacement into a speed. Guarded against the first frame and
+  // against a resumed tab handing us a multi-second gap.
+  const analysisDt = lastAnalysisAt ? (timestamp - lastAnalysisAt) / 1000 : 0;
+  lastAnalysisAt = timestamp;
+  const usableDt = analysisDt > 0 && analysisDt < 1 ? analysisDt : 0;
+
+  if (visionMode === 'speed' || visionMode === 'motiontrails') {
+    latestSpeed = speedField.update(
+      buffers.difference,
+      latestFlow,
+      buffers.width,
+      buffers.height,
+      usableDt,
+      { motionThreshold: settings.motionSensitivity }
+    );
+    if (visionMode === 'motiontrails') {
+      latestTrail = motionTrails.update(
+        speedField.speed,
+        speedField.state,
+        buffers.width,
+        buffers.height,
+        usableDt,
+        {
+          exposureSeconds: settings.motionExposureSeconds,
+          keepFastest: settings.motionKeepFastest
+        }
+      );
+    }
+  } else {
+    latestSpeed = null;
+    latestTrail = null;
   }
 
   // Night integration folds the frame in and discards it, so a longer
@@ -1194,6 +1342,19 @@ function processVisionFrame(timestamp: number): boolean {
         vectors: [], cellSize: flowOptions.cellSize, width: buffers.width, height: buffers.height,
         meanMagnitude: 0, maxMagnitude: 0, coverage: 0
       });
+      break;
+    case 'speed':
+      putBuffer(buffers, renderMotionIronbow(
+        buffers.gray,
+        speedField.speed,
+        speedField.state,
+        buffers.rgba
+      ));
+      break;
+    case 'motiontrails':
+      putBuffer(buffers, motionTrails.render(buffers.gray, buffers.rgba, {
+        fade: settings.motionFadeTrails
+      }));
       break;
     case 'night':
       renderNightFrame(buffers, frame.data);
@@ -1245,6 +1406,7 @@ function processVisionFrame(timestamp: number): boolean {
   };
   renderMetrics();
   renderObservationMetrics();
+  renderMotionReadouts();
   drawHistogram();
   paintViewer();
   return true;
@@ -1502,6 +1664,11 @@ function syncSettingsControls(): void {
   byId<HTMLInputElement>('nightGamma').value = String(settings.nightGamma);
   setText('nightGainValue', `${settings.nightGain.toFixed(1)}×`);
   setText('nightGammaValue', settings.nightGamma.toFixed(2));
+  byId<HTMLSelectElement>('motionExposure').value = String(settings.motionExposureSeconds);
+  byId<HTMLInputElement>('motionSensitivity').value = String(settings.motionSensitivity);
+  setText('motionSensitivityValue', String(settings.motionSensitivity));
+  byId<HTMLInputElement>('motionKeepFastest').checked = settings.motionKeepFastest;
+  byId<HTMLInputElement>('motionFadeTrails').checked = settings.motionFadeTrails;
   byId<HTMLSelectElement>('cameraPreference').value = settings.cameraPreference;
   byId<HTMLSelectElement>('qualityPreference').value = settings.qualityPreference;
   byId<HTMLSelectElement>('visionRatePreference').value = settings.visionRatePreference;
@@ -1943,7 +2110,12 @@ function nextFrame(): Promise<void> {
 }
 
 /** Render one mode at full resolution into an RGBA buffer. */
-function renderStill(mode: VisionMode, frame: ImageData, previous: ImageData | null): Uint8ClampedArray {
+function renderStill(
+  mode: VisionMode,
+  frame: ImageData,
+  previous: ImageData | null,
+  dtSeconds = 0
+): Uint8ClampedArray {
   const { width, height } = frame;
   const gray = rgbaToGray(frame.data);
 
@@ -1974,6 +2146,28 @@ function renderStill(mode: VisionMode, frame: ImageData, previous: ImageData | n
       });
       const rgba = dimGrayToRgba(gray, 0.42);
       return drawFlowIntoRgba(rgba, field, width, height);
+    }
+    case 'speed': {
+      if (!previous || dtSeconds <= 0) return frame.data;
+      const scale = width / Math.max(1, latestMetrics?.analysisWidth ?? 256);
+      const options = flowOptionsForPreset();
+      const field = computeBlockFlow(rgbaToGray(previous.data), gray, width, height, {
+        cellSize: Math.round(options.cellSize * scale),
+        patchRadius: Math.max(2, Math.round(options.patchRadius * scale)),
+        maxShift: Math.max(2, Math.round(options.maxShift * scale))
+      });
+      const difference = absoluteDifference(gray, rgbaToGray(previous.data));
+      // A separate mapper, and the live full scale pinned into it: sharing the
+      // running one would let a still shift the preview's colours, and letting
+      // it auto-scale afresh would save a picture in different colours from the
+      // one on screen.
+      const stillField = new MotionSpeedField();
+      stillField.update(difference, field, width, height, dtSeconds, {
+        motionThreshold: settings.motionSensitivity,
+        fullScale: latestSpeed?.fullScale,
+        autoScale: false
+      });
+      return renderMotionIronbow(gray, stillField.speed, stillField.state, new Uint8ClampedArray(width * height * 4));
     }
     case 'night': {
       const rgba = Uint8ClampedArray.from(frame.data);
@@ -2021,8 +2215,16 @@ async function captureStill(): Promise<void> {
   // to render. Saving the stack as it exists is honest; re-rendering a single
   // frame at full size would be a different picture.
   const stackedNight = visionMode === 'night' && !integrator.isEmpty;
-  if (stackedNight) {
-    saveCanvas(visionCanvas, `${visionCanvas.width}×${visionCanvas.height} stacked exposure`);
+  // Motion trails are the same case as a night stack: the picture is an
+  // accumulation over many frames at analysis resolution, so there is no
+  // full-resolution version of it to render. Saving what was built is honest;
+  // re-rendering one instant at full size would be a different picture, and an
+  // empty one.
+  const accumulatedTrail = visionMode === 'motiontrails' && motionTrails.framesAccumulated > 0;
+  if (stackedNight || accumulatedTrail) {
+    saveCanvas(visionCanvas, `${visionCanvas.width}×${visionCanvas.height} ${
+      stackedNight ? 'stacked exposure' : 'motion trail'
+    }`);
     return;
   }
 
@@ -2033,18 +2235,22 @@ async function captureStill(): Promise<void> {
   }
 
   let previous: ImageData | null = null;
-  if (visionMode === 'motion' || visionMode === 'difference' || visionMode === 'flow') {
+  if (visionMode === 'motion' || visionMode === 'difference'
+    || visionMode === 'flow' || visionMode === 'speed') {
     setText('cameraMessage', 'Capturing two frames for the motion comparison…');
+    const startedAt = performance.now();
     await nextFrame();
     previous = frame;
     const second = grabFullFrame();
-    if (second) return finishStill(second, previous);
+    // Speed is a per-second measurement, so the gap between these two grabs is
+    // part of the measurement rather than an implementation detail.
+    if (second) return finishStill(second, previous, (performance.now() - startedAt) / 1000);
   }
   finishStill(frame, previous);
 }
 
-function finishStill(frame: ImageData, previous: ImageData | null): void {
-  const rgba = renderStill(visionMode, frame, previous);
+function finishStill(frame: ImageData, previous: ImageData | null, dtSeconds = 0): void {
+  const rgba = renderStill(visionMode, frame, previous, dtSeconds);
   const output = document.createElement('canvas');
   output.width = frame.width;
   output.height = frame.height;
@@ -2688,6 +2894,28 @@ on('measureDetailButton', 'click', () => {
 on('resetPeakButton', 'click', () => {
   frameRateMeter.resetPeak();
   void refreshSettingsDiagnostics();
+});
+on('motionExposure', 'change', (event) => {
+  settings.motionExposureSeconds = Number((event.target as HTMLSelectElement).value);
+  saveSettings();
+});
+on('motionSensitivity', 'input', (event) => {
+  settings.motionSensitivity = Number((event.target as HTMLInputElement).value);
+  setText('motionSensitivityValue', String(settings.motionSensitivity));
+  saveSettings();
+});
+on('motionKeepFastest', 'change', (event) => {
+  settings.motionKeepFastest = (event.target as HTMLInputElement).checked;
+  saveSettings();
+});
+on('motionFadeTrails', 'change', (event) => {
+  settings.motionFadeTrails = (event.target as HTMLInputElement).checked;
+  saveSettings();
+});
+on('motionClearButton', 'click', () => {
+  motionTrails.reset();
+  speedField.reset();
+  setText('motionTrailCoverage', 'Cleared');
 });
 on('nightRestartButton', 'click', () => {
   integrator.reset();

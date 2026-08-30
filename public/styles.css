@@ -778,3 +778,47 @@ footer strong { color: #9fb2c3; }
   font-weight: 700;
 }
 .lens-button:disabled { opacity: 0.42; cursor: not-allowed; }
+
+/* Motion speed panel. Shares the night panel's frame so the two observation
+   modes look like siblings rather than two different apps. */
+.night-grid label.switch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #cfe2f1;
+  font-size: 0.74rem;
+  font-weight: 650;
+  min-height: 40px;
+}
+.night-grid label.switch-row input[type="checkbox"] {
+  accent-color: var(--cyan);
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+.speed-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+  font-size: 0.7rem;
+  font-weight: 650;
+  color: #9fb2c3;
+}
+.speed-legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.speed-legend .swatch {
+  width: 22px;
+  height: 11px;
+  border-radius: 3px;
+  border: 1px solid rgba(153, 190, 222, 0.22);
+  /* Filled from the same lookup table the pixels use, so the legend cannot
+     drift away from the picture it is explaining. */
+  background: #000;
+}
+.night-status .readout.wide { grid-column: 1 / -1; }

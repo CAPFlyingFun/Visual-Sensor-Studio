@@ -68,6 +68,8 @@
             <button class="segmented" type="button" data-vision-mode="motion">Motion</button>
             <button class="segmented" type="button" data-vision-mode="flow">Flow</button>
             <button class="segmented" type="button" data-vision-mode="difference">Difference</button>
+            <button class="segmented" type="button" data-vision-mode="speed">Speed</button>
+            <button class="segmented" type="button" data-vision-mode="motiontrails">Trails</button>
             <button class="segmented" type="button" data-vision-mode="night">Night</button>
           </div>
 
@@ -86,6 +88,58 @@
             <div class="metric"><span>Processing</span><strong id="metricFps">&mdash;</strong></div>
             <div class="metric"><span>Zoom</span><strong id="metricZoom">&mdash;</strong></div>
           </div>
+
+          <section class="night-panel" id="motionPanel" hidden aria-label="Motion speed controls">
+            <div class="night-heading">
+              <strong id="motionPanelTitle">Motion Ironbow</strong>
+              <span class="small-badge warning">Speed, not temperature</span>
+            </div>
+            <p class="helper">
+              Colour is how fast part of the image is moving, measured in frame widths per second.
+              This camera has no infrared sensitivity and measures no temperature at all — the palette
+              is borrowed because it reads well, not because anything here is thermal.
+            </p>
+            <ul class="speed-legend" id="speedLegend">
+              <li><span class="swatch" data-speed="0"></span>Still</li>
+              <li><span class="swatch" data-speed="0.2"></span>Very slow</li>
+              <li><span class="swatch" data-speed="0.4"></span>Slow</li>
+              <li><span class="swatch" data-speed="0.6"></span>Medium</li>
+              <li><span class="swatch" data-speed="0.8"></span>Fast</li>
+              <li><span class="swatch" data-speed="1"></span>Very fast</li>
+              <li><span class="swatch unresolved"></span>Moved, speed unknown</li>
+            </ul>
+            <div class="night-grid" id="motionTrailControls">
+              <label>Trail Length
+                <select id="motionExposure">
+                  <option value="1">1 sec</option>
+                  <option value="2">2 sec</option>
+                  <option value="5">5 sec</option>
+                  <option value="10">10 sec</option>
+                  <option value="30">30 sec</option>
+                  <option value="60">60 sec</option>
+                </select>
+              </label>
+              <label>Sensitivity <span class="range-value" id="motionSensitivityValue">18</span>
+                <input id="motionSensitivity" type="range" min="4" max="60" step="1" value="18" />
+              </label>
+              <label class="switch-row">
+                <input id="motionKeepFastest" type="checkbox" checked /> Keep fastest colour
+              </label>
+              <label class="switch-row">
+                <input id="motionFadeTrails" type="checkbox" checked /> Fade older motion
+              </label>
+            </div>
+            <div class="night-status">
+              <div class="readout"><span>Peak speed</span><strong id="motionPeakSpeed">—</strong></div>
+              <div class="readout"><span>Full scale</span><strong id="motionFullScale">—</strong></div>
+              <div class="readout"><span>Moving</span><strong id="motionMovingFraction">—</strong></div>
+              <div class="readout wide"><span>Speed source</span><strong id="motionUnresolved">—</strong></div>
+              <div class="readout"><span>Trail coverage</span><strong id="motionTrailCoverage">—</strong></div>
+            </div>
+            <div class="button-row">
+              <button class="secondary-button" id="motionClearButton" type="button">Clear Trails</button>
+            </div>
+          </section>
 
           <section class="night-panel" id="nightPanel" hidden aria-label="Night and low light controls">
             <div class="night-heading">
@@ -262,7 +316,7 @@
       </section>
     </main>
 
-    <footer><strong>Visual Sensor Studio v0.6.1</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.7.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">

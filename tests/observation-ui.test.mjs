@@ -395,7 +395,12 @@ test('a full-resolution still reproduces a digital crop but not a camera zoom', 
 
 test('temporal modes capture two frames so the still is a real comparison', () => {
   assert.match(mainSource, /function nextFrame\(/);
-  assert.match(mainSource, /visionMode === 'motion' \|\| visionMode === 'difference' \|\| visionMode === 'flow'/);
+  // Every mode whose picture depends on a PAIR of frames has to grab two, or
+  // the saved still is a comparison against nothing.
+  const capture = mainSource.slice(mainSource.indexOf('async function captureStill'));
+  for (const mode of ['motion', 'difference', 'flow', 'speed']) {
+    assert.match(capture, new RegExp(`visionMode === '${mode}'`), `${mode} must grab two frames`);
+  }
 });
 
 test('a stacked night exposure is saved at its own resolution and said so', () => {
@@ -484,4 +489,52 @@ test('a zoom that changes capture geometry is reported', () => {
   // same resolution while the image softens.
   assert.match(mainSource, /Zoom changed the capture size to/);
   assert.match(mainSource, /afterWidth !== beforeWidth/);
+});
+
+test('the motion modes are present and never claim to be thermal', () => {
+  // A palette borrowed from thermography on a camera with no infrared
+  // sensitivity is a lie unless the label says what it actually maps.
+  for (const mode of ['speed', 'motiontrails']) {
+    assert.match(htmlSource, new RegExp(`data-vision-mode=["']${mode}["']`), `missing ${mode} button`);
+  }
+  assert.match(mainSource, /speed: 'Motion Ironbow • image speed, not temperature'/);
+  assert.match(mainSource, /motiontrails: 'Motion trails • hue = speed, fade = age'/);
+  assert.match(htmlSource, /Speed, not temperature/);
+  assert.match(htmlSource, /no infrared sensitivity and measures no temperature/);
+  assert.doesNotMatch(htmlSource, /\bFLIR\b/);
+});
+
+test('the speed legend is filled from the same ramp the pixels use', () => {
+  // A legend typed out in CSS stops describing the picture the first time the
+  // ramp is touched, and nothing fails when it does.
+  assert.match(htmlSource, /id=["']speedLegend["']/);
+  assert.match(mainSource, /ironbowColor\(Number\(swatch\.dataset\.speed/);
+  assert.match(mainSource, /UNRESOLVED_COLOR\.join/);
+});
+
+test('the motion panel reports measured, inferred and unknown separately', () => {
+  assert.match(mainSource, /% measured/);
+  assert.match(mainSource, /% inferred/);
+  assert.match(mainSource, /% unknown/);
+});
+
+test('trail controls only appear for the mode that uses them', () => {
+  assert.match(mainSource, /#motionExposure, #motionKeepFastest, #motionFadeTrails/);
+  for (const id of ['motionExposure', 'motionSensitivity', 'motionKeepFastest',
+    'motionFadeTrails', 'motionClearButton', 'motionPeakSpeed', 'motionFullScale']) {
+    assert.match(htmlSource, new RegExp(`id=["']${id}["']`), `missing #${id}`);
+    assert.match(mainSource, new RegExp(`'${id}'`), `#${id} not referenced by main.ts`);
+  }
+});
+
+test('an accumulated motion trail is saved at its own resolution', () => {
+  // Same case as a night stack: the picture is built over many frames at
+  // analysis resolution, so re-rendering one instant at full size would save a
+  // different — and empty — picture.
+  assert.match(mainSource, /const accumulatedTrail = visionMode === 'motiontrails'/);
+  assert.match(mainSource, /motion trail/);
+});
+
+test('switching modes clears motion state that belongs to another scene', () => {
+  assert.match(mainSource, /motionTrails\.reset\(\);\s*\n\s*speedField\.reset\(\);/);
 });
