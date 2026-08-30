@@ -30,11 +30,14 @@
         <h1>Visual Sensor Studio</h1>
         <p class="subtitle">Camera + motion + GPS + experimental parallax + interactive 3D fusion.</p>
       </div>
-      <div class="status-row" aria-label="Sensor status">
-        <span class="status-chip" id="cameraChip" data-state="idle">Camera idle</span>
-        <span class="status-chip" id="motionChip" data-state="idle">Motion idle</span>
-        <span class="status-chip" id="gpsChip" data-state="idle">GPS idle</span>
-        <span class="status-chip" id="pwaChip" data-state="idle">PWA</span>
+      <div class="topbar-actions">
+        <div class="status-row" aria-label="Sensor status">
+          <span class="status-chip" id="cameraChip" data-state="idle">Camera idle</span>
+          <span class="status-chip" id="motionChip" data-state="idle">Motion idle</span>
+          <span class="status-chip" id="gpsChip" data-state="idle">GPS idle</span>
+          <span class="status-chip" id="pwaChip" data-state="idle">PWA</span>
+        </div>
+        <button class="settings-button" id="settingsButton" type="button" aria-label="Open settings">⚙️ Settings</button>
       </div>
     </header>
 
@@ -54,9 +57,7 @@
             <canvas id="visionCanvas" hidden></canvas>
             <button class="camera-enable-overlay" id="cameraOverlayButton" type="button">Enable Camera</button>
             <div class="reticle" aria-hidden="true"></div>
-            <div class="horizon-wrap" aria-hidden="true">
-              <div id="horizonLine" class="horizon-line"></div>
-            </div>
+            <div class="horizon-wrap" aria-hidden="true"><div id="horizonLine" class="horizon-line"></div></div>
           </div>
 
           <div class="mode-strip" aria-label="Camera visualization mode">
@@ -68,17 +69,14 @@
           <div class="button-row">
             <button class="primary-button" id="cameraButton" type="button">Enable Camera</button>
             <button class="secondary-button" id="switchCameraButton" type="button" disabled>Switch Camera</button>
-            <button class="secondary-button camera-browser-fallback" id="cameraBrowserFallback" type="button" hidden>Open Live Camera in Browser</button>
+            <button class="secondary-button camera-browser-fallback" id="cameraBrowserFallback" type="button" hidden>Open Live Camera in Edge</button>
           </div>
-          <p class="helper" id="cameraMessage">Tap Enable Camera and allow access when iOS asks. If an installed iOS web app hits the standalone camera bug, a browser fallback will appear here.</p>
+          <p class="helper" id="cameraMessage">Tap Enable Camera and allow access when iOS asks. If the installed web app hits the standalone camera bug, an Edge fallback will appear.</p>
         </article>
 
         <article class="panel scene-panel">
           <div class="panel-heading">
-            <div>
-              <p class="section-kicker">3D FUSION</p>
-              <h2>Sensor Space</h2>
-            </div>
+            <div><p class="section-kicker">3D FUSION</p><h2>Sensor Space</h2></div>
             <button class="icon-button" id="resetViewButton" type="button" title="Reset 3D view" disabled>Reset view</button>
           </div>
           <div id="fusionScene" class="fusion-scene" aria-label="Interactive 3D sensor visualization">Loading interactive 3D sensor view…</div>
@@ -93,12 +91,7 @@
 
       <section class="sensor-grid">
         <article class="panel compact-panel">
-          <div class="panel-heading">
-            <div>
-              <p class="section-kicker">DEVICE MOTION</p>
-              <h2>Orientation + IMU</h2>
-            </div>
-          </div>
+          <div class="panel-heading"><div><p class="section-kicker">DEVICE MOTION</p><h2>Orientation + IMU</h2></div></div>
           <button class="primary-button full" id="motionButton" type="button">Enable Motion Sensors</button>
           <div class="readout-grid three">
             <div class="readout"><span>Alpha</span><strong id="alphaValue">—</strong></div>
@@ -111,12 +104,7 @@
         </article>
 
         <article class="panel compact-panel">
-          <div class="panel-heading">
-            <div>
-              <p class="section-kicker">POSITION DATA</p>
-              <h2>GPS Track</h2>
-            </div>
-          </div>
+          <div class="panel-heading"><div><p class="section-kicker">POSITION DATA</p><h2>GPS Track</h2></div></div>
           <div class="button-row">
             <button class="primary-button" id="gpsButton" type="button">Start GPS Track</button>
             <button class="secondary-button" id="resetGpsButton" type="button">Clear Track</button>
@@ -128,37 +116,23 @@
             <div class="readout"><span>Speed</span><strong id="speedValue">—</strong></div>
           </div>
           <div class="wide-readout"><span>3D track points</span><strong id="trackValue">0</strong></div>
-          <p class="helper" id="gpsMessage">GPS asks only when iOS still needs a permission decision. If location is already granted, it can start without another prompt. Outdoor GPS is usually more accurate.</p>
+          <p class="helper" id="gpsMessage">GPS asks only when iOS still needs a permission decision. If location is already granted, it can start without another prompt.</p>
         </article>
       </section>
 
       <section class="panel parallax-panel">
         <div class="panel-heading">
-          <div>
-            <p class="section-kicker">EXPERIMENTAL DEPTH</p>
-            <h2>Two-Frame Parallax Scan</h2>
-          </div>
+          <div><p class="section-kicker">EXPERIMENTAL DEPTH</p><h2>Two-Frame Parallax Scan</h2></div>
           <span class="small-badge warning">Relative, not LiDAR</span>
         </div>
-        <p class="lead-copy">Capture A, slide the phone sideways about 5–10 cm while keeping the scene framed, then analyze B. The matcher searches textured image blocks for displacement. Bigger disparity generally corresponds to nearer structure.</p>
-
+        <p class="lead-copy">Capture A, slide the phone sideways about 5–10 cm while keeping the scene framed, then analyze B. Bigger disparity generally corresponds to nearer structure.</p>
         <div class="parallax-layout">
           <div class="capture-pair">
-            <figure>
-              <canvas id="referenceCanvas"></canvas>
-              <figcaption>A · reference</figcaption>
-            </figure>
-            <figure>
-              <canvas id="currentCanvas"></canvas>
-              <figcaption>B · moved</figcaption>
-            </figure>
+            <figure><canvas id="referenceCanvas"></canvas><figcaption>A · reference</figcaption></figure>
+            <figure><canvas id="currentCanvas"></canvas><figcaption>B · moved</figcaption></figure>
           </div>
-          <figure class="depth-output">
-            <canvas id="parallaxCanvas"></canvas>
-            <figcaption>Relative disparity map · warm = larger shift</figcaption>
-          </figure>
+          <figure class="depth-output"><canvas id="parallaxCanvas"></canvas><figcaption>Relative disparity map · warm = larger shift</figcaption></figure>
         </div>
-
         <div class="button-row">
           <button class="primary-button" id="captureParallaxButton" type="button" disabled>Capture A</button>
           <button class="secondary-button" id="analyzeParallaxButton" type="button" disabled>Analyze B</button>
@@ -168,8 +142,7 @@
 
       <section class="panel export-panel">
         <div>
-          <p class="section-kicker">DATA SNAPSHOT</p>
-          <h2>Take the numbers with you</h2>
+          <p class="section-kicker">DATA SNAPSHOT</p><h2>Take the numbers with you</h2>
           <p class="lead-copy">Exports the latest motion, GPS and parallax summary as JSON. Camera frames stay on the device and are not uploaded by this app.</p>
         </div>
         <div class="export-actions">
@@ -179,11 +152,68 @@
       </section>
     </main>
 
-    <footer>
-      <strong>Visual Sensor Studio v0.1.2</strong>
-      <span>Experimental instrument, not calibrated survey or safety equipment.</span>
-    </footer>
+    <footer><strong>Visual Sensor Studio v0.2.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
+
+  <dialog class="settings-dialog" id="settingsDialog">
+    <form method="dialog" class="settings-card">
+      <div class="settings-heading">
+        <div><p class="section-kicker">APP CONTROL</p><h2>Settings</h2></div>
+        <button class="icon-button" value="cancel" aria-label="Close settings">Close</button>
+      </div>
+
+      <section class="settings-section">
+        <h3>Updates & recovery</h3>
+        <p class="helper" id="updateStatus">Ready to check for updates.</p>
+        <div class="settings-actions">
+          <button class="primary-button" id="checkUpdatesButton" type="button">Check for Updates</button>
+          <button class="secondary-button" id="applyUpdateButton" type="button" disabled>Install Update & Restart</button>
+          <button class="danger-button" id="clearCacheButton" type="button">Clear App Cache & Reload</button>
+        </div>
+      </section>
+
+      <section class="settings-section settings-grid">
+        <label>Preferred Camera
+          <select id="cameraPreference">
+            <option value="auto">Auto / Rear first</option>
+            <option value="environment">Rear</option>
+            <option value="user">Front</option>
+          </select>
+        </label>
+        <label>3D Quality
+          <select id="qualityPreference">
+            <option value="low">Battery Saver</option>
+            <option value="normal">Balanced</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+        <label>Vision Processing
+          <select id="visionRatePreference">
+            <option value="battery">Battery Saver</option>
+            <option value="balanced">Balanced</option>
+            <option value="fast">Fast</option>
+          </select>
+        </label>
+        <label>GPS Accuracy
+          <select id="gpsAccuracyPreference">
+            <option value="balanced">Balanced</option>
+            <option value="high">High Accuracy</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-heading compact"><h3>Diagnostics</h3><button class="secondary-button" id="resetSettingsButton" type="button">Reset Settings</button></div>
+        <div class="diagnostics-grid">
+          <div class="readout"><span>App version</span><strong id="settingsVersion">—</strong></div>
+          <div class="readout"><span>Cache</span><strong id="settingsCacheVersion">—</strong></div>
+          <div class="readout"><span>Service worker</span><strong id="settingsWorkerState">—</strong></div>
+          <div class="readout"><span>Display mode</span><strong id="settingsDisplayMode">—</strong></div>
+          <div class="readout"><span>Secure context</span><strong id="settingsSecureContext">—</strong></div>
+        </div>
+      </section>
+    </form>
+  </dialog>
 
   <script type="module" src="./app/main.js"></script>
 </body>
