@@ -39,6 +39,12 @@ function frameToThumbnail(canvas: HTMLCanvasElement, frame: ImageData): void {
   drawImageData(canvas, frame);
 }
 
+function rgbaToImageData(rgba: Uint8ClampedArray, width: number, height: number): ImageData {
+  const imageData = new ImageData(width, height);
+  imageData.data.set(rgba);
+  return imageData;
+}
+
 const video = byId<HTMLVideoElement>('cameraVideo');
 const visionCanvas = byId<HTMLCanvasElement>('visionCanvas');
 const visionContext = visionCanvas.getContext('2d');
@@ -182,7 +188,7 @@ async function visionLoop(timestamp: number): Promise<void> {
     const output = visionMode === 'relief'
       ? reliefFromGray(gray, frame.width, frame.height)
       : grayToRgba(sobelEdges(gray, frame.width, frame.height));
-    drawImageData(visionCanvas, new ImageData(output, frame.width, frame.height));
+    drawImageData(visionCanvas, rgbaToImageData(output, frame.width, frame.height));
   } catch {
     // A camera can briefly report no frame while switching; the next animation tick recovers.
   } finally {
@@ -230,7 +236,7 @@ function analyzeParallax(): void {
       const valid = [...result.disparity].filter((value, index) => Number.isFinite(value) && value > 0.25 && result.confidence[index] > 0.015);
       medianDisparityPx = valid.length ? median(valid) : null;
       const rgba = disparityToRgba(result.disparity, result.confidence, maxDisparity);
-      drawImageData(byId<HTMLCanvasElement>('parallaxCanvas'), new ImageData(rgba, result.width, result.height));
+      drawImageData(byId<HTMLCanvasElement>('parallaxCanvas'), rgbaToImageData(rgba, result.width, result.height));
       parallaxAnalyzed = true;
       setText(
         'parallaxMessage',
