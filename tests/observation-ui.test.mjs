@@ -20,8 +20,12 @@ test('analysis is driven by delivered frames, not by the display clock', () => {
 });
 
 test('the rAF fallback cannot double-process once real delivery is running', () => {
+  // It steps aside only while delivery is genuinely producing analysed
+  // frames — not merely while callbacks are arriving, which was the flaw that
+  // let the net stay switched off through a total stall.
   assert.match(mainSource, /function fallbackVisionLoop\(/);
-  assert.match(mainSource, /if \(deliveryDriven && timestamp - lastDeliveredAt < 1000\) return;/);
+  assert.match(mainSource, /const deliveryIsWorking = deliveryDriven/);
+  assert.match(mainSource, /if \(deliveryIsWorking\) return;/);
 });
 
 test('a high frame rate is never requested with an exact constraint', () => {
@@ -227,7 +231,9 @@ test('the overlay canvas is never shown before it holds a frame', () => {
 });
 
 test('a stalled pipeline uncovers the live video instead of freezing a frame', () => {
-  assert.match(mainSource, /timestamp - lastVisionFrameAt > 2000/);
+  // Keyed off when a frame was last ANALYSED, not when one was last attempted:
+  // an attempt that produced nothing is exactly the stall this guards against.
+  assert.match(mainSource, /timestamp - lastAnalysedAt > 2000/);
   assert.match(mainSource, /A stale overlay is worse than none/);
 });
 
@@ -271,4 +277,35 @@ test('de-duplication can never permanently gate the pipeline', () => {
   assert.match(frameRateSource, /REPEAT_STREAK_LIMIT/);
   assert.match(frameRateSource, /identitySignal/);
   assert.match(htmlSource, /id=["']benchIdentity["']/);
+});
+
+test('the rAF safety net cannot be switched off by discarded callbacks', () => {
+  // Before the delivery loop existed, analysis ran on every animation frame
+  // and only an inactive camera could stop it — which is why the vision modes
+  // were reliable in v0.3.3. The delivery loop made processing conditional on
+  // a chain (callback arrives, frame judged new, governor allows, capture
+  // succeeds), and the net keyed off "a callback arrived". Callbacks kept
+  // arriving and being discarded, so the net was permanently switched off
+  // while nothing was processed at all.
+  assert.match(mainSource, /lastDeliveryAnalysedAt/);
+  const loop = mainSource.slice(mainSource.indexOf('function fallbackVisionLoop('));
+  const body = loop.slice(0, loop.indexOf('\n}'));
+  assert.match(body, /timestamp - lastDeliveryAnalysedAt < 500/);
+  assert.doesNotMatch(body, /lastDeliveredAt/, 'an arriving callback is not evidence of progress');
+});
+
+test('the safety net does not switch itself off after its own frames', () => {
+  // Keying off the shared lastAnalysedAt made the loop see its own work as
+  // proof that delivery was healthy, so it ran once every 500 ms — two frames
+  // a second — instead of taking over at the governed rate.
+  assert.match(mainSource, /analyseDeliveredFrame\(timestamp, 'fallback'\)/);
+  assert.match(mainSource, /analyseDeliveredFrame\(frame\.now, 'delivery'\)/);
+  assert.match(mainSource, /if \(source === 'delivery'\) lastDeliveryAnalysedAt = now;/);
+});
+
+test('only a genuinely rendered frame counts as analysis', () => {
+  // A failed capture must leave the safety net armed rather than satisfied.
+  assert.match(mainSource, /function processVisionFrame\(timestamp: number\): boolean/);
+  assert.match(mainSource, /if \(!frame\) return false;/);
+  assert.match(mainSource, /if \(processVisionFrame\(now\)\) \{/);
 });

@@ -42,7 +42,7 @@ import {
 import { StabilityMonitor } from './sensors/stability.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 
-const APP_VERSION = '0.4.3';
+const APP_VERSION = '0.4.4';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -274,6 +274,22 @@ let nightModeActive = false;
 let trackedObjects: readonly TrackedObject[] = [];
 let adaptiveState: AdaptiveState = 'idle';
 let lastDeliveredAt = 0;
+/**
+ * When analysis last actually produced a frame.
+ *
+ * Distinct from lastDeliveredAt on purpose. A delivered callback that is then
+ * discarded downstream — as a duplicate, by the rate governor, or by a failed
+ * capture — is not progress, and must not count as the pipeline working.
+ */
+let lastAnalysedAt = 0;
+/**
+ * When frame DELIVERY last produced an analysed frame.
+ *
+ * Separate from lastAnalysedAt because the fallback loop updates that one
+ * too, and would then see it fresh and switch itself off — running at two
+ * frames a second instead of taking over properly.
+ */
+let lastDeliveryAnalysedAt = 0;
 let deliveryDriven = false;
 let boostLut: Uint8ClampedArray | undefined;
 let overlayPhase = 0;
@@ -989,9 +1005,9 @@ function recordProcessingFps(timestamp: number): number {
  * actually selected. Motion elsewhere comes from the much cheaper frame
  * difference that Motion and Difference already need.
  */
-function processVisionFrame(timestamp: number): void {
+function processVisionFrame(timestamp: number): boolean {
   const frame = cameraSource.captureFrame(analysisWidth());
-  if (!frame) return;
+  if (!frame) return false;
 
   const buffers = ensureVisionBuffers(frame.width, frame.height);
   buffers.previousGray.set(buffers.gray);
@@ -1117,6 +1133,7 @@ function processVisionFrame(timestamp: number): void {
   renderMetrics();
   renderObservationMetrics();
   drawHistogram();
+  return true;
 }
 
 /**
@@ -1135,7 +1152,7 @@ function shouldAnalyse(now: number): boolean {
   return now - lastVisionFrameAt >= interval * 0.92;
 }
 
-function analyseDeliveredFrame(now: number): void {
+function analyseDeliveredFrame(now: number, source: 'delivery' | 'fallback'): void {
   if (!camera.active || processingVision) return;
   if (!shouldAnalyse(now)) {
     frameRateMeter.recordSkipped();
@@ -1146,8 +1163,13 @@ function analyseDeliveredFrame(now: number): void {
   processingVision = true;
   const startedAt = performance.now();
   try {
-    processVisionFrame(now);
-    frameRateMeter.recordProcessed(now, performance.now() - startedAt);
+    // Only a frame that was really captured and rendered counts as analysis.
+    // A failed capture must leave the safety net armed, not satisfied.
+    if (processVisionFrame(now)) {
+      lastAnalysedAt = now;
+      if (source === 'delivery') lastDeliveryAnalysedAt = now;
+      frameRateMeter.recordProcessed(now, performance.now() - startedAt);
+    }
   } catch {
     // A camera can briefly report no frame while switching; the next delivered
     // frame recovers without the loop stopping.
@@ -1169,7 +1191,7 @@ function onFrameDelivered(frame: PresentedFrame): void {
   lastDeliveredAt = frame.now;
   const isNew = frameRateMeter.recordDelivered(frame);
   if (!isNew) return;
-  analyseDeliveredFrame(frame.now);
+  analyseDeliveredFrame(frame.now, 'delivery');
 }
 
 /**
@@ -1178,22 +1200,43 @@ function onFrameDelivered(frame: PresentedFrame): void {
  * It cannot know whether the video holds a new frame, so it measures the
  * display and is explicitly reported as an estimate rather than a measurement.
  */
+/**
+ * Unconditional safety net.
+ *
+ * Before the delivery-driven loop existed, this ran on every animation frame
+ * and nothing could stop it but an inactive camera — which is why the vision
+ * modes were reliable. The delivery loop then made processing conditional on
+ * a chain of steps (a callback arrives, the frame is judged new, the governor
+ * allows it, the capture succeeds), and any one of them failing silently
+ * killed every filter.
+ *
+ * So this defers to frame delivery only while DELIVERY is actually producing
+ * analysed frames. It keys off lastDeliveryAnalysedAt for two reasons:
+ * callbacks that arrive and are then discarded kept the old lastDeliveredAt
+ * check satisfied forever, so the net could never catch anything; and using
+ * the shared lastAnalysedAt made this loop switch itself off after each of
+ * its own frames, limping along at two frames a second instead of taking
+ * over. Once it does take over, the rate governor alone decides the pace.
+ */
 function fallbackVisionLoop(timestamp: number): void {
   requestAnimationFrame(fallbackVisionLoop);
 
   // A stale overlay is worse than none: if nothing has been painted for a
   // while, uncover the live video rather than leaving a frozen frame — or a
   // black rectangle — over a camera that is working perfectly.
-  if (overlayPainted && !visionCanvas.hidden && timestamp - lastVisionFrameAt > 2000) {
+  if (overlayPainted && !visionCanvas.hidden && timestamp - lastAnalysedAt > 2000) {
     overlayPainted = false;
     visionCanvas.hidden = true;
   }
 
-  // Once real frame delivery is running this loop must not also analyse, or
-  // every frame would be processed twice.
-  if (deliveryDriven && timestamp - lastDeliveredAt < 1000) return;
   if (!camera.active) return;
-  analyseDeliveredFrame(timestamp);
+
+  const deliveryIsWorking = deliveryDriven
+    && lastDeliveryAnalysedAt > 0
+    && timestamp - lastDeliveryAnalysedAt < 500;
+  if (deliveryIsWorking) return;
+
+  analyseDeliveredFrame(timestamp, 'fallback');
 }
 
 function percent(value: number): string {
@@ -1238,6 +1281,8 @@ function resetVisionState(): void {
   visionContext.clearRect(0, 0, visionCanvas.width, visionCanvas.height);
   overlayPainted = false;
   visionCanvas.hidden = true;
+  lastAnalysedAt = 0;
+  lastDeliveryAnalysedAt = 0;
   renderMetrics();
 }
 
