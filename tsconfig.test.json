@@ -15,8 +15,15 @@
   "include": [
     "src/core/math.ts",
     "src/sensors/zoom.ts",
+    "src/sensors/stability.ts",
     "src/vision/parallax.ts",
     "src/vision/frame-processing.ts",
-    "src/vision/optical-flow.ts"
+    "src/vision/optical-flow.ts",
+    "src/vision/frame-rate.ts",
+    "src/vision/adaptive.ts",
+    "src/vision/tracking.ts",
+    "src/vision/integration.ts",
+    "src/vision/histogram.ts",
+    "src/vision/overlays.ts"
   ]
 }

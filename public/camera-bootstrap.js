@@ -87,6 +87,14 @@
   // automatic refusal, which points at an OS-level block rather than a choice.
   let lastFailureMs = null;
 
+  // Requested camera frame rate. 'auto' asks for the highest the active
+  // configuration claims to support; a number requests that rate specifically.
+  let requestedFrameRate = 'auto';
+  let negotiatedFrameRate = 0;
+  let frameRateCapability = null;
+  let deliveryHandle = 0;
+  let deliveryListener = null;
+
   let zoomValue = 1;
   let zoomKind = 'none';
   let zoomMin = 1;
@@ -187,6 +195,7 @@
 
   function releaseStream() {
     clearTimeout(muteTimer);
+    stopFrameDelivery();
     detachTrackListeners();
     if (stream) {
       for (const track of stream.getTracks()) {
@@ -536,6 +545,183 @@
     return snapshot().zoom;
   }
 
+  /**
+   * Frame-rate ladder for a request.
+   *
+   * `exact` is never used for a high rate: on WebKit an unsatisfiable exact
+   * constraint fails the whole getUserMedia call, so asking for exact 240
+   * would take the camera down rather than fall back. `ideal` lets the browser
+   * negotiate the closest rate it can actually deliver, and `max` keeps it
+   * from picking something absurd.
+   */
+  function frameRateConstraint(requested) {
+    if (requested === 'auto') {
+      // Ask high and let WebKit negotiate down. Whatever it settles on is
+      // measured afterwards rather than assumed.
+      return { ideal: 240, max: 240 };
+    }
+    const value = Number(requested);
+    if (!Number.isFinite(value) || value <= 0) return undefined;
+    return { ideal: value, max: value };
+  }
+
+  function buildProfiles(requested) {
+    const rate = frameRateConstraint(requested);
+    const base = { facingMode: { ideal: facing } };
+    const withRate = (extra) => {
+      const video = Object.assign({}, base, extra);
+      if (rate) video.frameRate = rate;
+      return { audio: false, video };
+    };
+
+    return [
+      withRate({ width: { ideal: 1280 }, height: { ideal: 720 } }),
+      withRate({}),
+      // Final fallback drops the frame-rate request entirely: a rate the
+      // device cannot honour must never be the reason the camera fails.
+      { audio: false, video: true }
+    ];
+  }
+
+  function readFrameRateCapability() {
+    frameRateCapability = null;
+    negotiatedFrameRate = 0;
+
+    const track = videoTrack;
+    if (!track) return;
+
+    if (typeof track.getCapabilities === 'function') {
+      try {
+        const capabilities = track.getCapabilities();
+        const range = capabilities && capabilities.frameRate;
+        if (range && typeof range === 'object') {
+          const min = Number(range.min);
+          const max = Number(range.max);
+          if (Number.isFinite(max) && max > 0) {
+            frameRateCapability = { min: Number.isFinite(min) ? min : 0, max };
+          }
+        }
+      } catch {
+        // Capability reporting is optional and absent on several WebKit builds.
+      }
+    }
+
+    if (typeof track.getSettings === 'function') {
+      try {
+        negotiatedFrameRate = Number(track.getSettings().frameRate) || 0;
+      } catch {
+        negotiatedFrameRate = 0;
+      }
+    }
+  }
+
+  /**
+   * Drive a callback from presented video frames.
+   *
+   * requestVideoFrameCallback fires once per frame the compositor actually
+   * presents, which is the only honest source of delivered frame rate. A
+   * requestAnimationFrame loop measures the DISPLAY instead, and a 30 fps
+   * camera on a 120 Hz screen would report 120.
+   *
+   * Where rVFC is missing the caller gets nothing rather than a fabricated
+   * number, and falls back to its own timing.
+   */
+  function startFrameDelivery(listener) {
+    stopFrameDelivery();
+    if (typeof video.requestVideoFrameCallback !== 'function') return false;
+
+    deliveryListener = listener;
+    const tick = (now, metadata) => {
+      if (deliveryListener !== listener) return;
+      deliveryHandle = video.requestVideoFrameCallback(tick);
+      try {
+        listener({
+          now,
+          mediaTime: metadata ? metadata.mediaTime : 0,
+          presentedFrames: metadata ? metadata.presentedFrames : undefined
+        });
+      } catch {
+        // A failing consumer must not stop frame delivery.
+      }
+    };
+    deliveryHandle = video.requestVideoFrameCallback(tick);
+    return true;
+  }
+
+  function stopFrameDelivery() {
+    deliveryListener = null;
+    if (deliveryHandle && typeof video.cancelVideoFrameCallback === 'function') {
+      try {
+        video.cancelVideoFrameCallback(deliveryHandle);
+      } catch {
+        // Cancelling an already-fired handle is harmless.
+      }
+    }
+    deliveryHandle = 0;
+  }
+
+  /**
+   * Count distinct presented frames over a window.
+   *
+   * Frames carrying a mediaTime already seen are counted separately: they are
+   * the same image again, and including them would report a delivery rate the
+   * camera is not achieving.
+   */
+  function measureDelivery(durationMs) {
+    return new Promise((resolve) => {
+      if (typeof video.requestVideoFrameCallback !== 'function') {
+        resolve({ fps: 0, unique: 0, repeated: 0 });
+        return;
+      }
+
+      let unique = 0;
+      let repeated = 0;
+      let firstAt = 0;
+      let lastAt = 0;
+      let lastMediaTime = Number.NaN;
+      let handle = 0;
+      let settled = false;
+
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (handle && typeof video.cancelVideoFrameCallback === 'function') {
+          try {
+            video.cancelVideoFrameCallback(handle);
+          } catch {
+            // Already fired.
+          }
+        }
+        const span = lastAt - firstAt;
+        // Rate comes from the gaps BETWEEN frames, so a partially filled
+        // window still measures correctly.
+        const fps = unique > 1 && span > 0 ? ((unique - 1) * 1000) / span : 0;
+        resolve({ fps, unique, repeated });
+      };
+
+      const timer = setTimeout(finish, durationMs);
+
+      const tick = (now, metadata) => {
+        if (settled) return;
+        handle = video.requestVideoFrameCallback(tick);
+        const mediaTime = metadata ? metadata.mediaTime : 0;
+        if (Number.isFinite(lastMediaTime) && mediaTime === lastMediaTime) {
+          repeated++;
+          return;
+        }
+        lastMediaTime = mediaTime;
+        unique++;
+        if (firstAt === 0) firstAt = now;
+        lastAt = now;
+        if (now - firstAt >= durationMs) {
+          clearTimeout(timer);
+          finish();
+        }
+      };
+      handle = video.requestVideoFrameCallback(tick);
+    });
+  }
+
   async function requestStream(constraints, profileIndex) {
     // getUserMedia is invoked before anything else in this function, and
     // nothing is awaited between the user's tap and this line. The pending
@@ -620,11 +806,7 @@
     stage = 'getUserMedia';
     setState('requesting', '');
 
-    const profiles = [
-      { audio: false, video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } } },
-      { audio: false, video: { facingMode: { ideal: facing } } },
-      { audio: false, video: true }
-    ];
+    const profiles = buildProfiles(requestedFrameRate);
 
     let lastError = new Error('Unable to start the camera.');
 
@@ -632,6 +814,7 @@
       try {
         await attempt(profiles[i], i, token);
         readZoomCapabilities();
+        readFrameRateCapability();
         applyDigitalZoomPreview();
         stage = 'live';
         settleAttempt('live');
@@ -785,6 +968,173 @@
     captureFrame,
     setZoom,
     describeError,
+    startFrameDelivery,
+    stopFrameDelivery,
+
+    /**
+     * Change the requested frame rate on the live track without a new
+     * getUserMedia call.
+     *
+     * applyConstraints renegotiates the existing track, so a rate the device
+     * cannot honour degrades to whatever it can do instead of re-prompting for
+     * permission or dropping the stream. The returned value is what the track
+     * then REPORTS, which still has to be checked against measured delivery.
+     */
+    async setFrameRate(requested) {
+      requestedFrameRate = requested === 'auto' ? 'auto' : Number(requested) || 'auto';
+      const track = videoTrack;
+      if (!track || typeof track.applyConstraints !== 'function') {
+        return { applied: false, reason: 'no live track', reported: negotiatedFrameRate };
+      }
+
+      const constraint = frameRateConstraint(requestedFrameRate);
+      try {
+        await track.applyConstraints(constraint ? { frameRate: constraint } : {});
+        readFrameRateCapability();
+        return { applied: true, reported: negotiatedFrameRate };
+      } catch (error) {
+        // The old rate stays in force; a refused constraint is not a failure
+        // of the camera, only of that particular request.
+        readFrameRateCapability();
+        return {
+          applied: false,
+          reason: errorName(error) || 'refused',
+          reported: negotiatedFrameRate
+        };
+      }
+    },
+
+    /**
+     * Everything WebKit actually exposes about the live track.
+     *
+     * Reports three distinct things per capability: `supported` (advertised
+     * and usable), `unsupported` (the browser reports capabilities but not
+     * this one) and `not exposed` (no capability reporting at all). Conflating
+     * the last two would invent support that was never claimed.
+     */
+    get capabilityReport() {
+      const track = videoTrack;
+      if (!track || typeof track.getCapabilities !== 'function') {
+        return { available: false, fields: {}, settings: {} };
+      }
+
+      let capabilities = null;
+      let currentSettings = {};
+      try {
+        capabilities = track.getCapabilities();
+      } catch {
+        return { available: false, fields: {}, settings: {} };
+      }
+      try {
+        currentSettings = typeof track.getSettings === 'function' ? track.getSettings() : {};
+      } catch {
+        currentSettings = {};
+      }
+
+      const names = [
+        'zoom', 'torch', 'focusMode', 'focusDistance', 'exposureMode',
+        'exposureCompensation', 'exposureTime', 'iso', 'whiteBalanceMode',
+        'frameRate', 'width', 'height'
+      ];
+      const fields = {};
+      for (const name of names) {
+        const value = capabilities ? capabilities[name] : undefined;
+        if (value === undefined) {
+          fields[name] = { state: 'not exposed' };
+        } else if (Array.isArray(value)) {
+          fields[name] = value.length
+            ? { state: 'supported', options: value }
+            : { state: 'unsupported' };
+        } else if (value && typeof value === 'object') {
+          fields[name] = { state: 'supported', min: value.min, max: value.max, step: value.step };
+        } else {
+          fields[name] = { state: 'supported', value };
+        }
+      }
+      return { available: true, fields, settings: currentSettings };
+    },
+
+    /**
+     * Try a series of frame rates and report what each one really did.
+     *
+     * Runs on the LIVE track via applyConstraints — it never calls
+     * getUserMedia, so it cannot re-prompt for permission or drop the stream,
+     * and the preview keeps running throughout. Each rate is measured by
+     * counting presented frames rather than trusting the track's claim, and
+     * the original setting is restored at the end.
+     *
+     * Verdicts:
+     *   accepted   - measured within 15% of the request
+     *   negotiated - the browser settled on a materially different rate
+     *   unstable   - reported and measured disagree by more than 25%
+     *   unsupported- the constraint was refused outright
+     */
+    async benchmarkFrameRates(rates, sampleMs, onProgress) {
+      const list = Array.isArray(rates) && rates.length ? rates : [30, 60, 120, 240];
+      const perRate = Math.max(400, Number(sampleMs) || 1200);
+      const previous = requestedFrameRate;
+      const results = [];
+
+      if (!videoTrack || typeof videoTrack.applyConstraints !== 'function') {
+        return { supported: false, reason: 'No live track to benchmark.', results };
+      }
+      if (typeof video.requestVideoFrameCallback !== 'function') {
+        return {
+          supported: false,
+          reason: 'requestVideoFrameCallback is unavailable, so delivered frames cannot be counted honestly.',
+          results
+        };
+      }
+
+      for (const rate of list) {
+        if (typeof onProgress === 'function') {
+          try {
+            onProgress({ rate, phase: 'testing' });
+          } catch {
+            // Progress reporting must not abort the benchmark.
+          }
+        }
+
+        const applied = await this.setFrameRate(rate);
+        const measured = await measureDelivery(perRate);
+        const reported = negotiatedFrameRate;
+
+        let verdict;
+        if (!applied.applied) {
+          verdict = 'unsupported';
+        } else if (measured.fps <= 0) {
+          verdict = 'unstable';
+        } else if (Math.abs(measured.fps - rate) / rate <= 0.15) {
+          verdict = 'accepted';
+        } else if (reported > 0 && Math.abs(measured.fps - reported) / reported > 0.25) {
+          verdict = 'unstable';
+        } else {
+          verdict = 'negotiated';
+        }
+
+        results.push({
+          requested: rate,
+          reported,
+          measuredFps: Math.round(measured.fps * 10) / 10,
+          uniqueFrames: measured.unique,
+          repeatedFrames: measured.repeated,
+          verdict,
+          reason: applied.applied ? '' : applied.reason || ''
+        });
+      }
+
+      await this.setFrameRate(previous);
+      return { supported: true, results };
+    },
+
+    get frameRateInfo() {
+      return {
+        requested: requestedFrameRate,
+        reported: negotiatedFrameRate,
+        capability: frameRateCapability
+      };
+    },
+
     get attempts() {
       return readAttemptLog();
     },
