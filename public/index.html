@@ -53,9 +53,9 @@
             <span class="small-badge" id="visionModeLabel">RGB camera</span>
           </div>
 
-          <div class="vision-stage" aria-label="Live camera view">
+          <div class="vision-stage" id="visionStage" aria-label="Live camera view">
             <video id="cameraVideo" autoplay muted playsinline></video>
-            <canvas id="visionCanvas" hidden></canvas>
+            <canvas id="visionCanvas" class="vision-overlay" hidden></canvas>
             <button class="camera-enable-overlay" id="cameraOverlayButton" type="button">Enable Camera</button>
             <div class="reticle" aria-hidden="true"></div>
             <div class="horizon-wrap" aria-hidden="true"><div id="horizonLine" class="horizon-line"></div></div>
@@ -65,6 +65,25 @@
             <button class="segmented active" type="button" data-vision-mode="camera">RGB</button>
             <button class="segmented" type="button" data-vision-mode="relief">Relief</button>
             <button class="segmented" type="button" data-vision-mode="edges">Edges</button>
+            <button class="segmented" type="button" data-vision-mode="motion">Motion</button>
+            <button class="segmented" type="button" data-vision-mode="flow">Flow</button>
+            <button class="segmented" type="button" data-vision-mode="difference">Difference</button>
+          </div>
+
+          <div class="zoom-row" aria-label="Camera zoom">
+            <div class="zoom-presets" id="zoomPresets" role="group" aria-label="Zoom presets"></div>
+            <input class="zoom-slider" id="zoomSlider" type="range" min="1" max="5" step="0.1" value="1"
+                   aria-label="Camera zoom level" disabled />
+            <span class="zoom-value" id="zoomValue">1.0&times; <em>None</em></span>
+          </div>
+
+          <div class="metric-strip" id="metricStrip" aria-label="Live camera measurements">
+            <div class="metric"><span>Brightness</span><strong id="metricBrightness">&mdash;</strong></div>
+            <div class="metric"><span>Contrast</span><strong id="metricContrast">&mdash;</strong></div>
+            <div class="metric"><span>Detail</span><strong id="metricDetail">&mdash;</strong></div>
+            <div class="metric"><span>Motion</span><strong id="metricMotion">&mdash;</strong></div>
+            <div class="metric"><span>Processing</span><strong id="metricFps">&mdash;</strong></div>
+            <div class="metric"><span>Zoom</span><strong id="metricZoom">&mdash;</strong></div>
           </div>
 
           <div class="button-row">
@@ -72,7 +91,7 @@
             <button class="secondary-button" id="switchCameraButton" type="button" disabled>Switch Camera</button>
             <button class="secondary-button camera-browser-fallback" id="cameraBrowserFallback" type="button" hidden>Open Live Camera in Edge</button>
           </div>
-          <p class="helper" id="cameraMessage">Tap Enable Camera for live video. If standalone iOS blocks the live stream, the Edge browser fallback will appear.</p>
+          <p class="helper" id="cameraMessage">Tap Enable Camera for live video. Pinch the preview or use the zoom slider once the camera is live.</p>
         </article>
 
         <article class="panel scene-panel">
@@ -153,7 +172,7 @@
       </section>
     </main>
 
-    <footer><strong>Visual Sensor Studio v0.2.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.3.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <dialog class="settings-dialog" id="settingsDialog">
@@ -215,9 +234,22 @@
           <div class="readout"><span>Camera constraints</span><strong id="settingsCameraConstraints">—</strong></div>
           <div class="readout"><span>Video inputs</span><strong id="settingsCameraDevices">—</strong></div>
           <div class="readout"><span>Camera stream</span><strong id="settingsCameraStream">—</strong></div>
+          <div class="readout"><span>Camera state</span><strong id="settingsCameraState">—</strong></div>
+          <div class="readout"><span>Request stage</span><strong id="settingsCameraStage">—</strong></div>
+          <div class="readout"><span>Selected camera</span><strong id="settingsCameraLabel">—</strong></div>
+          <div class="readout"><span>Track</span><strong id="settingsTrackState">—</strong></div>
+          <div class="readout"><span>Video element</span><strong id="settingsVideoState">—</strong></div>
+          <div class="readout"><span>First frame</span><strong id="settingsFirstFrame">—</strong></div>
+          <div class="readout"><span>Hardware zoom</span><strong id="settingsZoomSupport">—</strong></div>
+          <div class="readout"><span>Processing FPS</span><strong id="settingsProcessingFps">—</strong></div>
+          <div class="readout"><span>Storage</span><strong id="settingsStorage">—</strong></div>
           <div class="readout"><span>ImageCapture API</span><strong id="settingsImageCapture">—</strong></div>
         </div>
-        <p class="helper">Camera diagnostics use <code>getSupportedConstraints()</code> and <code>enumerateDevices()</code> when WebKit exposes them. Device labels can remain hidden until camera permission is granted.</p>
+        <div class="settings-actions two">
+          <button class="secondary-button" id="hardResetCameraButton" type="button">Hard Reset Camera</button>
+          <button class="secondary-button" id="refreshDiagnosticsButton" type="button">Refresh Diagnostics</button>
+        </div>
+        <p class="helper">Camera diagnostics use <code>getSupportedConstraints()</code>, <code>enumerateDevices()</code> and <code>getCapabilities()</code> when WebKit exposes them. Device labels can remain hidden until camera permission is granted. <strong>First frame</strong> is the honest liveness test: a stream that reports a live track but never delivers a decoded frame is reported as a failure, not as “Camera Live”.</p>
       </section>
     </form>
   </dialog>

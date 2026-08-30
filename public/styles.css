@@ -120,7 +120,20 @@ main { display: grid; gap: 14px; }
   display: block;
   object-fit: cover;
 }
-.vision-stage canvas { image-rendering: auto; }
+/*
+ * Processed modes stack their canvas ON TOP of the video rather than hiding
+ * the video with display:none. A display:none <video> can stop decoding on
+ * WebKit, which is exactly how a live camera turns into a frozen frame after
+ * a mode switch. The video therefore stays laid out and painted underneath.
+ */
+.vision-stage .vision-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  image-rendering: auto;
+  background: #050910;
+}
+.vision-stage video { transition: transform 90ms ease-out; }
 .camera-enable-overlay {
   position: absolute;
   z-index: 6;
@@ -168,7 +181,8 @@ main { display: grid; gap: 14px; }
 }
 .horizon-line::before { content: ""; position: absolute; left: 50%; top: -5px; width: 1px; height: 11px; background: var(--amber); }
 
-.mode-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; margin: 10px 0; }
+.mode-strip { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin: 10px 0 8px; }
+.mode-strip .segmented { padding: 0 4px; font-size: 0.8rem; }
 .segmented, .primary-button, .secondary-button, .icon-button {
   min-height: 44px;
   border-radius: 12px;
@@ -212,6 +226,119 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
 .legend-swatch.accel { background: #ffc46b; }
 .legend-swatch.gps { background: #73e5ad; }
 
+/* --- Camera Lab instrument controls --- */
+
+.zoom-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 9px;
+  flex-wrap: wrap;
+}
+.zoom-presets { display: flex; gap: 5px; flex: 0 0 auto; }
+.zoom-preset {
+  min-width: 42px;
+  min-height: 40px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: rgba(9, 17, 26, 0.8);
+  color: #9eb1c2;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.zoom-preset.active { color: #eaffff; border-color: rgba(118, 209, 255, 0.55); background: rgba(28, 99, 132, 0.35); }
+.zoom-preset:disabled { opacity: 0.42; cursor: not-allowed; }
+
+.zoom-slider {
+  flex: 1 1 130px;
+  min-width: 110px;
+  height: 40px;
+  margin: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+.zoom-slider::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(45, 159, 213, 0.85), rgba(118, 209, 255, 0.4));
+}
+.zoom-slider::-moz-range-track { height: 5px; border-radius: 999px; background: rgba(45, 159, 213, 0.6); }
+.zoom-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 24px;
+  height: 24px;
+  margin-top: -10px;
+  border: 2px solid rgba(6, 16, 25, 0.85);
+  border-radius: 50%;
+  background: #9adcff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+.zoom-slider::-moz-range-thumb {
+  width: 22px; height: 22px; border: 2px solid rgba(6, 16, 25, 0.85);
+  border-radius: 50%; background: #9adcff;
+}
+.zoom-slider:disabled { opacity: 0.42; cursor: not-allowed; }
+
+.zoom-value {
+  flex: 0 0 auto;
+  min-width: 108px;
+  text-align: right;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.84rem;
+  font-weight: 650;
+  color: #cfe2f1;
+}
+.zoom-value em {
+  display: inline-block;
+  font-style: normal;
+  font-size: 0.66rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #7f96aa;
+}
+.zoom-value[data-kind="camera"] em { color: var(--green); }
+.zoom-value[data-kind="digital"] em { color: var(--amber); }
+
+.metric-strip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.metric {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid rgba(144, 180, 210, 0.12);
+  border-radius: 11px;
+  background: rgba(5, 12, 19, 0.65);
+}
+.metric span {
+  display: block;
+  color: #758da2;
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.metric strong {
+  display: block;
+  margin-top: 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+/* Pinch-to-zoom needs the browser to stop claiming the gesture first. */
+.vision-stage { touch-action: pan-y; }
+
 .helper, .lead-copy { color: var(--muted); line-height: 1.5; }
 .helper { margin: 10px 2px 0; font-size: 0.78rem; }
 .lead-copy { font-size: 0.88rem; margin-bottom: 14px; }
@@ -254,6 +381,7 @@ footer { display: flex; justify-content: space-between; gap: 15px; flex-wrap: wr
 footer strong { color: #9fb2c3; }
 
 @media (max-width: 900px) {
+  .metric-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .topbar { align-items: flex-start; flex-direction: column; }
   .status-row { justify-content: flex-start; }
   .primary-grid, .sensor-grid { grid-template-columns: 1fr; }
@@ -269,6 +397,10 @@ footer strong { color: #9fb2c3; }
   .camera-enable-overlay { min-width: 175px; min-height: 52px; padding: 0 16px; }
   .fusion-scene { height: 320px; }
   .readout-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .mode-strip { grid-template-columns: repeat(3, 1fr); }
+  .metric-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .zoom-value { min-width: 96px; font-size: 0.78rem; }
+  .zoom-slider { flex-basis: 100px; }
   .readout strong { font-size: 0.78rem; }
   .capture-pair { grid-template-columns: 1fr 1fr; }
   .export-panel { align-items: stretch; flex-direction: column; }

@@ -1,12 +1,34 @@
-import { CameraController, describeCameraError, type CameraFacing } from './sensors/camera.js';
+import {
+  BrowserCameraSource,
+  CameraController,
+  describeCameraError,
+  type CameraFacing,
+  type CameraStatus,
+  type CameraZoomState
+} from './sensors/camera.js';
 import { MotionController } from './sensors/motion.js';
 import { GpsController } from './sensors/gps.js';
+import { zoomPresetStops } from './sensors/zoom.js';
 import { clamp, median } from './core/math.js';
-import type { GpsSample, MotionSample, SensorSnapshot, VisionMode } from './core/types.js';
-import { disparityToRgba, grayToRgba, reliefFromGray, rgbaToGray, sobelEdges } from './vision/frame-processing.js';
+import type { GpsSample, MotionSample, SensorSnapshot, VisionMetrics, VisionMode } from './core/types.js';
+import {
+  absoluteDifference,
+  differenceToRgba,
+  dimGrayToRgba,
+  disparityToRgba,
+  edgeDensity,
+  grayToRgba,
+  luminanceStats,
+  motionMaskToRgba,
+  motionScore,
+  reliefFromGray,
+  rgbaToGray,
+  sobelEdges
+} from './vision/frame-processing.js';
+import { computeBlockFlow, flowVectorColor, type FlowField } from './vision/optical-flow.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 
-const APP_VERSION = '0.2.0';
+const APP_VERSION = '0.3.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -122,10 +144,17 @@ const fallbackFusion: FusionBridge = {
 
 const video = byId<HTMLVideoElement>('cameraVideo');
 const visionCanvas = byId<HTMLCanvasElement>('visionCanvas');
-const visionContext = visionCanvas.getContext('2d');
-if (!visionContext) throw new Error('Canvas 2D is required.');
+
+function requireVisionContext(): CanvasRenderingContext2D {
+  const context = visionCanvas.getContext('2d');
+  if (!context) throw new Error('Canvas 2D is required.');
+  return context;
+}
+
+const visionContext = requireVisionContext();
 
 const camera = new CameraController(video);
+const cameraSource = new BrowserCameraSource(camera);
 const motion = new MotionController();
 const gps = new GpsController();
 let fusion: FusionBridge = fallbackFusion;
@@ -144,6 +173,37 @@ let medianDisparityPx: number | null = null;
 let lastVisionFrameAt = 0;
 let processingVision = false;
 
+/**
+ * Vision pipeline scratch space.
+ *
+ * Every buffer here is allocated once per analysis-frame geometry and then
+ * reused, because a 20 fps preview that allocates frame-sized typed arrays
+ * hands the phone a garbage-collection pause several times a second.
+ */
+interface VisionBuffers {
+  width: number;
+  height: number;
+  gray: Uint8ClampedArray;
+  previousGray: Uint8ClampedArray;
+  edges: Uint8ClampedArray;
+  difference: Uint8ClampedArray;
+  rgba: Uint8ClampedArray;
+  imageData: ImageData;
+  hasPrevious: boolean;
+}
+
+let visionBuffers: VisionBuffers | null = null;
+let latestMetrics: VisionMetrics | null = null;
+let smoothedFps = 0;
+let lastProcessedAt = 0;
+let latestFlow: FlowField | null = null;
+let zoomState: CameraZoomState = { value: 1, min: 1, max: 1, step: 0.1, kind: 'none' };
+let zoomPointers = new Map<number, { x: number; y: number }>();
+let pinchStartDistance = 0;
+let pinchStartZoom = 1;
+let zoomWriteInFlight = false;
+let pendingZoom: number | null = null;
+
 function preferredCameraFacing(): CameraFacing {
   return settings.cameraPreference === 'user' ? 'user' : 'environment';
 }
@@ -152,6 +212,52 @@ function visionIntervalMs(): number {
   if (settings.visionRatePreference === 'battery') return 220;
   if (settings.visionRatePreference === 'fast') return 45;
   return 95;
+}
+
+/**
+ * Analysis width per processing preset. Everything downstream works on this
+ * downsampled frame, never on the full camera resolution.
+ *
+ * The width does not vary by mode. It was tempting to shrink it for optical
+ * flow, but measured per-frame cost at this width says flow is the cheapest
+ * stage in the pipeline, not the most expensive: about 0.16 ms for the sparse
+ * three-step search against 1.6 ms for the shared metrics pass and 2.0 ms for
+ * the relief render. Shrinking the frame for flow bought nothing measurable
+ * and made Brightness, Contrast, Detail and Motion read differently in Flow
+ * mode than in every other mode, purely because they were sampled at a
+ * different resolution.
+ */
+function analysisWidth(): number {
+  if (settings.visionRatePreference === 'battery') return 176;
+  if (settings.visionRatePreference === 'fast') return 384;
+  return 256;
+}
+
+/**
+ * Flow grid density per preset. Cost scales with the number of cells, so the
+ * spacing - not the frame size - is the dial that keeps flow cheap.
+ */
+function flowOptionsForPreset(): { cellSize: number; patchRadius: number; maxShift: number } {
+  if (settings.visionRatePreference === 'battery') return { cellSize: 20, patchRadius: 3, maxShift: 5 };
+  if (settings.visionRatePreference === 'fast') return { cellSize: 14, patchRadius: 4, maxShift: 8 };
+  return { cellSize: 16, patchRadius: 3, maxShift: 6 };
+}
+
+function ensureVisionBuffers(width: number, height: number): VisionBuffers {
+  if (visionBuffers && visionBuffers.width === width && visionBuffers.height === height) return visionBuffers;
+  const count = width * height;
+  visionBuffers = {
+    width,
+    height,
+    gray: new Uint8ClampedArray(count),
+    previousGray: new Uint8ClampedArray(count),
+    edges: new Uint8ClampedArray(count),
+    difference: new Uint8ClampedArray(count),
+    rgba: new Uint8ClampedArray(count * 4),
+    imageData: new ImageData(width, height),
+    hasPrevious: false
+  };
+  return visionBuffers;
 }
 
 function setBrowserCameraFallback(visible: boolean): void {
@@ -174,6 +280,16 @@ function openCameraInBrowser(): void {
   setChip('cameraChip', 'idle', 'Opening Edge…');
   setText('cameraMessage', 'Opening the live camera in Microsoft Edge browser mode…');
   window.location.href = edgeUrl;
+
+  // There is no way to confirm that a custom-scheme handoff succeeded. If the
+  // app is still here shortly afterwards, Edge almost certainly is not
+  // installed, and saying so is better than leaving a hopeful message up.
+  window.setTimeout(() => {
+    if (document.visibilityState !== 'visible') return;
+    setChip('cameraChip', 'warn', 'Camera needs attention');
+    setText('cameraMessage', 'Microsoft Edge did not open, so it is probably not installed. Open '
+      + `${httpsUrl} in Safari instead — the camera works there even when this installed app cannot start it.`);
+  }, 2500);
 }
 
 async function initializeFusion(): Promise<void> {
@@ -204,69 +320,247 @@ async function initializeFusion(): Promise<void> {
   }
 }
 
-async function startCamera(): Promise<void> {
+/**
+ * Render whatever state the camera engine reports.
+ *
+ * The engine is the single source of camera truth, including the transitions
+ * this app never asked for - a track the system muted, a background/foreground
+ * cycle, a stream that opened but delivered no frames. Driving the UI from its
+ * notifications is what stops the panel claiming "Camera live" over a frozen
+ * or black preview.
+ */
+function applyCameraStatus(status: CameraStatus): void {
   const button = byId<HTMLButtonElement>('cameraButton');
   const overlay = byId<HTMLButtonElement>('cameraOverlayButton');
   const switchButton = byId<HTMLButtonElement>('switchCameraButton');
   const parallaxButton = byId<HTMLButtonElement>('captureParallaxButton');
 
-  button.disabled = true;
-  overlay.disabled = true;
-  overlay.hidden = false;
-  overlay.textContent = 'Requesting Camera…';
-  switchButton.disabled = true;
+  zoomState = status.zoom;
+  const facingLabel = status.facing === 'environment' ? 'rear' : 'front';
+  const live = status.state === 'live';
+
+  switchButton.disabled = !live;
+  parallaxButton.disabled = !live;
+  syncZoomControls();
+
+  switch (status.state) {
+    case 'requesting':
+      setChip('cameraChip', 'warn', 'Camera requesting…');
+      overlay.hidden = false;
+      overlay.disabled = true;
+      overlay.textContent = 'Requesting Camera…';
+      button.disabled = true;
+      break;
+
+    case 'live':
+      setChip('cameraChip', 'good', `Camera ${facingLabel}`);
+      overlay.hidden = true;
+      overlay.disabled = false;
+      button.disabled = false;
+      button.textContent = 'Restart Camera';
+      setBrowserCameraFallback(false);
+      break;
+
+    case 'suspended':
+      setChip('cameraChip', 'warn', 'Camera suspended');
+      overlay.hidden = false;
+      overlay.disabled = false;
+      overlay.textContent = 'Resume Camera';
+      button.disabled = false;
+      button.textContent = 'Resume Camera';
+      resetVisionState();
+      if (status.reason) setText('cameraMessage', status.reason);
+      break;
+
+    case 'error':
+      setChip('cameraChip', 'warn', 'Camera needs attention');
+      overlay.hidden = false;
+      overlay.disabled = false;
+      overlay.textContent = 'Retry Camera';
+      button.disabled = false;
+      button.textContent = 'Retry Camera';
+      setBrowserCameraFallback(isStandalone());
+      resetVisionState();
+      if (status.reason) setText('cameraMessage', status.reason);
+      break;
+
+    default:
+      setChip('cameraChip', 'idle', 'Camera idle');
+      overlay.hidden = false;
+      overlay.disabled = false;
+      overlay.textContent = 'Enable Camera';
+      button.disabled = false;
+      button.textContent = 'Enable Camera';
+      resetVisionState();
+      break;
+  }
+}
+
+async function startCamera(): Promise<void> {
   setBrowserCameraFallback(false);
-  setChip('cameraChip', 'warn', 'Camera requesting…');
+  resetVisionState();
 
   try {
+    // Nothing is awaited before this call, so the tap's transient activation
+    // is still live when WebKit decides whether to show a permission prompt.
     await camera.start(preferredCameraFacing());
-    setChip('cameraChip', 'good', `Camera ${camera.currentFacing === 'environment' ? 'rear' : 'front'}`);
-    button.textContent = 'Restart Camera';
-    overlay.hidden = true;
-    switchButton.disabled = false;
-    parallaxButton.disabled = false;
-    setBrowserCameraFallback(false);
     setText('cameraMessage', isStandalone()
-      ? 'Camera is live inside the installed app.'
+      ? 'Camera is live inside the installed app. If it stops after backgrounding, tap Resume Camera — iOS releases the stream and it cannot be revived in place.'
       : 'Camera is live in browser mode.');
   } catch (error) {
-    const standalone = isStandalone();
-    setChip('cameraChip', 'warn', 'Camera needs attention');
-    button.textContent = 'Retry Camera';
-    overlay.hidden = false;
-    overlay.textContent = 'Retry Camera';
-    switchButton.disabled = true;
-    parallaxButton.disabled = true;
-    setBrowserCameraFallback(standalone);
-    setText('cameraMessage', describeCameraError(error, standalone));
+    setText('cameraMessage', describeCameraError(error, isStandalone()));
   } finally {
-    button.disabled = false;
-    overlay.disabled = false;
     void refreshSettingsDiagnostics();
   }
 }
 
 async function switchCamera(): Promise<void> {
   const button = byId<HTMLButtonElement>('switchCameraButton');
-  const overlay = byId<HTMLButtonElement>('cameraOverlayButton');
   button.disabled = true;
+  resetVisionState();
   try {
     const facing = await camera.switchCamera();
-    setChip('cameraChip', 'good', `Camera ${facing === 'environment' ? 'rear' : 'front'}`);
-    overlay.hidden = true;
-    setBrowserCameraFallback(false);
     setText('cameraMessage', `Switched to the ${facing === 'environment' ? 'rear' : 'front'} camera.`);
   } catch (error) {
-    const standalone = isStandalone();
-    setChip('cameraChip', 'warn', 'Camera needs attention');
-    overlay.hidden = false;
-    overlay.textContent = 'Retry Camera';
-    byId<HTMLButtonElement>('captureParallaxButton').disabled = true;
-    setBrowserCameraFallback(standalone);
-    setText('cameraMessage', describeCameraError(error, standalone));
+    setText('cameraMessage', describeCameraError(error, isStandalone()));
   } finally {
-    button.disabled = !camera.active;
     void refreshSettingsDiagnostics();
+  }
+}
+
+function hardResetCamera(): void {
+  camera.hardReset();
+  resetVisionState();
+  setText('cameraMessage', 'Camera media state was fully torn down. Tap Enable Camera to request a completely new stream.');
+  setText('updateStatus', 'Camera hard reset complete.');
+  void refreshSettingsDiagnostics();
+}
+
+// --- Zoom ------------------------------------------------------------------
+
+function buildZoomPresets(): void {
+  const container = byId('zoomPresets');
+  const stops = zoomState.kind === 'none' ? [] : zoomPresetStops(zoomState.min, zoomState.max);
+  const signature = stops.join(',');
+  if (container.dataset.signature === signature) return;
+
+  container.dataset.signature = signature;
+  container.textContent = '';
+  for (const stop of stops) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'zoom-preset';
+    button.dataset.zoom = String(stop);
+    button.textContent = `${stop % 1 === 0 ? stop.toFixed(0) : stop.toFixed(1)}×`;
+    button.addEventListener('click', () => void requestZoom(stop));
+    container.appendChild(button);
+  }
+}
+
+function syncZoomControls(): void {
+  const slider = byId<HTMLInputElement>('zoomSlider');
+  const readout = byId('zoomValue');
+  const available = zoomState.kind !== 'none' && camera.active;
+
+  buildZoomPresets();
+
+  slider.disabled = !available;
+  slider.min = String(zoomState.min);
+  slider.max = String(zoomState.max);
+  slider.step = String(Math.max(0.05, zoomState.step));
+  if (document.activeElement !== slider) slider.value = String(zoomState.value);
+
+  readout.dataset.kind = zoomState.kind;
+  readout.innerHTML = `${zoomState.value.toFixed(1)}&times; <em>${zoomKindLabel(zoomState.kind)}</em>`;
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('.zoom-preset')) {
+    const stop = Number(button.dataset.zoom);
+    button.disabled = !available;
+    button.classList.toggle('active', Math.abs(stop - zoomState.value) < 0.05);
+  }
+
+  renderZoomMetric();
+}
+
+/**
+ * Apply a zoom value, coalescing bursts.
+ *
+ * A pinch produces a pointer event per frame and `applyConstraints()` is
+ * asynchronous, so only one write is ever in flight and the newest requested
+ * value wins. Without this a fast pinch queues dozens of constraint writes.
+ */
+async function requestZoom(value: number): Promise<void> {
+  if (zoomState.kind === 'none') return;
+  const clamped = clamp(value, zoomState.min, zoomState.max);
+
+  if (zoomWriteInFlight) {
+    pendingZoom = clamped;
+    return;
+  }
+
+  zoomWriteInFlight = true;
+  try {
+    zoomState = await camera.setZoom(clamped);
+  } catch {
+    // The engine already falls back to a digital crop when a track refuses.
+  } finally {
+    zoomWriteInFlight = false;
+    syncZoomControls();
+  }
+
+  if (pendingZoom !== null) {
+    const next = pendingZoom;
+    pendingZoom = null;
+    await requestZoom(next);
+  }
+}
+
+function pinchDistance(): number {
+  const points = [...zoomPointers.values()];
+  if (points.length < 2) return 0;
+  return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+}
+
+/**
+ * Pinch-to-zoom on the preview, sharing one zoom value with the slider.
+ *
+ * The stage sets `touch-action: pan-y`, so a vertical drag still scrolls the
+ * page normally and only a genuine two-finger pinch is claimed here.
+ */
+function installPinchZoom(): void {
+  const stage = byId('visionStage');
+
+  stage.addEventListener('pointerdown', (event) => {
+    if (event.pointerType !== 'touch') return;
+    zoomPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (zoomPointers.size === 2) {
+      pinchStartDistance = pinchDistance();
+      pinchStartZoom = zoomState.value;
+    }
+  });
+
+  stage.addEventListener('pointermove', (event) => {
+    if (event.pointerType !== 'touch' || !zoomPointers.has(event.pointerId)) return;
+    zoomPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (zoomPointers.size !== 2 || pinchStartDistance <= 0) return;
+
+    event.preventDefault();
+    const scale = pinchDistance() / pinchStartDistance;
+    if (!Number.isFinite(scale) || scale <= 0) return;
+    void requestZoom(pinchStartZoom * scale);
+  }, { passive: false });
+
+  const release = (event: PointerEvent): void => {
+    zoomPointers.delete(event.pointerId);
+    if (zoomPointers.size < 2) pinchStartDistance = 0;
+  };
+  stage.addEventListener('pointerup', release);
+  stage.addEventListener('pointercancel', release);
+  stage.addEventListener('pointerleave', release);
+
+  // WebKit-only gesture events would otherwise pinch-zoom the whole page.
+  for (const name of ['gesturestart', 'gesturechange', 'gestureend']) {
+    stage.addEventListener(name, (event) => event.preventDefault());
   }
 }
 
@@ -345,38 +639,227 @@ function resetGps(): void {
   setText('gpsMessage', 'Track cleared. The next GPS sample becomes the new local origin.');
 }
 
+const MODE_LABELS: Record<VisionMode, string> = {
+  camera: 'RGB camera',
+  relief: 'Image relief • not physical depth',
+  edges: 'Edge map',
+  motion: 'Motion mask • thresholded change',
+  difference: 'Frame difference • raw change',
+  flow: 'Optical flow • relative image motion'
+};
+
 function updateVisionMode(mode: VisionMode): void {
   visionMode = mode;
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-vision-mode]')) {
     button.classList.toggle('active', button.dataset.visionMode === mode);
   }
-  const processed = mode !== 'camera';
-  visionCanvas.hidden = !processed;
-  video.hidden = processed;
-  setText('visionModeLabel', mode === 'camera'
-    ? 'RGB camera'
-    : mode === 'relief'
-      ? 'Image relief • not physical depth'
-      : 'Edge map');
+
+  // The processed canvas is layered over the video rather than swapped with
+  // it: hiding a <video> with display:none can stop WebKit decoding frames,
+  // and the camera then never recovers when the mode is switched back.
+  visionCanvas.hidden = mode === 'camera';
+  latestFlow = null;
+  setText('visionModeLabel', `${MODE_LABELS[mode]} • ${settings.visionRatePreference}`);
 }
 
-async function visionLoop(timestamp: number): Promise<void> {
-  requestAnimationFrame((time) => void visionLoop(time));
-  if (!camera.active || visionMode === 'camera' || processingVision || timestamp - lastVisionFrameAt < visionIntervalMs()) return;
+function resizeVisionCanvas(width: number, height: number): void {
+  if (visionCanvas.width !== width) visionCanvas.width = width;
+  if (visionCanvas.height !== height) visionCanvas.height = height;
+}
+
+function putBuffer(buffers: VisionBuffers, rgba: Uint8ClampedArray): void {
+  resizeVisionCanvas(buffers.width, buffers.height);
+  buffers.imageData.data.set(rgba);
+  visionContext.putImageData(buffers.imageData, 0, 0);
+}
+
+function drawFlowOverlay(buffers: VisionBuffers, field: FlowField): void {
+  putBuffer(buffers, dimGrayToRgba(buffers.gray, 0.42, buffers.rgba));
+  if (!field.vectors.length) return;
+
+  const reference = Math.max(1, field.maxMagnitude);
+  // Short vectors are hard to read at analysis resolution, so they are drawn
+  // with a gain. The Motion metric uses the raw magnitudes, not this gain.
+  const gain = 2.2;
+
+  visionContext.lineWidth = Math.max(1, buffers.width / 220);
+  visionContext.lineCap = 'round';
+
+  for (const vector of field.vectors) {
+    const tipX = vector.x + vector.dx * gain;
+    const tipY = vector.y + vector.dy * gain;
+    visionContext.strokeStyle = flowVectorColor(vector, reference);
+    visionContext.beginPath();
+    visionContext.moveTo(vector.x, vector.y);
+    visionContext.lineTo(tipX, tipY);
+    visionContext.stroke();
+
+    // A small head so direction reads without drawing a full arrowhead path.
+    const angle = Math.atan2(vector.dy, vector.dx);
+    const head = Math.max(2, field.cellSize * 0.22);
+    visionContext.beginPath();
+    visionContext.moveTo(tipX, tipY);
+    visionContext.lineTo(tipX - head * Math.cos(angle - 0.5), tipY - head * Math.sin(angle - 0.5));
+    visionContext.moveTo(tipX, tipY);
+    visionContext.lineTo(tipX - head * Math.cos(angle + 0.5), tipY - head * Math.sin(angle + 0.5));
+    visionContext.stroke();
+  }
+}
+
+function recordProcessingFps(timestamp: number): number {
+  if (lastProcessedAt > 0) {
+    const delta = timestamp - lastProcessedAt;
+    if (delta > 0 && delta < 4000) {
+      const instant = 1000 / delta;
+      // Exponential moving average so the readout is steady enough to read
+      // while still responding to a genuine rate change within a second.
+      smoothedFps = smoothedFps > 0 ? smoothedFps * 0.8 + instant * 0.2 : instant;
+    }
+  }
+  lastProcessedAt = timestamp;
+  return smoothedFps;
+}
+
+/**
+ * One pass of the vision pipeline.
+ *
+ * This runs in every mode, including plain RGB, because the instrument
+ * readouts are the point of the panel - but it always works on a downsampled
+ * analysis frame, and optical flow is computed only while the Flow mode is
+ * actually selected. Motion elsewhere comes from the much cheaper frame
+ * difference that Motion and Difference already need.
+ */
+function processVisionFrame(timestamp: number): void {
+  const frame = cameraSource.captureFrame(analysisWidth());
+  if (!frame) return;
+
+  const buffers = ensureVisionBuffers(frame.width, frame.height);
+  buffers.previousGray.set(buffers.gray);
+  const hadPrevious = buffers.hasPrevious;
+  rgbaToGray(frame.data, buffers.gray);
+  buffers.hasPrevious = true;
+
+  const stats = luminanceStats(buffers.gray);
+  sobelEdges(buffers.gray, buffers.width, buffers.height, buffers.edges);
+  const detail = edgeDensity(buffers.edges, 48);
+
+  // The Motion metric always comes from the frame difference, in every mode.
+  // Deriving it from flow magnitude while Flow is selected made the same
+  // scene read 8% in one mode and 0% in another, which is a worse readout
+  // than a slightly cruder one that stays comparable as modes change.
+  let motionValue = 0;
+  if (hadPrevious) {
+    absoluteDifference(buffers.gray, buffers.previousGray, buffers.difference);
+    motionValue = motionScore(buffers.difference, 18);
+  } else {
+    buffers.difference.fill(0);
+  }
+
+  const flowOptions = flowOptionsForPreset();
+  if (visionMode === 'flow' && hadPrevious) {
+    latestFlow = computeBlockFlow(buffers.previousGray, buffers.gray, buffers.width, buffers.height, flowOptions);
+  } else if (visionMode !== 'flow') {
+    latestFlow = null;
+  }
+
+  switch (visionMode) {
+    case 'relief':
+      putBuffer(buffers, reliefFromGray(buffers.gray, buffers.width, buffers.height));
+      break;
+    case 'edges':
+      putBuffer(buffers, grayToRgba(buffers.edges));
+      break;
+    case 'motion':
+      putBuffer(buffers, motionMaskToRgba(
+        buffers.gray,
+        buffers.difference,
+        buffers.width,
+        buffers.height,
+        18,
+        buffers.rgba
+      ));
+      break;
+    case 'difference':
+      putBuffer(buffers, differenceToRgba(buffers.difference, 3.2, buffers.rgba));
+      break;
+    case 'flow':
+      drawFlowOverlay(buffers, latestFlow ?? {
+        vectors: [], cellSize: flowOptions.cellSize, width: buffers.width, height: buffers.height,
+        meanMagnitude: 0, maxMagnitude: 0, coverage: 0
+      });
+      break;
+    default:
+      break;
+  }
+
+  latestMetrics = {
+    brightness: clamp(stats.mean / 255, 0, 1),
+    // A standard deviation of ~64 already looks like a high-contrast scene,
+    // so that is treated as full scale rather than the theoretical 127.5.
+    contrast: clamp(stats.standardDeviation / 64, 0, 1),
+    detail: clamp(detail * 3.5, 0, 1),
+    motion: clamp(motionValue * 4, 0, 1),
+    processingFps: recordProcessingFps(timestamp),
+    analysisWidth: buffers.width
+  };
+  renderMetrics();
+}
+
+function visionLoop(timestamp: number): void {
+  requestAnimationFrame(visionLoop);
+  if (!camera.active || processingVision || timestamp - lastVisionFrameAt < visionIntervalMs()) return;
   lastVisionFrameAt = timestamp;
   processingVision = true;
   try {
-    const frame = camera.captureFrame(settings.visionRatePreference === 'fast' ? 320 : settings.visionRatePreference === 'battery' ? 192 : 256);
-    const gray = rgbaToGray(frame.imageData.data);
-    const output = visionMode === 'relief'
-      ? reliefFromGray(gray, frame.width, frame.height)
-      : grayToRgba(sobelEdges(gray, frame.width, frame.height));
-    drawImageData(visionCanvas, rgbaToImageData(output, frame.width, frame.height));
+    processVisionFrame(timestamp);
   } catch {
     // A camera can briefly report no frame while switching; the next animation tick recovers.
   } finally {
     processingVision = false;
   }
+}
+
+function percent(value: number): string {
+  return `${Math.round(clamp(value, 0, 1) * 100)}%`;
+}
+
+function renderMetrics(): void {
+  if (!latestMetrics) {
+    for (const id of ['metricBrightness', 'metricContrast', 'metricDetail', 'metricMotion', 'metricFps']) {
+      setText(id, '—');
+    }
+    renderZoomMetric();
+    return;
+  }
+
+  setText('metricBrightness', percent(latestMetrics.brightness));
+  setText('metricContrast', percent(latestMetrics.contrast));
+  setText('metricDetail', percent(latestMetrics.detail));
+  setText('metricMotion', percent(latestMetrics.motion));
+  setText('metricFps', `${Math.round(latestMetrics.processingFps)} FPS`);
+  renderZoomMetric();
+}
+
+function zoomKindLabel(kind: CameraZoomState['kind']): string {
+  if (kind === 'camera') return 'Camera';
+  if (kind === 'digital') return 'Digital';
+  return 'None';
+}
+
+function renderZoomMetric(): void {
+  setText('metricZoom', zoomState.kind === 'none'
+    ? '—'
+    : `${zoomState.value.toFixed(1)}× ${zoomKindLabel(zoomState.kind)}`);
+}
+
+function resetVisionState(): void {
+  visionBuffers = null;
+  latestMetrics = null;
+  latestFlow = null;
+  smoothedFps = 0;
+  lastProcessedAt = 0;
+  visionContext.clearRect(0, 0, visionCanvas.width, visionCanvas.height);
+  renderMetrics();
 }
 
 function captureParallaxReference(): void {
@@ -448,6 +931,12 @@ function downloadSnapshot(): void {
       capturedReference: Boolean(referenceGray),
       analyzed: parallaxAnalyzed,
       medianDisparityPx
+    },
+    vision: {
+      mode: visionMode,
+      metrics: latestMetrics,
+      zoom: zoomState.value,
+      zoomKind: zoomState.kind
     }
   };
   const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
@@ -521,10 +1010,69 @@ async function refreshSettingsDiagnostics(): Promise<void> {
     setText('settingsCameraDevices', 'Enumeration unavailable');
   }
 
+  const diagnostics = camera.diagnostics;
+
   setText('settingsCameraStream', camera.active
-    ? `Live • ${video.videoWidth || '?'}×${video.videoHeight || '?'} • ${camera.currentFacing}`
+    ? `Live • ${diagnostics.videoWidth || '?'}×${diagnostics.videoHeight || '?'} • ${diagnostics.facing}`
     : 'Idle / no live track');
+  setText('settingsCameraState', diagnostics.reason
+    ? `${diagnostics.state} • ${diagnostics.reason}`
+    : diagnostics.state);
+  setText('settingsCameraStage', diagnostics.stage);
+  setText('settingsCameraLabel', diagnostics.trackLabel || 'Not exposed by WebKit');
+  setText('settingsTrackState', `${diagnostics.trackState}${diagnostics.trackMuted ? ' • muted' : ''}${diagnostics.trackEnabled ? '' : ' • disabled'}`);
+  setText('settingsVideoState', `readyState ${diagnostics.readyState} • ${diagnostics.videoWidth}×${diagnostics.videoHeight} • ${diagnostics.paused ? 'paused' : 'playing'}`);
+
+  // The honest liveness signal: a stream that resolves but never presents a
+  // decoded frame is a WebKit failure, not a working camera.
+  setText('settingsFirstFrame', diagnostics.frameEvidence && diagnostics.firstFrameMs !== null
+    ? `${diagnostics.firstFrameMs} ms via ${diagnostics.firstFrameVia}`
+    : diagnostics.state === 'live'
+      ? 'Waiting for evidence'
+      : 'No decoded frame observed');
+
+  setText('settingsZoomSupport', diagnostics.zoomKind === 'camera'
+    ? `Hardware zoom ${diagnostics.zoomMin.toFixed(1)}–${diagnostics.zoomMax.toFixed(1)}× • now ${diagnostics.zoomValue.toFixed(1)}×`
+    : diagnostics.zoomKind === 'digital'
+      ? `Not exposed • digital crop 1.0–${diagnostics.zoomMax.toFixed(1)}× • now ${diagnostics.zoomValue.toFixed(1)}×`
+      : 'Unavailable until the camera is live');
+
+  setText('settingsProcessingFps', latestMetrics
+    ? `${Math.round(latestMetrics.processingFps)} FPS • ${latestMetrics.analysisWidth}px analysis`
+    : 'Not processing');
+
   setText('settingsImageCapture', 'ImageCapture' in window ? 'Available' : 'Not exposed');
+  await refreshStorageEstimate();
+}
+
+/**
+ * Storage headroom, where the browser reports it.
+ *
+ * Deliberately not asserting any fixed iOS quota: the old 50 MB figure is out
+ * of date and the real allowance is dynamic, so the reported estimate is shown
+ * as-is rather than compared against a hard-coded limit.
+ */
+async function refreshStorageEstimate(): Promise<void> {
+  const storage = navigator.storage as StorageManager | undefined;
+  if (!storage || typeof storage.estimate !== 'function') {
+    setText('settingsStorage', 'Estimate unavailable');
+    return;
+  }
+
+  try {
+    const estimate = await storage.estimate();
+    const usedMb = (estimate.usage ?? 0) / (1024 * 1024);
+    const quotaMb = (estimate.quota ?? 0) / (1024 * 1024);
+    let persisted = '';
+    if (typeof storage.persisted === 'function') {
+      persisted = (await storage.persisted()) ? ' • persistent' : ' • best-effort';
+    }
+    setText('settingsStorage', quotaMb > 0
+      ? `${usedMb.toFixed(1)} MB used of ${quotaMb.toFixed(0)} MB${persisted}`
+      : `${usedMb.toFixed(1)} MB used${persisted}`);
+  } catch {
+    setText('settingsStorage', 'Estimate blocked');
+  }
 }
 
 function openSettings(): void {
@@ -559,9 +1107,15 @@ function handleQualityChange(): void {
 
 function handleVisionRateChange(): void {
   saveSettingFromControls();
-  setText('visionModeLabel', visionMode === 'camera'
-    ? `RGB camera • ${settings.visionRatePreference}`
-    : `${visionMode === 'relief' ? 'Image relief' : 'Edge map'} • ${settings.visionRatePreference}`);
+  // The analysis width changes with the preset, so the frame buffers must be
+  // rebuilt rather than reused at the old geometry.
+  resetVisionState();
+  setText('visionModeLabel', `${MODE_LABELS[visionMode]} • ${settings.visionRatePreference}`);
+  // The diagnostics panel reports the analysis width and processing rate, and
+  // neither is true until a few frames have run at the new preset - the rate
+  // is a moving average and needs at least two. Wait for three of the new
+  // preset's intervals, so Battery Saver gets the same treatment as Fast.
+  window.setTimeout(() => void refreshSettingsDiagnostics(), visionIntervalMs() * 3 + 100);
 }
 
 function handleGpsAccuracyChange(): void {
@@ -627,7 +1181,7 @@ async function checkForUpdates(): Promise<void> {
     if (!('serviceWorker' in navigator)) throw new Error('Service workers are unavailable in this browser context.');
     let registration = serviceWorkerRegistration ?? await navigator.serviceWorker.getRegistration();
     if (!registration) {
-      registration = await navigator.serviceWorker.register('./sw.js');
+      registration = await navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' });
       observeServiceWorkerRegistration(registration);
     }
 
@@ -711,6 +1265,11 @@ byId<HTMLButtonElement>('checkUpdatesButton').addEventListener('click', () => vo
 byId<HTMLButtonElement>('applyUpdateButton').addEventListener('click', applyUpdate);
 byId<HTMLButtonElement>('clearCacheButton').addEventListener('click', () => void clearAppCache());
 byId<HTMLButtonElement>('resetSettingsButton').addEventListener('click', resetSettings);
+byId<HTMLButtonElement>('hardResetCameraButton').addEventListener('click', hardResetCamera);
+byId<HTMLButtonElement>('refreshDiagnosticsButton').addEventListener('click', () => void refreshSettingsDiagnostics());
+byId<HTMLInputElement>('zoomSlider').addEventListener('input', (event) => {
+  void requestZoom(Number((event.target as HTMLInputElement).value));
+});
 byId<HTMLSelectElement>('cameraPreference').addEventListener('change', handleCameraPreferenceChange);
 byId<HTMLSelectElement>('qualityPreference').addEventListener('change', handleQualityChange);
 byId<HTMLSelectElement>('visionRatePreference').addEventListener('change', handleVisionRateChange);
@@ -720,12 +1279,36 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-vision-
   button.addEventListener('click', () => updateVisionMode(button.dataset.visionMode as VisionMode));
 }
 
-const browserCameraMode = new URL(window.location.href).searchParams.get('camera-browser') === '1';
+const bootUrl = new URL(window.location.href);
+const browserCameraMode = bootUrl.searchParams.get('camera-browser') === '1';
+
+/**
+ * Drop our own cache-busting parameter from the address bar before the camera
+ * is ever requested.
+ *
+ * WebKit binds a capture grant to the top frame document's current URL, so an
+ * installed PWA left sitting on `?refresh=1724983…` after an update is running
+ * on a different URL from its `start_url`, and a later URL change can tear the
+ * media environment down mid-capture. One replaceState at boot, before any
+ * getUserMedia call, keeps the document on a stable URL for the whole session.
+ */
+if (bootUrl.searchParams.has('refresh') && typeof history.replaceState === 'function') {
+  bootUrl.searchParams.delete('refresh');
+  try {
+    history.replaceState(null, '', bootUrl.toString());
+  } catch {
+    // A blocked history write is harmless; the app just keeps the parameter.
+  }
+}
+
 setText('secureContextValue', window.isSecureContext ? 'Secure ✓' : 'Needs HTTPS');
 setChip('pwaChip', 'good', isStandalone() ? 'PWA installed' : browserCameraMode ? 'Browser camera mode' : 'PWA ready');
 syncSettingsControls();
 updateVisionMode('camera');
-requestAnimationFrame((time) => void visionLoop(time));
+installPinchZoom();
+camera.subscribe(applyCameraStatus);
+renderMetrics();
+requestAnimationFrame(visionLoop);
 void initializeFusion();
 void refreshSettingsDiagnostics();
 
@@ -757,7 +1340,9 @@ if ('serviceWorker' in navigator) {
   });
 
   window.addEventListener('load', () => {
-    void navigator.serviceWorker.register('./sw.js').then((registration) => {
+    // `updateViaCache: 'none'` keeps the HTTP cache out of the worker's own
+    // update check, so a stale sw.js cannot pin the app to an old build.
+    void navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).then((registration) => {
       observeServiceWorkerRegistration(registration);
       return registration.update();
     }).then(() => refreshSettingsDiagnostics()).catch(() => {
