@@ -42,7 +42,7 @@ import {
 import { StabilityMonitor } from './sensors/stability.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 
-const APP_VERSION = '0.4.2';
+const APP_VERSION = '0.4.3';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -1450,6 +1450,9 @@ async function refreshSettingsDiagnostics(): Promise<void> {
   setText('benchAvgMs', `${rates.averageProcessingMs.toFixed(2)} ms`);
   setText('benchPeakMs', `${rates.peakProcessingMs.toFixed(2)} ms`);
   setText('benchSkipped', `${rates.skippedFrames} skipped / ${rates.droppedFrames} dropped`);
+  setText('benchIdentity', rates.identitySignal === 'none'
+    ? 'Abandoned — frames counted unconditionally'
+    : rates.identitySignal);
   setText('benchDelivery', diagnostics.deliveryActive
     ? `Active · ${diagnostics.deliveredUnique} unique / ${diagnostics.deliveredRepeated} repeated`
     : diagnostics.deliverySubscribed

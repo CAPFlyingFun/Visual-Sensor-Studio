@@ -248,3 +248,27 @@ test('capture failures and delivery state are visible in diagnostics', () => {
   assert.match(htmlSource, /id=["']benchDelivery["']/);
   assert.match(htmlSource, /id=["']benchCaptureFailures["']/);
 });
+
+test('the engine counters also survive a frame identity signal that never changes', () => {
+  // The same de-duplication existed in two places. Fixing only the TypeScript
+  // meter restored the vision modes but left the benchmark reporting zero,
+  // because measureDelivery samples the engine's own counters — which were
+  // still reporting "1 unique / 184 repeated" on a camera delivering 60 fps.
+  assert.match(cameraSource, /function countDeliveredFrame\(/);
+  assert.match(cameraSource, /DELIVERY_REPEAT_LIMIT/);
+  assert.match(cameraSource, /delivery\.identityTrusted = false;/);
+  // The tick must go through the shared counter, not its own inline compare.
+  assert.match(cameraSource, /countDeliveredFrame\(now, mediaTime, metadata \? metadata\.presentedFrames : undefined\)/);
+  // And the standalone measurement path needs the same protection.
+  assert.match(cameraSource, /repeatStreak < DELIVERY_REPEAT_LIMIT/);
+});
+
+test('de-duplication can never permanently gate the pipeline', () => {
+  // A repeated frame is not analysed, so any identity signal that gets stuck
+  // stops all vision work. Both implementations must be able to give up on it.
+  const frameRateSource = readFileSync(new URL('../src/vision/frame-rate.ts', import.meta.url), 'utf8');
+  assert.match(frameRateSource, /identityTrusted = false;/);
+  assert.match(frameRateSource, /REPEAT_STREAK_LIMIT/);
+  assert.match(frameRateSource, /identitySignal/);
+  assert.match(htmlSource, /id=["']benchIdentity["']/);
+});

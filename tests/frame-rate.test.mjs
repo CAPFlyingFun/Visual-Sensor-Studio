@@ -69,3 +69,49 @@ test('a meter with fewer than two samples reports zero rather than guessing', ()
   meter.recordDelivered({ now: 5, mediaTime: 0 });
   assert.equal(meter.report.deliveredFps, 0);
 });
+
+test('a frozen mediaTime cannot stall the pipeline', () => {
+  // Some WebKit builds hand the callback no metadata, or a mediaTime that
+  // never advances. De-duplicating on a signal that never changes marked
+  // every frame after the first as a repeat, and a repeat is not analysed —
+  // so the whole vision pipeline stopped on a camera delivering perfectly.
+  const meter = new FrameRateMeter();
+  const results = [];
+  for (let i = 0; i < 40; i++) {
+    // mediaTime pinned at 0, no presentedFrames — the observed failure.
+    results.push(meter.recordDelivered({ now: i * (1000 / 60), mediaTime: 0 }));
+  }
+
+  assert.equal(results[0], true, 'the first frame is always new');
+  assert.ok(results.slice(-20).every(Boolean), 'the meter must recover and accept frames');
+
+  const report = meter.report;
+  assert.equal(report.identitySignal, 'none', 'a useless signal must be abandoned');
+  assert.ok(report.uniqueFrames > 25, `expected most frames counted, got ${report.uniqueFrames}`);
+  assert.ok(report.deliveredFps > 40, `rate must be measurable again, got ${report.deliveredFps}`);
+});
+
+test('presentedFrames takes over as identity once mediaTime proves useless', () => {
+  // presentedFrames counts compositions, not decoded frames, so it is only
+  // the right identity signal after mediaTime has been abandoned.
+  const meter = new FrameRateMeter();
+  for (let i = 0; i < 40; i++) {
+    meter.recordDelivered({ now: i * (1000 / 60), mediaTime: 0, presentedFrames: i + 1 });
+  }
+  const report = meter.report;
+  assert.equal(report.identitySignal, 'presentedFrames');
+  assert.ok(report.uniqueFrames > 25, `a stuck mediaTime must not hide real frames, got ${report.uniqueFrames}`);
+  assert.ok(report.deliveredFps > 40, `rate must be measurable, got ${report.deliveredFps}`);
+});
+
+test('genuine duplicates are still recognised while the signal works', () => {
+  const meter = new FrameRateMeter();
+  // A 30 fps camera on a 60 Hz compositor: alternating, never a long run.
+  for (let i = 0; i < 40; i++) {
+    meter.recordDelivered({ now: i * (1000 / 60), mediaTime: Math.floor(i / 2) * 0.0333 });
+  }
+  const report = meter.report;
+  assert.equal(report.identitySignal, 'mediaTime', 'a working signal must stay trusted');
+  assert.equal(report.uniqueFrames, 20);
+  assert.equal(report.repeatedFrames, 20);
+});

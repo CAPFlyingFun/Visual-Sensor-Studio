@@ -38,9 +38,18 @@ export interface FrameRateReport {
   skippedFrames: number;
   averageProcessingMs: number;
   peakProcessingMs: number;
+  /** Which signal is distinguishing frames, or 'none' once both proved useless. */
+  identitySignal: 'presentedFrames' | 'mediaTime' | 'none';
 }
 
 const WINDOW = 90;
+/**
+ * Consecutive identical-looking frames before the identity signal is
+ * abandoned. Eight is about 130 ms at 60 fps — long enough not to trip on a
+ * genuinely duplicated frame, short enough that a broken signal costs only a
+ * brief stall before the pipeline recovers on its own.
+ */
+const REPEAT_STREAK_LIMIT = 8;
 
 /**
  * Sliding-window rate over recent event times. A window beats an exponential
@@ -80,6 +89,20 @@ export class FrameRateMeter {
 
   private lastMediaTime = Number.NaN;
   private lastPresentedFrames = Number.NaN;
+  /** Consecutive callbacks judged to be the same frame. */
+  private repeatStreak = 0;
+  /**
+   * Whether frame identity can be trusted at all.
+   *
+   * Some WebKit builds hand the callback no metadata, or a mediaTime that
+   * never advances. De-duplicating on a signal that never changes marks every
+   * frame after the first as a repeat, and since a repeat is not analysed,
+   * the entire pipeline stops on a camera that is delivering perfectly. A
+   * long unbroken run of repeats means the signal is broken, not that the
+   * scene is frozen, so identity is abandoned and every callback counts.
+   */
+  private identityTrusted = true;
+  private identitySignal: 'presentedFrames' | 'mediaTime' | 'none' = 'mediaTime';
 
   private unique = 0;
   private repeated = 0;
@@ -95,23 +118,55 @@ export class FrameRateMeter {
    * mediaTime already seen, which means it is the same image again and
    * analysing it would inflate the processing rate with no new information.
    */
+  /**
+   * Record a presented frame. Returns false only when the frame is known to
+   * be one already seen.
+   *
+   * De-duplication must never be able to stop the pipeline: when the identity
+   * signal turns out to be useless, this reports every callback as new rather
+   * than blocking analysis on a measurement detail.
+   */
   recordDelivered(frame: PresentedFrame): boolean {
-    if (typeof frame.presentedFrames === 'number') {
-      if (Number.isFinite(this.lastPresentedFrames)) {
-        // A gap larger than one means the browser presented frames that never
-        // reached a callback: genuinely dropped, not merely unprocessed.
-        const gap = frame.presentedFrames - this.lastPresentedFrames - 1;
-        if (gap > 0) this.dropped += gap;
-      }
-      this.lastPresentedFrames = frame.presentedFrames;
+    const presented = typeof frame.presentedFrames === 'number' && Number.isFinite(frame.presentedFrames)
+      ? frame.presentedFrames
+      : Number.NaN;
+
+    if (!Number.isNaN(presented) && Number.isFinite(this.lastPresentedFrames)) {
+      // A gap larger than one means the browser presented frames that never
+      // reached a callback: genuinely dropped, not merely unprocessed.
+      const gap = presented - this.lastPresentedFrames - 1;
+      if (gap > 0) this.dropped += gap;
     }
 
-    if (Number.isFinite(this.lastMediaTime) && frame.mediaTime === this.lastMediaTime) {
-      this.repeated++;
-      return false;
+    // mediaTime identifies the DECODED frame and is the right signal for
+    // uniqueness. presentedFrames counts compositions — it increments twice
+    // for one frame on a 60 Hz display showing 30 fps video — so it is right
+    // for drop accounting and wrong for identity, and is only used as a
+    // fallback once mediaTime has proven useless.
+    let sameFrame = false;
+    if (this.identityTrusted) {
+      this.identitySignal = 'mediaTime';
+      sameFrame = Number.isFinite(this.lastMediaTime) && frame.mediaTime === this.lastMediaTime;
+    } else if (!Number.isNaN(presented)) {
+      this.identitySignal = 'presentedFrames';
+      sameFrame = Number.isFinite(this.lastPresentedFrames) && presented === this.lastPresentedFrames;
+    } else {
+      this.identitySignal = 'none';
     }
 
+    this.lastPresentedFrames = Number.isNaN(presented) ? this.lastPresentedFrames : presented;
     this.lastMediaTime = frame.mediaTime;
+
+    if (sameFrame) {
+      this.repeated++;
+      this.repeatStreak++;
+      if (this.repeatStreak < REPEAT_STREAK_LIMIT) return false;
+      // The signal has not changed once across a long run of callbacks. That
+      // is a broken identity signal, not a static scene: stop trusting it.
+      this.identityTrusted = false;
+    }
+
+    this.repeatStreak = 0;
     this.unique++;
     this.delivered.add(frame.now);
     return true;
@@ -135,6 +190,9 @@ export class FrameRateMeter {
     this.processed.reset();
     this.lastMediaTime = Number.NaN;
     this.lastPresentedFrames = Number.NaN;
+    this.repeatStreak = 0;
+    this.identityTrusted = true;
+    this.identitySignal = 'mediaTime';
     this.unique = 0;
     this.repeated = 0;
     this.dropped = 0;
@@ -158,7 +216,8 @@ export class FrameRateMeter {
       droppedFrames: this.dropped,
       skippedFrames: this.skipped,
       averageProcessingMs: this.processingCount ? this.processingSum / this.processingCount : 0,
-      peakProcessingMs: this.processingPeak
+      peakProcessingMs: this.processingPeak,
+      identitySignal: this.identitySignal
     };
   }
 }

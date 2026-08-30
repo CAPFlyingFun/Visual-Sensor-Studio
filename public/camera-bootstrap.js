@@ -111,7 +111,57 @@
   let deliveryListener = null;
   // Counters maintained by whichever delivery loop is running, so anything
   // that needs a frame rate can read them instead of starting a second loop.
-  const delivery = { unique: 0, repeated: 0, lastMediaTime: Number.NaN, firstAt: 0, lastAt: 0 };
+  /**
+   * Frame counters for anything that needs a delivery rate.
+   *
+   * `identityTrusted` exists for the same reason as in the TypeScript meter:
+   * some WebKit builds supply no callback metadata, so mediaTime is a constant
+   * and every frame after the first looks like a repeat. Counting only
+   * "unique" frames then reports one frame forever — which is exactly what
+   * made the frame-rate benchmark report zero on a camera delivering 60 fps.
+   * A long unbroken run of repeats means the signal is broken, not the camera.
+   */
+  const DELIVERY_REPEAT_LIMIT = 8;
+  const delivery = {
+    unique: 0,
+    repeated: 0,
+    lastMediaTime: Number.NaN,
+    lastPresentedFrames: Number.NaN,
+    repeatStreak: 0,
+    identityTrusted: true,
+    firstAt: 0,
+    lastAt: 0
+  };
+
+  /** Fold one presented frame into the counters. Returns true when it is new. */
+  function countDeliveredFrame(now, mediaTime, presentedFrames) {
+    const presented = typeof presentedFrames === 'number' && Number.isFinite(presentedFrames)
+      ? presentedFrames
+      : Number.NaN;
+
+    let sameFrame = false;
+    if (delivery.identityTrusted) {
+      sameFrame = Number.isFinite(delivery.lastMediaTime) && mediaTime === delivery.lastMediaTime;
+    } else if (!Number.isNaN(presented)) {
+      sameFrame = Number.isFinite(delivery.lastPresentedFrames) && presented === delivery.lastPresentedFrames;
+    }
+
+    delivery.lastMediaTime = mediaTime;
+    if (!Number.isNaN(presented)) delivery.lastPresentedFrames = presented;
+
+    if (sameFrame) {
+      delivery.repeated++;
+      delivery.repeatStreak++;
+      if (delivery.repeatStreak < DELIVERY_REPEAT_LIMIT) return false;
+      delivery.identityTrusted = false;
+    }
+
+    delivery.repeatStreak = 0;
+    delivery.unique++;
+    if (delivery.firstAt === 0) delivery.firstAt = now;
+    delivery.lastAt = now;
+    return true;
+  }
   /**
    * The consumer's interest in frames, kept across restarts.
    *
@@ -665,14 +715,7 @@
       deliveryHandle = video.requestVideoFrameCallback(tick);
 
       const mediaTime = metadata ? metadata.mediaTime : 0;
-      if (Number.isFinite(delivery.lastMediaTime) && mediaTime === delivery.lastMediaTime) {
-        delivery.repeated++;
-      } else {
-        delivery.lastMediaTime = mediaTime;
-        delivery.unique++;
-        if (delivery.firstAt === 0) delivery.firstAt = now;
-        delivery.lastAt = now;
-      }
+      countDeliveredFrame(now, mediaTime, metadata ? metadata.presentedFrames : undefined);
 
       try {
         listener({
@@ -693,6 +736,9 @@
     delivery.unique = 0;
     delivery.repeated = 0;
     delivery.lastMediaTime = Number.NaN;
+    delivery.lastPresentedFrames = Number.NaN;
+    delivery.repeatStreak = 0;
+    delivery.identityTrusted = true;
     delivery.firstAt = 0;
     delivery.lastAt = 0;
     if (deliveryHandle && typeof video.cancelVideoFrameCallback === 'function') {
@@ -749,6 +795,7 @@
       let firstAt = 0;
       let lastAt = 0;
       let lastMediaTime = Number.NaN;
+      let repeatStreak = 0;
       let handle = 0;
       let settled = false;
 
@@ -773,10 +820,14 @@
         if (settled) return;
         handle = video.requestVideoFrameCallback(tick);
         const mediaTime = metadata ? metadata.mediaTime : 0;
-        if (Number.isFinite(lastMediaTime) && mediaTime === lastMediaTime) {
+        // Same reasoning as countDeliveredFrame: a signal that never changes
+        // must not be allowed to report zero frames forever.
+        if (Number.isFinite(lastMediaTime) && mediaTime === lastMediaTime && repeatStreak < DELIVERY_REPEAT_LIMIT) {
           repeated++;
+          repeatStreak++;
           return;
         }
+        repeatStreak = 0;
         lastMediaTime = mediaTime;
         unique++;
         if (firstAt === 0) firstAt = now;
