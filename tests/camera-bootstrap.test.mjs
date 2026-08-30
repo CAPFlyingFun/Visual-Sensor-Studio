@@ -22,7 +22,7 @@ test('plain camera engine loads before the TypeScript application', () => {
   assert.ok(cameraScript < appScript, 'camera bootstrap must load before the TypeScript app');
 });
 
-test('persistent HTML camera engine owns getUserMedia while TypeScript only bridges to it', () => {
+test('plain HTML camera engine owns getUserMedia while TypeScript only bridges to it', () => {
   assert.match(cameraSource, /navigator\.mediaDevices\.getUserMedia/);
   assert.match(cameraSource, /requestProfiles/);
   assert.match(cameraSource, /video:\s*true/);
@@ -32,13 +32,13 @@ test('persistent HTML camera engine owns getUserMedia while TypeScript only brid
   assert.doesNotMatch(mainSource, /getUserMedia\(/);
 });
 
-test('camera preview exposes direct live and native-photo controls', () => {
+test('camera UI exposes live camera controls without the removed native-photo fallback', () => {
   assert.match(htmlSource, /id=["']cameraOverlayButton["']/);
-  assert.match(htmlSource, /id=["']nativePhotoButton["']/);
-  assert.match(htmlSource, /id=["']nativePhotoInput["']/);
-  assert.match(htmlSource, /capture=["']environment["']/);
-  assert.match(cameraSource, /nativePhotoInput/);
-  assert.match(cameraSource, /loadNativePhoto/);
+  assert.match(htmlSource, /id=["']cameraButton["']/);
+  assert.doesNotMatch(htmlSource, /nativePhotoButton/);
+  assert.doesNotMatch(htmlSource, /nativePhotoInput/);
+  assert.doesNotMatch(cameraSource, /nativePhotoInput/);
+  assert.doesNotMatch(cameraSource, /loadNativePhoto/);
 });
 
 test('standalone camera UI hands off directly to Edge instead of opening another PWA window', () => {
