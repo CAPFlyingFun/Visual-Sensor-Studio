@@ -14,20 +14,20 @@ function errorName(error: unknown): string {
 export function describeCameraError(error: unknown, standalone = false): string {
   const name = errorName(error);
   const standaloneHint = standalone
-    ? ' If it works in Edge but not the installed app, close the installed app completely and retry. iOS/WebKit can handle standalone camera permission separately.'
+    ? ' iOS/WebKit has an open standalone-PWA camera bug where the same camera can work in a normal browser tab but fail here without showing a prompt. Use Open Live Camera in Browser if Retry Camera still fails.'
     : '';
 
   if (name === 'NotAllowedError' || name === 'SecurityError') {
-    return `Camera permission was blocked. Tap Retry Camera and choose Allow when iOS asks. If no prompt appears, check camera access for Edge/the installed web app in iPhone Settings.${standaloneHint}`;
+    return `Camera permission was blocked. Tap Retry Camera and choose Allow when iOS asks. If no prompt appears, check camera access for your browser in iPhone Settings.${standaloneHint}`;
   }
   if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
     return `No usable camera was reported by the browser.${standaloneHint}`;
   }
   if (name === 'NotReadableError' || name === 'TrackStartError') {
-    return `The camera exists but iOS could not start it. Close other camera/video apps, then tap Retry Camera.${standaloneHint}`;
+    return `The camera exists but iOS could not start or render it. Close other camera/video apps, then tap Retry Camera.${standaloneHint}`;
   }
   if (name === 'OverconstrainedError' || name === 'ConstraintNotSatisfiedError') {
-    return `The requested camera mode was not available. Retry Camera will use a simpler camera request.${standaloneHint}`;
+    return `The requested camera mode was not available. The app already tried simpler camera requests too.${standaloneHint}`;
   }
   if (name === 'AbortError') {
     return `Camera startup was interrupted. Tap Retry Camera.${standaloneHint}`;
@@ -37,7 +37,7 @@ export function describeCameraError(error: unknown, standalone = false): string 
   return `${message}${standaloneHint}`;
 }
 
-function waitForMetadata(video: HTMLVideoElement, timeoutMs = 1800): Promise<void> {
+function waitForMetadata(video: HTMLVideoElement, timeoutMs = 2200): Promise<void> {
   if (video.readyState >= HTMLMediaElement.HAVE_METADATA || video.videoWidth > 0) return Promise.resolve();
 
   return new Promise((resolve) => {
@@ -53,6 +53,16 @@ function waitForMetadata(video: HTMLVideoElement, timeoutMs = 1800): Promise<voi
     const timer = window.setTimeout(finish, timeoutMs);
     video.addEventListener('loadedmetadata', finish, { once: true });
     video.addEventListener('loadeddata', finish, { once: true });
+  });
+}
+
+function playbackTimeout(timeoutMs = 2400): Promise<never> {
+  return new Promise((_, reject) => {
+    window.setTimeout(() => {
+      const error = new Error('Camera preview did not begin playback.');
+      error.name = 'NotReadableError';
+      reject(error);
+    }, timeoutMs);
   });
 }
 
@@ -83,61 +93,7 @@ export class CameraController {
     this.video.muted = true;
   }
 
-  async start(facing: CameraFacing = this.facing): Promise<void> {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error('Camera access is not available in this browser context.');
-    }
-
-    this.stop();
-    this.facing = facing;
-    this.prepareVideoElement();
-
-    const constraints: MediaStreamConstraints = {
-      audio: false,
-      video: {
-        facingMode: { ideal: facing },
-        width: { ideal: 1920 },
-        height: { ideal: 1080 }
-      }
-    };
-
-    try {
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-      } catch (error) {
-        const name = errorName(error);
-        if (name !== 'OverconstrainedError' && name !== 'ConstraintNotSatisfiedError') throw error;
-        stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: facing } });
-      }
-
-      this.stream = stream;
-      this.video.srcObject = stream;
-      await waitForMetadata(this.video);
-
-      try {
-        await this.video.play();
-      } catch (playError) {
-        const liveTrack = stream.getVideoTracks().some((track) => track.readyState === 'live');
-        const videoHasFrames = this.video.videoWidth > 0 || this.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
-        if (!liveTrack || !videoHasFrames) throw playError;
-      }
-
-      const track = stream.getVideoTracks()[0];
-      if (!track || track.readyState !== 'live') throw new Error('Camera stream did not become live.');
-    } catch (error) {
-      this.stop();
-      throw error;
-    }
-  }
-
-  async switchCamera(): Promise<CameraFacing> {
-    const next: CameraFacing = this.facing === 'environment' ? 'user' : 'environment';
-    await this.start(next);
-    return next;
-  }
-
-  stop(): void {
+  private releaseCurrentStream(): void {
     if (this.stream) {
       for (const track of this.stream.getTracks()) track.stop();
     }
@@ -148,6 +104,79 @@ export class CameraController {
       // Some WebKit states can throw while a media element is being torn down.
     }
     this.video.srcObject = null;
+  }
+
+  async start(facing: CameraFacing = this.facing): Promise<void> {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('Camera access is not available in this browser context.');
+    }
+
+    this.releaseCurrentStream();
+    this.facing = facing;
+    this.prepareVideoElement();
+
+    const requestProfiles: MediaStreamConstraints[] = [
+      {
+        audio: false,
+        video: {
+          facingMode: { ideal: facing },
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        }
+      },
+      {
+        audio: false,
+        video: { facingMode: { ideal: facing } }
+      },
+      {
+        audio: false,
+        video: true
+      }
+    ];
+
+    let lastError: unknown = new Error('Unable to start the camera.');
+
+    for (const constraints of requestProfiles) {
+      this.releaseCurrentStream();
+      this.prepareVideoElement();
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        this.stream = stream;
+        this.video.srcObject = stream;
+        await waitForMetadata(this.video);
+
+        const playPromise = this.video.play();
+        if (playPromise) await Promise.race([playPromise, playbackTimeout()]);
+
+        const track = stream.getVideoTracks()[0];
+        const videoHasFrames = this.video.videoWidth > 0 || this.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
+        if (!track || track.readyState !== 'live' || !videoHasFrames) {
+          const error = new Error('Camera stream opened but no usable preview frames arrived.');
+          error.name = 'NotReadableError';
+          throw error;
+        }
+
+        return;
+      } catch (error) {
+        lastError = error;
+        this.releaseCurrentStream();
+        const name = errorName(error);
+        if (name === 'NotAllowedError' || name === 'SecurityError') throw error;
+      }
+    }
+
+    throw lastError;
+  }
+
+  async switchCamera(): Promise<CameraFacing> {
+    const next: CameraFacing = this.facing === 'environment' ? 'user' : 'environment';
+    await this.start(next);
+    return next;
+  }
+
+  stop(): void {
+    this.releaseCurrentStream();
   }
 
   captureFrame(targetWidth = 192): CapturedFrame {
