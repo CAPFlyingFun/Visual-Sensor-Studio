@@ -11,12 +11,11 @@ interface CameraEngine {
   switchCamera(): Promise<CameraFacing>;
   stop(): void;
   captureFrame(targetWidth?: number): CapturedFrame;
-  loadNativePhoto(file: Blob): Promise<ImageData>;
   describeError(error: unknown, standalone?: boolean): string;
   readonly active: boolean;
   readonly ready: boolean;
   readonly currentFacing: CameraFacing;
-  readonly sourceKind: 'none' | 'live' | 'photo';
+  readonly sourceKind: 'none' | 'live';
   readonly diagnostics: {
     stage: string;
     sourceKind: string;
@@ -80,9 +79,5 @@ export class CameraController {
 
   captureFrame(targetWidth = 192): CapturedFrame {
     return engine().captureFrame(targetWidth);
-  }
-
-  async loadNativePhoto(file: Blob): Promise<ImageData> {
-    return engine().loadNativePhoto(file);
   }
 }
