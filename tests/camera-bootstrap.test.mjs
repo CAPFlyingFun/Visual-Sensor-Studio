@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+const adapterSource = readFileSync(new URL('../src/sensors/camera.ts', import.meta.url), 'utf8');
 const htmlSource = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 const cameraPath = new URL('../public/camera-bootstrap.js', import.meta.url);
 const cameraSource = existsSync(cameraPath) ? readFileSync(cameraPath, 'utf8') : '';
@@ -19,15 +20,15 @@ test('plain camera engine loads before the TypeScript application', () => {
   assert.ok(cameraScript >= 0, 'camera bootstrap script must be referenced');
   assert.ok(appScript >= 0, 'TypeScript app bundle must be referenced');
   assert.ok(cameraScript < appScript, 'camera bootstrap must load before the TypeScript app');
-  assert.doesNotMatch(mainSource, /new CameraController\(/);
-  assert.match(mainSource, /VisualCamera/);
 });
 
-test('persistent camera engine owns getUserMedia and keeps one video element', () => {
+test('persistent HTML camera engine owns getUserMedia while TypeScript only bridges to it', () => {
   assert.match(cameraSource, /navigator\.mediaDevices\.getUserMedia/);
   assert.match(cameraSource, /requestProfiles/);
   assert.match(cameraSource, /video:\s*true/);
   assert.match(cameraSource, /setAttribute\(['"]playsinline['"]/);
+  assert.doesNotMatch(adapterSource, /getUserMedia\(/);
+  assert.match(adapterSource, /VisualCamera/);
   assert.doesNotMatch(mainSource, /getUserMedia\(/);
 });
 
@@ -36,8 +37,8 @@ test('camera preview exposes direct live and native-photo controls', () => {
   assert.match(htmlSource, /id=["']nativePhotoButton["']/);
   assert.match(htmlSource, /id=["']nativePhotoInput["']/);
   assert.match(htmlSource, /capture=["']environment["']/);
-  assert.match(mainSource, /nativePhotoInput/);
-  assert.match(mainSource, /loadNativePhoto/);
+  assert.match(cameraSource, /nativePhotoInput/);
+  assert.match(cameraSource, /loadNativePhoto/);
 });
 
 test('standalone camera UI hands off directly to Edge instead of opening another PWA window', () => {
