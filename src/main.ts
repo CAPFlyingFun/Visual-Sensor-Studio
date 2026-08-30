@@ -83,6 +83,25 @@ let medianDisparityPx: number | null = null;
 let lastVisionFrameAt = 0;
 let processingVision = false;
 
+function setBrowserCameraFallback(visible: boolean): void {
+  byId<HTMLButtonElement>('cameraBrowserFallback').hidden = !visible;
+}
+
+function openCameraInBrowser(): void {
+  const url = new URL(window.location.href);
+  url.searchParams.set('camera-browser', '1');
+  const opened = window.open(url.toString(), '_blank');
+  if (opened) {
+    try {
+      opened.opener = null;
+    } catch {
+      // Cross-context restrictions can prevent touching opener; the new tab still opened.
+    }
+  } else {
+    setText('cameraMessage', 'iOS blocked the browser handoff. Open the Visual Sensor Studio website directly in Edge and use Enable Camera there.');
+  }
+}
+
 async function initializeFusion(): Promise<void> {
   const container = byId('fusionScene');
   const resetButton = byId<HTMLButtonElement>('resetViewButton');
@@ -120,6 +139,7 @@ async function startCamera(): Promise<void> {
   overlay.hidden = false;
   overlay.textContent = 'Requesting Camera…';
   switchButton.disabled = true;
+  setBrowserCameraFallback(false);
   setChip('cameraChip', 'warn', 'Camera requesting…');
 
   try {
@@ -129,15 +149,20 @@ async function startCamera(): Promise<void> {
     overlay.hidden = true;
     switchButton.disabled = false;
     parallaxButton.disabled = false;
-    setText('cameraMessage', 'Camera is live. The installed Edge app may use its own iOS camera permission prompt, separate from a normal browser tab.');
+    setBrowserCameraFallback(false);
+    setText('cameraMessage', isStandalone()
+      ? 'Camera is live inside the installed app.'
+      : 'Camera is live in browser mode.');
   } catch (error) {
+    const standalone = isStandalone();
     setChip('cameraChip', 'warn', 'Camera needs attention');
     button.textContent = 'Retry Camera';
     overlay.hidden = false;
     overlay.textContent = 'Retry Camera';
     switchButton.disabled = true;
     parallaxButton.disabled = true;
-    setText('cameraMessage', describeCameraError(error, isStandalone()));
+    setBrowserCameraFallback(standalone);
+    setText('cameraMessage', describeCameraError(error, standalone));
   } finally {
     button.disabled = false;
     overlay.disabled = false;
@@ -152,13 +177,16 @@ async function switchCamera(): Promise<void> {
     const facing = await camera.switchCamera();
     setChip('cameraChip', 'good', `Camera ${facing === 'environment' ? 'rear' : 'front'}`);
     overlay.hidden = true;
+    setBrowserCameraFallback(false);
     setText('cameraMessage', `Switched to the ${facing === 'environment' ? 'rear' : 'front'} camera.`);
   } catch (error) {
+    const standalone = isStandalone();
     setChip('cameraChip', 'warn', 'Camera needs attention');
     overlay.hidden = false;
     overlay.textContent = 'Retry Camera';
     byId<HTMLButtonElement>('captureParallaxButton').disabled = true;
-    setText('cameraMessage', describeCameraError(error, isStandalone()));
+    setBrowserCameraFallback(standalone);
+    setText('cameraMessage', describeCameraError(error, standalone));
   } finally {
     button.disabled = !camera.active;
   }
@@ -346,6 +374,7 @@ function downloadSnapshot(): void {
 
 byId<HTMLButtonElement>('cameraButton').addEventListener('click', () => void startCamera());
 byId<HTMLButtonElement>('cameraOverlayButton').addEventListener('click', () => void startCamera());
+byId<HTMLButtonElement>('cameraBrowserFallback').addEventListener('click', openCameraInBrowser);
 byId<HTMLButtonElement>('switchCameraButton').addEventListener('click', () => void switchCamera());
 byId<HTMLButtonElement>('motionButton').addEventListener('click', () => void enableMotion());
 byId<HTMLButtonElement>('gpsButton').addEventListener('click', toggleGps);
@@ -359,18 +388,27 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-vision-
   button.addEventListener('click', () => updateVisionMode(button.dataset.visionMode as VisionMode));
 }
 
+const browserCameraMode = new URL(window.location.href).searchParams.get('camera-browser') === '1';
 setText('secureContextValue', window.isSecureContext ? 'Secure ✓' : 'Needs HTTPS');
-setChip('pwaChip', 'good', isStandalone() ? 'PWA installed' : 'PWA ready');
+setChip('pwaChip', 'good', isStandalone() ? 'PWA installed' : browserCameraMode ? 'Browser camera mode' : 'PWA ready');
 updateVisionMode('camera');
 requestAnimationFrame((time) => void visionLoop(time));
 void initializeFusion();
+
+if (browserCameraMode && !isStandalone()) {
+  setText('cameraMessage', 'Browser compatibility mode is active. Tap Enable Camera. This uses the browser camera path that already works on your iPhone.');
+}
 
 if (!window.isSecureContext) {
   setChip('cameraChip', 'warn', 'Camera needs HTTPS');
   setText('cameraMessage', 'Camera access requires a secure HTTPS context.');
 } else if (!navigator.mediaDevices?.getUserMedia) {
+  const standalone = isStandalone();
   setChip('cameraChip', 'warn', 'Camera API unavailable');
-  setText('cameraMessage', 'This browser context is not exposing getUserMedia. Try opening the same URL directly in Edge to compare with the installed app.');
+  setBrowserCameraFallback(standalone);
+  setText('cameraMessage', standalone
+    ? 'This installed iOS web-app context is not exposing getUserMedia. Use Open Live Camera in Browser.'
+    : 'This browser context is not exposing getUserMedia.');
 }
 
 if ('serviceWorker' in navigator) {
