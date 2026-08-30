@@ -70,11 +70,9 @@
           <div class="button-row">
             <button class="primary-button" id="cameraButton" type="button">Enable Camera</button>
             <button class="secondary-button" id="switchCameraButton" type="button" disabled>Switch Camera</button>
-            <button class="secondary-button" id="nativePhotoButton" type="button">📸 Native Photo</button>
-            <input id="nativePhotoInput" type="file" accept="image/*" capture="environment" hidden />
             <button class="secondary-button camera-browser-fallback" id="cameraBrowserFallback" type="button" hidden>Open Live Camera in Edge</button>
           </div>
-          <p class="helper" id="cameraMessage">Tap Enable Camera for live video. If standalone iOS blocks the live stream, Native Photo uses the iPhone capture flow and still feeds Relief, Edges and parallax.</p>
+          <p class="helper" id="cameraMessage">Tap Enable Camera for live video. If standalone iOS blocks the live stream, the Edge browser fallback will appear.</p>
         </article>
 
         <article class="panel scene-panel">
@@ -128,7 +126,7 @@
           <div><p class="section-kicker">EXPERIMENTAL DEPTH</p><h2>Two-Frame Parallax Scan</h2></div>
           <span class="small-badge warning">Relative, not LiDAR</span>
         </div>
-        <p class="lead-copy">Capture A, slide the phone sideways about 5–10 cm while keeping the scene framed, then analyze B. With Native Photo, take/load A, tap Capture A, then take/load B and tap Analyze B.</p>
+        <p class="lead-copy">Capture A, slide the phone sideways about 5–10 cm while keeping the scene framed, then analyze B. Bigger disparity generally corresponds to nearer structure.</p>
         <div class="parallax-layout">
           <div class="capture-pair">
             <figure><canvas id="referenceCanvas"></canvas><figcaption>A · reference</figcaption></figure>
@@ -140,7 +138,7 @@
           <button class="primary-button" id="captureParallaxButton" type="button" disabled>Capture A</button>
           <button class="secondary-button" id="analyzeParallaxButton" type="button" disabled>Analyze B</button>
         </div>
-        <p class="helper" id="parallaxMessage">Enable live camera or load a Native Photo first. Textured scenes work better than blank walls, glass, or shiny surfaces.</p>
+        <p class="helper" id="parallaxMessage">Enable the live camera first. Textured scenes work better than blank walls, glass, or shiny surfaces.</p>
       </section>
 
       <section class="panel export-panel">
