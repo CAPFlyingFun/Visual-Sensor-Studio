@@ -52,6 +52,7 @@
           <div class="vision-stage" aria-label="Live camera view">
             <video id="cameraVideo" autoplay muted playsinline></video>
             <canvas id="visionCanvas" hidden></canvas>
+            <button class="camera-enable-overlay" id="cameraOverlayButton" type="button">Enable Camera</button>
             <div class="reticle" aria-hidden="true"></div>
             <div class="horizon-wrap" aria-hidden="true">
               <div id="horizonLine" class="horizon-line"></div>
@@ -65,10 +66,10 @@
           </div>
 
           <div class="button-row">
-            <button class="primary-button" id="cameraButton" type="button">Start Camera</button>
+            <button class="primary-button" id="cameraButton" type="button">Enable Camera</button>
             <button class="secondary-button" id="switchCameraButton" type="button" disabled>Switch Camera</button>
           </div>
-          <p class="helper" id="cameraMessage">Relief is an image-derived surface visualization, not physical depth. The parallax tool below estimates relative depth from camera movement.</p>
+          <p class="helper" id="cameraMessage">Tap Enable Camera and allow access when iOS asks. Installed Edge web apps can have a separate camera-permission state from the normal browser tab.</p>
         </article>
 
         <article class="panel scene-panel">
@@ -77,15 +78,15 @@
               <p class="section-kicker">3D FUSION</p>
               <h2>Sensor Space</h2>
             </div>
-            <button class="icon-button" id="resetViewButton" type="button" title="Reset 3D view">Reset view</button>
+            <button class="icon-button" id="resetViewButton" type="button" title="Reset 3D view" disabled>Reset view</button>
           </div>
-          <div id="fusionScene" class="fusion-scene" aria-label="Interactive 3D sensor visualization"></div>
+          <div id="fusionScene" class="fusion-scene" aria-label="Interactive 3D sensor visualization">Loading interactive 3D sensor view…</div>
           <div class="scene-legend">
             <span><i class="legend-swatch phone"></i> phone orientation</span>
             <span><i class="legend-swatch accel"></i> acceleration</span>
             <span><i class="legend-swatch gps"></i> GPS trail</span>
           </div>
-          <p class="helper">Drag to orbit, pinch to zoom. GPS uses 1 scene unit ≈ 1 meter from the first accepted point. Accelerometer position is not integrated because phone IMUs drift rapidly.</p>
+          <p class="helper" id="sceneMessage">The 3D viewer loads independently. Camera, motion, GPS and parallax controls remain usable even if the 3D module cannot load.</p>
         </article>
       </section>
 
@@ -105,7 +106,7 @@
           </div>
           <div class="wide-readout"><span>Acceleration XYZ</span><strong id="accelValue">—</strong></div>
           <div class="wide-readout"><span>Rotation αβγ</span><strong id="rotationValue">—</strong></div>
-          <p class="helper" id="motionMessage">On iPhone, Safari requires a tap before it can ask for motion/orientation permission.</p>
+          <p class="helper" id="motionMessage">On iPhone, a tap is required before the app can ask for motion/orientation permission.</p>
         </article>
 
         <article class="panel compact-panel">
@@ -158,10 +159,10 @@
         </div>
 
         <div class="button-row">
-          <button class="primary-button" id="captureParallaxButton" type="button">Capture A</button>
+          <button class="primary-button" id="captureParallaxButton" type="button" disabled>Capture A</button>
           <button class="secondary-button" id="analyzeParallaxButton" type="button" disabled>Analyze B</button>
         </div>
-        <p class="helper" id="parallaxMessage">Start the camera first. Textured scenes work better than blank walls, glass, or shiny surfaces.</p>
+        <p class="helper" id="parallaxMessage">Enable the camera first. Textured scenes work better than blank walls, glass, or shiny surfaces.</p>
       </section>
 
       <section class="panel export-panel">
@@ -178,7 +179,7 @@
     </main>
 
     <footer>
-      <strong>Visual Sensor Studio v0.1</strong>
+      <strong>Visual Sensor Studio v0.1.1</strong>
       <span>Experimental instrument, not calibrated survey or safety equipment.</span>
     </footer>
   </div>
