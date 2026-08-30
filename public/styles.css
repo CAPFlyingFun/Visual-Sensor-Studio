@@ -121,6 +121,27 @@ main { display: grid; gap: 14px; }
   object-fit: cover;
 }
 .vision-stage canvas { image-rendering: auto; }
+.camera-enable-overlay {
+  position: absolute;
+  z-index: 6;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  min-width: 190px;
+  min-height: 56px;
+  padding: 0 20px;
+  border: 1px solid rgba(118, 209, 255, 0.72);
+  border-radius: 999px;
+  background: rgba(12, 47, 68, 0.94);
+  color: #f1fbff;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.34);
+  cursor: pointer;
+}
+.camera-enable-overlay::before { content: "🎥"; margin-right: 9px; }
+.camera-enable-overlay:active { transform: translate(-50%, -50%) scale(0.98); }
+.camera-enable-overlay:disabled { opacity: 0.68; }
 .reticle {
   position: absolute;
   left: 50%; top: 50%;
@@ -174,6 +195,15 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
   background: #080d16;
   touch-action: none;
 }
+.fusion-scene[data-state="loading"], .fusion-scene[data-state="fallback"] {
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  text-align: center;
+  color: #91a5b8;
+  line-height: 1.5;
+}
+.fusion-scene[data-state="fallback"] { touch-action: auto; }
 .fusion-scene canvas { display: block; width: 100%; height: 100%; }
 .scene-legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 2px 0; color: #91a5b8; font-size: 0.74rem; }
 .scene-legend span { display: inline-flex; gap: 6px; align-items: center; }
@@ -236,6 +266,7 @@ footer strong { color: #9fb2c3; }
   .vision-panel, .scene-panel, .compact-panel, .parallax-panel, .export-panel { padding: 12px; border-radius: 17px; }
   .topbar { padding-left: 2px; padding-right: 2px; }
   .subtitle { font-size: 0.85rem; }
+  .camera-enable-overlay { min-width: 175px; min-height: 52px; padding: 0 16px; }
   .fusion-scene { height: 320px; }
   .readout-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .readout strong { font-size: 0.78rem; }
