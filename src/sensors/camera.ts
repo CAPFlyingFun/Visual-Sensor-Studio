@@ -165,6 +165,7 @@ interface CameraEngine {
   startFrameDelivery(listener: (frame: { now: number; mediaTime: number; presentedFrames?: number }) => void): boolean;
   stopFrameDelivery(): void;
   videoInputs(): Promise<{ available: boolean; devices: VideoInput[] }>;
+  applyCameraSetting(name: string, value: unknown): Promise<{ applied: boolean; reason?: string }>;
   readonly frameRateInfo: FrameRateInfo;
   readonly capabilityReport: CapabilityReport;
   readonly attempts: CameraAttempt[];
@@ -244,6 +245,15 @@ export class CameraController {
 
   get frameRateInfo(): FrameRateInfo {
     return engine().frameRateInfo;
+  }
+
+  /** Apply a manual control the track advertised. Reports refusal rather than hiding it. */
+  async applyCameraSetting(name: string, value: unknown): Promise<{ applied: boolean; reason?: string }> {
+    try {
+      return await engine().applyCameraSetting(name, value);
+    } catch {
+      return { applied: false, reason: 'unavailable' };
+    }
   }
 
   /** Video inputs WebKit reports. Labels appear only after a permission grant. */

@@ -1,4 +1,4 @@
-const CACHE = 'visual-sensor-studio-v0.4.4';
+const CACHE = 'visual-sensor-studio-v0.5.0';
 const APP_SHELL = [
   './',
   './index.html',
@@ -73,18 +73,19 @@ self.addEventListener('fetch', (event) => {
     // The camera path is served network-first so a stale cached copy can never
     // be the reason the camera misbehaves. A cached copy is still kept and
     // still answers when the network is gone, so offline use is unaffected.
+    // Every compiled module is network-first, not an enumerated list of them.
+    // The list went stale the moment new modules were added, so a fresh
+    // main.js could run against a cached older module — which showed up as a
+    // diagnostics row reading empty because the field it wanted did not exist
+    // in the version actually loaded. Mixed module versions are much worse
+    // than a slightly larger network-first set.
     const networkFirst = event.request.mode === 'navigate'
+      || url.pathname.includes('/app/')
       || url.pathname.endsWith('/index.html')
       || url.pathname.endsWith('/styles.css')
       || url.pathname.endsWith('/settings.css')
       || url.pathname.endsWith('/camera-bootstrap.js')
-      || url.pathname.endsWith('/manifest.webmanifest')
-      || url.pathname.endsWith('/app/main.js')
-      || url.pathname.endsWith('/app/sensors/camera.js')
-      || url.pathname.endsWith('/app/sensors/zoom.js')
-      || url.pathname.endsWith('/app/vision/frame-processing.js')
-      || url.pathname.endsWith('/app/vision/frame-source.js')
-      || url.pathname.endsWith('/app/vision/optical-flow.js');
+      || url.pathname.endsWith('/manifest.webmanifest');
 
     if (networkFirst) {
       event.respondWith(

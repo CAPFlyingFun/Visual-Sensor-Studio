@@ -110,6 +110,14 @@ requested with `ideal`+`max`, never `exact` — on WebKit an unsatisfiable
 instead of falling back. Rate changes use `applyConstraints` on the live
 track, so they cannot re-prompt for permission or drop the stream.
 
+**Auto Max asks for the rate the active configuration advertises**, not a
+hopeful 240. Measured on a device whose track advertised 1-60: requesting 240
+delivered 38.3 fps, while requesting 120 delivered 51.6 and requesting 60
+delivered 50. Asking for a rate the hardware cannot reach is not politely
+ignored — it destabilises delivery and makes the result worse. Capabilities
+are only readable once a track exists, so the first request uses a sane 60 and
+the advertised ceiling is applied once known.
+
 **Run the benchmark** (Settings → Camera Performance) to find out what this
 device really does. It applies 30/60/120/240 to the live track, counts
 presented frames for each, and reports `accepted`, `negotiated`, `unsupported`
@@ -159,6 +167,30 @@ accumulator and discarded, so memory is constant in exposure length.
 
 Stability is measured from the IMU rather than assumed, so a stack disturbed
 by a knock is flagged instead of silently blurred.
+
+## Full screen view and capture
+
+Tap the camera preview to open a full-screen view laid out like a phone camera
+app: mode buttons, zoom stops, a shutter and a switch-camera control. It
+re-presents the SAME pipeline output rather than running a second one, so
+opening it costs one canvas blit per analysed frame and cannot change what the
+instruments read.
+
+The shutter saves whatever is on screen — the processed view in a filter mode,
+the raw camera otherwise — as a PNG. Nothing is uploaded. Video and GIF
+recording are not built yet.
+
+## Manual camera controls
+
+Torch, white balance and focus distance appear only when the live track
+actually advertises them, because a control for a capability WebKit does not
+expose is a button that does nothing. A control the camera refuses says so
+rather than silently failing.
+
+What a given device offers is visible under Settings → Manual Camera. One
+iPhone reported zoom 0.5-10, torch, white balance (manual/continuous) and
+frame rate 1-60, with exposure time, ISO and exposure compensation not exposed
+at all.
 
 ## Important limits
 

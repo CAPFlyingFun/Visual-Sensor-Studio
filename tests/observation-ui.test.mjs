@@ -32,7 +32,11 @@ test('a high frame rate is never requested with an exact constraint', () => {
   // On WebKit an unsatisfiable `exact` fails the whole getUserMedia call, so
   // asking for exact 240 would take the camera down instead of falling back.
   assert.match(cameraSource, /function frameRateConstraint\(/);
-  assert.match(cameraSource, /ideal: 240, max: 240/);
+  // ideal+max, never exact — and Auto Max asks for the advertised ceiling
+  // rather than a fixed 240, since over-asking degrades delivery on real
+  // hardware rather than being politely ignored.
+  assert.match(cameraSource, /return \{ ideal: target, max: target \};/);
+  assert.match(cameraSource, /return \{ ideal: value, max: value \};/);
   assert.doesNotMatch(cameraSource, /exact:\s*240/);
   assert.doesNotMatch(cameraSource, /frameRate:\s*\{\s*exact:/);
   // The last profile drops the rate request entirely, so an unsupported rate
@@ -308,4 +312,61 @@ test('only a genuinely rendered frame counts as analysis', () => {
   assert.match(mainSource, /function processVisionFrame\(timestamp: number\): boolean/);
   assert.match(mainSource, /if \(!frame\) return false;/);
   assert.match(mainSource, /if \(processVisionFrame\(now\)\) \{/);
+});
+
+test('Auto Max asks for the advertised ceiling, not a hopeful 240', () => {
+  // Device measurement on a track advertising 1-60: requesting 240 delivered
+  // 38.3 fps while 120 delivered 51.6 and 60 delivered 50. Asking for a rate
+  // the hardware cannot reach is not free — it destabilises delivery.
+  assert.match(cameraSource, /AUTO_FRAME_RATE_FALLBACK = 60;/);
+  assert.match(cameraSource, /frameRateCapability\.max\s*\n?\s*:\s*0;/);
+  const constraint = cameraSource.slice(cameraSource.indexOf('function frameRateConstraint('));
+  const body = constraint.slice(0, constraint.indexOf('\n  }'));
+  assert.doesNotMatch(body, /ideal: 240/, 'Auto Max must not blindly request 240');
+  // Capabilities are only readable once the track exists, so it re-applies.
+  assert.match(cameraSource, /requestedFrameRate === 'auto'\s*\n\s*&& frameRateCapability/);
+});
+
+test('every compiled module is served network-first', () => {
+  // An enumerated list went stale the moment new modules were added, so a
+  // fresh main.js could run against a cached older module — which surfaced as
+  // a diagnostics row rendering empty because the field did not exist there.
+  assert.match(swSource, /url\.pathname\.includes\('\/app\/'\)/);
+  assert.doesNotMatch(swSource, /endsWith\('\/app\/vision\/optical-flow\.js'\)/);
+});
+
+test('a missing diagnostic value renders as a placeholder, not an empty box', () => {
+  // Assigning undefined to textContent yields an empty element rather than a
+  // visible error, so a field gone missing looks like a blank readout.
+  assert.match(mainSource, /value === undefined \|\| value === null \? '—' : value/);
+});
+
+test('the full-screen viewer re-presents the pipeline rather than duplicating it', () => {
+  for (const id of ['cameraViewer', 'viewerCanvas', 'viewerModes', 'viewerZoom', 'viewerShutterButton', 'viewerCloseButton']) {
+    assert.match(htmlSource, new RegExp(`id=["']${id}["']`), `missing #${id}`);
+  }
+  assert.match(mainSource, /function paintViewer\(/);
+  // It must draw the existing output, never capture or analyse its own frames.
+  const paint = mainSource.slice(mainSource.indexOf('function paintViewer('));
+  const body = paint.slice(0, paint.indexOf('\n}'));
+  assert.doesNotMatch(body, /captureFrame|processVisionFrame|getUserMedia/);
+  assert.match(body, /viewerContext\.drawImage/);
+});
+
+test('manual controls are hidden unless the track advertises them', () => {
+  // A control for a capability WebKit does not expose is a button that does
+  // nothing, so it is hidden rather than shown disabled.
+  assert.match(mainSource, /function syncManualControls\(/);
+  assert.match(mainSource, /fields\.torch\?\.state === 'supported'/);
+  assert.match(mainSource, /wbWrap\.hidden = wbOptions\.length === 0;/);
+  assert.match(mainSource, /focusWrap\.hidden = !hasRange;/);
+  // A refused control must say so rather than silently doing nothing.
+  assert.match(mainSource, /The torch was refused by the camera/);
+});
+
+test('saved frames match what is on screen and stay on the device', () => {
+  assert.match(mainSource, /function captureStill\(/);
+  assert.match(mainSource, /const usingCanvas = !visionCanvas\.hidden;/);
+  assert.match(mainSource, /It stays on this device/);
+  assert.doesNotMatch(mainSource, /fetch\([^)]*toBlob|upload/i);
 });

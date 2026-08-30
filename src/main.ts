@@ -42,7 +42,7 @@ import {
 import { StabilityMonitor } from './sensors/stability.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 
-const APP_VERSION = '0.4.4';
+const APP_VERSION = '0.5.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -96,7 +96,10 @@ function byId<T extends HTMLElement>(id: string): T {
 }
 
 function setText(id: string, value: string): void {
-  byId(id).textContent = value;
+  // Assigning undefined to textContent yields an empty element rather than a
+  // visible error, so a field that has gone missing looks like a blank readout
+  // instead of the version mismatch it actually is.
+  byId(id).textContent = value === undefined || value === null ? '—' : value;
 }
 
 function setChip(id: string, state: 'idle' | 'good' | 'warn', text: string): void {
@@ -494,6 +497,7 @@ function applyCameraStatus(status: CameraStatus): void {
   const parallaxButton = byId<HTMLButtonElement>('captureParallaxButton');
 
   zoomState = status.zoom;
+  if (viewerOpen) buildViewerControls();
   const facingLabel = status.facing === 'environment' ? 'rear' : 'front';
   const live = status.state === 'live';
 
@@ -524,6 +528,7 @@ function applyCameraStatus(status: CameraStatus): void {
       button.disabled = false;
       button.textContent = 'Restart Camera';
       setBrowserCameraFallback(false);
+      syncManualControls();
       break;
 
     case 'suspended':
@@ -534,6 +539,7 @@ function applyCameraStatus(status: CameraStatus): void {
       button.disabled = false;
       button.textContent = 'Resume Camera';
       resetVisionState();
+      if (viewerOpen) setViewerOpen(false);
       if (status.reason) setText('cameraMessage', status.reason);
       break;
 
@@ -753,6 +759,73 @@ function installPinchZoom(): void {
   for (const name of ['gesturestart', 'gesturechange', 'gestureend']) {
     stage.addEventListener(name, (event) => event.preventDefault());
   }
+
+  // A tap on the preview opens the full-screen view. Guarded so a pinch, a
+  // drag, or a press on the Enable Camera overlay is not mistaken for one.
+  let tapStart = 0;
+  let tapX = 0;
+  let tapY = 0;
+  stage.addEventListener('pointerdown', (event) => {
+    tapStart = event.timeStamp;
+    tapX = event.clientX;
+    tapY = event.clientY;
+  });
+  stage.addEventListener('pointerup', (event) => {
+    if (zoomPointers.size > 0) return;
+    if (event.timeStamp - tapStart > 400) return;
+    if (Math.hypot(event.clientX - tapX, event.clientY - tapY) > 12) return;
+    if ((event.target as HTMLElement).closest('button')) return;
+    if (!camera.active) return;
+    setViewerOpen(true);
+  });
+}
+
+/** Also open the viewer from the pinch-zoom stage on non-touch pointers. */
+function installViewerGestures(): void {
+  const viewer = byId('cameraViewer');
+  for (const name of ['gesturestart', 'gesturechange', 'gestureend']) {
+    viewer.addEventListener(name, (event) => event.preventDefault());
+  }
+
+  // Pinch inside the viewer drives the same zoom value as everywhere else.
+  const stage = byId('viewerStage');
+  const points = new Map<number, { x: number; y: number }>();
+  let startDistance = 0;
+  let startZoom = 1;
+
+  const distance = (): number => {
+    const list = [...points.values()];
+    return list.length < 2 ? 0 : Math.hypot(list[0].x - list[1].x, list[0].y - list[1].y);
+  };
+
+  stage.addEventListener('pointerdown', (event) => {
+    if (event.pointerType !== 'touch') return;
+    points.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (points.size === 2) {
+      startDistance = distance();
+      startZoom = zoomState.value;
+    }
+  });
+  stage.addEventListener('pointermove', (event) => {
+    if (event.pointerType !== 'touch' || !points.has(event.pointerId)) return;
+    points.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (points.size !== 2 || startDistance <= 0) return;
+    event.preventDefault();
+    const scale = distance() / startDistance;
+    if (Number.isFinite(scale) && scale > 0) void requestZoom(startZoom * scale);
+  }, { passive: false });
+
+  const release = (event: PointerEvent): void => {
+    points.delete(event.pointerId);
+    if (points.size < 2) startDistance = 0;
+  };
+  stage.addEventListener('pointerup', release);
+  stage.addEventListener('pointercancel', release);
+
+  // Escape closes it, matching every other full-screen surface.
+  window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && viewerOpen) setViewerOpen(false);
+  });
 }
 
 async function enableMotion(): Promise<void> {
@@ -1133,6 +1206,7 @@ function processVisionFrame(timestamp: number): boolean {
   renderMetrics();
   renderObservationMetrics();
   drawHistogram();
+  paintViewer();
   return true;
 }
 
@@ -1627,6 +1701,214 @@ async function refreshStorageEstimate(): Promise<void> {
   }
 }
 
+let viewerOpen = false;
+let viewerContext: CanvasRenderingContext2D | null = null;
+let hintTimer = 0;
+
+/**
+ * Mirror the analysed frame into the full-screen canvas.
+ *
+ * The viewer is a second presentation of the SAME pipeline output, not a
+ * second pipeline: nothing here captures or analyses anything, so opening it
+ * costs one canvas blit per analysed frame and cannot change what the
+ * instruments read.
+ */
+function paintViewer(): void {
+  if (!viewerOpen) return;
+  const target = byId<HTMLCanvasElement>('viewerCanvas');
+  viewerContext ??= target.getContext('2d');
+  if (!viewerContext) return;
+
+  const source: CanvasImageSource = visionCanvas.hidden ? video : visionCanvas;
+  const width = visionCanvas.hidden ? video.videoWidth : visionCanvas.width;
+  const height = visionCanvas.hidden ? video.videoHeight : visionCanvas.height;
+  if (!width || !height) return;
+
+  if (target.width !== width || target.height !== height) {
+    target.width = width;
+    target.height = height;
+  }
+  viewerContext.drawImage(source, 0, 0, width, height);
+
+  const rates = frameRateMeter.report;
+  setText('viewerStats', `${rates.deliveredFps.toFixed(0)} fps in · ${rates.processingFps.toFixed(0)} fps analysed · ${zoomState.value.toFixed(1)}×`);
+  setText('viewerMode', MODE_LABELS[visionMode].split(' • ')[0]);
+}
+
+function buildViewerControls(): void {
+  const modes = byId('viewerModes');
+  if (!modes.childElementCount) {
+    for (const [mode, label] of Object.entries(MODE_LABELS) as [VisionMode, string][]) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.viewerMode = mode;
+      button.textContent = label.split(' • ')[0];
+      button.addEventListener('click', () => {
+        updateVisionMode(mode);
+        buildViewerControls();
+      });
+      modes.appendChild(button);
+    }
+  }
+  for (const button of modes.querySelectorAll<HTMLButtonElement>('[data-viewer-mode]')) {
+    button.classList.toggle('active', button.dataset.viewerMode === visionMode);
+  }
+
+  const zoom = byId('viewerZoom');
+  const stops = zoomState.kind === 'none' ? [] : zoomPresetStops(zoomState.min, zoomState.max);
+  const signature = stops.join(',');
+  if (zoom.dataset.signature !== signature) {
+    zoom.dataset.signature = signature;
+    zoom.textContent = '';
+    for (const stop of stops) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.zoom = String(stop);
+      button.textContent = `${stop % 1 === 0 ? stop.toFixed(0) : stop.toFixed(1)}×`;
+      button.addEventListener('click', () => void requestZoom(stop));
+      zoom.appendChild(button);
+    }
+  }
+  for (const button of zoom.querySelectorAll<HTMLButtonElement>('[data-zoom]')) {
+    button.classList.toggle('active', Math.abs(Number(button.dataset.zoom) - zoomState.value) < 0.05);
+  }
+}
+
+function setViewerOpen(open: boolean): void {
+  if (open && !camera.active) {
+    setText('cameraMessage', 'Enable the camera before opening the full screen view.');
+    return;
+  }
+
+  viewerOpen = open;
+  byId('cameraViewer').hidden = !open;
+  document.body.style.overflow = open ? 'hidden' : '';
+
+  if (!open) return;
+  buildViewerControls();
+  syncTorchButtons();
+
+  const hint = byId('viewerHint');
+  hint.style.opacity = '1';
+  window.clearTimeout(hintTimer);
+  hintTimer = window.setTimeout(() => { hint.style.opacity = '0'; }, 2600);
+  paintViewer();
+}
+
+/**
+ * Save the frame currently on screen.
+ *
+ * Captures whatever is being displayed — the processed view in a filter mode,
+ * the raw camera otherwise — so the file matches what was on screen rather
+ * than a different rendering of it. The image never leaves the device.
+ */
+function captureStill(): void {
+  const usingCanvas = !visionCanvas.hidden;
+  const width = usingCanvas ? visionCanvas.width : video.videoWidth;
+  const height = usingCanvas ? visionCanvas.height : video.videoHeight;
+  if (!width || !height) {
+    setText('cameraMessage', 'No frame is available to save yet.');
+    return;
+  }
+
+  const target = document.createElement('canvas');
+  target.width = width;
+  target.height = height;
+  const context = target.getContext('2d');
+  if (!context) return;
+  context.drawImage(usingCanvas ? visionCanvas : video, 0, 0, width, height);
+
+  target.toBlob((blob) => {
+    if (!blob) {
+      setText('cameraMessage', 'The frame could not be encoded.');
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `visual-sensor-${visionMode}-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setText('cameraMessage', `Saved a ${width}×${height} ${visionMode} frame. It stays on this device.`);
+  }, 'image/png');
+}
+
+// --- Manual camera controls ---------------------------------------------
+
+let torchOn = false;
+
+function syncTorchButtons(): void {
+  for (const id of ['torchToggle', 'viewerTorchButton']) {
+    const button = document.getElementById(id) as HTMLButtonElement | null;
+    if (button) button.setAttribute('aria-pressed', String(torchOn));
+  }
+}
+
+async function toggleTorch(): Promise<void> {
+  const next = !torchOn;
+  const result = await camera.applyCameraSetting('torch', next);
+  if (result.applied) {
+    torchOn = next;
+  } else {
+    setText('cameraMessage', `The torch was refused by the camera (${result.reason ?? 'unknown'}).`);
+  }
+  syncTorchButtons();
+}
+
+/**
+ * Show only the manual controls the live track actually advertises.
+ *
+ * A control for a capability WebKit does not expose would be a button that
+ * does nothing, so an unsupported control is hidden rather than disabled.
+ */
+function syncManualControls(): void {
+  const report = camera.capabilityReport;
+  const fields = report.available ? report.fields : {};
+
+  const torchSupported = fields.torch?.state === 'supported';
+  for (const id of ['torchToggle', 'viewerTorchButton']) {
+    const button = document.getElementById(id) as HTMLButtonElement | null;
+    if (button) button.hidden = !torchSupported;
+  }
+  if (!torchSupported) torchOn = false;
+
+  const wbField = fields.whiteBalanceMode;
+  const wbWrap = byId('whiteBalanceWrap');
+  const wbSelect = byId<HTMLSelectElement>('whiteBalanceMode');
+  const wbOptions = wbField?.state === 'supported' && Array.isArray(wbField.options) ? wbField.options : [];
+  wbWrap.hidden = wbOptions.length === 0;
+  if (wbOptions.length && wbSelect.dataset.signature !== wbOptions.join(',')) {
+    wbSelect.dataset.signature = wbOptions.join(',');
+    wbSelect.textContent = '';
+    for (const option of wbOptions) {
+      const element = document.createElement('option');
+      element.value = String(option);
+      element.textContent = String(option);
+      wbSelect.appendChild(element);
+    }
+    const current = report.settings.whiteBalanceMode;
+    if (typeof current === 'string') wbSelect.value = current;
+  }
+
+  const focusField = fields.focusDistance;
+  const focusWrap = byId('focusDistanceWrap');
+  const focusInput = byId<HTMLInputElement>('focusDistance');
+  const hasRange = focusField?.state === 'supported'
+    && typeof focusField.min === 'number'
+    && typeof focusField.max === 'number';
+  focusWrap.hidden = !hasRange;
+  if (hasRange) {
+    focusInput.min = String(focusField.min);
+    focusInput.max = String(focusField.max);
+    focusInput.step = String(focusField.step ?? (focusField.max! - focusField.min!) / 100);
+  }
+
+  byId('manualRow').hidden = false;
+  syncTorchButtons();
+}
+
 /** Live histogram, drawn as a compact luminance plot. */
 function drawHistogram(): void {
   const canvas = byId<HTMLCanvasElement>('histogramCanvas');
@@ -2068,6 +2350,19 @@ on('copyDiagnosticsButton', 'click', () => void copyDiagnostics());
 on('zoomSlider', 'input', (event) => {
   void requestZoom(Number((event.target as HTMLInputElement).value));
 });
+on('captureStillButton', 'click', captureStill);
+on('expandViewButton', 'click', () => setViewerOpen(true));
+on('viewerCloseButton', 'click', () => setViewerOpen(false));
+on('viewerShutterButton', 'click', captureStill);
+on('viewerSwitchButton', 'click', () => void switchCamera());
+on('torchToggle', 'click', () => void toggleTorch());
+on('viewerTorchButton', 'click', () => void toggleTorch());
+on('whiteBalanceMode', 'change', (event) => {
+  void camera.applyCameraSetting('whiteBalanceMode', (event.target as HTMLSelectElement).value);
+});
+on('focusDistance', 'input', (event) => {
+  void camera.applyCameraSetting('focusDistance', Number((event.target as HTMLInputElement).value));
+});
 on('runBenchmarkButton', 'click', () => void runBenchmark());
 on('resetPeakButton', 'click', () => {
   frameRateMeter.resetPeak();
@@ -2166,6 +2461,7 @@ setChip('pwaChip', 'good', isStandalone() ? 'PWA installed' : browserCameraMode 
 syncSettingsControls();
 updateVisionMode('camera');
 installPinchZoom();
+installViewerGestures();
 camera.subscribe(applyCameraStatus);
 renderMetrics();
 requestAnimationFrame(fallbackVisionLoop);

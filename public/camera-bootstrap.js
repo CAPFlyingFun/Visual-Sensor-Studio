@@ -63,6 +63,15 @@
   const MUTE_GRACE_MS = 1400;
   const DIGITAL_ZOOM_MAX = 5;
   /**
+   * Rate requested by Auto Max before any capability has been read.
+   *
+   * 60 rather than 240: the first request happens before getCapabilities() can
+   * be consulted, and over-asking measurably degrades delivery. Once the track
+   * is live its advertised maximum is read and applied, so a device that can
+   * genuinely do more still gets it.
+   */
+  const AUTO_FRAME_RATE_FALLBACK = 60;
+  /**
    * Floor for the DIGITAL zoom fallback.
    *
    * Digital zoom is a centre crop, and there is no cropping outward: below 1x
@@ -634,9 +643,19 @@
    */
   function frameRateConstraint(requested) {
     if (requested === 'auto') {
-      // Ask high and let WebKit negotiate down. Whatever it settles on is
-      // measured afterwards rather than assumed.
-      return { ideal: 240, max: 240 };
+      // Ask for the highest rate the ACTIVE configuration actually advertises,
+      // not a hopeful 240.
+      //
+      // Device measurement: on a track advertising 1-60, requesting 240
+      // delivered 38.3 fps while requesting 120 delivered 51.6 and requesting
+      // 60 delivered 50. Asking for a rate the hardware cannot reach does not
+      // get ignored — it destabilises delivery and makes things worse. Auto
+      // Max means the maximum useful rate, so ask for the one on offer.
+      const advertised = frameRateCapability && Number.isFinite(frameRateCapability.max)
+        ? frameRateCapability.max
+        : 0;
+      const target = advertised > 0 ? advertised : AUTO_FRAME_RATE_FALLBACK;
+      return { ideal: target, max: target };
     }
     const value = Number(requested);
     if (!Number.isFinite(value) || value <= 0) return undefined;
@@ -938,6 +957,19 @@
         // Re-arm the standing subscription: releaseStream() stopped it at the
         // top of this call, and nothing else is going to put it back.
         if (persistentDeliveryListener) startFrameDelivery(persistentDeliveryListener);
+        // Capabilities are only readable once the track exists, so Auto Max
+        // re-applies here against the ceiling the device actually advertises.
+        if (requestedFrameRate === 'auto'
+          && frameRateCapability
+          && Number.isFinite(frameRateCapability.max)
+          && frameRateCapability.max > AUTO_FRAME_RATE_FALLBACK
+          && videoTrack
+          && typeof videoTrack.applyConstraints === 'function') {
+          const ceiling = frameRateCapability.max;
+          void videoTrack.applyConstraints({ frameRate: { ideal: ceiling, max: ceiling } })
+            .then(readFrameRateCapability)
+            .catch(() => undefined);
+        }
         stage = 'live';
         settleAttempt('live');
         setState('live', '');
@@ -1130,6 +1162,26 @@
           reason: errorName(error) || 'refused',
           reported: negotiatedFrameRate
         };
+      }
+    },
+
+    /**
+     * Apply a manual camera control to the live track.
+     *
+     * Only ever called for a capability the track advertised, and it reports
+     * the refusal rather than swallowing it — a control that silently does
+     * nothing is worse than one that says it could not.
+     */
+    async applyCameraSetting(name, value) {
+      const track = videoTrack;
+      if (!track || typeof track.applyConstraints !== 'function') {
+        return { applied: false, reason: 'no live track' };
+      }
+      try {
+        await track.applyConstraints({ advanced: [{ [name]: value }] });
+        return { applied: true };
+      } catch (error) {
+        return { applied: false, reason: errorName(error) || 'refused' };
       }
     },
 

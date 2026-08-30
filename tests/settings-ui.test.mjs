@@ -49,10 +49,10 @@ test('service worker accepts immediate activation request', () => {
   assert.match(swSource, /skipWaiting\(\)/);
 });
 
-test('settings version is 0.4.4 everywhere it is stated', () => {
-  assert.match(htmlSource, /Visual Sensor Studio v0\.4\.4/);
-  assert.match(mainSource, /APP_VERSION\s*=\s*['"]0\.4\.4['"]/);
-  assert.match(swSource, /visual-sensor-studio-v0\.4\.4/);
+test('settings version is 0.5.0 everywhere it is stated', () => {
+  assert.match(htmlSource, /Visual Sensor Studio v0\.5\.0/);
+  assert.match(mainSource, /APP_VERSION\s*=\s*['"]0\.5\.0['"]/);
+  assert.match(swSource, /visual-sensor-studio-v0\.5\.0/);
 });
 
 test('the service worker update check bypasses the HTTP cache', () => {
@@ -64,7 +64,10 @@ test('the service worker update check bypasses the HTTP cache', () => {
 
 test('camera assets are served network-first so a stale copy cannot linger', () => {
   assert.match(swSource, /networkFirst[\s\S]*camera-bootstrap\.js/);
-  assert.match(swSource, /networkFirst[\s\S]*app\/sensors\/camera\.js/);
+  // Every compiled module, not an enumerated list that goes stale as soon as a
+  // module is added — a fresh main.js running against a cached older module is
+  // a far worse failure than a slightly larger network-first set.
+  assert.match(swSource, /url\.pathname\.includes\('\/app\/'\)/);
   assert.match(swSource, /cache:\s*['"]no-store['"]/);
   // Offline use must survive: a cached copy still answers when fetch fails.
   assert.match(swSource, /\.catch\(\(\)\s*=>\s*caches\.match\(event\.request\)\)/);
