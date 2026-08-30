@@ -29,8 +29,9 @@ test('camera startup includes a generic video fallback after preferred rear-came
   assert.match(cameraSource, /requestProfiles/);
 });
 
-test('standalone camera UI provides a browser launch fallback', () => {
+test('standalone camera UI hands off directly to Edge instead of opening another PWA window', () => {
   assert.match(htmlSource, /id=["']cameraBrowserFallback["']/);
   assert.match(mainSource, /cameraBrowserFallback/);
-  assert.match(mainSource, /window\.open\(/);
+  assert.match(mainSource, /microsoft-edge-https:\/\//);
+  assert.doesNotMatch(mainSource, /window\.open\(url\.toString\(\),\s*['"]_blank['"]\)/);
 });
