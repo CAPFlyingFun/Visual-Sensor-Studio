@@ -99,9 +99,12 @@ test('the app keeps its own URL stable so WebKit cannot drop the capture grant',
   // request, rather than left in the address bar for the whole session.
   assert.match(mainSource, /searchParams\.has\(['"]refresh['"]\)/);
   assert.match(mainSource, /history\.replaceState/);
-  const stripIndex = mainSource.indexOf('history.replaceState');
-  const subscribeIndex = mainSource.indexOf('camera.subscribe(applyCameraStatus)');
-  assert.ok(stripIndex >= 0 && subscribeIndex >= 0);
+  // Anchor on the statements themselves, at the start of a line - matching any
+  // mention would also hit these identifiers inside comments.
+  const stripIndex = mainSource.search(/^\s*history\.replaceState\(/m);
+  const subscribeIndex = mainSource.search(/^camera\.subscribe\(applyCameraStatus\);$/m);
+  assert.ok(stripIndex >= 0, 'the refresh parameter must be stripped');
+  assert.ok(subscribeIndex >= 0, 'the camera status subscription must be wired');
   assert.ok(stripIndex < subscribeIndex, 'the URL must be settled before the camera is wired up');
 });
 
@@ -151,7 +154,7 @@ test('pinch zoom and the slider drive the same zoom state', () => {
   assert.match(mainSource, /pinchStartDistance/);
   // Both paths funnel through requestZoom, which clamps and syncs the slider.
   assert.match(mainSource, /requestZoom\(pinchStartZoom \* scale\)/);
-  assert.match(mainSource, /zoomSlider['"]\)\.addEventListener\(['"]input['"]/);
+  assert.match(mainSource, /on\('zoomSlider', 'input'/);
   assert.match(mainSource, /clamp\(value, zoomState\.min, zoomState\.max\)/);
 });
 
@@ -161,4 +164,53 @@ test('the removed native photo fallback has not come back anywhere', () => {
     assert.doesNotMatch(source, /Native Photo/i);
     assert.doesNotMatch(source, /capture=["']environment["']/);
   }
+});
+
+test('a missing element cannot silently kill the rest of the boot wiring', () => {
+  // These used to be bare `byId(...).addEventListener(...)` statements at
+  // module top level. One missing id threw, and because everything below is
+  // also top level the throw skipped the remaining wiring - including
+  // camera.subscribe(applyCameraStatus), which is what makes the camera UI
+  // respond at all. The visible symptom is a button that does nothing, with
+  // no error the user can see.
+  assert.match(mainSource, /function on<K extends keyof HTMLElementEventMap>/);
+  assert.match(mainSource, /bootProblems\.push/);
+  assert.doesNotMatch(mainSource, /byId<HTMLButtonElement>\('\w+'\)\.addEventListener/);
+  assert.doesNotMatch(mainSource, /byId<HTMLSelectElement>\('\w+'\)\.addEventListener/);
+  assert.doesNotMatch(mainSource, /byId<HTMLInputElement>\('\w+'\)\.addEventListener/);
+  // And the problem is reported rather than swallowed.
+  assert.match(mainSource, /bootProblems\.length/);
+});
+
+test('camera attempts are logged across reloads, including calls that never settle', () => {
+  // In-memory state is wiped by any reload, so diagnostics read after a
+  // restart show "idle" regardless of what failed beforehand. The log has to
+  // outlive the page for a failure to still be readable afterwards.
+  assert.match(cameraSource, /ATTEMPT_LOG_KEY/);
+  assert.match(cameraSource, /localStorage\.setItem\(ATTEMPT_LOG_KEY/);
+  assert.match(cameraSource, /function beginAttempt\(/);
+  assert.match(cameraSource, /function settleAttempt\(/);
+  assert.match(cameraSource, /outcome: 'pending'/);
+
+  // The pending record must be written BEFORE getUserMedia is called,
+  // otherwise a call that never settles leaves no trace at all.
+  const begin = cameraSource.indexOf('beginAttempt(i);');
+  const request = cameraSource.indexOf('await attempt(profiles[i], token);');
+  assert.ok(begin >= 0 && request >= 0);
+  assert.ok(begin < request, 'the attempt must be recorded before the request is made');
+
+  // Failures must be settled before teardown so the track state at the moment
+  // of failure is recorded rather than the state after releaseStream().
+  const settleFail = cameraSource.indexOf("settleAttempt('failed', error);");
+  const release = cameraSource.indexOf('releaseStream();', settleFail);
+  assert.ok(settleFail >= 0 && release > settleFail);
+});
+
+test('the request stage is visible without opening Settings', () => {
+  assert.match(htmlSource, /id=["']cameraStage["']/);
+  assert.match(mainSource, /stage: \$\{status\.stage\}/);
+  assert.match(htmlSource, /id=["']settingsLastAttempt["']/);
+  assert.match(htmlSource, /id=["']copyDiagnosticsButton["']/);
+  assert.match(mainSource, /function describeAttempt\(/);
+  assert.match(mainSource, /never settled/);
 });

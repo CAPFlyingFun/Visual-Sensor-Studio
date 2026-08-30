@@ -316,6 +316,91 @@
     });
   }
 
+  // --- Persistent attempt log ------------------------------------------
+  //
+  // The in-memory state is wiped by any reload, so a screenshot of the
+  // diagnostics taken after a restart shows "idle" no matter what happened
+  // before it. This log survives reloads and app restarts so the failing
+  // attempt can still be read afterwards.
+  //
+  // The important record is the one written BEFORE getUserMedia is called.
+  // If an entry is still "pending" when it is read back, the call was made
+  // and never settled at all - it neither resolved nor rejected. That is a
+  // different fault from a rejection, and nothing in the live state can
+  // distinguish the two after the fact.
+
+  const ATTEMPT_LOG_KEY = 'visual-sensor-camera-attempts-v1';
+  const MAX_ATTEMPTS_LOGGED = 8;
+  let currentAttempt = null;
+
+  function readAttemptLog() {
+    try {
+      const raw = localStorage.getItem(ATTEMPT_LOG_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function writeAttemptLog(list) {
+    try {
+      localStorage.setItem(ATTEMPT_LOG_KEY, JSON.stringify(list.slice(0, MAX_ATTEMPTS_LOGGED)));
+    } catch {
+      // Private browsing or a full quota must not break the camera itself.
+    }
+  }
+
+  function beginAttempt(profileIndex) {
+    currentAttempt = {
+      id: `${Date.now()}-${profileIndex}-${Math.random().toString(36).slice(2, 7)}`,
+      at: new Date().toISOString(),
+      standalone: isStandaloneDisplay(),
+      profile: profileIndex,
+      facing,
+      outcome: 'pending',
+      stage: 'getUserMedia',
+      elapsedMs: null,
+      errorName: '',
+      errorMessage: '',
+      firstFrameMs: null,
+      firstFrameVia: 'none',
+      trackState: 'none',
+      trackMuted: false,
+      videoWidth: 0,
+      videoHeight: 0
+    };
+    const list = readAttemptLog();
+    list.unshift(currentAttempt);
+    writeAttemptLog(list);
+    return currentAttempt;
+  }
+
+  function settleAttempt(outcome, error) {
+    if (!currentAttempt) return;
+    const track = stream ? stream.getVideoTracks()[0] || null : null;
+    currentAttempt.outcome = outcome;
+    currentAttempt.stage = stage;
+    currentAttempt.elapsedMs = Math.round(performance.now() - startedAt);
+    currentAttempt.errorName = error ? errorName(error) : '';
+    currentAttempt.errorMessage = error
+      ? (error instanceof Error ? error.message : String(error))
+      : '';
+    currentAttempt.firstFrameMs = firstFrameMs;
+    currentAttempt.firstFrameVia = firstFrameVia;
+    currentAttempt.trackState = track ? track.readyState : 'none';
+    currentAttempt.trackMuted = track ? Boolean(track.muted) : false;
+    currentAttempt.videoWidth = video.videoWidth || 0;
+    currentAttempt.videoHeight = video.videoHeight || 0;
+
+    const list = readAttemptLog();
+    const index = list.findIndex((entry) => entry && entry.id === currentAttempt.id);
+    if (index >= 0) list[index] = currentAttempt;
+    else list.unshift(currentAttempt);
+    writeAttemptLog(list);
+    currentAttempt = null;
+  }
+
   function errorName(error) {
     return error && typeof error === 'object' && 'name' in error ? String(error.name || '') : '';
   }
@@ -487,6 +572,9 @@
       stage = 'unsupported';
       lastErrorName = error.name;
       lastErrorMessage = error.message;
+      startedAt = performance.now();
+      beginAttempt(-1);
+      settleAttempt('unsupported', error);
       setState('error', describeError(error));
       throw error;
     }
@@ -514,19 +602,27 @@
     let lastError = new Error('Unable to start the camera.');
 
     for (let i = 0; i < profiles.length; i++) {
+      beginAttempt(i);
       try {
         await attempt(profiles[i], token);
         readZoomCapabilities();
         applyDigitalZoomPreview();
         stage = 'live';
+        settleAttempt('live');
         setState('live', '');
         return facing;
       } catch (error) {
-        if (token !== requestToken) throw error;
+        if (token !== requestToken) {
+          settleAttempt('superseded', error);
+          throw error;
+        }
 
         lastError = error;
         lastErrorName = errorName(error);
         lastErrorMessage = error instanceof Error ? error.message : String(error);
+        // Settled before releaseStream() so the track state at the moment of
+        // failure is what gets recorded, not the state after teardown.
+        settleAttempt('failed', error);
         releaseStream();
 
         // A denied permission is final; retrying only produces another prompt.
@@ -662,6 +758,12 @@
     captureFrame,
     setZoom,
     describeError,
+    get attempts() {
+      return readAttemptLog();
+    },
+    clearAttempts() {
+      writeAttemptLog([]);
+    },
     subscribe(listener) {
       listeners.add(listener);
       try {

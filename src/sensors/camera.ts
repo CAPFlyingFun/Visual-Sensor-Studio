@@ -31,6 +31,30 @@ export interface CameraStatus {
   zoom: CameraZoomState;
 }
 
+export interface CameraAttempt {
+  id: string;
+  at: string;
+  standalone: boolean;
+  profile: number;
+  facing: CameraFacing;
+  /**
+   * `pending` is the diagnostically important outcome: it means getUserMedia
+   * was called and never settled — it neither resolved nor rejected — which
+   * no live state can distinguish from "never called" after a reload.
+   */
+  outcome: 'pending' | 'live' | 'failed' | 'superseded' | 'unsupported';
+  stage: string;
+  elapsedMs: number | null;
+  errorName: string;
+  errorMessage: string;
+  firstFrameMs: number | null;
+  firstFrameVia: string;
+  trackState: string;
+  trackMuted: boolean;
+  videoWidth: number;
+  videoHeight: number;
+}
+
 export interface CameraDiagnostics {
   state: CameraState;
   stage: string;
@@ -72,6 +96,8 @@ interface CameraEngine {
   setZoom(value: number): Promise<CameraZoomState>;
   describeError(error: unknown, standalone?: boolean): string;
   subscribe(listener: (status: CameraStatus) => void): () => void;
+  clearAttempts(): void;
+  readonly attempts: CameraAttempt[];
   readonly state: CameraState;
   readonly active: boolean;
   readonly ready: boolean;
@@ -131,6 +157,19 @@ export class CameraController {
 
   get diagnostics(): CameraDiagnostics {
     return engine().diagnostics;
+  }
+
+  /** Camera attempts recorded across reloads, newest first. */
+  get attempts(): CameraAttempt[] {
+    try {
+      return engine().attempts;
+    } catch {
+      return [];
+    }
+  }
+
+  clearAttempts(): void {
+    engine().clearAttempts();
   }
 
   subscribe(listener: (status: CameraStatus) => void): () => void {

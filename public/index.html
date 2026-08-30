@@ -92,6 +92,7 @@
             <button class="secondary-button camera-browser-fallback" id="cameraBrowserFallback" type="button" hidden>Open Live Camera in Edge</button>
           </div>
           <p class="helper" id="cameraMessage">Tap Enable Camera for live video. Pinch the preview or use the zoom slider once the camera is live.</p>
+          <p class="stage-trace" id="cameraStage" hidden>stage: idle</p>
         </article>
 
         <article class="panel scene-panel">
@@ -172,7 +173,7 @@
       </section>
     </main>
 
-    <footer><strong>Visual Sensor Studio v0.3.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.3.1</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <dialog class="settings-dialog" id="settingsDialog">
@@ -245,9 +246,11 @@
           <div class="readout"><span>Storage</span><strong id="settingsStorage">—</strong></div>
           <div class="readout"><span>ImageCapture API</span><strong id="settingsImageCapture">—</strong></div>
         </div>
-        <div class="settings-actions two">
+        <div class="wide-readout"><span>Last camera attempt</span><strong id="settingsLastAttempt">—</strong></div>
+        <div class="settings-actions">
           <button class="secondary-button" id="hardResetCameraButton" type="button">Hard Reset Camera</button>
           <button class="secondary-button" id="refreshDiagnosticsButton" type="button">Refresh Diagnostics</button>
+          <button class="secondary-button" id="copyDiagnosticsButton" type="button">Copy Diagnostics</button>
         </div>
         <p class="helper">Camera diagnostics use <code>getSupportedConstraints()</code>, <code>enumerateDevices()</code> and <code>getCapabilities()</code> when WebKit exposes them. Device labels can remain hidden until camera permission is granted. <strong>First frame</strong> is the honest liveness test: a stream that reports a live track but never delivers a decoded frame is reported as a failure, not as “Camera Live”.</p>
       </section>

@@ -339,6 +339,14 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
 /* Pinch-to-zoom needs the browser to stop claiming the gesture first. */
 .vision-stage { touch-action: pan-y; }
 
+.stage-trace {
+  margin: 6px 2px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  color: var(--amber);
+  letter-spacing: 0.02em;
+}
+
 .helper, .lead-copy { color: var(--muted); line-height: 1.5; }
 .helper { margin: 10px 2px 0; font-size: 0.78rem; }
 .lead-copy { font-size: 0.88rem; margin-bottom: 14px; }

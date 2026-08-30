@@ -3,6 +3,7 @@ import {
   CameraController,
   describeCameraError,
   type CameraFacing,
+  type CameraAttempt,
   type CameraStatus,
   type CameraZoomState
 } from './sensors/camera.js';
@@ -28,7 +29,7 @@ import {
 import { computeBlockFlow, flowVectorColor, type FlowField } from './vision/optical-flow.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 
-const APP_VERSION = '0.3.0';
+const APP_VERSION = '0.3.1';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -161,6 +162,9 @@ let fusion: FusionBridge = fallbackFusion;
 let settings = loadSettings();
 let serviceWorkerRegistration: ServiceWorkerRegistration | null = null;
 let updateActivitySeen = false;
+
+/** Wiring problems found during boot, surfaced to the user rather than thrown. */
+const bootProblems: string[] = [];
 
 let visionMode: VisionMode = 'camera';
 let latestMotion: MotionSample | null = null;
@@ -338,6 +342,13 @@ function applyCameraStatus(status: CameraStatus): void {
   zoomState = status.zoom;
   const facingLabel = status.facing === 'environment' ? 'rear' : 'front';
   const live = status.state === 'live';
+
+  // A visible stage trace, so a stalled request can be seen without digging
+  // into Settings. If a tap leaves this blank, the request never started; if
+  // it sticks on "getUserMedia", WebKit took the call and never answered.
+  const trace = byId('cameraStage');
+  trace.hidden = status.state === 'idle' || status.state === 'live';
+  trace.textContent = `stage: ${status.stage}`;
 
   switchButton.disabled = !live;
   parallaxButton.disabled = !live;
@@ -1042,7 +1053,76 @@ async function refreshSettingsDiagnostics(): Promise<void> {
     : 'Not processing');
 
   setText('settingsImageCapture', 'ImageCapture' in window ? 'Available' : 'Not exposed');
+  setText('settingsLastAttempt', describeAttempt(camera.attempts[0]));
   await refreshStorageEstimate();
+}
+
+/**
+ * One-line summary of a recorded camera attempt.
+ *
+ * `pending` is called out explicitly because it is the one outcome the live
+ * state can never show: getUserMedia was entered and never came back.
+ */
+function describeAttempt(attempt: CameraAttempt | undefined): string {
+  if (!attempt) return 'No camera attempt recorded yet';
+
+  const when = attempt.at.replace('T', ' ').replace(/\..*$/, 'Z');
+  const where = attempt.standalone ? 'standalone' : 'browser';
+
+  if (attempt.outcome === 'pending') {
+    return `${when} • ${where} • getUserMedia never settled — no prompt, no resolve, no reject`;
+  }
+  if (attempt.outcome === 'live') {
+    return `${when} • ${where} • live after ${attempt.elapsedMs} ms, first frame ${attempt.firstFrameMs} ms via ${attempt.firstFrameVia}`;
+  }
+  if (attempt.outcome === 'unsupported') {
+    return `${when} • ${where} • getUserMedia not exposed in this context`;
+  }
+
+  const reason = attempt.errorName || 'failure';
+  return `${when} • ${where} • ${reason} at stage "${attempt.stage}" after ${attempt.elapsedMs} ms`
+    + ` • track ${attempt.trackState}${attempt.trackMuted ? ' (muted)' : ''}`
+    + ` • video ${attempt.videoWidth}×${attempt.videoHeight}`;
+}
+
+/**
+ * Copy the full diagnostic report, including the cross-reload attempt log,
+ * so it can be pasted somewhere useful instead of retyped from a screenshot.
+ */
+async function copyDiagnostics(): Promise<void> {
+  const diagnostics = camera.diagnostics;
+  const report = {
+    app: APP_VERSION,
+    capturedAt: new Date().toISOString(),
+    displayMode: isStandalone() ? 'standalone' : 'browser',
+    secureContext: window.isSecureContext,
+    userAgent: navigator.userAgent,
+    getUserMedia: Boolean(navigator.mediaDevices?.getUserMedia),
+    supportedConstraints: navigator.mediaDevices?.getSupportedConstraints?.() ?? null,
+    camera: diagnostics,
+    settings,
+    metrics: latestMetrics,
+    bootProblems,
+    attempts: camera.attempts
+  };
+  const text = JSON.stringify(report, null, 2);
+
+  try {
+    await navigator.clipboard.writeText(text);
+    setText('updateStatus', 'Diagnostics copied to the clipboard.');
+  } catch {
+    // Clipboard access can be refused; a download still gets the data out.
+    const blob = new Blob([text], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `visual-sensor-diagnostics-${Date.now()}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setText('updateStatus', 'Clipboard was blocked, so diagnostics were downloaded instead.');
+  }
 }
 
 /**
@@ -1129,11 +1209,12 @@ function handleGpsAccuracyChange(): void {
 }
 
 function resetSettings(): void {
+  camera.clearAttempts();
   settings = { ...DEFAULT_SETTINGS };
   saveSettings();
   syncSettingsControls();
   fusion.setQuality(settings.qualityPreference);
-  setText('updateStatus', 'Settings reset to defaults.');
+  setText('updateStatus', 'Settings reset to defaults and the camera attempt log was cleared.');
 }
 
 function setUpdateButton(enabled: boolean, label = 'Install Update & Restart'): void {
@@ -1249,31 +1330,56 @@ async function clearAppCache(): Promise<void> {
   }
 }
 
-byId<HTMLButtonElement>('cameraButton').addEventListener('click', () => void startCamera());
-byId<HTMLButtonElement>('cameraOverlayButton').addEventListener('click', () => void startCamera());
-byId<HTMLButtonElement>('cameraBrowserFallback').addEventListener('click', openCameraInBrowser);
-byId<HTMLButtonElement>('switchCameraButton').addEventListener('click', () => void switchCamera());
-byId<HTMLButtonElement>('motionButton').addEventListener('click', () => void enableMotion());
-byId<HTMLButtonElement>('gpsButton').addEventListener('click', toggleGps);
-byId<HTMLButtonElement>('resetGpsButton').addEventListener('click', resetGps);
-byId<HTMLButtonElement>('captureParallaxButton').addEventListener('click', captureParallaxReference);
-byId<HTMLButtonElement>('analyzeParallaxButton').addEventListener('click', analyzeParallax);
-byId<HTMLButtonElement>('resetViewButton').addEventListener('click', () => fusion.resetView());
-byId<HTMLButtonElement>('downloadButton').addEventListener('click', downloadSnapshot);
-byId<HTMLButtonElement>('settingsButton').addEventListener('click', openSettings);
-byId<HTMLButtonElement>('checkUpdatesButton').addEventListener('click', () => void checkForUpdates());
-byId<HTMLButtonElement>('applyUpdateButton').addEventListener('click', applyUpdate);
-byId<HTMLButtonElement>('clearCacheButton').addEventListener('click', () => void clearAppCache());
-byId<HTMLButtonElement>('resetSettingsButton').addEventListener('click', resetSettings);
-byId<HTMLButtonElement>('hardResetCameraButton').addEventListener('click', hardResetCamera);
-byId<HTMLButtonElement>('refreshDiagnosticsButton').addEventListener('click', () => void refreshSettingsDiagnostics());
-byId<HTMLInputElement>('zoomSlider').addEventListener('input', (event) => {
+/**
+ * Wire one listener without letting a missing element kill the rest of boot.
+ *
+ * These were previously a run of bare `byId(...).addEventListener(...)`
+ * statements at module top level. A single missing id threw, and because
+ * everything below is also top-level, the throw silently skipped the rest of
+ * the wiring - including `camera.subscribe(applyCameraStatus)`, which is what
+ * makes the camera UI respond at all. The visible symptom of that is a button
+ * that appears to do nothing, with no error anywhere the user can see. One
+ * missing id should cost one control, not the whole panel.
+ */
+function on<K extends keyof HTMLElementEventMap>(
+  id: string,
+  event: K,
+  handler: (event: HTMLElementEventMap[K]) => void
+): void {
+  const element = document.getElementById(id);
+  if (!element) {
+    bootProblems.push(`#${id} is missing, so its control does nothing`);
+    return;
+  }
+  element.addEventListener(event, handler as EventListener);
+}
+
+on('cameraButton', 'click', () => void startCamera());
+on('cameraOverlayButton', 'click', () => void startCamera());
+on('cameraBrowserFallback', 'click', openCameraInBrowser);
+on('switchCameraButton', 'click', () => void switchCamera());
+on('motionButton', 'click', () => void enableMotion());
+on('gpsButton', 'click', toggleGps);
+on('resetGpsButton', 'click', resetGps);
+on('captureParallaxButton', 'click', captureParallaxReference);
+on('analyzeParallaxButton', 'click', analyzeParallax);
+on('resetViewButton', 'click', () => fusion.resetView());
+on('downloadButton', 'click', downloadSnapshot);
+on('settingsButton', 'click', openSettings);
+on('checkUpdatesButton', 'click', () => void checkForUpdates());
+on('applyUpdateButton', 'click', applyUpdate);
+on('clearCacheButton', 'click', () => void clearAppCache());
+on('resetSettingsButton', 'click', resetSettings);
+on('hardResetCameraButton', 'click', hardResetCamera);
+on('refreshDiagnosticsButton', 'click', () => void refreshSettingsDiagnostics());
+on('copyDiagnosticsButton', 'click', () => void copyDiagnostics());
+on('zoomSlider', 'input', (event) => {
   void requestZoom(Number((event.target as HTMLInputElement).value));
 });
-byId<HTMLSelectElement>('cameraPreference').addEventListener('change', handleCameraPreferenceChange);
-byId<HTMLSelectElement>('qualityPreference').addEventListener('change', handleQualityChange);
-byId<HTMLSelectElement>('visionRatePreference').addEventListener('change', handleVisionRateChange);
-byId<HTMLSelectElement>('gpsAccuracyPreference').addEventListener('change', handleGpsAccuracyChange);
+on('cameraPreference', 'change', handleCameraPreferenceChange);
+on('qualityPreference', 'change', handleQualityChange);
+on('visionRatePreference', 'change', handleVisionRateChange);
+on('gpsAccuracyPreference', 'change', handleGpsAccuracyChange);
 
 for (const button of document.querySelectorAll<HTMLButtonElement>('[data-vision-mode]')) {
   button.addEventListener('click', () => updateVisionMode(button.dataset.visionMode as VisionMode));
@@ -1311,6 +1417,13 @@ renderMetrics();
 requestAnimationFrame(visionLoop);
 void initializeFusion();
 void refreshSettingsDiagnostics();
+
+// A control that silently does nothing is the hardest kind of bug to report,
+// so say so rather than leaving the user to guess.
+if (bootProblems.length) {
+  setText('cameraMessage', `App wiring problem: ${bootProblems.join('; ')}. Reload, or use Clear App Cache & Reload in Settings.`);
+  setChip('cameraChip', 'warn', 'App wiring problem');
+}
 
 if (browserCameraMode && !isStandalone()) {
   setText('cameraMessage', 'Browser compatibility mode is active. Tap Enable Camera. This uses the browser camera path that works outside the installed PWA.');
