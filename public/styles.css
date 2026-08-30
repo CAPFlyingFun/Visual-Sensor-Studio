@@ -860,3 +860,25 @@ footer strong { color: #9fb2c3; }
   line-height: 1;
 }
 .viewer-secondary:disabled { opacity: 0.4; }
+
+/* Terrain panel. The map wants to be as wide as it can get on a phone. */
+.terrain-output { margin: 0 0 10px; }
+.terrain-output canvas {
+  width: 100%;
+  max-width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #071019;
+  image-rendering: auto;
+}
+.terrain-output figcaption {
+  margin-top: 6px;
+  font-size: 0.7rem;
+  color: #9fb2c3;
+}
+.warning-copy {
+  border-left: 2px solid var(--amber);
+  padding-left: 10px;
+}

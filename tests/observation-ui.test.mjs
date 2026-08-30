@@ -804,3 +804,52 @@ test('a layer control is never shown for a layer it cannot affect', () => {
   assert.match(mainSource, /byId\('layerControls'\)\.hidden = visible === 0/);
   assert.match(mainSource, /showing\[input\.id\] !== mode/);
 });
+
+test('terrain says exactly what leaves the device', () => {
+  // The only network request the app makes, and the first thing derived from
+  // location to leave at all. A vague claim here would be the worst kind.
+  assert.match(htmlSource, /only part of the app that uses the network/);
+  assert.match(htmlSource, /never a latitude,\s*\n?\s*a longitude, an accuracy or an identifier/);
+  const loader = readFileSync(new URL('../src/terrain/loader.ts', import.meta.url), 'utf8');
+  assert.match(loader, /credentials: 'omit'/);
+  assert.match(loader, /referrerPolicy: 'no-referrer'/);
+  // The URL may carry only zoom and tile indices. Scoped to the function that
+  // builds it — the file's prose necessarily mentions latitude and longitude to
+  // explain what is NOT sent.
+  const build = loader.slice(loader.indexOf('export function tileUrl'));
+  const body = build.slice(0, build.indexOf('\n}'));
+  assert.match(body, /\$\{TILE_HOST\}\/\$\{z\}\/\$\{x\}\/\$\{y\}\.png/);
+  assert.doesNotMatch(body, /lat|lon|accuracy|id/i);
+  // And nothing else in the file may construct a request URL at all.
+  assert.equal((loader.match(/fetchImpl\(/g) ?? []).length, 1);
+  assert.match(loader, /fetchImpl\(tileUrl\(tile\.z, tile\.x, tile\.y\)/);
+});
+
+test('a location can be entered by hand so GPS is never consulted', () => {
+  assert.match(htmlSource, /id=["']terrainLat["']/);
+  assert.match(htmlSource, /id=["']terrainLon["']/);
+  assert.match(htmlSource, /GPS is never consulted at all/);
+  assert.match(mainSource, /the location you entered/);
+});
+
+test('a tile that never answers cannot stall the whole load', () => {
+  const loader = readFileSync(new URL('../src/terrain/loader.ts', import.meta.url), 'utf8');
+  assert.match(loader, /TILE_TIMEOUT_MS/);
+  assert.match(loader, /new AbortController\(\)/);
+  assert.match(loader, /signal: abort\.signal/);
+  assert.match(loader, /clearTimeout\(timer\)/);
+});
+
+test('a missing tile is a hole in the map, not a failed load', () => {
+  // Ocean tiles genuinely do not exist in this dataset, so rejecting the whole
+  // load over a 404 would mean no map at any coastline.
+  const loader = readFileSync(new URL('../src/terrain/loader.ts', import.meta.url), 'utf8');
+  assert.match(loader, /progress\.failed\+\+/);
+  assert.match(mainSource, /open ocean genuinely has no tiles/);
+});
+
+test('terrain resolution is stated rather than implied by the render', () => {
+  // A 512-pixel map drawn from 30 m data invites being read as 30 cm data.
+  assert.match(mainSource, /roughly 30 m resolution — good for a hillside, not for a kerb/);
+  assert.match(htmlSource, /id=["']terrainResolution["']/);
+});

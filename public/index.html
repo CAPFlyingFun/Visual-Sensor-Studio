@@ -336,6 +336,61 @@
         </article>
       </section>
 
+      <section class="panel terrain-panel">
+        <p class="section-kicker">TERRAIN</p>
+        <h2>Real elevation around you</h2>
+        <p class="lead-copy">
+          Public elevation tiles, roughly 30 m resolution, covering about two miles.
+        </p>
+        <p class="helper warning-copy" id="terrainPrivacy">
+          <strong>This is the only part of the app that uses the network.</strong>
+          A tile request carries a zoom and two integer tile indices — never a latitude,
+          a longitude, an accuracy or an identifier. Those indices name a square several
+          kilometres across, so the tile server learns roughly which few-kilometre square
+          you asked about and nothing finer. Nothing else here leaves the device.
+        </p>
+        <div class="terrain-layout">
+          <figure class="terrain-output">
+            <canvas id="terrainCanvas"></canvas>
+            <figcaption>Hypsometric tint + hillshade + contours · ✛ marks your position</figcaption>
+          </figure>
+        </div>
+        <div class="diagnostics-grid">
+          <div class="readout"><span>Your elevation</span><strong id="terrainElevation">—</strong></div>
+          <div class="readout"><span>Slope here</span><strong id="terrainSlope">—</strong></div>
+          <div class="readout"><span>Range in view</span><strong id="terrainRange">—</strong></div>
+          <div class="readout"><span>Contour interval</span><strong id="terrainContour">—</strong></div>
+          <div class="readout"><span>Resolution</span><strong id="terrainResolution">—</strong></div>
+          <div class="readout"><span>Tiles</span><strong id="terrainTiles">—</strong></div>
+        </div>
+        <div class="night-grid">
+          <label>Radius
+            <select id="terrainRadius">
+              <option value="1609">1 mile</option>
+              <option value="3218" selected>2 miles</option>
+              <option value="8047">5 miles</option>
+            </select>
+          </label>
+          <label>Relief exaggeration <span class="range-value" id="terrainExaggerationValue">2.0×</span>
+            <input id="terrainExaggeration" type="range" min="1" max="8" step="0.5" value="2" />
+          </label>
+          <label>Sun bearing <span class="range-value" id="terrainAzimuthValue">315°</span>
+            <input id="terrainAzimuth" type="range" min="0" max="359" step="5" value="315" />
+          </label>
+          <label class="switch-row"><input id="terrainContours" type="checkbox" checked /> Contour lines</label>
+        </div>
+        <p class="helper" id="terrainManualHelp">Or enter a location by hand, and GPS is never consulted at all.</p>
+        <div class="night-grid">
+          <label>Latitude<input id="terrainLat" type="number" step="0.0001" placeholder="27.9506" /></label>
+          <label>Longitude<input id="terrainLon" type="number" step="0.0001" placeholder="-82.4572" /></label>
+        </div>
+        <div class="button-row">
+          <button class="primary-button" id="loadTerrainButton" type="button">Load Terrain From GPS</button>
+          <button class="secondary-button" id="loadTerrainManualButton" type="button">Load Entered Location</button>
+        </div>
+        <p class="helper" id="terrainMessage">Enable GPS and tap Load Terrain, or type a latitude and longitude.</p>
+      </section>
+
       <section class="panel parallax-panel">
         <div class="panel-heading">
           <div><p class="section-kicker">EXPERIMENTAL DEPTH</p><h2>Two-Frame Parallax Scan</h2></div>
@@ -368,7 +423,7 @@
       </section>
     </main>
 
-    <footer><strong>Visual Sensor Studio v0.12.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.13.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">

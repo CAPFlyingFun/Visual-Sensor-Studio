@@ -79,6 +79,16 @@ import {
 import { StabilityMonitor } from './sensors/stability.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 import {
+  metresPerPixel as terrainMetresPerPixel,
+  projectToField,
+  sampleHeight,
+  slopeAt,
+  tilesForRadius,
+  type Heightfield
+} from './terrain/tiles.js';
+import { loadHeightfield } from './terrain/loader.js';
+import { contourInterval, renderTerrain, terrainStats } from './terrain/render.js';
+import {
   BaselineTracker,
   MAX_BASELINE_ROTATION_DEGREES,
   depthUncertaintyMetres,
@@ -87,7 +97,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.12.0';
+const APP_VERSION = '0.13.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -359,6 +369,10 @@ const baseline = new BaselineTracker();
 let lastBaseline: BaselineEstimate | null = null;
 let lastMotionAt = 0;
 let parallaxDepthMetres: number | null = null;
+let terrainField: Heightfield | null = null;
+let terrainOrigin: { lat: number; lon: number } | null = null;
+/** Elevation data is ~30 m, so a higher zoom would upsample rather than reveal. */
+const TERRAIN_ZOOM = 12;
 let medianDisparityPx: number | null = null;
 let lastVisionFrameAt = 0;
 let processingVision = false;
@@ -2482,6 +2496,111 @@ function analyzeParallax(): void {
   }, 20);
 }
 
+/**
+ * Fetch elevation around a point and draw it.
+ *
+ * The only network request the app makes. Everything about it is deliberate:
+ * the URL carries a zoom and two tile indices, the fetch omits credentials and
+ * the referrer, and the position is never sent in any form.
+ */
+async function loadTerrain(lat: number, lon: number, source: string): Promise<void> {
+  const gpsButton = byId<HTMLButtonElement>('loadTerrainButton');
+  const manualButton = byId<HTMLButtonElement>('loadTerrainManualButton');
+  gpsButton.disabled = true;
+  manualButton.disabled = true;
+
+  const radius = Number(byId<HTMLSelectElement>('terrainRadius').value) || 3218;
+  const window_ = tilesForRadius(lon, lat, radius, TERRAIN_ZOOM);
+  setText('terrainMessage', `Requesting ${window_.tiles.length} elevation tile`
+    + `${window_.tiles.length === 1 ? '' : 's'} · z${window_.zoom} ${window_.minX}–${window_.maxX},`
+    + ` ${window_.minY}–${window_.maxY}. No coordinate is sent.`);
+
+  try {
+    const { field, progress } = await loadHeightfield(window_, (p) => {
+      setText('terrainTiles', `${p.loaded} of ${p.total}${p.failed ? ` · ${p.failed} missing` : ''}`);
+    });
+
+    if (progress.loaded === 0) {
+      setText('terrainMessage', 'No elevation tiles could be fetched. This needs a network connection,'
+        + ' and open ocean genuinely has no tiles in this dataset.');
+      return;
+    }
+
+    terrainField = field;
+    terrainOrigin = { lat, lon };
+    drawTerrain();
+    setText('terrainMessage', `Loaded from ${source}. ${progress.loaded} tile`
+      + `${progress.loaded === 1 ? '' : 's'} covering about`
+      + ` ${(radius / 1609).toFixed(0)} mile${radius > 1700 ? 's' : ''} around the point.`
+      + ' Elevation data is roughly 30 m resolution — good for a hillside, not for a kerb.');
+  } catch (error) {
+    setText('terrainMessage', error instanceof Error ? error.message : 'Terrain could not be loaded.');
+  } finally {
+    gpsButton.disabled = false;
+    manualButton.disabled = false;
+  }
+}
+
+function drawTerrain(): void {
+  const field = terrainField;
+  if (!field) return;
+
+  const canvas = byId<HTMLCanvasElement>('terrainCanvas');
+  canvas.width = field.width;
+  canvas.height = field.height;
+  const context = canvas.getContext('2d');
+  if (!context) return;
+
+  const stats = terrainStats(field);
+  const rgba = new Uint8ClampedArray(field.width * field.height * 4);
+  renderTerrain(field, stats, rgba, {
+    azimuth: Number(byId<HTMLInputElement>('terrainAzimuth').value),
+    exaggeration: Number(byId<HTMLInputElement>('terrainExaggeration').value),
+    contours: byId<HTMLInputElement>('terrainContours').checked
+  });
+  const image = new ImageData(field.width, field.height);
+  image.data.set(rgba);
+  context.putImageData(image, 0, 0);
+
+  const interval = contourInterval(Math.max(1, stats.max - stats.min));
+  setText('terrainRange', `${stats.min.toFixed(0)}–${stats.max.toFixed(0)} m`
+    + (stats.missingFraction > 0.01 ? ` · ${(stats.missingFraction * 100).toFixed(0)}% no data` : ''));
+  setText('terrainContour', `${interval} m`);
+  setText('terrainResolution', `${field.metresPerPixel.toFixed(1)} m per pixel`);
+
+  if (!terrainOrigin) return;
+  const point = projectToField(field, terrainOrigin.lon, terrainOrigin.lat);
+  const elevation = sampleHeight(field, point.x, point.y);
+  const slope = slopeAt(field, point.x, point.y);
+
+  setText('terrainElevation', elevation === null
+    ? 'no data at this point'
+    : `${elevation.toFixed(1)} m · ${(elevation * 3.28084).toFixed(0)} ft`);
+  setText('terrainSlope', slope === null
+    ? '—'
+    : `${slope.degrees.toFixed(1)}° facing ${compassPoint(slope.aspectDegrees)}`);
+
+  // Drawn after the image rather than into it, so moving the sun or the
+  // exaggeration never redraws the marker in the wrong place.
+  context.strokeStyle = '#ff3b6b';
+  context.lineWidth = Math.max(1.5, field.width / 220);
+  const reach = Math.max(6, field.width / 40);
+  context.beginPath();
+  context.moveTo(point.x - reach, point.y);
+  context.lineTo(point.x + reach, point.y);
+  context.moveTo(point.x, point.y - reach);
+  context.lineTo(point.x, point.y + reach);
+  context.stroke();
+  context.beginPath();
+  context.arc(point.x, point.y, reach * 0.55, 0, Math.PI * 2);
+  context.stroke();
+}
+
+function compassPoint(degrees: number): string {
+  const points = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  return points[Math.round(degrees / 45) % 8];
+}
+
 function downloadSnapshot(): void {
   const snapshot: SensorSnapshot = {
     capturedAt: new Date().toISOString(),
@@ -3723,6 +3842,31 @@ on('motionButton', 'click', () => void enableMotion());
 on('gpsButton', 'click', toggleGps);
 on('resetGpsButton', 'click', resetGps);
 on('captureParallaxButton', 'click', captureParallaxReference);
+on('loadTerrainButton', 'click', () => {
+  if (!latestGps) {
+    setText('terrainMessage', 'No GPS fix yet. Start the GPS track first, or enter a location by hand.');
+    return;
+  }
+  void loadTerrain(latestGps.latitude, latestGps.longitude, 'your GPS position');
+});
+on('loadTerrainManualButton', 'click', () => {
+  const lat = Number(byId<HTMLInputElement>('terrainLat').value);
+  const lon = Number(byId<HTMLInputElement>('terrainLon').value);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 85 || Math.abs(lon) > 180) {
+    setText('terrainMessage', 'Enter a latitude between -85 and 85 and a longitude between -180 and 180.');
+    return;
+  }
+  void loadTerrain(lat, lon, 'the location you entered');
+});
+on('terrainExaggeration', 'input', (event) => {
+  setText('terrainExaggerationValue', `${Number((event.target as HTMLInputElement).value).toFixed(1)}×`);
+  drawTerrain();
+});
+on('terrainAzimuth', 'input', (event) => {
+  setText('terrainAzimuthValue', `${(event.target as HTMLInputElement).value}°`);
+  drawTerrain();
+});
+on('terrainContours', 'change', () => drawTerrain());
 on('analyzeParallaxButton', 'click', analyzeParallax);
 on('resetViewButton', 'click', () => fusion.resetView());
 on('downloadButton', 'click', downloadSnapshot);

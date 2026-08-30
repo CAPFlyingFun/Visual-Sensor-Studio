@@ -30,6 +30,8 @@
     "src/sensors/autostart.ts",
     "src/vision/baseline.ts",
     "src/vision/layers.ts",
+    "src/terrain/tiles.ts",
+    "src/terrain/render.ts",
     "src/vision/overlays.ts"
   ]
 }
