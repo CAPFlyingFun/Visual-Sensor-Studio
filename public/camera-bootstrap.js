@@ -4,6 +4,7 @@
   const video = document.getElementById('cameraVideo');
   if (!(video instanceof HTMLVideoElement)) return;
 
+  const visionCanvas = document.getElementById('visionCanvas');
   const captureCanvas = document.createElement('canvas');
   const captureContext = captureCanvas.getContext('2d', { willReadFrequently: true });
   const photoCanvas = document.createElement('canvas');
@@ -14,6 +15,22 @@
   let facing = 'environment';
   let sourceKind = 'none';
   let lastStage = 'idle';
+
+  function byId(id) {
+    return document.getElementById(id);
+  }
+
+  function setText(id, value) {
+    const element = byId(id);
+    if (element) element.textContent = value;
+  }
+
+  function setChip(id, state, text) {
+    const chip = byId(id);
+    if (!chip) return;
+    chip.dataset.state = state;
+    chip.textContent = text;
+  }
 
   function prepareVideo() {
     video.setAttribute('playsinline', 'true');
@@ -31,6 +48,26 @@
     try { video.pause(); } catch { /* WebKit can throw during teardown. */ }
     video.srcObject = null;
     if (sourceKind === 'live') sourceKind = 'none';
+  }
+
+  function showLiveVideoIfRgb() {
+    const rgb = document.querySelector('[data-vision-mode="camera"]');
+    if (rgb?.classList.contains('active')) {
+      video.hidden = false;
+      if (visionCanvas) visionCanvas.hidden = true;
+    }
+  }
+
+  function showNativePhotoPreview() {
+    if (!(visionCanvas instanceof HTMLCanvasElement) || !photoCanvas.width || !photoCanvas.height) return;
+    const context = visionCanvas.getContext('2d');
+    if (!context) return;
+    const preview = captureFrame(720);
+    visionCanvas.width = preview.width;
+    visionCanvas.height = preview.height;
+    context.putImageData(preview.imageData, 0, 0);
+    video.hidden = true;
+    visionCanvas.hidden = false;
   }
 
   function waitForMetadata(timeoutMs = 2400) {
@@ -117,6 +154,7 @@
         }
         sourceKind = 'live';
         lastStage = 'live';
+        showLiveVideoIfRgb();
         return facing;
       } catch (error) {
         lastError = error;
@@ -172,6 +210,7 @@
       photoContext.drawImage(source, 0, 0, photoCanvas.width, photoCanvas.height);
       sourceKind = 'photo';
       lastStage = 'photo';
+      showNativePhotoPreview();
       return captureFrame(640).imageData;
     } finally {
       if (source && typeof source.close === 'function') source.close();
@@ -238,4 +277,42 @@
 
   prepareVideo();
   window.VisualCamera = VisualCamera;
+
+  const nativePhotoButton = byId('nativePhotoButton');
+  const nativePhotoInput = byId('nativePhotoInput');
+  if (nativePhotoButton && nativePhotoInput instanceof HTMLInputElement) {
+    nativePhotoButton.addEventListener('click', () => nativePhotoInput.click());
+    nativePhotoInput.addEventListener('change', async () => {
+      const file = nativePhotoInput.files?.[0];
+      if (!file) return;
+      nativePhotoButton.disabled = true;
+      setChip('cameraChip', 'warn', 'Loading photo…');
+      try {
+        await loadNativePhoto(file);
+        setChip('cameraChip', 'good', 'Native photo ready');
+        setText('cameraMessage', 'Native photo loaded without a live MediaStream. Relief, Edges and parallax can use this frame. Take another photo when you need frame B.');
+        const overlay = byId('cameraOverlayButton');
+        if (overlay) overlay.hidden = true;
+        const switchButton = byId('switchCameraButton');
+        if (switchButton) switchButton.disabled = true;
+        const parallaxButton = byId('captureParallaxButton');
+        if (parallaxButton) parallaxButton.disabled = false;
+      } catch (error) {
+        setChip('cameraChip', 'warn', 'Photo unavailable');
+        setText('cameraMessage', error instanceof Error ? error.message : 'Could not load the selected photo.');
+      } finally {
+        nativePhotoButton.disabled = false;
+        nativePhotoInput.value = '';
+      }
+    });
+  }
+
+  for (const button of document.querySelectorAll('[data-vision-mode]')) {
+    button.addEventListener('click', () => {
+      if (button.dataset.visionMode !== 'camera') return;
+      setTimeout(() => {
+        if (sourceKind === 'photo') showNativePhotoPreview();
+      }, 0);
+    });
+  }
 })();
