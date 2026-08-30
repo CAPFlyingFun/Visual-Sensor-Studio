@@ -260,17 +260,18 @@
       </section>
     </main>
 
-    <footer><strong>Visual Sensor Studio v0.5.1</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.5.2</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">
     <div class="viewer-stage" id="viewerStage">
       <canvas id="viewerCanvas"></canvas>
-      <p class="viewer-hint" id="viewerHint">Pinch to zoom · tap a mode below</p>
+      <p class="viewer-hint" id="viewerHint">Pinch to zoom · filter previews are upscaled from the analysis frame, saved stills are full resolution</p>
     </div>
     <div class="viewer-top">
       <span class="viewer-badge" id="viewerMode">RGB</span>
       <span class="viewer-badge" id="viewerStats">—</span>
+      <button class="viewer-fit" id="viewerFitButton" type="button" aria-pressed="false">Fill</button>
       <button class="viewer-close" id="viewerCloseButton" type="button" aria-label="Close full screen">✕</button>
     </div>
     <div class="viewer-controls">

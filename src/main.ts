@@ -42,7 +42,7 @@ import {
 import { StabilityMonitor } from './sensors/stability.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 
-const APP_VERSION = '0.5.1';
+const APP_VERSION = '0.5.2';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -2528,6 +2528,17 @@ on('zoomSlider', 'input', (event) => {
 on('captureStillButton', 'click', () => void captureStill());
 on('expandViewButton', 'click', () => setViewerOpen(true));
 on('viewerCloseButton', 'click', () => setViewerOpen(false));
+on('viewerFitButton', 'click', () => {
+  // Contain shows the whole frame with bars; fill crops to the screen. An
+  // instrument defaults to showing everything, but filling reads better on a
+  // 9:19.5 screen when nothing at the edges matters.
+  const viewer = byId('cameraViewer');
+  const filling = viewer.dataset.fit === 'fill';
+  viewer.dataset.fit = filling ? 'contain' : 'fill';
+  const button = byId<HTMLButtonElement>('viewerFitButton');
+  button.textContent = filling ? 'Fill' : 'Fit';
+  button.setAttribute('aria-pressed', String(!filling));
+});
 on('viewerShutterButton', 'click', () => void captureStill());
 on('viewerSwitchButton', 'click', () => void switchCamera());
 on('torchToggle', 'click', () => void toggleTorch());

@@ -607,24 +607,34 @@ footer strong { color: #9fb2c3; }
   background: #000;
   touch-action: pan-y;
 }
+/*
+ * The stage fills the whole viewer and the controls float over it, the way a
+ * phone camera app is laid out. Giving the controls their own row in the flex
+ * column left the preview squeezed into what was left.
+ */
 .viewer-stage {
-  position: relative;
-  flex: 1;
-  min-height: 0;
+  position: absolute;
+  inset: 0;
   display: grid;
   place-items: center;
   overflow: hidden;
 }
+/*
+ * The canvas must SCALE to the stage, not sit at its intrinsic size. In a
+ * filter mode its bitmap is the analysis frame — 144x256 on a portrait phone —
+ * so `width: auto` drew a postage stamp in the middle of a black screen.
+ * object-fit does the letterboxing once the box is full size.
+ */
 .viewer-stage canvas {
-  max-width: 100%;
-  max-height: 100%;
-  width: auto;
-  height: auto;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
 }
+.viewer[data-fit="fill"] .viewer-stage canvas { object-fit: cover; }
 .viewer-hint {
   position: absolute;
-  bottom: 10px;
+  z-index: 4;
+  bottom: calc(190px + env(safe-area-inset-bottom));
   left: 50%;
   transform: translateX(-50%);
   margin: 0;
@@ -641,23 +651,37 @@ footer strong { color: #9fb2c3; }
   left: 12px;
   right: 12px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
   gap: 8px;
-  z-index: 2;
+  z-index: 4;
 }
 .viewer-badge {
+  flex: 0 1 auto;
+  max-width: 100%;
   padding: 6px 11px;
   border-radius: 999px;
   background: rgba(6, 14, 22, 0.72);
   color: #d7e7f4;
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* Wrapping beats truncating: both badges were being clipped to "Frame
+     diff…" and "54 fps in · 38 fps anal…" while competing for one row. */
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.viewer-fit {
+  margin-left: auto;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgba(200, 225, 245, 0.24);
+  border-radius: 999px;
+  background: rgba(6, 14, 22, 0.72);
+  color: #cfe2f1;
+  font-size: 0.72rem;
+  cursor: pointer;
 }
 .viewer-close {
-  margin-left: auto;
   width: 40px;
   height: 40px;
   border: none;
@@ -668,9 +692,13 @@ footer strong { color: #9fb2c3; }
   cursor: pointer;
 }
 .viewer-controls {
-  flex: 0 0 auto;
-  padding: 10px 12px calc(14px + env(safe-area-inset-bottom));
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.72) 34%);
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  padding: 14px 12px calc(14px + env(safe-area-inset-bottom));
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.55) 30%, rgba(0, 0, 0, 0.82));
 }
 .viewer-zoom, .viewer-modes {
   display: flex;

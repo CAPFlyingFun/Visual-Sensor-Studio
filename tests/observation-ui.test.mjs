@@ -421,3 +421,33 @@ test('capture resolution is selectable and the frame-rate trade is reported', ()
   assert.doesNotMatch(body, /getUserMedia/);
   assert.match(mainSource, /Higher resolutions usually cost frame rate/);
 });
+
+test('the full-screen canvas scales to the stage rather than its bitmap size', () => {
+  // In a filter mode the viewer canvas takes its bitmap from the analysis
+  // frame — 144x256 on a portrait phone — so `width: auto` drew a postage
+  // stamp in the middle of a black screen. It must scale to the stage.
+  const styles = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const rule = styles.slice(styles.indexOf('.viewer-stage canvas {'));
+  const body = rule.slice(0, rule.indexOf('}'));
+  assert.match(body, /width:\s*100%/);
+  assert.match(body, /height:\s*100%/);
+  assert.match(body, /object-fit:\s*contain/);
+  assert.doesNotMatch(body, /width:\s*auto/);
+});
+
+test('viewer controls float over the preview instead of squeezing it', () => {
+  const styles = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const stage = styles.slice(styles.indexOf('.viewer-stage {'));
+  assert.match(stage.slice(0, stage.indexOf('}')), /position:\s*absolute/);
+  const controls = styles.slice(styles.indexOf('.viewer-controls {'));
+  assert.match(controls.slice(0, controls.indexOf('}')), /position:\s*absolute/);
+});
+
+test('fit and fill are both offered, and the preview is described honestly', () => {
+  assert.match(htmlSource, /id=["']viewerFitButton["']/);
+  const styles = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+  assert.match(styles, /\.viewer\[data-fit="fill"\] \.viewer-stage canvas \{ object-fit: cover; \}/);
+  // A filter preview really is an upscale of the analysis frame, and the app
+  // says so rather than letting it look like lost resolution.
+  assert.match(htmlSource, /upscaled from the analysis frame, saved stills are full resolution/);
+});
