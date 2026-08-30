@@ -1,8 +1,9 @@
-const CACHE = 'visual-sensor-studio-v0.1.2';
+const CACHE = 'visual-sensor-studio-v0.2.0';
 const APP_SHELL = [
   './',
   './index.html',
   './styles.css',
+  './settings.css',
   './manifest.webmanifest',
   './icons/icon.svg',
   './icons/icon-180.png',
@@ -26,9 +27,18 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key))))
+    caches.keys().then((keys) => Promise.all(
+      keys.filter((key) => key.startsWith('visual-sensor-studio-') && key !== CACHE)
+        .map((key) => caches.delete(key))
+    ))
   );
   self.clients.claim();
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener('fetch', (event) => {
@@ -52,12 +62,13 @@ self.addEventListener('fetch', (event) => {
     const networkFirst = event.request.mode === 'navigate'
       || url.pathname.endsWith('/index.html')
       || url.pathname.endsWith('/styles.css')
+      || url.pathname.endsWith('/settings.css')
       || url.pathname.endsWith('/app/main.js')
       || url.pathname.endsWith('/app/sensors/camera.js');
 
     if (networkFirst) {
       event.respondWith(
-        fetch(event.request).then((response) => {
+        fetch(event.request, { cache: 'no-store' }).then((response) => {
           if (response.ok) {
             const copy = response.clone();
             void caches.open(CACHE).then((cache) => cache.put(event.request, copy));
