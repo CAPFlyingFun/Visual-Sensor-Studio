@@ -1,0 +1,136 @@
+.topbar-actions {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.settings-button,
+.danger-button {
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 12px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.settings-button {
+  border: 1px solid rgba(118, 209, 255, 0.28);
+  background: rgba(17, 30, 43, 0.9);
+  color: #ddecf7;
+}
+
+.danger-button {
+  border: 1px solid rgba(255, 139, 139, 0.3);
+  background: rgba(91, 32, 39, 0.58);
+  color: #ffd9d9;
+}
+
+.settings-dialog {
+  width: min(720px, calc(100% - 20px));
+  max-height: calc(100dvh - 24px);
+  padding: 0;
+  border: 1px solid rgba(153, 190, 222, 0.22);
+  border-radius: 22px;
+  background: #08111a;
+  color: #eaf3ff;
+  box-shadow: 0 26px 90px rgba(0, 0, 0, 0.64);
+}
+
+.settings-dialog::backdrop {
+  background: rgba(0, 5, 10, 0.72);
+  backdrop-filter: blur(8px);
+}
+
+.settings-card {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  overflow-y: auto;
+  max-height: calc(100dvh - 24px);
+}
+
+.settings-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-heading.compact {
+  margin-bottom: 10px;
+}
+
+.settings-heading h2,
+.settings-heading h3,
+.settings-section h3 {
+  margin: 0;
+}
+
+.settings-section {
+  border: 1px solid rgba(153, 190, 222, 0.13);
+  border-radius: 15px;
+  padding: 13px;
+  background: rgba(12, 22, 33, 0.82);
+}
+
+.settings-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settings-grid label {
+  display: grid;
+  gap: 6px;
+  color: #9fb2c3;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.settings-grid select {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 10px;
+  border-radius: 11px;
+  border: 1px solid rgba(153, 190, 222, 0.18);
+  background: #071019;
+  color: #eaf3ff;
+}
+
+.diagnostics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.camera-browser-fallback {
+  border-color: rgba(118, 209, 255, 0.32);
+}
+
+@media (max-width: 700px) {
+  .topbar-actions {
+    width: 100%;
+    align-items: flex-start;
+    justify-content: space-between;
+  }
+
+  .settings-actions,
+  .settings-grid,
+  .diagnostics-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-actions > button {
+    width: 100%;
+  }
+}
