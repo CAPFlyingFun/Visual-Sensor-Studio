@@ -14,7 +14,11 @@ export class GpsController {
     return this.points;
   }
 
-  start(onSample: (sample: GpsSample, track: readonly GpsSample[]) => void, onError: (message: string) => void): void {
+  start(
+    onSample: (sample: GpsSample, track: readonly GpsSample[]) => void,
+    onError: (message: string) => void,
+    highAccuracy = true
+  ): void {
     if (!navigator.geolocation) {
       onError('Geolocation is not available in this browser.');
       return;
@@ -56,7 +60,11 @@ export class GpsController {
         onSample(sample, this.points);
       },
       (error) => onError(error.message || 'Unable to read location.'),
-      { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 }
+      {
+        enableHighAccuracy: highAccuracy,
+        maximumAge: highAccuracy ? 1000 : 5000,
+        timeout: highAccuracy ? 15000 : 10000
+      }
     );
   }
 
