@@ -13,6 +13,7 @@
   <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="./icons/icon-180.png" />
   <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./settings.css" />
   <script type="importmap">
   {
     "imports": {
@@ -210,7 +211,13 @@
           <div class="readout"><span>Service worker</span><strong id="settingsWorkerState">—</strong></div>
           <div class="readout"><span>Display mode</span><strong id="settingsDisplayMode">—</strong></div>
           <div class="readout"><span>Secure context</span><strong id="settingsSecureContext">—</strong></div>
+          <div class="readout"><span>Camera API</span><strong id="settingsCameraApi">—</strong></div>
+          <div class="readout"><span>Camera constraints</span><strong id="settingsCameraConstraints">—</strong></div>
+          <div class="readout"><span>Video inputs</span><strong id="settingsCameraDevices">—</strong></div>
+          <div class="readout"><span>Camera stream</span><strong id="settingsCameraStream">—</strong></div>
+          <div class="readout"><span>ImageCapture API</span><strong id="settingsImageCapture">—</strong></div>
         </div>
+        <p class="helper">Camera diagnostics use <code>getSupportedConstraints()</code> and <code>enumerateDevices()</code> when WebKit exposes them. Device labels can remain hidden until camera permission is granted.</p>
       </section>
     </form>
   </dialog>
