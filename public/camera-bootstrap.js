@@ -82,6 +82,10 @@
   let frameEvidence = false;
   let muteTimer = 0;
   let requestToken = 0;
+  // How long the most recent failure took. A NotAllowedError returned in a few
+  // milliseconds cannot have involved a prompt a human dismissed - it is an
+  // automatic refusal, which points at an OS-level block rather than a choice.
+  let lastFailureMs = null;
 
   let zoomValue = 1;
   let zoomKind = 'none';
@@ -434,6 +438,13 @@
       : '';
 
     if (name === 'NotAllowedError' || name === 'SecurityError') {
+      // No human dismisses a permission sheet in a fraction of a second, so a
+      // refusal this fast means no sheet was ever shown. That is an OS-level
+      // block, and telling the user to "allow the prompt" is useless advice
+      // when there is no prompt to allow.
+      if (lastFailureMs !== null && lastFailureMs < 400) {
+        return `iOS refused camera access in ${lastFailureMs} ms without showing a permission prompt, so this is a block outside the app rather than a choice you made in it. Check Settings > Screen Time > Content & Privacy Restrictions > Allowed Apps & Features and make sure Camera is on — when Camera is restricted there, every website request is refused instantly with no prompt. Then check Settings > Apps > Safari > Camera and set it to Ask. If both are already correct, delete this app from the Home Screen and add it again from Safari, which clears a remembered denial for the site.`;
+      }
       return `Camera permission was blocked or never granted.${standalone ? ' iOS does not persist camera permission for installed web apps, so the prompt can be expected again after each launch.' : ''}${hint}`;
     }
     if (name === 'NotFoundError' || name === 'DevicesNotFoundError') return `No usable camera was reported by this device.${hint}`;
@@ -517,16 +528,24 @@
     return snapshot().zoom;
   }
 
-  async function requestStream(constraints) {
-    const nextStream = await navigator.mediaDevices.getUserMedia(constraints);
+  async function requestStream(constraints, profileIndex) {
+    // getUserMedia is invoked before anything else in this function, and
+    // nothing is awaited between the user's tap and this line. The pending
+    // record is written from the returned promise rather than before the
+    // call, so the localStorage round-trip cannot sit between the gesture
+    // and the permission request.
+    const pending = navigator.mediaDevices.getUserMedia(constraints);
+    beginAttempt(profileIndex);
+
+    const nextStream = await pending;
     stream = nextStream;
     attachTrackListeners(nextStream.getVideoTracks()[0] || null);
     video.srcObject = nextStream;
     return nextStream;
   }
 
-  async function attempt(constraints, token) {
-    await requestStream(constraints);
+  async function attempt(constraints, profileIndex, token) {
+    await requestStream(constraints, profileIndex);
     if (token !== requestToken) throw new DOMException('Superseded camera request.', 'AbortError');
 
     stage = 'metadata';
@@ -602,9 +621,8 @@
     let lastError = new Error('Unable to start the camera.');
 
     for (let i = 0; i < profiles.length; i++) {
-      beginAttempt(i);
       try {
-        await attempt(profiles[i], token);
+        await attempt(profiles[i], i, token);
         readZoomCapabilities();
         applyDigitalZoomPreview();
         stage = 'live';
@@ -620,6 +638,7 @@
         lastError = error;
         lastErrorName = errorName(error);
         lastErrorMessage = error instanceof Error ? error.message : String(error);
+        lastFailureMs = Math.round(performance.now() - startedAt);
         // Settled before releaseStream() so the track state at the moment of
         // failure is what gets recorded, not the state after teardown.
         settleAttempt('failed', error);
@@ -760,6 +779,19 @@
     describeError,
     get attempts() {
       return readAttemptLog();
+    },
+    async permissionState() {
+      try {
+        if (!navigator.permissions || typeof navigator.permissions.query !== 'function') {
+          return 'Permissions API not exposed';
+        }
+        const status = await navigator.permissions.query({ name: 'camera' });
+        return status.state;
+      } catch (error) {
+        // WebKit throws for unsupported permission names rather than
+        // returning anything, so this is expected on some iOS versions.
+        return `not queryable (${errorName(error) || 'error'})`;
+      }
     },
     clearAttempts() {
       writeAttemptLog([]);

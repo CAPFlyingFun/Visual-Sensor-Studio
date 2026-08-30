@@ -29,7 +29,7 @@ import {
 import { computeBlockFlow, flowVectorColor, type FlowField } from './vision/optical-flow.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 
-const APP_VERSION = '0.3.1';
+const APP_VERSION = '0.3.2';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -1054,6 +1054,7 @@ async function refreshSettingsDiagnostics(): Promise<void> {
 
   setText('settingsImageCapture', 'ImageCapture' in window ? 'Available' : 'Not exposed');
   setText('settingsLastAttempt', describeAttempt(camera.attempts[0]));
+  setText('settingsPermission', await camera.permissionState());
   await refreshStorageEstimate();
 }
 
@@ -1100,6 +1101,7 @@ async function copyDiagnostics(): Promise<void> {
     getUserMedia: Boolean(navigator.mediaDevices?.getUserMedia),
     supportedConstraints: navigator.mediaDevices?.getSupportedConstraints?.() ?? null,
     camera: diagnostics,
+    permissionState: await camera.permissionState(),
     settings,
     metrics: latestMetrics,
     bootProblems,

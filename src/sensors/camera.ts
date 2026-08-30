@@ -97,6 +97,7 @@ interface CameraEngine {
   describeError(error: unknown, standalone?: boolean): string;
   subscribe(listener: (status: CameraStatus) => void): () => void;
   clearAttempts(): void;
+  permissionState(): Promise<string>;
   readonly attempts: CameraAttempt[];
   readonly state: CameraState;
   readonly active: boolean;
@@ -170,6 +171,15 @@ export class CameraController {
 
   clearAttempts(): void {
     engine().clearAttempts();
+  }
+
+  /** 'granted' | 'denied' | 'prompt', where WebKit exposes the Permissions API. */
+  async permissionState(): Promise<string> {
+    try {
+      return await engine().permissionState();
+    } catch {
+      return 'unavailable';
+    }
   }
 
   subscribe(listener: (status: CameraStatus) => void): () => void {

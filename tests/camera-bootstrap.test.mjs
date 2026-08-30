@@ -192,12 +192,15 @@ test('camera attempts are logged across reloads, including calls that never sett
   assert.match(cameraSource, /function settleAttempt\(/);
   assert.match(cameraSource, /outcome: 'pending'/);
 
-  // The pending record must be written BEFORE getUserMedia is called,
-  // otherwise a call that never settles leaves no trace at all.
-  const begin = cameraSource.indexOf('beginAttempt(i);');
-  const request = cameraSource.indexOf('await attempt(profiles[i], token);');
-  assert.ok(begin >= 0 && request >= 0);
-  assert.ok(begin < request, 'the attempt must be recorded before the request is made');
+  // The pending record must be written before the request is AWAITED,
+  // otherwise a call that never settles leaves no trace at all. It is written
+  // just after getUserMedia is invoked, so the storage write cannot delay the
+  // permission request itself (see the gesture-ordering test below).
+  const fn = cameraSource.slice(cameraSource.indexOf('async function requestStream('));
+  const begin = fn.indexOf('beginAttempt(profileIndex)');
+  const awaited = fn.indexOf('await pending;');
+  assert.ok(begin >= 0 && awaited >= 0);
+  assert.ok(begin < awaited, 'the attempt must be recorded before the request is awaited');
 
   // Failures must be settled before teardown so the track state at the moment
   // of failure is recorded rather than the state after releaseStream().
@@ -213,4 +216,33 @@ test('the request stage is visible without opening Settings', () => {
   assert.match(htmlSource, /id=["']copyDiagnosticsButton["']/);
   assert.match(mainSource, /function describeAttempt\(/);
   assert.match(mainSource, /never settled/);
+});
+
+test('getUserMedia is invoked before any storage work in the gesture', () => {
+  // Nothing may sit between the user's tap and the permission request. The
+  // attempt log is written from the returned promise, so the localStorage
+  // round-trip happens after the call rather than in front of it.
+  const fn = cameraSource.slice(cameraSource.indexOf('async function requestStream('));
+  const call = fn.indexOf('navigator.mediaDevices.getUserMedia(constraints)');
+  const log = fn.indexOf('beginAttempt(profileIndex)');
+  assert.ok(call >= 0 && log >= 0);
+  assert.ok(call < log, 'getUserMedia must be invoked before the attempt is logged');
+  // And the call must not be awaited before the log write, or the ordering
+  // above would be meaningless.
+  assert.match(cameraSource, /const pending = navigator\.mediaDevices\.getUserMedia\(constraints\);/);
+});
+
+test('a denial that never prompted is reported as an OS-level block', () => {
+  // A NotAllowedError returned in milliseconds cannot have involved a prompt
+  // a human dismissed, so "allow the prompt" would be useless advice.
+  assert.match(cameraSource, /lastFailureMs/);
+  assert.match(cameraSource, /lastFailureMs < 400/);
+  assert.match(cameraSource, /Screen Time/);
+  assert.match(cameraSource, /without showing a permission prompt/);
+});
+
+test('the Permissions API state is surfaced when WebKit exposes it', () => {
+  assert.match(cameraSource, /navigator\.permissions\.query\(\{ name: 'camera' \}\)/);
+  assert.match(cameraSource, /not queryable/);
+  assert.match(htmlSource, /id=["']settingsPermission["']/);
 });
