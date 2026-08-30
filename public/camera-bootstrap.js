@@ -97,7 +97,7 @@
 
   let zoomValue = 1;
   let zoomKind = 'none';
-  let zoomMin = 1;
+  let zoomMin = 0.5;
   let zoomMax = 1;
   let zoomStep = 0.1;
 
