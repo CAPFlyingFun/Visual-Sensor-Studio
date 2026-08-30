@@ -1,4 +1,4 @@
-const CACHE = 'visual-sensor-studio-v0.1.0';
+const CACHE = 'visual-sensor-studio-v0.1.1';
 const APP_SHELL = [
   './',
   './index.html',
@@ -49,6 +49,25 @@ self.addEventListener('fetch', (event) => {
   }
 
   if (url.origin === self.location.origin) {
+    const networkFirst = event.request.mode === 'navigate'
+      || url.pathname.endsWith('/index.html')
+      || url.pathname.endsWith('/styles.css')
+      || url.pathname.endsWith('/app/main.js')
+      || url.pathname.endsWith('/app/sensors/camera.js');
+
+    if (networkFirst) {
+      event.respondWith(
+        fetch(event.request).then((response) => {
+          if (response.ok) {
+            const copy = response.clone();
+            void caches.open(CACHE).then((cache) => cache.put(event.request, copy));
+          }
+          return response;
+        }).catch(() => caches.match(event.request))
+      );
+      return;
+    }
+
     event.respondWith(
       caches.match(event.request).then((cached) => cached || fetch(event.request).then((response) => {
         if (response.ok) {
