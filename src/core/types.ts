@@ -66,4 +66,19 @@ export interface SensorSnapshot {
     zoom: number;
     zoomKind: 'camera' | 'digital' | 'none';
   };
+  /**
+   * How far the phone travelled between the two parallax captures.
+   *
+   * Null when the motion sensors were off, so a reader can tell "not measured"
+   * from "measured as zero".
+   */
+  parallaxBaseline: {
+    displacementMetres: number;
+    uncertaintyMetres: number;
+    rotationDegrees: number;
+    durationSeconds: number;
+    usable: boolean;
+    estimatedDepthMetres: number | null;
+    method: string;
+  } | null;
 }

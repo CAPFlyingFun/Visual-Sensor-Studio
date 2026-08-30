@@ -71,8 +71,16 @@ import {
 } from './vision/overlays.js';
 import { StabilityMonitor } from './sensors/stability.js';
 import { computeBlockDisparity } from './vision/parallax.js';
+import {
+  BaselineTracker,
+  MAX_BASELINE_ROTATION_DEGREES,
+  depthUncertaintyMetres,
+  estimateDepthMetres,
+  focalLengthPixels,
+  type BaselineEstimate
+} from './vision/baseline.js';
 
-const APP_VERSION = '0.10.0';
+const APP_VERSION = '0.11.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -325,6 +333,10 @@ let referenceGray: Uint8ClampedArray | null = null;
 let referenceWidth = 0;
 let referenceHeight = 0;
 let parallaxAnalyzed = false;
+const baseline = new BaselineTracker();
+let lastBaseline: BaselineEstimate | null = null;
+let lastMotionAt = 0;
+let parallaxDepthMetres: number | null = null;
 let medianDisparityPx: number | null = null;
 let lastVisionFrameAt = 0;
 let processingVision = false;
@@ -1598,6 +1610,17 @@ function onMotionSample(sample: MotionSample): void {
     acceleration: sample.acceleration
   });
   calibrator.add({ rotationRate: sample.rotationRate, acceleration: sample.acceleration }, performance.now());
+
+  // The baseline tracker integrates between the two parallax captures, so it
+  // needs the interval between samples rather than a timestamp.
+  const nowMs = performance.now();
+  if (baseline.running && lastMotionAt) {
+    baseline.add(
+      { acceleration: sample.acceleration, rotationRate: sample.rotationRate },
+      (nowMs - lastMotionAt) / 1000
+    );
+  }
+  lastMotionAt = nowMs;
   deviceSteady = isSteady(report, stabilityCalibration);
   steadyExcursion = excursion(report, stabilityCalibration);
   if (calibrator.running) renderCalibration();
@@ -2226,12 +2249,70 @@ function captureParallaxReference(): void {
     referenceHeight = frame.height;
     parallaxAnalyzed = false;
     medianDisparityPx = null;
+    parallaxDepthMetres = null;
+    lastBaseline = null;
+    // From here until Analyze B, the IMU is measuring how far the phone
+    // actually travelled — which is what turns "nearer" into "roughly this
+    // far", and what catches a twist masquerading as a slide.
+    baseline.start();
     frameToThumbnail(byId<HTMLCanvasElement>('referenceCanvas'), frame.imageData);
-    setText('parallaxMessage', 'Reference captured. Move the phone sideways about 5–10 cm without rotating much, then tap Analyze B.');
+    setText('parallaxMessage', motion.active
+      ? 'Reference captured. Slide the phone sideways about 5–10 cm without rotating, then tap Analyze B. The baseline is being measured.'
+      : 'Reference captured. Move the phone sideways about 5–10 cm without rotating much, then tap Analyze B.'
+        + ' Enable motion sensors first if you want a distance rather than relative depth.');
     byId<HTMLButtonElement>('analyzeParallaxButton').disabled = false;
   } catch (error) {
     setText('parallaxMessage', error instanceof Error ? error.message : 'Unable to capture a reference frame.');
   }
+}
+
+/**
+ * Say what the baseline lets us claim, and no more than that.
+ *
+ * Three genuinely different outcomes, and collapsing them would be the whole
+ * problem: no IMU means relative depth only; a twist means the disparity is an
+ * artefact and reporting a distance from it would be worse than reporting
+ * nothing; and a good slide plus an entered field of view gives a real
+ * triangulation, which still has to arrive with its uncertainty attached.
+ */
+function describeBaseline(disparityPx: number): string {
+  const estimate = lastBaseline;
+  if (!estimate) {
+    return 'This is not calibrated distance — enable motion sensors to measure the baseline.';
+  }
+
+  if (estimate.rotationDegrees > MAX_BASELINE_ROTATION_DEGREES) {
+    // Rotation shifts every pixel regardless of how far away it is, so a
+    // rotated pair reads as "everything is close". That is not depth.
+    return `The phone rotated ${estimate.rotationDegrees.toFixed(0)}° during the move, so this`
+      + ' disparity is mostly rotation rather than parallax. Slide it sideways without turning'
+      + ' and try again.';
+  }
+
+  if (!estimate.usable) {
+    return `Baseline not measurable (${(estimate.displacementMetres * 100).toFixed(1)} cm`
+      + ` ±${(estimate.uncertaintyMetres * 100).toFixed(1)} cm over`
+      + ` ${estimate.durationSeconds.toFixed(1)}s), so this stays relative depth.`
+      + ' A quicker, more definite sideways slide measures better.';
+  }
+
+  const baselineText = `Baseline ${(estimate.displacementMetres * 100).toFixed(1)} cm`
+    + ` ±${(estimate.uncertaintyMetres * 100).toFixed(1)} cm.`;
+
+  const focal = focalLengthPixels(referenceWidth, settings.motionFovDegrees);
+  if (focal === null) {
+    return `${baselineText} Enter a horizontal field of view in the motion panel to turn this`
+      + ' into a distance.';
+  }
+
+  const depth = estimateDepthMetres(disparityPx, estimate.displacementMetres, focal);
+  if (depth === null) return `${baselineText} No usable disparity to triangulate from.`;
+
+  parallaxDepthMetres = depth;
+  const error = depthUncertaintyMetres(depth, estimate);
+  return `${baselineText} Median structure ≈ ${depth.toFixed(2)} m ±${error.toFixed(2)} m,`
+    + ` assuming ${settings.motionFovDegrees}° horizontal field of view.`
+    + ' Handheld frames are not rectified, so treat this as an estimate rather than a measurement.';
 }
 
 function analyzeParallax(): void {
@@ -2262,12 +2343,20 @@ function analyzeParallax(): void {
       const rgba = disparityToRgba(result.disparity, result.confidence, maxDisparity);
       drawImageData(byId<HTMLCanvasElement>('parallaxCanvas'), rgbaToImageData(rgba, result.width, result.height));
       parallaxAnalyzed = true;
-      setText(
-        'parallaxMessage',
-        medianDisparityPx === null
-          ? 'Not enough textured matches. Try a scene with more detail and a steadier sideways move.'
-          : `Relative disparity median: ${medianDisparityPx.toFixed(1)} px. Larger disparity generally means nearer structure. This is not calibrated distance.`
-      );
+
+      baseline.stop();
+      lastBaseline = motion.active ? baseline.estimate : null;
+      parallaxDepthMetres = null;
+
+      if (medianDisparityPx === null) {
+        setText('parallaxMessage',
+          'Not enough textured matches. Try a scene with more detail and a steadier sideways move.');
+        return;
+      }
+
+      const relative = `Relative disparity median: ${medianDisparityPx.toFixed(1)} px.`
+        + ' Larger disparity generally means nearer structure.';
+      setText('parallaxMessage', `${relative} ${describeBaseline(medianDisparityPx)}`);
     } catch (error) {
       setText('parallaxMessage', error instanceof Error ? error.message : 'Parallax analysis failed.');
     } finally {
@@ -2283,6 +2372,15 @@ function downloadSnapshot(): void {
     motion: latestMotion,
     gps: latestGps,
     gpsTrackPoints: gps.track.length,
+    parallaxBaseline: lastBaseline ? {
+      displacementMetres: Number(lastBaseline.displacementMetres.toFixed(4)),
+      uncertaintyMetres: Number(lastBaseline.uncertaintyMetres.toFixed(4)),
+      rotationDegrees: Number(lastBaseline.rotationDegrees.toFixed(2)),
+      durationSeconds: Number(lastBaseline.durationSeconds.toFixed(2)),
+      usable: lastBaseline.usable,
+      estimatedDepthMetres: parallaxDepthMetres === null ? null : Number(parallaxDepthMetres.toFixed(3)),
+      method: 'IMU dead reckoning between the two captures; error grows with the square of elapsed time'
+    } : null,
     parallax: {
       capturedReference: Boolean(referenceGray),
       analyzed: parallaxAnalyzed,

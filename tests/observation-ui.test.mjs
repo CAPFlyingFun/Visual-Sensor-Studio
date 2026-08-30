@@ -742,3 +742,31 @@ test('calibration is reachable without opening Settings', () => {
   assert.match(body, /'calibrateButton'/);
   assert.match(body, /'motionCalibrateButton'/);
 });
+
+test('a rotated parallax pair is refused rather than turned into a distance', () => {
+  // Rotation shifts every pixel regardless of how far away it is, so a rotated
+  // pair reads as "everything is close". Reporting a distance from that would
+  // be worse than reporting nothing.
+  assert.match(mainSource, /rotationDegrees > MAX_BASELINE_ROTATION_DEGREES/);
+  assert.match(mainSource, /mostly rotation rather than parallax/);
+});
+
+test('parallax distinguishes not-measured from measured-as-zero', () => {
+  assert.match(mainSource, /lastBaseline = motion\.active \? baseline\.estimate : null/);
+  assert.match(mainSource, /enable motion sensors to measure the baseline/);
+  assert.match(mainSource, /parallaxBaseline: lastBaseline \?/);
+});
+
+test('a triangulated depth never travels without its uncertainty', () => {
+  // A distance quoted bare invites being read as a measurement.
+  assert.match(mainSource, /depthUncertaintyMetres\(depth, estimate\)/);
+  assert.match(mainSource, /±\$\{error\.toFixed\(2\)\} m/);
+  assert.match(mainSource, /not rectified, so treat this as an estimate/);
+  assert.match(mainSource, /assuming \$\{settings\.motionFovDegrees\}° horizontal field of view/);
+});
+
+test('the baseline stops being integrated once the pair is captured', () => {
+  const analyze = mainSource.slice(mainSource.indexOf('function analyzeParallax'));
+  assert.match(analyze.slice(0, 2500), /baseline\.stop\(\)/);
+  assert.match(mainSource, /baseline\.start\(\)/);
+});

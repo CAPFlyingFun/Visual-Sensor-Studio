@@ -28,6 +28,7 @@
     "src/vision/motion-ironbow.ts",
     "src/vision/observation.ts",
     "src/sensors/autostart.ts",
+    "src/vision/baseline.ts",
     "src/vision/overlays.ts"
   ]
 }
