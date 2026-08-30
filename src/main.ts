@@ -1421,6 +1421,7 @@ async function refreshSettingsDiagnostics(): Promise<void> {
     ? `${nightReport.mode} · ${nightReport.framesIntegrated} frames · ${(nightReport.elapsedMs / 1000).toFixed(1)} s · stability ${Math.round(stability.report.score * 100)}%`
     : 'Inactive');
   renderCapabilityTable();
+  await renderVideoInputs();
   await refreshStorageEstimate();
 }
 
@@ -1636,6 +1637,49 @@ async function runBenchmark(): Promise<void> {
   } finally {
     button.disabled = false;
     await applyCameraFrameRate();
+  }
+}
+
+/**
+ * List the video inputs WebKit reports.
+ *
+ * On an iPhone the ultrawide is a separate physical camera, so a genuine 0.5x
+ * is only reachable if it appears here as its own input (or if the track
+ * advertises a zoom capability with a min below 1). A digital crop cannot
+ * widen the field of view, so it can never produce 0.5x however the range is
+ * configured.
+ */
+async function renderVideoInputs(): Promise<void> {
+  const container = byId('videoInputs');
+  const report = await camera.videoInputs();
+  container.textContent = '';
+
+  if (!report.available) {
+    container.textContent = 'Device enumeration is unavailable in this context.';
+    return;
+  }
+  if (!report.devices.length) {
+    container.textContent = 'No video inputs reported.';
+    return;
+  }
+
+  for (const [index, device] of report.devices.entries()) {
+    const row = document.createElement('div');
+    row.className = 'capability-row';
+    const label = document.createElement('span');
+    label.textContent = device.label || `Camera ${index + 1} (label hidden)`;
+    const value = document.createElement('strong');
+    value.dataset.state = device.label ? 'supported' : 'not exposed';
+    value.textContent = device.label ? 'Labelled' : 'Needs permission';
+    row.append(label, value);
+    container.appendChild(row);
+  }
+
+  if (report.devices.length === 1) {
+    const note = document.createElement('p');
+    note.className = 'helper';
+    note.textContent = 'Only one video input is exposed, so the ultrawide cannot be selected separately here and zoom below 1× is not available.';
+    container.appendChild(note);
   }
 }
 

@@ -137,3 +137,38 @@ test('expensive analysis is skipped when no mode needs it', () => {
   assert.match(mainSource, /function needsMotionAnalysis\(/);
   assert.match(mainSource, /if \(hadPrevious && wantsMotion\)/);
 });
+
+test('the digital zoom floor is a single constant and cannot be set below 1', () => {
+  // Digital zoom is a centre crop and there is no cropping outward: below 1x
+  // there is no more sensor to read. A real 0.5x needs the ultrawide, which is
+  // a different physical camera, so it cannot be produced by widening this
+  // range. The initial value must match what reset produces, or the engine
+  // advertises a range it will never actually offer.
+  assert.match(cameraSource, /const DIGITAL_ZOOM_MIN = 1;/);
+  assert.doesNotMatch(cameraSource, /zoomMin = 0?\.5/);
+  const assignments = [...cameraSource.matchAll(/zoomMin = ([^;]+);/g)].map((m) => m[1].trim());
+  for (const value of assignments) {
+    assert.ok(
+      value === 'DIGITAL_ZOOM_MIN' || value === 'min',
+      `zoomMin assigned a literal (${value}); it must come from the constant or from reported capabilities`
+    );
+  }
+});
+
+test('hardware zoom uses whatever minimum the track reports', () => {
+  // If a device ever advertises a zoom capability with a min below 1, that
+  // value must be honoured rather than clamped to the digital floor.
+  const read = cameraSource.slice(cameraSource.indexOf('function readZoomCapabilities('));
+  assert.match(read, /zoomMin = min;/);
+  assert.match(read, /zoomKind = 'camera';/);
+});
+
+test('video inputs are enumerated so lens availability is measured, not assumed', () => {
+  assert.match(cameraSource, /async videoInputs\(\)/);
+  assert.match(cameraSource, /enumerateDevices/);
+  assert.match(mainSource, /async function renderVideoInputs\(/);
+  assert.match(htmlSource, /id=["']videoInputs["']/);
+  // Labels are withheld until a grant, so an unlabelled list must not be
+  // reported as though the device has no other cameras.
+  assert.match(mainSource, /Needs permission/);
+});

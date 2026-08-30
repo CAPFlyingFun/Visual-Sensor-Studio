@@ -94,6 +94,13 @@ export interface CapabilityField {
   options?: unknown[];
 }
 
+export interface VideoInput {
+  deviceId: string;
+  /** Empty until camera permission is granted — WebKit withholds labels. */
+  label: string;
+  groupId: string;
+}
+
 export interface CapabilityReport {
   available: boolean;
   fields: Record<string, CapabilityField>;
@@ -151,6 +158,7 @@ interface CameraEngine {
   ): Promise<BenchmarkReport>;
   startFrameDelivery(listener: (frame: { now: number; mediaTime: number; presentedFrames?: number }) => void): boolean;
   stopFrameDelivery(): void;
+  videoInputs(): Promise<{ available: boolean; devices: VideoInput[] }>;
   readonly frameRateInfo: FrameRateInfo;
   readonly capabilityReport: CapabilityReport;
   readonly attempts: CameraAttempt[];
@@ -230,6 +238,15 @@ export class CameraController {
 
   get frameRateInfo(): FrameRateInfo {
     return engine().frameRateInfo;
+  }
+
+  /** Video inputs WebKit reports. Labels appear only after a permission grant. */
+  async videoInputs(): Promise<{ available: boolean; devices: VideoInput[] }> {
+    try {
+      return await engine().videoInputs();
+    } catch {
+      return { available: false, devices: [] };
+    }
   }
 
   get capabilityReport(): CapabilityReport {

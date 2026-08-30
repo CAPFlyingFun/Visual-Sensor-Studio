@@ -62,6 +62,19 @@
   // mute that persists past this window is treated as the iOS suspend bug.
   const MUTE_GRACE_MS = 1400;
   const DIGITAL_ZOOM_MAX = 5;
+  /**
+   * Floor for the DIGITAL zoom fallback.
+   *
+   * Digital zoom is a centre crop, and there is no cropping outward: below 1x
+   * there is simply no more sensor to read, so a "0.5x digital" would be
+   * upscaling nothing. A real 0.5x on an iPhone comes from the ultrawide,
+   * which is a different physical camera — reachable only if the track
+   * advertises a zoom capability whose min is below 1 (handled in
+   * readZoomCapabilities, which uses whatever min is reported), or if WebKit
+   * exposes the ultrawide as a separate video input that can be selected by
+   * deviceId. It cannot be produced by changing this number.
+   */
+  const DIGITAL_ZOOM_MIN = 1;
 
   /** @type {MediaStream|null} */
   let stream = null;
@@ -97,7 +110,7 @@
 
   let zoomValue = 1;
   let zoomKind = 'none';
-  let zoomMin = 0.5;
+  let zoomMin = DIGITAL_ZOOM_MIN;
   let zoomMax = 1;
   let zoomStep = 0.1;
 
@@ -244,7 +257,7 @@
   function resetZoomState() {
     zoomValue = 1;
     zoomKind = 'none';
-    zoomMin = 1;
+    zoomMin = DIGITAL_ZOOM_MIN;
     zoomMax = 1;
     zoomStep = 0.1;
     video.style.transform = '';
@@ -477,7 +490,7 @@
 
   function readZoomCapabilities() {
     zoomKind = 'digital';
-    zoomMin = 1;
+    zoomMin = DIGITAL_ZOOM_MIN;
     zoomMax = DIGITAL_ZOOM_MAX;
     zoomStep = 0.1;
 
@@ -533,7 +546,7 @@
         // The capability was advertised but refused. Fall through to a crop
         // rather than leaving the control dead, and relabel it honestly.
         zoomKind = 'digital';
-        zoomMin = 1;
+        zoomMin = DIGITAL_ZOOM_MIN;
         zoomMax = DIGITAL_ZOOM_MAX;
         zoomStep = 0.1;
       }
@@ -1125,6 +1138,36 @@
 
       await this.setFrameRate(previous);
       return { supported: true, results };
+    },
+
+    /**
+     * Video inputs as WebKit reports them.
+     *
+     * Labels stay hidden until camera permission has been granted, so an empty
+     * or unlabelled list before a grant says nothing about what the device has.
+     * This is how we find out whether the ultrawide is separately selectable —
+     * which is the only route to a genuine 0.5x, since a digital crop cannot
+     * widen the field of view.
+     */
+    async videoInputs() {
+      if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== 'function') {
+        return { available: false, devices: [] };
+      }
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        return {
+          available: true,
+          devices: devices
+            .filter((device) => device.kind === 'videoinput')
+            .map((device) => ({
+              deviceId: device.deviceId,
+              label: device.label || '',
+              groupId: device.groupId || ''
+            }))
+        };
+      } catch {
+        return { available: false, devices: [] };
+      }
     },
 
     get frameRateInfo() {
