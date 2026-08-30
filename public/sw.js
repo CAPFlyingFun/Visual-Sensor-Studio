@@ -4,6 +4,7 @@ const APP_SHELL = [
   './index.html',
   './styles.css',
   './settings.css',
+  './camera-bootstrap.js',
   './manifest.webmanifest',
   './icons/icon.svg',
   './icons/icon-180.png',
@@ -63,6 +64,7 @@ self.addEventListener('fetch', (event) => {
       || url.pathname.endsWith('/index.html')
       || url.pathname.endsWith('/styles.css')
       || url.pathname.endsWith('/settings.css')
+      || url.pathname.endsWith('/camera-bootstrap.js')
       || url.pathname.endsWith('/app/main.js')
       || url.pathname.endsWith('/app/sensors/camera.js');
 
