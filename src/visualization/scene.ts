@@ -3,6 +3,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { clamp, type QuaternionLike } from '../core/math.js';
 import type { GpsSample } from '../core/types.js';
 
+export type SceneQuality = 'low' | 'normal' | 'high';
+
 export class FusionScene {
   private readonly scene: any;
   private readonly renderer: any;
@@ -15,7 +17,7 @@ export class FusionScene {
   private readonly resizeObserver: ResizeObserver;
   private animationFrame = 0;
 
-  constructor(private readonly container: HTMLElement) {
+  constructor(private readonly container: HTMLElement, quality: SceneQuality = 'normal') {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x080d16);
     this.scene.fog = new THREE.FogExp2(0x080d16, 0.008);
@@ -23,8 +25,8 @@ export class FusionScene {
     this.camera = new THREE.PerspectiveCamera(52, 1, 0.05, 500);
     this.camera.position.set(7, 6, 9);
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer = new THREE.WebGLRenderer({ antialias: quality !== 'low', alpha: false, powerPreference: 'high-performance' });
+    this.setQuality(quality);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.container.appendChild(this.renderer.domElement);
 
@@ -49,7 +51,6 @@ export class FusionScene {
       new THREE.BoxGeometry(1.35, 2.7, 0.18),
       new THREE.MeshStandardMaterial({ color: 0x263849, metalness: 0.45, roughness: 0.42 })
     );
-    body.geometry.translate(0, 0, 0);
     this.phoneGroup.add(body);
 
     const screen = new THREE.Mesh(
@@ -82,10 +83,7 @@ export class FusionScene {
     );
     this.scene.add(this.accelerationArrow);
 
-    this.gpsLine = new THREE.Line(
-      new THREE.BufferGeometry(),
-      new THREE.LineBasicMaterial({ color: 0x6be6a7 })
-    );
+    this.gpsLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x6be6a7 }));
     this.scene.add(this.gpsLine);
 
     this.gpsMarkers = new THREE.Points(
@@ -98,6 +96,13 @@ export class FusionScene {
     this.resizeObserver.observe(this.container);
     this.resize();
     this.animate();
+  }
+
+  setQuality(quality: SceneQuality): void {
+    const deviceRatio = window.devicePixelRatio || 1;
+    const ratio = quality === 'low' ? 1 : quality === 'high' ? Math.min(deviceRatio, 2.5) : Math.min(deviceRatio, 2);
+    this.renderer.setPixelRatio(ratio);
+    this.resize();
   }
 
   setOrientation(quaternion: QuaternionLike): void {
@@ -139,6 +144,7 @@ export class FusionScene {
   }
 
   private resize(): void {
+    if (!this.renderer) return;
     const width = Math.max(280, this.container.clientWidth);
     const height = Math.max(260, this.container.clientHeight || 360);
     this.renderer.setSize(width, height, false);
