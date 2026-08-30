@@ -12,5 +12,11 @@
     "noEmitOnError": true,
     "skipLibCheck": true
   },
-  "include": ["src/core/math.ts", "src/vision/parallax.ts", "src/vision/frame-processing.ts"]
+  "include": [
+    "src/core/math.ts",
+    "src/sensors/zoom.ts",
+    "src/vision/parallax.ts",
+    "src/vision/frame-processing.ts",
+    "src/vision/optical-flow.ts"
+  ]
 }

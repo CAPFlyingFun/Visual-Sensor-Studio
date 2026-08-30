@@ -1,6 +1,21 @@
 import type { LocalPoint, QuaternionLike } from './math.js';
 
-export type VisionMode = 'camera' | 'relief' | 'edges';
+export type VisionMode = 'camera' | 'relief' | 'edges' | 'motion' | 'difference' | 'flow';
+
+export interface VisionMetrics {
+  /** Mean scene luminance, 0..1. */
+  brightness: number;
+  /** Normalised luminance spread, 0..1. Not a physical contrast ratio. */
+  contrast: number;
+  /** Share of the frame carrying strong edge structure, 0..1. */
+  detail: number;
+  /** Normalised inter-frame change, 0..1. */
+  motion: number;
+  /** Frames per second actually pushed through the vision pipeline. */
+  processingFps: number;
+  /** Width in pixels of the downsampled analysis frame. */
+  analysisWidth: number;
+}
 
 export interface MotionSample {
   alpha: number | null;
@@ -35,5 +50,11 @@ export interface SensorSnapshot {
     capturedReference: boolean;
     analyzed: boolean;
     medianDisparityPx: number | null;
+  };
+  vision: {
+    mode: VisionMode;
+    metrics: VisionMetrics | null;
+    zoom: number;
+    zoomKind: 'camera' | 'digital' | 'none';
   };
 }
