@@ -24,9 +24,9 @@ test('plain camera engine loads before the TypeScript application', () => {
 
 test('plain HTML camera engine owns getUserMedia while TypeScript only bridges to it', () => {
   assert.match(cameraSource, /navigator\.mediaDevices\.getUserMedia/);
-  assert.match(cameraSource, /requestProfiles/);
   assert.match(cameraSource, /video:\s*true/);
   assert.match(cameraSource, /setAttribute\(['"]playsinline['"]/);
+  assert.match(cameraSource, /setAttribute\(['"]webkit-playsinline['"]/);
   assert.doesNotMatch(adapterSource, /getUserMedia\(/);
   assert.match(adapterSource, /VisualCamera/);
   assert.doesNotMatch(mainSource, /getUserMedia\(/);
@@ -46,4 +46,119 @@ test('standalone camera UI hands off directly to Edge instead of opening another
   assert.match(mainSource, /cameraBrowserFallback/);
   assert.match(mainSource, /microsoft-edge-https:\/\//);
   assert.doesNotMatch(mainSource, /window\.open\(url\.toString\(\),\s*['"]_blank['"]\)/);
+});
+test('camera liveness is proved by a decoded frame, not by a live track alone', () => {
+  // The iOS failure this guards is a getUserMedia() that resolves with a track
+  // reporting readyState "live" while the <video> never receives a frame.
+  // readyState and videoWidth are both satisfied by that state, so neither can
+  // be the liveness test on its own.
+  assert.match(cameraSource, /waitForFirstFrame/);
+  assert.match(cameraSource, /requestVideoFrameCallback/);
+  assert.match(cameraSource, /currentTime > startTime/);
+  assert.match(cameraSource, /frame\.ok/);
+  assert.match(cameraSource, /noFramesError/);
+});
+
+test('backgrounding releases the camera instead of preserving a corrupt stream', () => {
+  assert.match(cameraSource, /addEventListener\(['"]visibilitychange['"]/);
+  assert.match(cameraSource, /addEventListener\(['"]pagehide['"]/);
+  assert.match(cameraSource, /addEventListener\(['"]pageshow['"]/);
+  assert.match(cameraSource, /function suspend\(/);
+  assert.match(cameraSource, /suspended/);
+});
+
+test('track ended, mute and unmute are all handled', () => {
+  for (const event of ['ended', 'mute', 'unmute']) {
+    assert.match(cameraSource, new RegExp(`addEventListener\\(['"]${event}['"]`), `missing ${event} handler`);
+  }
+  assert.match(cameraSource, /MUTE_GRACE_MS/, 'a brief mute must not be treated as failure');
+});
+
+test('a hard reset tears down the media element, not just the stream', () => {
+  assert.match(cameraSource, /function hardReset\(/);
+  assert.match(cameraSource, /video\.srcObject = null/);
+  assert.match(cameraSource, /removeAttribute\(['"]src['"]\)/);
+  assert.match(cameraSource, /video\.load\(\)/);
+  // playsinline/autoplay/muted must be restored before the next request.
+  assert.match(cameraSource, /hardReset[\s\S]{0,400}prepareVideo\(\)/);
+});
+
+test('there is no automatic camera-request loop', () => {
+  // A no-frames failure must end in a reset and a user-driven retry. Calling
+  // getUserMedia again straight away can kill the previous stream's video on
+  // WebKit and re-prompts in standalone mode, where grants are not persisted.
+  assert.match(cameraSource, /if \(!isConstraintError\(lastErrorName\)\) break;/);
+  assert.match(cameraSource, /isConstraintError/);
+  assert.doesNotMatch(cameraSource, /setInterval\(/);
+  assert.doesNotMatch(mainSource, /setInterval\([\s\S]{0,120}startCamera/);
+});
+
+test('the app keeps its own URL stable so WebKit cannot drop the capture grant', () => {
+  // WebKit binds a capture grant to the top frame document's current URL, so
+  // the cache-busting parameter is stripped once at boot, before any camera
+  // request, rather than left in the address bar for the whole session.
+  assert.match(mainSource, /searchParams\.has\(['"]refresh['"]\)/);
+  assert.match(mainSource, /history\.replaceState/);
+  const stripIndex = mainSource.indexOf('history.replaceState');
+  const subscribeIndex = mainSource.indexOf('camera.subscribe(applyCameraStatus)');
+  assert.ok(stripIndex >= 0 && subscribeIndex >= 0);
+  assert.ok(stripIndex < subscribeIndex, 'the URL must be settled before the camera is wired up');
+});
+
+test('the processed canvas layers over the video rather than hiding it', () => {
+  // A display:none <video> can stop decoding on WebKit, so a mode switch would
+  // otherwise freeze the camera. The overlay canvas is stacked on top instead.
+  const styles = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+  assert.match(htmlSource, /id=["']visionCanvas["'][^>]*class=["'][^"']*vision-overlay/);
+  assert.match(styles, /\.vision-overlay\s*\{[^}]*position:\s*absolute/);
+  assert.doesNotMatch(mainSource, /video\.hidden\s*=/);
+});
+
+test('Camera Lab exposes every mode, the zoom controls and the metric readout', () => {
+  for (const mode of ['camera', 'relief', 'edges', 'motion', 'flow', 'difference']) {
+    assert.match(htmlSource, new RegExp(`data-vision-mode="${mode}"`), `missing ${mode} mode button`);
+  }
+  for (const id of [
+    'zoomSlider',
+    'zoomPresets',
+    'zoomValue',
+    'metricBrightness',
+    'metricContrast',
+    'metricDetail',
+    'metricMotion',
+    'metricFps',
+    'metricZoom'
+  ]) {
+    assert.match(htmlSource, new RegExp(`id=["']${id}["']`), `missing #${id}`);
+  }
+});
+
+test('hardware zoom is used when exposed and a crop is never called optical', () => {
+  assert.match(cameraSource, /getCapabilities/);
+  assert.match(cameraSource, /applyConstraints/);
+  assert.match(cameraSource, /zoomKind = 'camera'/);
+  assert.match(cameraSource, /zoomKind = 'digital'/);
+  assert.doesNotMatch(cameraSource, /optical/i);
+  assert.doesNotMatch(mainSource, /optical zoom/i);
+  // The label follows the mechanism actually in effect.
+  assert.match(mainSource, /kind === 'camera'\) return 'Camera'/);
+  assert.match(mainSource, /kind === 'digital'\) return 'Digital'/);
+});
+
+test('pinch zoom and the slider drive the same zoom state', () => {
+  assert.match(mainSource, /installPinchZoom/);
+  assert.match(mainSource, /pointerdown/);
+  assert.match(mainSource, /pinchStartDistance/);
+  // Both paths funnel through requestZoom, which clamps and syncs the slider.
+  assert.match(mainSource, /requestZoom\(pinchStartZoom \* scale\)/);
+  assert.match(mainSource, /zoomSlider['"]\)\.addEventListener\(['"]input['"]/);
+  assert.match(mainSource, /clamp\(value, zoomState\.min, zoomState\.max\)/);
+});
+
+test('the removed native photo fallback has not come back anywhere', () => {
+  for (const source of [htmlSource, mainSource, adapterSource, cameraSource]) {
+    assert.doesNotMatch(source, /nativePhoto/i);
+    assert.doesNotMatch(source, /Native Photo/i);
+    assert.doesNotMatch(source, /capture=["']environment["']/);
+  }
 });

@@ -1,3 +1,48 @@
+/**
+ * Visual Sensor Studio - persistent plain-JavaScript camera engine.
+ *
+ * This file deliberately loads before, and stays independent of, the compiled
+ * TypeScript application. It owns the <video> element, every getUserMedia call
+ * and the whole camera lifecycle. The TypeScript side is only a bridge.
+ *
+ *
+ * WHY THIS IS SHAPED THE WAY IT IS (iOS standalone PWA notes)
+ * -----------------------------------------------------------
+ * WebKit has a family of long-standing camera bugs that only bite when a page
+ * is launched from the Home Screen in standalone display mode. The ones this
+ * engine is built around:
+ *
+ *  1. Capture grants are bound to the top frame document's current URL. A
+ *     hash or path change - including a same-document history update - can
+ *     tear down the media environment and pause an active capture session
+ *     (WebKit 215884, 212040). So this engine never changes the URL, and the
+ *     app strips its own cache-busting query parameters before starting.
+ *
+ *  2. `getUserMedia()` can resolve with a track reporting readyState "live"
+ *     while the <video> never receives a single decoded frame, because
+ *     mediaserverd believes the capture session is backgrounded when it is
+ *     not (WebKit 252465). Checking `track.readyState` or even `videoWidth`
+ *     is therefore NOT proof of a working camera - both are satisfied by the
+ *     broken state. This engine waits for evidence of an actual decoded
+ *     frame and treats its absence as a failure.
+ *
+ *  3. Calling getUserMedia() again while a previous stream is alive can kill
+ *     the first stream's video display (WebKit 179363), and in standalone
+ *     mode each new request may re-prompt because the grant is not persisted.
+ *     So this engine does NOT loop blindly through constraint profiles: it
+ *     falls back only for genuine constraint errors, and a no-frames failure
+ *     ends in a hard reset plus a user-driven retry rather than an automatic
+ *     re-request. There is no automatic camera-request loop anywhere here.
+ *
+ *  4. Tracks are muted, and stay muted, across a background/foreground
+ *     transition in a standalone PWA. Rather than nurse a corrupted stream,
+ *     backgrounding fully releases the camera and the engine enters a
+ *     `suspended` state that only a user gesture can leave.
+ *
+ * None of this fixes the underlying WebKit bugs. It makes them detectable and
+ * recoverable instead of silently presenting a black rectangle labelled
+ * "Camera Live".
+ */
 (() => {
   'use strict';
 
@@ -8,57 +53,266 @@
   const captureContext = captureCanvas.getContext('2d', { willReadFrequently: true });
   if (!captureContext) return;
 
+  const METADATA_TIMEOUT_MS = 4000;
+  // iOS can take a couple of seconds to hand over the first decoded frame on a
+  // cold camera start, so this is deliberately longer than a desktop would
+  // need - but still bounded, because an unbounded wait is just a hang.
+  const FIRST_FRAME_TIMEOUT_MS = 6000;
+  // A track can mute briefly during a legitimate route or focus change. Only a
+  // mute that persists past this window is treated as the iOS suspend bug.
+  const MUTE_GRACE_MS = 1400;
+  const DIGITAL_ZOOM_MAX = 5;
+
+  /** @type {MediaStream|null} */
   let stream = null;
+  /** @type {MediaStreamTrack|null} */
+  let videoTrack = null;
   let facing = 'environment';
-  let lastStage = 'idle';
+
+  /** idle | requesting | live | suspended | error */
+  let state = 'idle';
+  let stage = 'idle';
+  let reason = '';
+  let lastErrorName = '';
+  let lastErrorMessage = '';
+
+  let startedAt = 0;
+  let firstFrameMs = null;
+  let firstFrameVia = 'none';
+  let frameEvidence = false;
+  let muteTimer = 0;
+  let requestToken = 0;
+
+  let zoomValue = 1;
+  let zoomKind = 'none';
+  let zoomMin = 1;
+  let zoomMax = 1;
+  let zoomStep = 0.1;
+
+  const listeners = new Set();
+
+  function snapshot() {
+    return {
+      state,
+      stage,
+      reason,
+      facing,
+      zoom: { value: zoomValue, min: zoomMin, max: zoomMax, step: zoomStep, kind: zoomKind }
+    };
+  }
+
+  function emit() {
+    const payload = snapshot();
+    for (const listener of listeners) {
+      try {
+        listener(payload);
+      } catch {
+        // A broken subscriber must never take the camera down with it.
+      }
+    }
+  }
+
+  function setState(next, nextReason = '') {
+    if (state === next && reason === nextReason) return;
+    state = next;
+    reason = nextReason;
+    emit();
+  }
 
   function prepareVideo() {
+    // Re-applied before every request: video.load() and a WebKit teardown can
+    // both drop these, and losing playsinline is what turns an iPhone preview
+    // into a fullscreen takeover.
     video.setAttribute('playsinline', 'true');
     video.setAttribute('webkit-playsinline', 'true');
     video.setAttribute('autoplay', 'true');
+    video.setAttribute('muted', 'true');
     video.autoplay = true;
     video.muted = true;
+    video.playsInline = true;
+    video.controls = false;
+  }
+
+  function detachTrackListeners() {
+    if (!videoTrack) return;
+    videoTrack.removeEventListener('ended', onTrackEnded);
+    videoTrack.removeEventListener('mute', onTrackMuted);
+    videoTrack.removeEventListener('unmute', onTrackUnmuted);
+    videoTrack = null;
+  }
+
+  function onTrackEnded() {
+    // The system took the camera away (another app, a hardware route change).
+    // Nothing is recoverable without a fresh user-gesture request.
+    clearTimeout(muteTimer);
+    releaseStream();
+    stage = 'track-ended';
+    setState('suspended', 'The camera track was ended by the system. Tap Resume Camera to start a new stream.');
+  }
+
+  function onTrackMuted() {
+    clearTimeout(muteTimer);
+    muteTimer = window.setTimeout(() => {
+      if (!videoTrack || !videoTrack.muted) return;
+      // This is the standalone-PWA background/foreground failure: the track is
+      // still "live" but permanently silent. Holding on to it only produces a
+      // frozen preview, so release it and ask for a deliberate restart.
+      releaseStream();
+      stage = 'track-muted';
+      setState('suspended', 'iOS muted the camera track and did not restore it. Tap Resume Camera for a fresh stream.');
+    }, MUTE_GRACE_MS);
+  }
+
+  function onTrackUnmuted() {
+    clearTimeout(muteTimer);
+    if (state === 'live') return;
+    if (videoTrack && videoTrack.readyState === 'live') {
+      stage = 'live';
+      setState('live');
+    }
+  }
+
+  function attachTrackListeners(track) {
+    detachTrackListeners();
+    if (!track) return;
+    videoTrack = track;
+    track.addEventListener('ended', onTrackEnded);
+    track.addEventListener('mute', onTrackMuted);
+    track.addEventListener('unmute', onTrackUnmuted);
   }
 
   function releaseStream() {
+    clearTimeout(muteTimer);
+    detachTrackListeners();
     if (stream) {
-      for (const track of stream.getTracks()) track.stop();
+      for (const track of stream.getTracks()) {
+        try {
+          track.stop();
+        } catch {
+          // A track can already be dead; stopping it twice is not an error here.
+        }
+      }
     }
     stream = null;
+    frameEvidence = false;
     try {
       video.pause();
     } catch {
-      // Some WebKit states can throw during teardown.
+      // Some WebKit teardown states throw from pause().
     }
     video.srcObject = null;
   }
 
-  function waitForMetadata(timeoutMs = 2400) {
-    if (video.readyState >= HTMLMediaElement.HAVE_METADATA || video.videoWidth > 0) return Promise.resolve();
+  /**
+   * Full teardown of the media element, not just the stream.
+   *
+   * `video.load()` after clearing both srcObject and src is what actually
+   * resets WebKit's internal media state; without it a video element that has
+   * been through a failed capture can refuse to render the next stream.
+   */
+  function hardReset() {
+    releaseStream();
+    try {
+      video.removeAttribute('src');
+      video.load();
+    } catch {
+      // load() can throw mid-teardown on WebKit; the stream is already gone.
+    }
+    prepareVideo();
+    resetZoomState();
+    stage = 'reset';
+    lastErrorName = '';
+    lastErrorMessage = '';
+    firstFrameMs = null;
+    firstFrameVia = 'none';
+    setState('idle', '');
+  }
+
+  function resetZoomState() {
+    zoomValue = 1;
+    zoomKind = 'none';
+    zoomMin = 1;
+    zoomMax = 1;
+    zoomStep = 0.1;
+    video.style.transform = '';
+    video.style.transformOrigin = '';
+  }
+
+  function waitForMetadata(timeoutMs) {
+    if (video.readyState >= HTMLMediaElement.HAVE_METADATA && video.videoWidth > 0) {
+      return Promise.resolve(true);
+    }
 
     return new Promise((resolve) => {
       let settled = false;
-      const finish = () => {
+      const finish = (ok) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        video.removeEventListener('loadedmetadata', finish);
-        video.removeEventListener('loadeddata', finish);
-        resolve();
+        video.removeEventListener('loadedmetadata', onMeta);
+        video.removeEventListener('loadeddata', onMeta);
+        resolve(ok);
       };
-      const timer = setTimeout(finish, timeoutMs);
-      video.addEventListener('loadedmetadata', finish, { once: true });
-      video.addEventListener('loadeddata', finish, { once: true });
+      const onMeta = () => finish(true);
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      video.addEventListener('loadedmetadata', onMeta);
+      video.addEventListener('loadeddata', onMeta);
     });
   }
 
-  function playbackTimeout(timeoutMs = 2600) {
-    return new Promise((_, reject) => {
-      setTimeout(() => {
-        const error = new Error('Camera preview did not begin playback.');
-        error.name = 'NotReadableError';
-        reject(error);
-      }, timeoutMs);
+  /**
+   * Wait for evidence that a frame was actually decoded and presented.
+   *
+   * `requestVideoFrameCallback` is the direct signal and is available on
+   * modern iOS Safari. Where it is missing, an advancing `currentTime` on a
+   * live MediaStream is the next best proof: a stream that resolves but never
+   * delivers frames leaves currentTime pinned at its starting value.
+   *
+   * Deliberately not used as evidence: `track.readyState`, `videoWidth` and
+   * `video.readyState`. All three are satisfied by the WebKit fake-success
+   * state this check exists to catch.
+   */
+  function waitForFirstFrame(timeoutMs) {
+    const begin = performance.now();
+    const startTime = video.currentTime;
+
+    return new Promise((resolve) => {
+      let settled = false;
+      let rafId = 0;
+      let frameHandle = 0;
+
+      const finish = (ok, via) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        cancelAnimationFrame(rafId);
+        if (frameHandle && typeof video.cancelVideoFrameCallback === 'function') {
+          try {
+            video.cancelVideoFrameCallback(frameHandle);
+          } catch {
+            // Cancelling an already-fired callback is harmless.
+          }
+        }
+        resolve({ ok, via, elapsedMs: Math.round(performance.now() - begin) });
+      };
+
+      const timer = setTimeout(() => finish(false, 'timeout'), timeoutMs);
+
+      if (typeof video.requestVideoFrameCallback === 'function') {
+        frameHandle = video.requestVideoFrameCallback(() => finish(true, 'requestVideoFrameCallback'));
+      }
+
+      const poll = () => {
+        if (settled) return;
+        if (video.videoWidth > 0
+          && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+          && video.currentTime > startTime) {
+          finish(true, 'currentTime');
+          return;
+        }
+        rafId = requestAnimationFrame(poll);
+      };
+      rafId = requestAnimationFrame(poll);
     });
   }
 
@@ -66,89 +320,240 @@
     return error && typeof error === 'object' && 'name' in error ? String(error.name || '') : '';
   }
 
-  function describeError(error, standalone = false) {
+  function noFramesError() {
+    const error = new Error('The camera stream opened but never delivered a decoded frame.');
+    error.name = 'NotReadableError';
+    return error;
+  }
+
+  function isConstraintError(name) {
+    return name === 'OverconstrainedError'
+      || name === 'ConstraintNotSatisfiedError'
+      || name === 'NotFoundError'
+      || name === 'DevicesNotFoundError'
+      || name === 'TypeError';
+  }
+
+  function isStandaloneDisplay() {
+    try {
+      return window.matchMedia('(display-mode: standalone)').matches || Boolean(navigator.standalone);
+    } catch {
+      return Boolean(navigator.standalone);
+    }
+  }
+
+  function describeError(error, standalone = isStandaloneDisplay()) {
     const name = errorName(error);
     const hint = standalone
-      ? ' iOS/WebKit can fail live camera capture in standalone PWAs even when the same page works in a browser tab. Try Retry Camera or Open Live Camera in Edge.'
+      ? ' This is an installed standalone iOS web app, where WebKit has known camera bugs that do not affect the same page in a browser tab. Try Hard Reset Camera, then Retry Camera; if it keeps failing, open the site in Safari or Edge.'
       : '';
 
-    if (name === 'NotAllowedError' || name === 'SecurityError') return `Camera permission was blocked or unavailable.${hint}`;
-    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') return `No usable camera was reported.${hint}`;
-    if (name === 'NotReadableError' || name === 'TrackStartError') return `The camera exists but WebKit could not deliver usable preview frames.${hint}`;
-    if (name === 'OverconstrainedError' || name === 'ConstraintNotSatisfiedError') return `The requested camera mode was unavailable.${hint}`;
-    if (name === 'AbortError') return `Camera startup was interrupted.${hint}`;
+    if (name === 'NotAllowedError' || name === 'SecurityError') {
+      return `Camera permission was blocked or never granted.${standalone ? ' iOS does not persist camera permission for installed web apps, so the prompt can be expected again after each launch.' : ''}${hint}`;
+    }
+    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') return `No usable camera was reported by this device.${hint}`;
+    if (name === 'NotReadableError' || name === 'TrackStartError') {
+      return `The camera opened but delivered no frames, so it was not reported as live. Another app may be holding the camera, or WebKit is in the known standalone capture-session failure state.${hint}`;
+    }
+    if (name === 'OverconstrainedError' || name === 'ConstraintNotSatisfiedError') return `The requested camera mode was unavailable on this device.${hint}`;
+    if (name === 'AbortError') return `Camera startup was interrupted before it completed.${hint}`;
 
     const message = error instanceof Error ? error.message : 'Unable to start the camera.';
     return `${message}${hint}`;
   }
 
-  async function start(requestedFacing = facing) {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error('Camera access is not available in this browser context.');
+  function readZoomCapabilities() {
+    zoomKind = 'digital';
+    zoomMin = 1;
+    zoomMax = DIGITAL_ZOOM_MAX;
+    zoomStep = 0.1;
+
+    const track = videoTrack;
+    if (!track || typeof track.getCapabilities !== 'function') return;
+
+    let capabilities = null;
+    try {
+      capabilities = track.getCapabilities();
+    } catch {
+      return;
     }
 
+    const zoom = capabilities && capabilities.zoom;
+    if (!zoom || typeof zoom !== 'object') return;
+    const min = Number(zoom.min);
+    const max = Number(zoom.max);
+    if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return;
+
+    zoomKind = 'camera';
+    zoomMin = min;
+    zoomMax = max;
+    const step = Number(zoom.step);
+    zoomStep = Number.isFinite(step) && step > 0 ? step : (max - min) / 40;
+  }
+
+  function applyDigitalZoomPreview() {
+    if (zoomKind !== 'digital' || zoomValue <= 1.0001) {
+      video.style.transform = '';
+      video.style.transformOrigin = '';
+      return;
+    }
+    video.style.transformOrigin = '50% 50%';
+    video.style.transform = `scale(${zoomValue.toFixed(3)})`;
+  }
+
+  /**
+   * Set zoom, preferring real MediaTrack zoom and falling back to a centre
+   * crop. `kind` in the returned state says which one is actually in effect;
+   * a digital crop is never reported as camera zoom.
+   */
+  async function setZoom(requested) {
+    const value = Math.min(zoomMax, Math.max(zoomMin, Number(requested) || 1));
+
+    if (zoomKind === 'camera' && videoTrack && typeof videoTrack.applyConstraints === 'function') {
+      try {
+        await videoTrack.applyConstraints({ advanced: [{ zoom: value }] });
+        zoomValue = value;
+        video.style.transform = '';
+        emit();
+        return snapshot().zoom;
+      } catch {
+        // The capability was advertised but refused. Fall through to a crop
+        // rather than leaving the control dead, and relabel it honestly.
+        zoomKind = 'digital';
+        zoomMin = 1;
+        zoomMax = DIGITAL_ZOOM_MAX;
+        zoomStep = 0.1;
+      }
+    }
+
+    zoomValue = Math.min(zoomMax, Math.max(zoomMin, value));
+    applyDigitalZoomPreview();
+    emit();
+    return snapshot().zoom;
+  }
+
+  async function requestStream(constraints) {
+    const nextStream = await navigator.mediaDevices.getUserMedia(constraints);
+    stream = nextStream;
+    attachTrackListeners(nextStream.getVideoTracks()[0] || null);
+    video.srcObject = nextStream;
+    return nextStream;
+  }
+
+  async function attempt(constraints, token) {
+    await requestStream(constraints);
+    if (token !== requestToken) throw new DOMException('Superseded camera request.', 'AbortError');
+
+    stage = 'metadata';
+    emit();
+    await waitForMetadata(METADATA_TIMEOUT_MS);
+    if (token !== requestToken) throw new DOMException('Superseded camera request.', 'AbortError');
+
+    stage = 'playback';
+    emit();
+    try {
+      const playPromise = video.play();
+      if (playPromise && typeof playPromise.then === 'function') await playPromise;
+    } catch {
+      // A rejected play() is not fatal on its own: WebKit sometimes rejects
+      // while still going on to render the stream. The first-frame check
+      // below is the real verdict.
+    }
+
+    stage = 'first-frame';
+    emit();
+    const frame = await waitForFirstFrame(FIRST_FRAME_TIMEOUT_MS);
+    if (token !== requestToken) throw new DOMException('Superseded camera request.', 'AbortError');
+
+    firstFrameMs = frame.elapsedMs;
+    firstFrameVia = frame.via;
+    frameEvidence = frame.ok;
+
+    const track = stream && stream.getVideoTracks()[0];
+    if (!track || track.readyState !== 'live' || track.muted || !frame.ok) {
+      throw noFramesError();
+    }
+  }
+
+  /**
+   * Start the camera. Call this from a user gesture: nothing is awaited before
+   * getUserMedia, so the gesture's transient activation is still in effect
+   * when WebKit decides whether to show the permission prompt.
+   */
+  async function start(requestedFacing = facing) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      const error = new Error('This browser context does not expose getUserMedia.');
+      error.name = 'NotAllowedError';
+      stage = 'unsupported';
+      lastErrorName = error.name;
+      lastErrorMessage = error.message;
+      setState('error', describeError(error));
+      throw error;
+    }
+
+    const token = ++requestToken;
     releaseStream();
-    facing = requestedFacing === 'user' ? 'user' : 'environment';
+    resetZoomState();
     prepareVideo();
 
-    const requestProfiles = [
-      {
-        audio: false,
-        video: {
-          facingMode: { ideal: facing },
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        }
-      },
-      {
-        audio: false,
-        video: { facingMode: { ideal: facing } }
-      },
-      {
-        audio: false,
-        video: true
-      }
+    facing = requestedFacing === 'user' ? 'user' : 'environment';
+    startedAt = performance.now();
+    firstFrameMs = null;
+    firstFrameVia = 'none';
+    lastErrorName = '';
+    lastErrorMessage = '';
+    stage = 'getUserMedia';
+    setState('requesting', '');
+
+    const profiles = [
+      { audio: false, video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } } },
+      { audio: false, video: { facingMode: { ideal: facing } } },
+      { audio: false, video: true }
     ];
 
     let lastError = new Error('Unable to start the camera.');
 
-    for (const constraints of requestProfiles) {
-      releaseStream();
-      prepareVideo();
-
+    for (let i = 0; i < profiles.length; i++) {
       try {
-        lastStage = 'getUserMedia';
-        const nextStream = await navigator.mediaDevices.getUserMedia(constraints);
-        stream = nextStream;
-        video.srcObject = nextStream;
-
-        lastStage = 'metadata';
-        await waitForMetadata();
-
-        lastStage = 'playback';
-        const playPromise = video.play();
-        if (playPromise) await Promise.race([playPromise, playbackTimeout()]);
-
-        const track = nextStream.getVideoTracks()[0];
-        const hasFrames = video.videoWidth > 0 || video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
-        if (!track || track.readyState !== 'live' || !hasFrames) {
-          const error = new Error('Camera stream opened but no usable preview frames arrived.');
-          error.name = 'NotReadableError';
-          throw error;
-        }
-
-        lastStage = 'live';
+        await attempt(profiles[i], token);
+        readZoomCapabilities();
+        applyDigitalZoomPreview();
+        stage = 'live';
+        setState('live', '');
         return facing;
       } catch (error) {
+        if (token !== requestToken) throw error;
+
         lastError = error;
+        lastErrorName = errorName(error);
+        lastErrorMessage = error instanceof Error ? error.message : String(error);
         releaseStream();
-        const name = errorName(error);
-        if (name === 'NotAllowedError' || name === 'SecurityError') throw error;
+
+        // A denied permission is final; retrying only produces another prompt.
+        if (lastErrorName === 'NotAllowedError' || lastErrorName === 'SecurityError') break;
+
+        // A stream that opened but delivered nothing is the WebKit capture
+        // failure. Immediately calling getUserMedia again is known to make it
+        // worse, so stop here and let the user retry deliberately.
+        if (!isConstraintError(lastErrorName)) break;
       }
     }
 
-    lastStage = 'failed';
+    hardResetQuietly();
+    stage = 'failed';
+    setState('error', describeError(lastError));
     throw lastError;
+  }
+
+  function hardResetQuietly() {
+    releaseStream();
+    try {
+      video.removeAttribute('src');
+      video.load();
+    } catch {
+      // See hardReset().
+    }
+    prepareVideo();
   }
 
   async function switchCamera() {
@@ -158,24 +563,49 @@
   }
 
   function stop() {
+    requestToken++;
     releaseStream();
-    lastStage = 'idle';
+    resetZoomState();
+    stage = 'idle';
+    setState('idle', '');
+  }
+
+  /**
+   * Release the camera because the app is going away, and remember that it was
+   * running so the UI can offer an explicit Resume rather than silently
+   * restarting. There is intentionally no automatic re-request here.
+   */
+  function suspend(why) {
+    if (state !== 'live' && state !== 'requesting') return;
+    requestToken++;
+    releaseStream();
+    stage = 'suspended';
+    setState('suspended', why);
   }
 
   function captureFrame(targetWidth = 192) {
     const sourceWidth = video.videoWidth;
     const sourceHeight = video.videoHeight;
-    const track = stream?.getVideoTracks()[0];
+    const track = stream && stream.getVideoTracks()[0];
 
-    if (!track || track.readyState !== 'live' || !sourceWidth || !sourceHeight) {
+    if (state !== 'live' || !track || track.readyState !== 'live' || track.muted || !sourceWidth || !sourceHeight) {
       throw new Error('No live camera frame is ready yet.');
     }
 
+    // Camera zoom already happened in the sensor, so only a digital crop needs
+    // to be reproduced here - otherwise the processed views would disagree
+    // with the preview.
+    const crop = zoomKind === 'digital' ? Math.max(1, zoomValue) : 1;
+    const cropWidth = sourceWidth / crop;
+    const cropHeight = sourceHeight / crop;
+    const cropX = (sourceWidth - cropWidth) / 2;
+    const cropY = (sourceHeight - cropHeight) / 2;
+
     const safeWidth = Math.max(32, Math.min(960, Math.round(targetWidth)));
-    const height = Math.max(24, Math.round((sourceHeight / sourceWidth) * safeWidth));
-    captureCanvas.width = safeWidth;
-    captureCanvas.height = height;
-    captureContext.drawImage(video, 0, 0, safeWidth, height);
+    const height = Math.max(24, Math.round((cropHeight / cropWidth) * safeWidth));
+    if (captureCanvas.width !== safeWidth) captureCanvas.width = safeWidth;
+    if (captureCanvas.height !== height) captureCanvas.height = height;
+    captureContext.drawImage(video, cropX, cropY, cropWidth, cropHeight, 0, 0, safeWidth, height);
 
     return {
       imageData: captureContext.getImageData(0, 0, safeWidth, height),
@@ -184,14 +614,69 @@
     };
   }
 
+  // --- Lifecycle -----------------------------------------------------------
+  //
+  // Backgrounding a standalone iOS web app is where the camera goes wrong, so
+  // the camera is fully released on the way out rather than preserved and
+  // repaired on the way back in.
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      suspend('The app was backgrounded, so the camera was released. Tap Resume Camera when you return.');
+      return;
+    }
+
+    // Coming back to the foreground: never auto-request. If a stream somehow
+    // survived but is muted or dead, drop it so the UI cannot claim it is live.
+    if (state === 'live') {
+      const track = stream && stream.getVideoTracks()[0];
+      if (!track || track.readyState !== 'live' || track.muted) {
+        suspend('The camera did not survive returning to the foreground. Tap Resume Camera for a fresh stream.');
+      }
+    }
+  });
+
+  window.addEventListener('pagehide', () => {
+    suspend('The page was hidden, so the camera was released.');
+  });
+
+  window.addEventListener('pageshow', (event) => {
+    // A back-forward-cache restore hands back a document whose media state
+    // WebKit may consider stale, so treat it exactly like a resume.
+    if (event.persisted && state === 'live') {
+      suspend('The page was restored from cache, so the camera was released. Tap Resume Camera.');
+    }
+  });
+
+  // Page Lifecycle `freeze` fires on the document, not the window.
+  document.addEventListener('freeze', () => {
+    suspend('The app was frozen by the system, so the camera was released.');
+  });
+
   const VisualCamera = {
     start,
     switchCamera,
     stop,
+    suspend,
+    hardReset,
     captureFrame,
+    setZoom,
     describeError,
+    subscribe(listener) {
+      listeners.add(listener);
+      try {
+        listener(snapshot());
+      } catch {
+        // See emit().
+      }
+      return () => listeners.delete(listener);
+    },
+    get state() {
+      return state;
+    },
     get active() {
-      return Boolean(stream?.getVideoTracks().some((track) => track.readyState === 'live'));
+      const track = stream && stream.getVideoTracks()[0];
+      return state === 'live' && Boolean(track) && track.readyState === 'live' && !track.muted;
     },
     get ready() {
       return this.active;
@@ -202,15 +687,47 @@
     get sourceKind() {
       return this.active ? 'live' : 'none';
     },
+    get zoom() {
+      return snapshot().zoom;
+    },
     get diagnostics() {
-      const track = stream?.getVideoTracks()[0] || null;
+      const track = stream ? stream.getVideoTracks()[0] || null : null;
+      let settings = {};
+      try {
+        settings = track && typeof track.getSettings === 'function' ? track.getSettings() : {};
+      } catch {
+        settings = {};
+      }
+
       return {
-        stage: lastStage,
+        state,
+        stage,
+        reason,
         sourceKind: this.active ? 'live' : 'none',
-        trackState: track?.readyState || 'none',
+        facing,
+        trackState: track ? track.readyState : 'none',
+        trackMuted: track ? Boolean(track.muted) : false,
+        trackEnabled: track ? Boolean(track.enabled) : false,
+        trackLabel: track && track.label ? track.label : '',
+        settingsWidth: Number(settings.width) || 0,
+        settingsHeight: Number(settings.height) || 0,
+        settingsFrameRate: Number(settings.frameRate) || 0,
         videoWidth: video.videoWidth || 0,
         videoHeight: video.videoHeight || 0,
-        readyState: video.readyState
+        readyState: video.readyState,
+        paused: video.paused,
+        currentTime: video.currentTime,
+        frameEvidence,
+        firstFrameMs,
+        firstFrameVia,
+        startedAt,
+        lastErrorName,
+        lastErrorMessage,
+        standalone: isStandaloneDisplay(),
+        zoomKind,
+        zoomValue,
+        zoomMin,
+        zoomMax
       };
     }
   };
