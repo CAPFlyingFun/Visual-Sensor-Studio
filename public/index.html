@@ -143,6 +143,7 @@
               <div class="readout"><span>Trail coverage</span><strong id="motionTrailCoverage">—</strong></div>
               <div class="readout"><span>Angular speed</span><strong id="motionAngular">—</strong></div>
               <div class="readout wide"><span>Event</span><strong id="motionEventState">Trigger off</strong></div>
+              <div class="readout wide"><span>Steady gate</span><strong id="steadyState">Gate off</strong></div>
             </div>
             <div class="button-row">
               <button class="secondary-button" id="motionFreezeButton" type="button">Freeze Trail</button>
@@ -332,7 +333,7 @@
       </section>
     </main>
 
-    <footer><strong>Visual Sensor Studio v0.8.2</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.9.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">
@@ -462,6 +463,44 @@
         <div class="settings-heading compact"><h3>Video Inputs</h3></div>
         <div id="videoInputs" class="capability-table">Enable the camera to enumerate inputs.</div>
         <p class="helper">Reported straight from <code>getCapabilities()</code>. <strong>Not exposed</strong> means WebKit reports nothing for that control, which is different from reporting that it is unsupported.</p>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-heading compact"><h3>Sensor Startup &amp; Steadiness</h3></div>
+        <p class="helper">
+          A web page cannot hold or extend a browser permission — that grant belongs to Safari and to
+          iOS, and nothing here changes how long it lasts. What these remember is that you wanted a
+          sensor running, so it starts on its own when the browser already says yes. Where a tap is
+          still required, one tap anywhere starts everything that is waiting.
+        </p>
+        <div class="settings-grid">
+          <label class="switch-row"><input id="autoStartCamera" type="checkbox" /> Start camera on open</label>
+          <label class="switch-row"><input id="autoStartGps" type="checkbox" /> Start GPS on open</label>
+          <label class="switch-row"><input id="autoStartMotion" type="checkbox" /> Start motion on open</label>
+          <label class="switch-row"><input id="steadyGate" type="checkbox" /> Steady-hand gate</label>
+        </div>
+        <p class="helper" id="autoStartStatus">Auto-start is off for every sensor.</p>
+        <p class="helper">
+          Sensors are released when the app is backgrounded and restored when it returns, so nothing
+          left running keeps the GPS or the camera awake behind your back.
+        </p>
+        <div class="settings-heading compact"><h3>Handshake calibration</h3></div>
+        <p class="helper">
+          Hold the phone the way you actually mean to hold it and calibrate for ten seconds. That
+          measures how still <em>this</em> device is in <em>your</em> hand, and everything below the
+          measured floor is then treated as tremor rather than movement. It is a gate, not
+          stabilisation — it does not remove camera movement from the picture, it stops the app
+          reporting your own hand as an event.
+        </p>
+        <div class="diagnostics-grid">
+          <div class="readout wide"><span>Calibration</span><strong id="calibrationState">Not calibrated — using a generic floor</strong></div>
+          <div class="readout wide"><span>Deadzone</span><strong id="calibrationDeadzone">—</strong></div>
+          <div class="readout wide"><span>Measured rotation</span><strong id="calibrationSpread">—</strong></div>
+        </div>
+        <div class="settings-actions two">
+          <button class="secondary-button" id="calibrateButton" type="button">Hold Still &amp; Calibrate</button>
+          <button class="secondary-button" id="clearCalibrationButton" type="button">Clear Calibration</button>
+        </div>
       </section>
 
       <section class="settings-section">

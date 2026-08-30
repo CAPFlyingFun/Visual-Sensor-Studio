@@ -29,6 +29,19 @@ import {
 import { computeBlockFlow, flowVectorColor, type FlowField } from './vision/optical-flow.js';
 import { estimateEffectiveResolution } from './vision/sharpness.js';
 import {
+  decideAutoStart,
+  describeAutoStart,
+  onFirstGesture,
+  readPermission,
+  type AutoStartDecision
+} from './sensors/autostart.js';
+import {
+  StabilityCalibrator,
+  excursion,
+  isSteady,
+  type StabilityCalibration
+} from './sensors/stability.js';
+import {
   EventDetector,
   degreesPerSecond,
   type EventPhase,
@@ -59,7 +72,7 @@ import {
 import { StabilityMonitor } from './sensors/stability.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 
-const APP_VERSION = '0.8.2';
+const APP_VERSION = '0.9.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -92,6 +105,11 @@ interface AppSettings {
   motionKeepFastest: boolean;
   motionFadeTrails: boolean;
   motionEventTrigger: boolean;
+  autoStartCamera: boolean;
+  autoStartGps: boolean;
+  autoStartMotion: boolean;
+  /** Suppress motion work while the phone itself is moving. */
+  steadyGate: boolean;
   /** Horizontal field of view in degrees, entered by hand. 0 means unknown. */
   motionFovDegrees: number;
 }
@@ -119,6 +137,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   motionKeepFastest: true,
   motionFadeTrails: true,
   motionEventTrigger: false,
+  autoStartCamera: false,
+  autoStartGps: false,
+  autoStartMotion: false,
+  steadyGate: false,
   motionFovDegrees: 0
 };
 
@@ -228,6 +250,18 @@ function loadSettings(): AppSettings {
       motionEventTrigger: typeof parsed.motionEventTrigger === 'boolean'
         ? parsed.motionEventTrigger
         : DEFAULT_SETTINGS.motionEventTrigger,
+      autoStartCamera: typeof parsed.autoStartCamera === 'boolean'
+        ? parsed.autoStartCamera
+        : DEFAULT_SETTINGS.autoStartCamera,
+      autoStartGps: typeof parsed.autoStartGps === 'boolean'
+        ? parsed.autoStartGps
+        : DEFAULT_SETTINGS.autoStartGps,
+      autoStartMotion: typeof parsed.autoStartMotion === 'boolean'
+        ? parsed.autoStartMotion
+        : DEFAULT_SETTINGS.autoStartMotion,
+      steadyGate: typeof parsed.steadyGate === 'boolean'
+        ? parsed.steadyGate
+        : DEFAULT_SETTINGS.steadyGate,
       motionFovDegrees: Number.isFinite(parsed.motionFovDegrees)
         ? clamp(Number(parsed.motionFovDegrees), 0, 180)
         : DEFAULT_SETTINGS.motionFovDegrees
@@ -338,6 +372,12 @@ const motionTrails = new MotionTrailBuffer();
 const eventDetector = new EventDetector();
 const histogram = createHistogram();
 const stability = new StabilityMonitor();
+const calibrator = new StabilityCalibrator();
+/** Measured from this device in this grip, or null until it has been. */
+let stabilityCalibration: StabilityCalibration | null = null;
+let deviceSteady = true;
+let steadyExcursion = 0;
+let cancelArmedStart: (() => void) | null = null;
 
 let nightModeActive = false;
 let trackedObjects: readonly TrackedObject[] = [];
@@ -1003,6 +1043,7 @@ function renderMotionReadouts(): void {
       : '—');
   }
 
+  renderSteadyState();
   setText('motionTrailCoverage', latestTrail
     ? `${(latestTrail.coverage * 100).toFixed(1)}% · ${latestTrail.framesAccumulated} frames`
       + (trailFrozen ? ' · FROZEN' : '')
@@ -1306,6 +1347,205 @@ function installViewerGestures(): void {
   });
 }
 
+const CALIBRATION_MS = 10_000;
+const CALIBRATION_KEY = 'visual-sensor-stability-calibration-v1';
+
+function loadCalibration(): StabilityCalibration | null {
+  try {
+    const raw = localStorage.getItem(CALIBRATION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StabilityCalibration;
+    // A stored deadzone that is not a real number would silently disable every
+    // gate built on it, so it is checked rather than trusted.
+    return Number.isFinite(parsed?.rotationDeadzone) && Number.isFinite(parsed?.accelerationDeadzone)
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function renderCalibration(): void {
+  const stored = stabilityCalibration;
+  if (calibrator.running) {
+    const progress = calibrator.progress(performance.now(), CALIBRATION_MS);
+    setText('calibrationState', `Measuring… ${Math.round(progress * 100)}% · ${calibrator.samples} samples`);
+    return;
+  }
+  if (!stored) {
+    setText('calibrationState', 'Not calibrated — using a generic floor');
+    setText('calibrationDeadzone', '—');
+    setText('calibrationSpread', '—');
+    return;
+  }
+  setText('calibrationState', `${stored.samples} samples over ${(stored.durationMs / 1000).toFixed(1)}s`
+    + ` · ${new Date(stored.capturedAt).toLocaleDateString()}`);
+  setText('calibrationDeadzone', `${stored.rotationDeadzone.toFixed(2)} °/s · ${stored.accelerationDeadzone.toFixed(2)} m/s²`);
+  setText('calibrationSpread', `min ${stored.rotation.min.toFixed(2)} · mean ${stored.rotation.mean.toFixed(2)}`
+    + ` · max ${stored.rotation.max.toFixed(2)} °/s`);
+}
+
+function renderSteadyState(): void {
+  if (!settings.steadyGate) {
+    setText('steadyState', 'Gate off');
+    return;
+  }
+  if (!latestMotion) {
+    setText('steadyState', 'Needs motion sensors');
+    return;
+  }
+  setText('steadyState', deviceSteady
+    ? `Steady${stabilityCalibration ? '' : ' (generic floor)'}`
+    : `Moving · ${(steadyExcursion * 100).toFixed(0)}% past the deadzone`);
+}
+
+/**
+ * Take a fresh noise floor from however the phone is being held right now.
+ *
+ * Ten seconds is a deliberate act rather than a background adaptation, and that
+ * is the point: a filter that kept adapting would eventually absorb the very
+ * movement it exists to reject.
+ */
+function startCalibration(): void {
+  if (!latestMotion) {
+    setText('calibrationState', 'Enable motion sensors first — there is nothing to measure without them.');
+    return;
+  }
+  calibrator.start(performance.now());
+  byId<HTMLButtonElement>('calibrateButton').textContent = 'Cancel';
+  renderCalibration();
+
+  window.setTimeout(() => {
+    if (!calibrator.running) return;
+    const result = calibrator.finish(performance.now());
+    byId<HTMLButtonElement>('calibrateButton').textContent = 'Hold Still & Calibrate';
+    if (!result) {
+      setText('calibrationState', 'Too few samples to trust — the motion sensor stopped reporting. Try again.');
+      return;
+    }
+    stabilityCalibration = result;
+    try {
+      localStorage.setItem(CALIBRATION_KEY, JSON.stringify(result));
+    } catch {
+      // Private browsing: the calibration still applies for this session.
+    }
+    renderCalibration();
+  }, CALIBRATION_MS);
+}
+
+function cancelCalibration(): void {
+  calibrator.cancel();
+  byId<HTMLButtonElement>('calibrateButton').textContent = 'Hold Still & Calibrate';
+  renderCalibration();
+}
+
+/**
+ * Start what the user asked to have running, where the browser already agrees.
+ *
+ * Nothing here holds or renews a permission — a page cannot. It remembers the
+ * intent and acts on it only when the grant is already in place, and otherwise
+ * says which of the four situations each sensor is in.
+ */
+async function applyAutoStart(): Promise<void> {
+  const [cameraPermission, gpsPermission] = await Promise.all([
+    readPermission('camera'),
+    readPermission('geolocation')
+  ]);
+
+  const decisions: Array<[string, AutoStartDecision, () => void]> = [
+    ['Camera', decideAutoStart({ enabled: settings.autoStartCamera, permission: cameraPermission }),
+      () => void startCamera()],
+    ['GPS', decideAutoStart({ enabled: settings.autoStartGps, permission: gpsPermission }),
+      () => { if (!gps.active) startGps(); }],
+    // iOS requires a gesture for DeviceMotion no matter what was granted
+    // before, so this one can never be in the 'start' branch on that platform.
+    ['Motion', decideAutoStart({
+      enabled: settings.autoStartMotion,
+      permission: 'unknown',
+      requiresGesture: typeof (DeviceMotionEvent as unknown as { requestPermission?: unknown })
+        ?.requestPermission === 'function'
+    }), () => void enableMotion()]
+  ];
+
+  const armed: Array<() => void> = [];
+  const notes: string[] = [];
+  const started: string[] = [];
+
+  for (const [sensor, decision, run] of decisions) {
+    if (decision === 'off') continue;
+    if (decision === 'start') {
+      started.push(sensor);
+      run();
+      continue;
+    }
+    if (decision === 'needs-gesture') armed.push(run);
+    notes.push(describeAutoStart(decision, sensor));
+  }
+
+  if (armed.length) {
+    cancelArmedStart?.();
+    cancelArmedStart = onFirstGesture(() => {
+      cancelArmedStart = null;
+      for (const run of armed) run();
+    }, document);
+  }
+
+  // Always rewritten, never left holding an older run's answer. A status line
+  // that still reads "off" while the camera is live is worse than none.
+  if (started.length) notes.unshift(`${started.join(' and ')} started automatically.`);
+  setText('autoStartStatus', notes.length
+    ? notes.join(' ')
+    : 'Auto-start is off for every sensor.');
+}
+
+/**
+ * Release the sensors the camera engine does not already release.
+ *
+ * The camera suspends itself on the way out. The GPS watch and the motion
+ * listeners did not, so a backgrounded app kept the location subsystem awake —
+ * exactly the drain that makes auto-start on open a bad trade otherwise.
+ */
+/** What was running when we suspended, so exactly that much comes back. */
+const suspended = { gps: false, motion: false };
+
+function suspendSensors(): void {
+  suspended.gps = gps.active;
+  suspended.motion = motion.active;
+
+  if (gps.active) {
+    gps.stop();
+    setChip('gpsChip', 'idle', 'GPS paused (backgrounded)');
+    byId<HTMLButtonElement>('gpsButton').textContent = 'Start GPS Track';
+  }
+  if (motion.active) {
+    motion.stop();
+    setChip('motionChip', 'idle', 'Motion paused (backgrounded)');
+  }
+  // A calibration cannot survive the gap: the samples either side of it come
+  // from different moments and different grips, and averaging across that would
+  // produce a floor describing neither.
+  cancelCalibration();
+}
+
+function resumeSensors(): void {
+  // Restore what WE turned off. The pause was the app's decision, not the
+  // user's, so leaving a sensor they had running switched off would be the app
+  // silently disabling it.
+  if (suspended.gps && !gps.active) startGps();
+  if (suspended.motion && !motion.active) {
+    // start() only re-attaches listeners. Deliberately NOT requestPermission()
+    // again: on iOS that throws outside a user gesture, and the grant this page
+    // already holds has not gone anywhere.
+    motion.start(onMotionSample);
+    setChip('motionChip', 'good', 'Motion live');
+  }
+  suspended.gps = false;
+  suspended.motion = false;
+
+  // And start anything auto-start was asked for that is still not running.
+  if (settings.autoStartGps && !gps.active) startGps();
+}
+
 async function enableMotion(): Promise<void> {
   const button = byId<HTMLButtonElement>('motionButton');
   button.disabled = true;
@@ -1327,7 +1567,14 @@ function onMotionSample(sample: MotionSample): void {
   latestMotion = sample;
   // The IMU is already running, so stacking stability is measured rather than
   // assumed. A multi-second exposure is only meaningful if the camera held still.
-  stability.update({ rotationRate: sample.rotationRate, acceleration: sample.acceleration });
+  const report = stability.update({
+    rotationRate: sample.rotationRate,
+    acceleration: sample.acceleration
+  });
+  calibrator.add({ rotationRate: sample.rotationRate, acceleration: sample.acceleration }, performance.now());
+  deviceSteady = isSteady(report, stabilityCalibration);
+  steadyExcursion = excursion(report, stabilityCalibration);
+  if (calibrator.running) renderCalibration();
   fusion.setOrientation(sample.quaternion);
   fusion.setAcceleration(sample.acceleration);
   setText('alphaValue', format(sample.alpha, 1, '°'));
@@ -1636,7 +1883,19 @@ function processVisionFrame(timestamp: number): boolean {
     );
     // The detector runs in BOTH motion modes, so Speed can arm a tripod watch
     // without the trail buffer being the thing that notices.
-    if (settings.motionEventTrigger) {
+    // The steady gate. This does NOT stabilise the image and cannot: once the
+    // phone has turned, the pixels have already moved and knowing about it does
+    // not put them back. What it does is stop the app calling ego-motion an
+    // event — a hand drifting lights up the whole frame, which is exactly the
+    // signal the detector is watching for.
+    const gated = settings.steadyGate && !!latestMotion && !deviceSteady;
+    if (gated && eventDetector.currentPhase !== 'idle') {
+      eventDetector.reset();
+      activeEvent = null;
+      eventPhase = 'idle';
+    }
+
+    if (settings.motionEventTrigger && !gated) {
       const update = eventDetector.update(
         latestSpeed.movingFraction,
         latestSpeed.peakWidthsPerSecond,
@@ -1659,7 +1918,10 @@ function processVisionFrame(timestamp: number): boolean {
       }
     }
 
-    if (visionMode === 'motiontrails' && !trailFrozen) {
+    // Trails are held rather than reset while the phone moves: a pass already
+    // painted is still a real observation, and throwing it away because the
+    // phone was picked up afterwards would lose the thing that was watched for.
+    if (visionMode === 'motiontrails' && !trailFrozen && !gated) {
       latestTrail = motionTrails.update(
         speedField.speed,
         speedField.state,
@@ -2038,6 +2300,10 @@ function syncSettingsControls(): void {
   byId<HTMLInputElement>('motionKeepFastest').checked = settings.motionKeepFastest;
   byId<HTMLInputElement>('motionFadeTrails').checked = settings.motionFadeTrails;
   byId<HTMLInputElement>('motionEventTrigger').checked = settings.motionEventTrigger;
+  byId<HTMLInputElement>('autoStartCamera').checked = settings.autoStartCamera;
+  byId<HTMLInputElement>('autoStartGps').checked = settings.autoStartGps;
+  byId<HTMLInputElement>('autoStartMotion').checked = settings.autoStartMotion;
+  byId<HTMLInputElement>('steadyGate').checked = settings.steadyGate;
   byId<HTMLInputElement>('motionFov').value = settings.motionFovDegrees > 0
     ? String(settings.motionFovDegrees)
     : '';
@@ -3258,6 +3524,39 @@ on('resetPeakButton', 'click', () => {
   frameRateMeter.resetPeak();
   void refreshSettingsDiagnostics();
 });
+on('autoStartCamera', 'change', (event) => {
+  settings.autoStartCamera = (event.target as HTMLInputElement).checked;
+  saveSettings();
+  void applyAutoStart();
+});
+on('autoStartGps', 'change', (event) => {
+  settings.autoStartGps = (event.target as HTMLInputElement).checked;
+  saveSettings();
+  void applyAutoStart();
+});
+on('autoStartMotion', 'change', (event) => {
+  settings.autoStartMotion = (event.target as HTMLInputElement).checked;
+  saveSettings();
+  void applyAutoStart();
+});
+on('steadyGate', 'change', (event) => {
+  settings.steadyGate = (event.target as HTMLInputElement).checked;
+  saveSettings();
+  renderSteadyState();
+});
+on('calibrateButton', 'click', () => {
+  if (calibrator.running) cancelCalibration();
+  else startCalibration();
+});
+on('clearCalibrationButton', 'click', () => {
+  stabilityCalibration = null;
+  try {
+    localStorage.removeItem(CALIBRATION_KEY);
+  } catch {
+    // Nothing to clear if storage was never available.
+  }
+  renderCalibration();
+});
 on('motionExposure', 'change', (event) => {
   settings.motionExposureSeconds = Number((event.target as HTMLSelectElement).value);
   saveSettings();
@@ -3407,6 +3706,23 @@ renderMetrics();
 requestAnimationFrame(fallbackVisionLoop);
 void initializeFusion();
 void refreshSettingsDiagnostics();
+
+stabilityCalibration = loadCalibration();
+renderCalibration();
+renderSteadyState();
+void applyAutoStart();
+
+// The camera engine already releases itself on the way out. The GPS watch and
+// the motion listeners did not, so a backgrounded app kept the location
+// subsystem awake — which is what makes starting sensors automatically a fair
+// trade rather than a battery leak.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') suspendSensors();
+  else resumeSensors();
+});
+window.addEventListener('pagehide', suspendSensors);
+document.addEventListener('freeze', suspendSensors);
+document.addEventListener('resume', resumeSensors);
 
 // A control that silently does nothing is the hardest kind of bug to report,
 // so say so rather than leaving the user to guess.

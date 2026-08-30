@@ -23,6 +23,11 @@ export class MotionController {
   private callback: ((sample: MotionSample) => void) | null = null;
   private listening = false;
 
+  /** True while the listeners are attached, so a suspend knows what to undo. */
+  get active(): boolean {
+    return this.listening;
+  }
+
   async requestPermission(): Promise<boolean> {
     const motionCtor = DeviceMotionEvent as PermissionCapableConstructor;
     const orientationCtor = DeviceOrientationEvent as OrientationPermissionCapableConstructor;

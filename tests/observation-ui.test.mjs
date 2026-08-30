@@ -641,3 +641,69 @@ test('both camera toggles name the same destination', () => {
   assert.match(body, /viewerSwitchLabel/);
   assert.match(body, /const destination = onFront \? 'rear' : 'front'/);
 });
+
+test('auto-start never claims to hold a permission', () => {
+  // A page cannot hold, extend or renew a browser permission — that grant
+  // belongs to Safari and to iOS. It remembers the intent and acts on it only
+  // when the grant is already in place, and the copy has to say so.
+  assert.match(htmlSource, /cannot hold or extend a browser permission/);
+  assert.match(mainSource, /readPermission\('camera'\)/);
+  assert.match(mainSource, /readPermission\('geolocation'\)/);
+  for (const id of ['autoStartCamera', 'autoStartGps', 'autoStartMotion', 'autoStartStatus']) {
+    assert.match(htmlSource, new RegExp(`id=["']${id}["']`), `missing #${id}`);
+  }
+});
+
+test('iOS motion is always treated as needing a gesture', () => {
+  // requestPermission() throws outside a user gesture no matter what was
+  // granted before, so a stored grant changes nothing for it.
+  assert.match(mainSource, /requiresGesture:[\s\S]{0,160}requestPermission/);
+});
+
+test('the app restores exactly the sensors it suspended', () => {
+  // The pause was the app's decision, not the user's, so leaving a sensor they
+  // had running switched off would be the app silently disabling it.
+  assert.match(mainSource, /const suspended = \{ gps: false, motion: false \}/);
+  assert.match(mainSource, /suspended\.gps = gps\.active/);
+  assert.match(mainSource, /suspended\.motion = motion\.active/);
+  assert.match(mainSource, /if \(suspended\.gps && !gps\.active\) startGps\(\)/);
+  // And it must re-attach listeners rather than re-request permission.
+  const resume = mainSource.slice(mainSource.indexOf('function resumeSensors'));
+  const body = resume.slice(0, resume.indexOf('\n}'));
+  assert.match(body, /motion\.start\(onMotionSample\)/);
+  // The CALL, not the word: the comment above it explains why it is absent.
+  assert.doesNotMatch(body, /motion\.requestPermission\(/);
+  assert.doesNotMatch(body, /enableMotion\(/);
+});
+
+test('backgrounding releases the sensors the camera engine does not', () => {
+  assert.match(mainSource, /document\.addEventListener\('visibilitychange'[\s\S]{0,200}suspendSensors\(\)/);
+  assert.match(mainSource, /window\.addEventListener\('pagehide', suspendSensors\)/);
+  assert.match(mainSource, /document\.addEventListener\('freeze', suspendSensors\)/);
+});
+
+test('the steady gate is described as suppression, never as stabilisation', () => {
+  // It cannot remove camera movement from the picture: once the phone has
+  // turned, the pixels have already moved. Claiming otherwise would be selling
+  // image stabilisation that does not exist.
+  assert.match(htmlSource, /It is a gate, not\s*\n?\s*stabilisation/);
+  assert.match(mainSource, /does NOT stabilise the image and cannot/);
+  assert.doesNotMatch(htmlSource, /image stabili[sz]ation\b(?![^<]*does not)/i);
+});
+
+test('the gate suppresses events without discarding a trail already painted', () => {
+  // A pass already recorded is a real observation; throwing it away because the
+  // phone was picked up afterwards would lose the thing that was watched for.
+  assert.match(mainSource, /const gated = settings\.steadyGate && !!latestMotion && !deviceSteady/);
+  assert.match(mainSource, /if \(settings\.motionEventTrigger && !gated\)/);
+  assert.match(mainSource, /!trailFrozen && !gated/);
+  const gate = mainSource.slice(mainSource.indexOf('const gated ='));
+  assert.doesNotMatch(gate.slice(0, 400), /motionTrails\.reset/);
+});
+
+test('a calibration is a deliberate act with a stated length', () => {
+  assert.match(mainSource, /const CALIBRATION_MS = 10_000/);
+  assert.match(htmlSource, /id=["']calibrateButton["']/);
+  assert.match(htmlSource, /id=["']clearCalibrationButton["']/);
+  assert.match(mainSource, /MIN_CALIBRATION_SAMPLES|Too few samples to trust/);
+});
