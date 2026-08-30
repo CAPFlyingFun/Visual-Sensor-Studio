@@ -42,7 +42,7 @@ import {
 import { StabilityMonitor } from './sensors/stability.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 
-const APP_VERSION = '0.5.0';
+const APP_VERSION = '0.5.1';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -51,6 +51,7 @@ type QualityPreference = 'low' | 'normal' | 'high';
 type VisionRatePreference = 'battery' | 'balanced' | 'fast' | 'adaptive';
 type CameraFrameRatePreference = 'auto' | '30' | '60' | '120' | '240';
 type TrailPreference = 'off' | 'short' | 'medium' | 'long';
+type CaptureResolution = '720' | '1080' | '1440' | '2160';
 type GpsAccuracyPreference = 'balanced' | 'high';
 
 interface AppSettings {
@@ -59,6 +60,7 @@ interface AppSettings {
   visionRatePreference: VisionRatePreference;
   gpsAccuracyPreference: GpsAccuracyPreference;
   cameraFrameRate: CameraFrameRatePreference;
+  captureResolution: CaptureResolution;
   trackingEnabled: boolean;
   trailPreference: TrailPreference;
   zebraEnabled: boolean;
@@ -78,6 +80,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   visionRatePreference: 'adaptive',
   gpsAccuracyPreference: 'high',
   cameraFrameRate: 'auto',
+  captureResolution: '1080',
   trackingEnabled: true,
   trailPreference: 'medium',
   zebraEnabled: false,
@@ -156,6 +159,9 @@ function loadSettings(): AppSettings {
       cameraFrameRate: ['auto', '30', '60', '120', '240'].includes(String(parsed.cameraFrameRate))
         ? parsed.cameraFrameRate as CameraFrameRatePreference
         : DEFAULT_SETTINGS.cameraFrameRate,
+      captureResolution: ['720', '1080', '1440', '2160'].includes(String(parsed.captureResolution))
+        ? parsed.captureResolution as CaptureResolution
+        : DEFAULT_SETTINGS.captureResolution,
       trackingEnabled: typeof parsed.trackingEnabled === 'boolean'
         ? parsed.trackingEnabled
         : DEFAULT_SETTINGS.trackingEnabled,
@@ -575,6 +581,7 @@ async function startCamera(): Promise<void> {
     // Nothing is awaited before this call, so the tap's transient activation
     // is still live when WebKit decides whether to show a permission prompt.
     await camera.start(preferredCameraFacing());
+    await applyCaptureResolution();
     await applyCameraFrameRate();
     startFrameDelivery();
     setText('cameraMessage', isStandalone()
@@ -595,6 +602,27 @@ async function applyCameraFrameRate(): Promise<void> {
   } catch {
     // A refused rate leaves the previous one in force; the camera keeps running.
   }
+}
+
+/**
+ * Apply the capture resolution, then report what was actually negotiated and
+ * what it cost in frame rate — the trade is the point of the control.
+ */
+async function applyCaptureResolution(): Promise<void> {
+  try {
+    await camera.setCaptureHeight(Number(settings.captureResolution));
+  } catch {
+    // A refused resolution leaves the previous one in force.
+  }
+  window.setTimeout(() => {
+    const diagnostics = camera.diagnostics;
+    const info = camera.frameRateInfo;
+    if (!diagnostics.videoWidth) return;
+    setText('cameraMessage', `Camera negotiated ${diagnostics.videoWidth}×${diagnostics.videoHeight}`
+      + `${info.reported ? ` at ${info.reported} FPS` : ''}. Higher resolutions usually cost frame rate —`
+      + ' the Camera Performance panel shows what is actually delivered.');
+    void refreshSettingsDiagnostics();
+  }, 700);
 }
 
 function startFrameDelivery(): void {
@@ -1450,6 +1478,7 @@ function downloadSnapshot(): void {
 
 function syncSettingsControls(): void {
   byId<HTMLSelectElement>('cameraFrameRate').value = settings.cameraFrameRate;
+  byId<HTMLSelectElement>('captureResolution').value = settings.captureResolution;
   byId<HTMLInputElement>('trackingToggle').checked = settings.trackingEnabled;
   byId<HTMLInputElement>('zebraToggle').checked = settings.zebraEnabled;
   byId<HTMLInputElement>('focusPeakToggle').checked = settings.focusPeakingEnabled;
@@ -1796,29 +1825,174 @@ function setViewerOpen(open: boolean): void {
 }
 
 /**
- * Save the frame currently on screen.
+ * Save a still at the camera's full resolution.
  *
- * Captures whatever is being displayed — the processed view in a filter mode,
- * the raw camera otherwise — so the file matches what was on screen rather
- * than a different rendering of it. The image never leaves the device.
+ * Deliberately NOT a copy of the on-screen canvas. That canvas holds the
+ * ANALYSIS frame, which is sized to a pixel budget for real-time processing —
+ * 144x256 on a portrait phone — so saving it discarded almost everything the
+ * sensor captured. The filter is re-run here at the video's native resolution
+ * instead, which is a few tens of milliseconds once, for a photo.
  */
-function captureStill(): void {
-  const usingCanvas = !visionCanvas.hidden;
-  const width = usingCanvas ? visionCanvas.width : video.videoWidth;
-  const height = usingCanvas ? visionCanvas.height : video.videoHeight;
-  if (!width || !height) {
+let stillCanvas: HTMLCanvasElement | null = null;
+let stillContext: CanvasRenderingContext2D | null = null;
+
+/** Grab the live video at native resolution, honouring any digital crop. */
+function grabFullFrame(): ImageData | null {
+  const sourceWidth = video.videoWidth;
+  const sourceHeight = video.videoHeight;
+  if (!sourceWidth || !sourceHeight) return null;
+
+  // Camera zoom already happened in the sensor; only a digital crop has to be
+  // reproduced, exactly as the live capture path does it.
+  const crop = zoomState.kind === 'digital' ? Math.max(1, zoomState.value) : 1;
+  const cropWidth = sourceWidth / crop;
+  const cropHeight = sourceHeight / crop;
+  const cropX = (sourceWidth - cropWidth) / 2;
+  const cropY = (sourceHeight - cropHeight) / 2;
+  const width = Math.round(cropWidth);
+  const height = Math.round(cropHeight);
+
+  stillCanvas ??= document.createElement('canvas');
+  stillContext ??= stillCanvas.getContext('2d', { willReadFrequently: true });
+  if (!stillContext) return null;
+
+  stillCanvas.width = width;
+  stillCanvas.height = height;
+  stillContext.drawImage(video, cropX, cropY, cropWidth, cropHeight, 0, 0, width, height);
+  return stillContext.getImageData(0, 0, width, height);
+}
+
+/** Wait for the next presented frame, so a temporal mode has two to compare. */
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    const element = video as HTMLVideoElement & {
+      requestVideoFrameCallback?: (callback: () => void) => number;
+    };
+    if (typeof element.requestVideoFrameCallback === 'function') {
+      element.requestVideoFrameCallback(() => resolve());
+      return;
+    }
+    window.setTimeout(resolve, 40);
+  });
+}
+
+/** Render one mode at full resolution into an RGBA buffer. */
+function renderStill(mode: VisionMode, frame: ImageData, previous: ImageData | null): Uint8ClampedArray {
+  const { width, height } = frame;
+  const gray = rgbaToGray(frame.data);
+
+  switch (mode) {
+    case 'relief':
+      return reliefFromGray(gray, width, height);
+    case 'edges':
+      return grayToRgba(sobelEdges(gray, width, height));
+    case 'motion': {
+      if (!previous) return frame.data;
+      const difference = absoluteDifference(gray, rgbaToGray(previous.data));
+      return motionMaskToRgba(gray, difference, width, height, 18);
+    }
+    case 'difference': {
+      if (!previous) return frame.data;
+      return differenceToRgba(absoluteDifference(gray, rgbaToGray(previous.data)), 3.2);
+    }
+    case 'flow': {
+      if (!previous) return frame.data;
+      // Scale the grid with resolution so a full-size still keeps the same
+      // vector density as the preview rather than a far denser one.
+      const scale = width / Math.max(1, latestMetrics?.analysisWidth ?? 256);
+      const options = flowOptionsForPreset();
+      const field = computeBlockFlow(rgbaToGray(previous.data), gray, width, height, {
+        cellSize: Math.round(options.cellSize * scale),
+        patchRadius: Math.max(2, Math.round(options.patchRadius * scale)),
+        maxShift: Math.max(2, Math.round(options.maxShift * scale))
+      });
+      const rgba = dimGrayToRgba(gray, 0.42);
+      return drawFlowIntoRgba(rgba, field, width, height);
+    }
+    case 'night': {
+      const rgba = Uint8ClampedArray.from(frame.data);
+      applyLightBoost(rgba, settings.nightGain, settings.nightGamma);
+      applyPalette(rgba, settings.nightPalette);
+      return rgba;
+    }
+    default:
+      return frame.data;
+  }
+}
+
+/** Draw flow vectors directly into an RGBA buffer, for the still path. */
+function drawFlowIntoRgba(
+  rgba: Uint8ClampedArray,
+  field: FlowField,
+  width: number,
+  height: number
+): Uint8ClampedArray {
+  const gain = 2.2;
+  for (const vector of field.vectors) {
+    const steps = Math.max(2, Math.round(vector.magnitude * gain));
+    for (let step = 0; step <= steps; step++) {
+      const t = step / steps;
+      const x = Math.round(vector.x + vector.dx * gain * t);
+      const y = Math.round(vector.y + vector.dy * gain * t);
+      if (x < 0 || y < 0 || x >= width || y >= height) continue;
+      const p = (y * width + x) * 4;
+      rgba[p] = 140;
+      rgba[p + 1] = 240;
+      rgba[p + 2] = 190;
+    }
+  }
+  return rgba;
+}
+
+async function captureStill(): Promise<void> {
+  if (!camera.active) {
+    setText('cameraMessage', 'Enable the camera before saving a frame.');
+    return;
+  }
+
+  // Night mode is the one exception: the exposure is accumulated at analysis
+  // resolution over many frames, so there is no full-resolution version of it
+  // to render. Saving the stack as it exists is honest; re-rendering a single
+  // frame at full size would be a different picture.
+  const stackedNight = visionMode === 'night' && !integrator.isEmpty;
+  if (stackedNight) {
+    saveCanvas(visionCanvas, `${visionCanvas.width}×${visionCanvas.height} stacked exposure`);
+    return;
+  }
+
+  const frame = grabFullFrame();
+  if (!frame) {
     setText('cameraMessage', 'No frame is available to save yet.');
     return;
   }
 
-  const target = document.createElement('canvas');
-  target.width = width;
-  target.height = height;
-  const context = target.getContext('2d');
-  if (!context) return;
-  context.drawImage(usingCanvas ? visionCanvas : video, 0, 0, width, height);
+  let previous: ImageData | null = null;
+  if (visionMode === 'motion' || visionMode === 'difference' || visionMode === 'flow') {
+    setText('cameraMessage', 'Capturing two frames for the motion comparison…');
+    await nextFrame();
+    previous = frame;
+    const second = grabFullFrame();
+    if (second) return finishStill(second, previous);
+  }
+  finishStill(frame, previous);
+}
 
-  target.toBlob((blob) => {
+function finishStill(frame: ImageData, previous: ImageData | null): void {
+  const rgba = renderStill(visionMode, frame, previous);
+  const output = document.createElement('canvas');
+  output.width = frame.width;
+  output.height = frame.height;
+  const context = output.getContext('2d');
+  if (!context) return;
+
+  const image = new ImageData(frame.width, frame.height);
+  image.data.set(rgba);
+  context.putImageData(image, 0, 0);
+  saveCanvas(output, `${frame.width}×${frame.height}`);
+}
+
+function saveCanvas(source: HTMLCanvasElement, description: string): void {
+  source.toBlob((blob) => {
     if (!blob) {
       setText('cameraMessage', 'The frame could not be encoded.');
       return;
@@ -1831,7 +2005,7 @@ function captureStill(): void {
     anchor.click();
     anchor.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    setText('cameraMessage', `Saved a ${width}×${height} ${visionMode} frame. It stays on this device.`);
+    setText('cameraMessage', `Saved ${description} · ${visionMode}. It stays on this device.`);
   }, 'image/png');
 }
 
@@ -2141,7 +2315,8 @@ function saveSettingFromControls(): void {
     qualityPreference: byId<HTMLSelectElement>('qualityPreference').value as QualityPreference,
     visionRatePreference: byId<HTMLSelectElement>('visionRatePreference').value as VisionRatePreference,
     gpsAccuracyPreference: byId<HTMLSelectElement>('gpsAccuracyPreference').value as GpsAccuracyPreference,
-    cameraFrameRate: byId<HTMLSelectElement>('cameraFrameRate').value as CameraFrameRatePreference
+    cameraFrameRate: byId<HTMLSelectElement>('cameraFrameRate').value as CameraFrameRatePreference,
+    captureResolution: byId<HTMLSelectElement>('captureResolution').value as CaptureResolution
   };
   saveSettings();
   fusion.setQuality(settings.qualityPreference);
@@ -2350,10 +2525,10 @@ on('copyDiagnosticsButton', 'click', () => void copyDiagnostics());
 on('zoomSlider', 'input', (event) => {
   void requestZoom(Number((event.target as HTMLInputElement).value));
 });
-on('captureStillButton', 'click', captureStill);
+on('captureStillButton', 'click', () => void captureStill());
 on('expandViewButton', 'click', () => setViewerOpen(true));
 on('viewerCloseButton', 'click', () => setViewerOpen(false));
-on('viewerShutterButton', 'click', captureStill);
+on('viewerShutterButton', 'click', () => void captureStill());
 on('viewerSwitchButton', 'click', () => void switchCamera());
 on('torchToggle', 'click', () => void toggleTorch());
 on('viewerTorchButton', 'click', () => void toggleTorch());
@@ -2417,6 +2592,10 @@ on('nightGamma', 'input', (event) => {
   settings.nightGamma = Number((event.target as HTMLInputElement).value) || 1;
   setText('nightGammaValue', settings.nightGamma.toFixed(2));
   saveSettings();
+});
+on('captureResolution', 'change', () => {
+  saveSettingFromControls();
+  void applyCaptureResolution();
 });
 on('cameraFrameRate', 'change', () => {
   saveSettingFromControls();

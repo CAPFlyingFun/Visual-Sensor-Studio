@@ -156,6 +156,7 @@ interface CameraEngine {
   subscribe(listener: (status: CameraStatus) => void): () => void;
   clearAttempts(): void;
   permissionState(): Promise<string>;
+  setCaptureHeight(height: number): Promise<{ applied: boolean; reason?: string }>;
   setFrameRate(requested: 'auto' | number): Promise<{ applied: boolean; reason?: string; reported: number }>;
   benchmarkFrameRates(
     rates: number[],
@@ -271,6 +272,11 @@ export class CameraController {
 
   async setFrameRate(requested: 'auto' | number): Promise<{ applied: boolean; reason?: string; reported: number }> {
     return engine().setFrameRate(requested);
+  }
+
+  /** Request a capture resolution by target height. The result must be read back. */
+  async setCaptureHeight(height: number): Promise<{ applied: boolean; reason?: string }> {
+    return engine().setCaptureHeight(height);
   }
 
   async benchmarkFrameRates(

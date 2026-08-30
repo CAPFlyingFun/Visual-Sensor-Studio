@@ -364,9 +364,60 @@ test('manual controls are hidden unless the track advertises them', () => {
   assert.match(mainSource, /The torch was refused by the camera/);
 });
 
-test('saved frames match what is on screen and stay on the device', () => {
-  assert.match(mainSource, /function captureStill\(/);
-  assert.match(mainSource, /const usingCanvas = !visionCanvas\.hidden;/);
+test('saved frames stay on the device', () => {
+  assert.match(mainSource, /async function captureStill\(/);
   assert.match(mainSource, /It stays on this device/);
   assert.doesNotMatch(mainSource, /fetch\([^)]*toBlob|upload/i);
+});
+
+test('stills are rendered at camera resolution, not analysis resolution', () => {
+  // The on-screen canvas holds the ANALYSIS frame, sized to a pixel budget for
+  // real-time processing — 144x256 on a portrait phone. Copying it threw away
+  // almost everything the sensor captured, so a saved ceiling fan came out at
+  // 144x256. The filter is re-run at the video's native resolution instead.
+  assert.match(mainSource, /function grabFullFrame\(/);
+  assert.match(mainSource, /function renderStill\(/);
+  assert.match(mainSource, /stillContext\.drawImage\(video/);
+  const capture = mainSource.slice(mainSource.indexOf('async function captureStill('));
+  const body = capture.slice(0, capture.indexOf('\nfunction finishStill'));
+  assert.doesNotMatch(body, /drawImage\(usingCanvas \? visionCanvas : video/);
+  assert.match(body, /grabFullFrame\(\)/);
+});
+
+test('a full-resolution still reproduces a digital crop but not a camera zoom', () => {
+  // Camera zoom already happened in the sensor; only a digital crop has to be
+  // applied again, exactly as the live capture path does it.
+  const grab = mainSource.slice(mainSource.indexOf('function grabFullFrame('));
+  const body = grab.slice(0, grab.indexOf('\n}'));
+  assert.match(body, /zoomState\.kind === 'digital'/);
+  assert.match(body, /const cropX = \(sourceWidth - cropWidth\) \/ 2;/);
+});
+
+test('temporal modes capture two frames so the still is a real comparison', () => {
+  assert.match(mainSource, /function nextFrame\(/);
+  assert.match(mainSource, /visionMode === 'motion' \|\| visionMode === 'difference' \|\| visionMode === 'flow'/);
+});
+
+test('a stacked night exposure is saved at its own resolution and said so', () => {
+  // The exposure is accumulated at analysis resolution over many frames, so
+  // there is no full-resolution version of it. Re-rendering a single frame at
+  // full size would be a different picture, not the same one larger.
+  assert.match(mainSource, /const stackedNight = visionMode === 'night' && !integrator\.isEmpty;/);
+  assert.match(mainSource, /stacked exposure/);
+});
+
+test('capture resolution is selectable and the frame-rate trade is reported', () => {
+  assert.match(htmlSource, /id=["']captureResolution["']/);
+  for (const height of ['720', '1080', '1440', '2160']) {
+    assert.match(htmlSource, new RegExp(`value="${height}"`), `missing ${height} option`);
+  }
+  assert.match(cameraSource, /async setCaptureHeight\(height\)/);
+  // ideal, never exact: a resolution the device cannot provide must negotiate
+  // down rather than fail the request.
+  const setter = cameraSource.slice(cameraSource.indexOf('async setCaptureHeight('));
+  const body = setter.slice(0, setter.indexOf('\n    },'));
+  assert.match(body, /height: \{ ideal: requestedHeight \}/);
+  assert.doesNotMatch(body, /exact:/);
+  assert.doesNotMatch(body, /getUserMedia/);
+  assert.match(mainSource, /Higher resolutions usually cost frame rate/);
 });

@@ -114,6 +114,14 @@
   // Requested camera frame rate. 'auto' asks for the highest the active
   // configuration claims to support; a number requests that rate specifically.
   let requestedFrameRate = 'auto';
+  /**
+   * Requested capture resolution, as a target height in pixels.
+   *
+   * A higher resolution usually costs frame rate — the sensor cannot read out
+   * 4032x3024 as fast as 1280x720 — so this is a deliberate trade the user
+   * makes, and the negotiated result is always reported rather than assumed.
+   */
+  let requestedHeight = 720;
   let negotiatedFrameRate = 0;
   let frameRateCapability = null;
   let deliveryHandle = 0;
@@ -671,8 +679,13 @@
       return { audio: false, video };
     };
 
+    // `ideal` throughout, so a resolution the device cannot provide is
+    // negotiated down rather than failing the request outright.
+    const height = Number(requestedHeight) || 720;
+    const width = Math.round(height * (16 / 9));
+
     return [
-      withRate({ width: { ideal: 1280 }, height: { ideal: 720 } }),
+      withRate({ width: { ideal: width }, height: { ideal: height } }),
       withRate({}),
       // Final fallback drops the frame-rate request entirely: a rate the
       // device cannot honour must never be the reason the camera fails.
@@ -1141,6 +1154,31 @@
      * permission or dropping the stream. The returned value is what the track
      * then REPORTS, which still has to be checked against measured delivery.
      */
+    /**
+     * Change the capture resolution on the live track.
+     *
+     * Uses applyConstraints, so it renegotiates the existing track rather than
+     * re-prompting for permission. The result is whatever the device settles
+     * on, which the caller must read back rather than assume.
+     */
+    async setCaptureHeight(height) {
+      requestedHeight = Number(height) || 720;
+      const track = videoTrack;
+      if (!track || typeof track.applyConstraints !== 'function') {
+        return { applied: false, reason: 'no live track' };
+      }
+      try {
+        await track.applyConstraints({
+          width: { ideal: Math.round(requestedHeight * (16 / 9)) },
+          height: { ideal: requestedHeight }
+        });
+        readFrameRateCapability();
+        return { applied: true };
+      } catch (error) {
+        return { applied: false, reason: errorName(error) || 'refused' };
+      }
+    },
+
     async setFrameRate(requested) {
       requestedFrameRate = requested === 'auto' ? 'auto' : Number(requested) || 'auto';
       const track = videoTrack;

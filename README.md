@@ -176,9 +176,24 @@ re-presents the SAME pipeline output rather than running a second one, so
 opening it costs one canvas blit per analysed frame and cannot change what the
 instruments read.
 
-The shutter saves whatever is on screen — the processed view in a filter mode,
-the raw camera otherwise — as a PNG. Nothing is uploaded. Video and GIF
-recording are not built yet.
+The shutter saves a PNG at the **camera's full resolution**, not at the
+analysis resolution. The on-screen canvas holds the analysis frame, which is
+sized to a pixel budget for real-time processing — 144x256 on a portrait phone
+— so the filter is re-run at the video's native size for the still instead. A
+motion, difference or flow still captures two consecutive full-resolution
+frames so the comparison is real.
+
+The one exception is a stacked Night exposure: it is accumulated at analysis
+resolution over many frames, so there is no full-resolution version of it to
+save. Re-rendering a single frame at full size would be a different picture,
+not the same one larger, so the stack is saved as it exists and the message
+says which resolution it was.
+
+**Capture Resolution** (720p to 2160p) sets what the track is asked for.
+Higher resolutions usually cost frame rate — the sensor cannot read out
+4032x3024 as fast as 1280x720 — so the negotiated result and its frame rate
+are reported rather than assumed. Nothing is uploaded. Video and GIF recording
+are not built yet.
 
 ## Manual camera controls
 

@@ -260,7 +260,7 @@
       </section>
     </main>
 
-    <footer><strong>Visual Sensor Studio v0.5.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.5.1</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">
@@ -314,6 +314,14 @@
             <option value="low">Battery Saver</option>
             <option value="normal">Balanced</option>
             <option value="high">High</option>
+          </select>
+        </label>
+        <label>Capture Resolution
+          <select id="captureResolution">
+            <option value="720">720p · fastest</option>
+            <option value="1080">1080p · balanced</option>
+            <option value="1440">1440p</option>
+            <option value="2160">2160p · highest detail</option>
           </select>
         </label>
         <label>Camera Frame Rate
