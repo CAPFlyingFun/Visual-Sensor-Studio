@@ -70,7 +70,7 @@ export interface BenchmarkResult {
   measuredFps: number;
   uniqueFrames: number;
   repeatedFrames: number;
-  verdict: 'accepted' | 'negotiated' | 'unsupported' | 'unstable';
+  verdict: 'accepted' | 'negotiated' | 'unsupported' | 'unstable' | 'not measured';
   reason: string;
 }
 

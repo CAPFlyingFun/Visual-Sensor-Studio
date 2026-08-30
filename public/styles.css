@@ -335,6 +335,7 @@ button:disabled { opacity: 0.42; cursor: not-allowed; }
 .benchmark-row.negotiated { border-color: rgba(255, 196, 107, 0.45); color: #ffe6bd; }
 .benchmark-row.unsupported { border-color: rgba(255, 139, 139, 0.4); color: #ffd9d9; }
 .benchmark-row.unstable { border-color: rgba(255, 139, 139, 0.4); color: #ffd9d9; }
+.benchmark-row.not-measured { border-color: rgba(153, 190, 222, 0.3); color: #b8c9d8; }
 
 .capability-table { display: grid; gap: 5px; }
 .capability-row {

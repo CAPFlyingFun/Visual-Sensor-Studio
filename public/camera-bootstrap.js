@@ -107,6 +107,9 @@
   let frameRateCapability = null;
   let deliveryHandle = 0;
   let deliveryListener = null;
+  // Counters maintained by whichever delivery loop is running, so anything
+  // that needs a frame rate can read them instead of starting a second loop.
+  const delivery = { unique: 0, repeated: 0, lastMediaTime: Number.NaN, firstAt: 0, lastAt: 0 };
 
   let zoomValue = 1;
   let zoomKind = 'none';
@@ -647,10 +650,21 @@
     const tick = (now, metadata) => {
       if (deliveryListener !== listener) return;
       deliveryHandle = video.requestVideoFrameCallback(tick);
+
+      const mediaTime = metadata ? metadata.mediaTime : 0;
+      if (Number.isFinite(delivery.lastMediaTime) && mediaTime === delivery.lastMediaTime) {
+        delivery.repeated++;
+      } else {
+        delivery.lastMediaTime = mediaTime;
+        delivery.unique++;
+        if (delivery.firstAt === 0) delivery.firstAt = now;
+        delivery.lastAt = now;
+      }
+
       try {
         listener({
           now,
-          mediaTime: metadata ? metadata.mediaTime : 0,
+          mediaTime,
           presentedFrames: metadata ? metadata.presentedFrames : undefined
         });
       } catch {
@@ -663,6 +677,11 @@
 
   function stopFrameDelivery() {
     deliveryListener = null;
+    delivery.unique = 0;
+    delivery.repeated = 0;
+    delivery.lastMediaTime = Number.NaN;
+    delivery.firstAt = 0;
+    delivery.lastAt = 0;
     if (deliveryHandle && typeof video.cancelVideoFrameCallback === 'function') {
       try {
         video.cancelVideoFrameCallback(deliveryHandle);
@@ -676,14 +695,39 @@
   /**
    * Count distinct presented frames over a window.
    *
-   * Frames carrying a mediaTime already seen are counted separately: they are
-   * the same image again, and including them would report a delivery rate the
-   * camera is not achieving.
+   * When a delivery loop is already running, this SAMPLES its counters rather
+   * than registering a second requestVideoFrameCallback loop on the same
+   * element. Two concurrent loops measured fine in Chromium but returned zero
+   * frames for the second one on WebKit, which is why the frame-rate benchmark
+   * reported "measured 0 fps" for every rate on a device whose camera was
+   * plainly working. One loop, one source of truth.
+   *
+   * Only when nothing is delivering does it register its own loop.
    */
   function measureDelivery(durationMs) {
+    if (deliveryListener) {
+      const startUnique = delivery.unique;
+      const startRepeated = delivery.repeated;
+      const startAt = performance.now();
+
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          const unique = delivery.unique - startUnique;
+          const repeated = delivery.repeated - startRepeated;
+          const span = performance.now() - startAt;
+          resolve({
+            fps: unique > 0 && span > 0 ? (unique * 1000) / span : 0,
+            unique,
+            repeated,
+            measurable: true
+          });
+        }, durationMs);
+      });
+    }
+
     return new Promise((resolve) => {
       if (typeof video.requestVideoFrameCallback !== 'function') {
-        resolve({ fps: 0, unique: 0, repeated: 0 });
+        resolve({ fps: 0, unique: 0, repeated: 0, measurable: false });
         return;
       }
 
@@ -706,10 +750,8 @@
           }
         }
         const span = lastAt - firstAt;
-        // Rate comes from the gaps BETWEEN frames, so a partially filled
-        // window still measures correctly.
         const fps = unique > 1 && span > 0 ? ((unique - 1) * 1000) / span : 0;
-        resolve({ fps, unique, repeated });
+        resolve({ fps, unique, repeated, measurable: unique > 0 });
       };
 
       const timer = setTimeout(finish, durationMs);
@@ -1115,6 +1157,12 @@
         let verdict;
         if (!applied.applied) {
           verdict = 'unsupported';
+        } else if (!measured.measurable || measured.unique === 0) {
+          // No frames were counted. That says nothing about the camera, which
+          // may be running perfectly — it says the measurement failed. Calling
+          // it "unstable" would be a claim about the device that the data does
+          // not support.
+          verdict = 'not measured';
         } else if (measured.fps <= 0) {
           verdict = 'unstable';
         } else if (Math.abs(measured.fps - rate) / rate <= 0.15) {
@@ -1132,7 +1180,9 @@
           uniqueFrames: measured.unique,
           repeatedFrames: measured.repeated,
           verdict,
-          reason: applied.applied ? '' : applied.reason || ''
+          reason: applied.applied
+            ? (verdict === 'not measured' ? 'no presented frames were counted' : '')
+            : applied.reason || ''
         });
       }
 

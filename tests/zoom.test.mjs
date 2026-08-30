@@ -6,6 +6,15 @@ test('a 1x..5x range offers the familiar 1/2/3 stops plus the maximum', () => {
   assert.deepEqual(zoomPresetStops(1, 5), [1, 2, 3, 5]);
 });
 
+test('an ultrawide range keeps 1x among the stops', () => {
+  // A real iPhone reports 0.5-10. Without 1 in the list the stops were
+  // 0.5, 2, 3 — no way back to the stop people use most.
+  const stops = zoomPresetStops(0.5, 10);
+  assert.equal(stops[0], 0.5, 'the ultrawide stop must be offered');
+  assert.ok(stops.includes(1), '1x must be reachable from the presets');
+  for (let i = 1; i < stops.length; i++) assert.ok(stops[i] > stops[i - 1]);
+});
+
 test('stops beyond the maximum are never offered', () => {
   assert.deepEqual(zoomPresetStops(1, 2.5), [1, 2, 2.5]);
   assert.deepEqual(zoomPresetStops(1, 1.6), [1, 1.6]);

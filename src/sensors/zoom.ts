@@ -13,7 +13,10 @@ export function zoomPresetStops(min: number, max: number): number[] {
 
   if (min <= 1.0001) {
     // Conventional multiplier range: use the familiar whole-number stops.
-    for (const stop of [2, 3, 5]) {
+    // 1 has to be among them when the range starts below it — an iPhone
+    // reporting 0.5-10 otherwise offered 0.5, 2, 3 and no way back to 1x,
+    // which is the stop people actually use most.
+    for (const stop of [1, 2, 3, 5]) {
       if (stop <= max + 1e-6 && stop > min + 1e-6) stops.push(stop);
     }
   } else {

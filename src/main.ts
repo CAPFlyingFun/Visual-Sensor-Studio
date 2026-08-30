@@ -42,7 +42,7 @@ import {
 import { StabilityMonitor } from './sensors/stability.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 
-const APP_VERSION = '0.4.0';
+const APP_VERSION = '0.4.1';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -1618,10 +1618,12 @@ async function runBenchmark(): Promise<void> {
 
     for (const row of report.results) {
       const line = document.createElement('div');
-      line.className = `benchmark-row ${row.verdict}`;
+      line.className = `benchmark-row ${row.verdict.replace(' ', '-')}`;
       const detail = row.verdict === 'unsupported'
         ? row.reason || 'refused'
-        : `reports ${row.reported || '?'} · measured ${row.measuredFps} fps`;
+        : row.verdict === 'not measured'
+          ? `track reports ${row.reported || '?'} FPS, but no frames were counted`
+          : `reports ${row.reported || '?'} · measured ${row.measuredFps} fps`;
       line.textContent = `${row.requested} FPS · ${row.verdict} · ${detail}`;
       results.appendChild(line);
     }
@@ -1629,9 +1631,15 @@ async function runBenchmark(): Promise<void> {
     const best = report.results
       .filter((row) => row.verdict === 'accepted' || row.verdict === 'negotiated')
       .reduce<number>((max, row) => Math.max(max, row.measuredFps), 0);
+    const unmeasured = report.results.every((row) => row.verdict === 'not measured');
+
     setText('benchmarkStatus', best > 0
       ? `Highest rate this device actually delivered: ${best.toFixed(1)} FPS. Requested rates above that were negotiated down or refused.`
-      : 'No requested rate produced measurable frames.');
+      : unmeasured
+        // A total measurement failure is a fault in the measurement, not a
+        // verdict on the camera, and must not be reported as one.
+        ? 'No frames could be counted, so no rate was measured. This is a measurement failure, not a fault in the camera — the preview above is unaffected. Make sure the camera is live and try again.'
+        : 'No requested rate produced measurable frames.');
   } catch (error) {
     setText('benchmarkStatus', error instanceof Error ? error.message : 'Benchmark failed.');
   } finally {
@@ -1715,10 +1723,15 @@ function renderCapabilityTable(): void {
       value.textContent = field.state === 'unsupported' ? 'Unsupported' : 'Not exposed';
     } else if (field.min !== undefined && field.max !== undefined) {
       value.textContent = `Supported · ${field.min}–${field.max}`;
-    } else if (field.options) {
+    } else if (field.options?.length) {
       value.textContent = `Supported · ${field.options.join(', ')}`;
-    } else {
+    } else if (field.value !== undefined) {
       value.textContent = `Supported · ${String(field.value)}`;
+    } else {
+      // WebKit advertises some capabilities as an empty object: the control
+      // exists but no range or value comes with it. Printing String(undefined)
+      // rendered that as the literal text "undefined".
+      value.textContent = 'Supported · no range reported';
     }
 
     row.append(label, value);

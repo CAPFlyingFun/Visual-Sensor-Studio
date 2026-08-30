@@ -172,3 +172,30 @@ test('video inputs are enumerated so lens availability is measured, not assumed'
   // reported as though the device has no other cameras.
   assert.match(mainSource, /Needs permission/);
 });
+
+test('the benchmark samples the running delivery loop instead of a second one', () => {
+  // Two concurrent requestVideoFrameCallback loops on the same element
+  // measured fine in Chromium but returned zero frames for the second one on
+  // WebKit, so the benchmark reported "measured 0 fps" for every rate on a
+  // device whose camera was plainly working. One loop, one source of truth.
+  const measure = cameraSource.slice(cameraSource.indexOf('function measureDelivery('));
+  const body = measure.slice(0, measure.indexOf('\n  async function requestStream'));
+  assert.match(body, /if \(deliveryListener\) \{/, 'a running loop must be sampled, not duplicated');
+  const sampled = body.slice(0, body.indexOf('return new Promise((resolve) => {\n      if (typeof video.requestVideoFrameCallback'));
+  assert.doesNotMatch(sampled, /requestVideoFrameCallback/, 'the sampling path must not register another callback');
+  assert.match(body, /delivery\.unique - startUnique/);
+});
+
+test('a failed measurement is never reported as an unstable camera', () => {
+  // Counting no frames is a fault in the measurement, not a verdict on the
+  // device. Saying "unstable" would be a claim the data does not support.
+  assert.match(cameraSource, /verdict = 'not measured';/);
+  assert.match(cameraSource, /!measured\.measurable \|\| measured\.unique === 0/);
+  assert.match(mainSource, /measurement failure, not a fault in the camera/);
+});
+
+test('a capability with no reported range is not rendered as "undefined"', () => {
+  assert.match(mainSource, /Supported · no range reported/);
+  assert.match(mainSource, /field\.value !== undefined/);
+  assert.doesNotMatch(mainSource, /Supported · \$\{String\(field\.value\)\}`;\s*\}\s*$/m);
+});
