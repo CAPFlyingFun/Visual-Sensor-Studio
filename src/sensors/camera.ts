@@ -132,6 +132,12 @@ export interface CameraDiagnostics {
   lastErrorName: string;
   lastErrorMessage: string;
   standalone: boolean;
+  deliveryActive: boolean;
+  deliverySubscribed: boolean;
+  deliveredUnique: number;
+  deliveredRepeated: number;
+  captureFailures: number;
+  lastCaptureError: string;
   zoomKind: string;
   zoomValue: number;
   zoomMin: number;

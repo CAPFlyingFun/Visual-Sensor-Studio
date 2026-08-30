@@ -95,6 +95,8 @@
   let frameEvidence = false;
   let muteTimer = 0;
   let requestToken = 0;
+  let captureFailures = 0;
+  let lastCaptureError = '';
   // How long the most recent failure took. A NotAllowedError returned in a few
   // milliseconds cannot have involved a prompt a human dismissed - it is an
   // automatic refusal, which points at an OS-level block rather than a choice.
@@ -110,6 +112,16 @@
   // Counters maintained by whichever delivery loop is running, so anything
   // that needs a frame rate can read them instead of starting a second loop.
   const delivery = { unique: 0, repeated: 0, lastMediaTime: Number.NaN, firstAt: 0, lastAt: 0 };
+  /**
+   * The consumer's interest in frames, kept across restarts.
+   *
+   * Every start() begins with releaseStream(), which stops delivery. Callers
+   * previously had to remember to start it again, and switchCamera() did not —
+   * so switching cameras killed frame delivery permanently while the camera
+   * itself carried on looking fine. Registration is a standing subscription
+   * now, re-armed by the engine whenever it reaches the live state.
+   */
+  let persistentDeliveryListener = null;
 
   let zoomValue = 1;
   let zoomKind = 'none';
@@ -644,6 +656,7 @@
    */
   function startFrameDelivery(listener) {
     stopFrameDelivery();
+    persistentDeliveryListener = listener;
     if (typeof video.requestVideoFrameCallback !== 'function') return false;
 
     deliveryListener = listener;
@@ -871,6 +884,9 @@
         readZoomCapabilities();
         readFrameRateCapability();
         applyDigitalZoomPreview();
+        // Re-arm the standing subscription: releaseStream() stopped it at the
+        // top of this call, and nothing else is going to put it back.
+        if (persistentDeliveryListener) startFrameDelivery(persistentDeliveryListener);
         stage = 'live';
         settleAttempt('live');
         setState('live', '');
@@ -950,6 +966,10 @@
     const track = stream && stream.getVideoTracks()[0];
 
     if (state !== 'live' || !track || track.readyState !== 'live' || track.muted || !sourceWidth || !sourceHeight) {
+      // Counted rather than only thrown: the consumer swallows these, so a
+      // permanent stall would otherwise be invisible in diagnostics.
+      captureFailures++;
+      lastCaptureError = `state ${state}, track ${track ? track.readyState : 'none'}, video ${sourceWidth}x${sourceHeight}`;
       throw new Error('No live camera frame is ready yet.');
     }
 
@@ -1024,7 +1044,10 @@
     setZoom,
     describeError,
     startFrameDelivery,
-    stopFrameDelivery,
+    stopFrameDelivery() {
+      persistentDeliveryListener = null;
+      stopFrameDelivery();
+    },
 
     /**
      * Change the requested frame rate on the live track without a new
@@ -1309,6 +1332,12 @@
         lastErrorName,
         lastErrorMessage,
         standalone: isStandaloneDisplay(),
+        deliveryActive: Boolean(deliveryListener),
+        deliverySubscribed: Boolean(persistentDeliveryListener),
+        deliveredUnique: delivery.unique,
+        deliveredRepeated: delivery.repeated,
+        captureFailures,
+        lastCaptureError,
         zoomKind,
         zoomValue,
         zoomMin,

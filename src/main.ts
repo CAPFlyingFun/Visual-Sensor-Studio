@@ -42,7 +42,7 @@ import {
 import { StabilityMonitor } from './sensors/stability.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 
-const APP_VERSION = '0.4.1';
+const APP_VERSION = '0.4.2';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -277,6 +277,15 @@ let lastDeliveredAt = 0;
 let deliveryDriven = false;
 let boostLut: Uint8ClampedArray | undefined;
 let overlayPhase = 0;
+/**
+ * Whether the overlay canvas currently holds a painted frame.
+ *
+ * The canvas is opaque and sits on top of the video, so revealing it before
+ * anything has been drawn covers a perfectly good preview with a black
+ * rectangle — which is exactly what happened when focus peaking was enabled
+ * and the pipeline stalled. It stays hidden until it has real content.
+ */
+let overlayPainted = false;
 
 let zoomPointers = new Map<number, { x: number; y: number }>();
 let pinchStartDistance = 0;
@@ -339,10 +348,31 @@ function needsMotionAnalysis(): boolean {
  * mode than in every other mode, purely because they were sampled at a
  * different resolution.
  */
+/**
+ * Pixel budget per analysed frame, by preset.
+ *
+ * A budget rather than a width, because the width alone does not bound the
+ * work. A phone held upright delivers 720x1280, and a fixed 256-wide analysis
+ * frame becomes 256x455 — 116k pixels against the 36k a 256x144 landscape
+ * frame costs. Every stage then does three times the work for no extra
+ * information, on the orientation the device is most often in.
+ */
+function analysisBudget(): number {
+  if (settings.visionRatePreference === 'battery') return 176 * 99;
+  if (settings.visionRatePreference === 'fast') return 384 * 216;
+  return 256 * 144;
+}
+
 function analysisWidth(): number {
-  if (settings.visionRatePreference === 'battery') return 176;
-  if (settings.visionRatePreference === 'fast') return 384;
-  return 256;
+  const budget = analysisBudget();
+  const diagnostics = camera.diagnostics;
+  const sourceWidth = diagnostics.videoWidth;
+  const sourceHeight = diagnostics.videoHeight;
+  if (!sourceWidth || !sourceHeight) return Math.round(Math.sqrt(budget * (16 / 9)));
+
+  // width * height = budget, with height = width / aspect.
+  const aspect = sourceWidth / sourceHeight;
+  return Math.max(96, Math.round(Math.sqrt(budget * aspect)));
 }
 
 /**
@@ -806,7 +836,11 @@ function updateVisionMode(mode: VisionMode): void {
   // The processed canvas is layered over the video rather than swapped with
   // it: hiding a <video> with display:none can stop WebKit decoding frames,
   // and the camera then never recovers when the mode is switched back.
-  visionCanvas.hidden = mode === 'camera' && !settings.zebraEnabled && !settings.focusPeakingEnabled;
+  // Any mode change invalidates what is on the canvas, so it goes back to
+  // hidden until the pipeline paints it again. Showing the live video is
+  // always better than showing a stale or empty overlay.
+  overlayPainted = false;
+  visionCanvas.hidden = true;
   latestFlow = null;
   setNightMode(mode === 'night');
   setText('visionModeLabel', `${MODE_LABELS[mode]} • ${settings.visionRatePreference}`);
@@ -821,6 +855,9 @@ function putBuffer(buffers: VisionBuffers, rgba: Uint8ClampedArray): void {
   resizeVisionCanvas(buffers.width, buffers.height);
   buffers.imageData.data.set(rgba);
   visionContext.putImageData(buffers.imageData, 0, 0);
+  // Only now is it safe to show: the canvas holds a real frame.
+  overlayPainted = true;
+  if (visionCanvas.hidden) visionCanvas.hidden = false;
 }
 
 function drawFlowOverlay(buffers: VisionBuffers, field: FlowField): void {
@@ -875,7 +912,6 @@ function drawOverlaysOverRgb(buffers: VisionBuffers, source: Uint8ClampedArray):
   if (settings.focusPeakingEnabled) applyFocusPeaking(buffers.rgba, buffers.edges, 90);
   if (settings.zebraEnabled) applyZebra(buffers.rgba, buffers.width, buffers.height, 0.95, overlayPhase);
   putBuffer(buffers, buffers.rgba);
-  visionCanvas.hidden = false;
 }
 
 /** Re-apply overlays to whatever a processed mode already drew. */
@@ -1144,6 +1180,15 @@ function onFrameDelivered(frame: PresentedFrame): void {
  */
 function fallbackVisionLoop(timestamp: number): void {
   requestAnimationFrame(fallbackVisionLoop);
+
+  // A stale overlay is worse than none: if nothing has been painted for a
+  // while, uncover the live video rather than leaving a frozen frame — or a
+  // black rectangle — over a camera that is working perfectly.
+  if (overlayPainted && !visionCanvas.hidden && timestamp - lastVisionFrameAt > 2000) {
+    overlayPainted = false;
+    visionCanvas.hidden = true;
+  }
+
   // Once real frame delivery is running this loop must not also analyse, or
   // every frame would be processed twice.
   if (deliveryDriven && timestamp - lastDeliveredAt < 1000) return;
@@ -1191,6 +1236,8 @@ function resetVisionState(): void {
   smoothedFps = 0;
   lastProcessedAt = 0;
   visionContext.clearRect(0, 0, visionCanvas.width, visionCanvas.height);
+  overlayPainted = false;
+  visionCanvas.hidden = true;
   renderMetrics();
 }
 
@@ -1403,6 +1450,14 @@ async function refreshSettingsDiagnostics(): Promise<void> {
   setText('benchAvgMs', `${rates.averageProcessingMs.toFixed(2)} ms`);
   setText('benchPeakMs', `${rates.peakProcessingMs.toFixed(2)} ms`);
   setText('benchSkipped', `${rates.skippedFrames} skipped / ${rates.droppedFrames} dropped`);
+  setText('benchDelivery', diagnostics.deliveryActive
+    ? `Active · ${diagnostics.deliveredUnique} unique / ${diagnostics.deliveredRepeated} repeated`
+    : diagnostics.deliverySubscribed
+      ? 'Subscribed but not running'
+      : 'Not subscribed');
+  setText('benchCaptureFailures', diagnostics.captureFailures
+    ? `${diagnostics.captureFailures} · ${diagnostics.lastCaptureError}`
+    : 'None');
   setText('benchAnalysis', latestMetrics
     ? `${latestMetrics.analysisWidth} px wide`
     : 'Not processing');

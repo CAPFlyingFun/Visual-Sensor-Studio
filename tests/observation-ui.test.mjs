@@ -199,3 +199,52 @@ test('a capability with no reported range is not rendered as "undefined"', () =>
   assert.match(mainSource, /field\.value !== undefined/);
   assert.doesNotMatch(mainSource, /Supported · \$\{String\(field\.value\)\}`;\s*\}\s*$/m);
 });
+
+test('frame delivery is a standing subscription the engine re-arms itself', () => {
+  // Every start() begins with releaseStream(), which stops delivery. Callers
+  // had to remember to restart it and switchCamera() did not, so switching
+  // cameras killed frame delivery permanently while the camera itself carried
+  // on looking completely fine.
+  assert.match(cameraSource, /persistentDeliveryListener/);
+  assert.match(cameraSource, /if \(persistentDeliveryListener\) startFrameDelivery\(persistentDeliveryListener\);/);
+
+  // The re-arm must sit on the success path of start(), after the stream is up.
+  const rearm = cameraSource.indexOf('if (persistentDeliveryListener) startFrameDelivery(persistentDeliveryListener);');
+  const liveState = cameraSource.indexOf("stage = 'live';", rearm);
+  assert.ok(rearm >= 0 && liveState > rearm, 're-arm must happen before the live state is announced');
+});
+
+test('the overlay canvas is never shown before it holds a frame', () => {
+  // The canvas is opaque and sits on top of the video, so revealing it before
+  // anything is drawn covers a working preview with a black rectangle.
+  assert.match(mainSource, /let overlayPainted = false;/);
+  assert.match(mainSource, /overlayPainted = true;\s*\n\s*if \(visionCanvas\.hidden\) visionCanvas\.hidden = false;/);
+  // A mode change invalidates the canvas and must re-hide it.
+  assert.match(mainSource, /overlayPainted = false;\s*\n\s*visionCanvas\.hidden = true;\s*\n\s*latestFlow = null;/);
+  // Nothing may reveal the canvas outside putBuffer.
+  const reveals = [...mainSource.matchAll(/visionCanvas\.hidden = false/g)];
+  assert.equal(reveals.length, 1, 'only putBuffer may reveal the overlay');
+});
+
+test('a stalled pipeline uncovers the live video instead of freezing a frame', () => {
+  assert.match(mainSource, /timestamp - lastVisionFrameAt > 2000/);
+  assert.match(mainSource, /A stale overlay is worse than none/);
+});
+
+test('the analysis frame is bounded by a pixel budget, not a width', () => {
+  // A phone held upright delivers 720x1280; a fixed 256-wide frame becomes
+  // 256x455, three times the pixels a landscape frame costs, for no extra
+  // information — on the orientation the device is most often in.
+  assert.match(mainSource, /function analysisBudget\(\)/);
+  assert.match(mainSource, /Math\.sqrt\(budget \* aspect\)/);
+  assert.match(mainSource, /256 \* 144/);
+});
+
+test('capture failures and delivery state are visible in diagnostics', () => {
+  // The frame source swallows capture errors and returns null, so a permanent
+  // stall would otherwise leave no trace anywhere.
+  assert.match(cameraSource, /captureFailures\+\+/);
+  assert.match(cameraSource, /deliveryActive: Boolean\(deliveryListener\)/);
+  assert.match(htmlSource, /id=["']benchDelivery["']/);
+  assert.match(htmlSource, /id=["']benchCaptureFailures["']/);
+});
