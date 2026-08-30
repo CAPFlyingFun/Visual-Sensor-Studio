@@ -111,6 +111,8 @@ export interface MotionSpeedOptions {
   fullScale?: number;
   /** Let the full-scale value follow the scene instead of holding fixed. */
   autoScale?: boolean;
+  /** How far, in pixels, a measurement may be carried into flat neighbours. */
+  fillRadius?: number;
 }
 
 export interface MotionSpeedReport {
@@ -124,8 +126,15 @@ export interface MotionSpeedReport {
   movingFraction: number;
   /** Of the moving pixels, the fraction whose speed could not be resolved at all. */
   unresolvedFraction: number;
-  /** Of the moving pixels, the fraction whose speed came from a neighbouring cell. */
+  /** Of the moving pixels, the fraction whose speed came from a neighbouring pixel. */
   inferredFraction: number;
+  /**
+   * Of the measured pixels, the fraction that hit the estimator's ceiling.
+   *
+   * A high value means the scene is moving faster than this method can resolve
+   * and the speeds shown are floors, not readings.
+   */
+  saturatedFraction: number;
   /** Speed currently mapped to white, in frame widths per second. */
   fullScale: number;
 }
@@ -137,6 +146,7 @@ const EMPTY_REPORT: MotionSpeedReport = {
   movingFraction: 0,
   unresolvedFraction: 0,
   inferredFraction: 0,
+  saturatedFraction: 0,
   fullScale: 0
 };
 
@@ -188,31 +198,36 @@ function sampleCells(
   return weight > 0 ? total / weight : fallback;
 }
 
-export interface FlowLike {
-  vectors: ReadonlyArray<{ x: number; y: number; magnitude: number }>;
-  cellSize: number;
-}
+/**
+ * Largest displacement, in pixels per frame, this estimator will report.
+ *
+ * The normal-flow estimate below linearises the image around each pixel, and
+ * that assumption holds for small displacements and degrades for large ones —
+ * past a few pixels the temporal difference saturates against the intensity
+ * range while the gradient does not, so the estimate UNDERSTATES fast motion
+ * rather than overstating it. The cap makes the ceiling explicit instead of
+ * letting a division by a small gradient produce an arbitrary number, and the
+ * report counts how much of the frame hit it.
+ */
+const MAX_PIXELS_PER_FRAME = 12;
 
 /**
- * Per-pixel image speed, normalised for the colour ramp.
- *
- * Owns its buffers and resizes them only when the analysis frame changes, so a
- * running preview allocates nothing per frame.
+ * Gradient magnitude, in intensity per pixel, below which speed is not
+ * recoverable. Dividing by anything smaller amplifies sensor noise into a
+ * confident-looking speed.
  */
+const GRADIENT_FLOOR = 3;
+
+/** How far a measured speed may be carried into neighbouring flat pixels. */
+const DEFAULT_FILL_RADIUS = 6;
+
 export class MotionSpeedField {
   /** Normalised speed per pixel, 0..1. Zero means still. */
   speed = new Float32Array(0);
-  /** STILL, RESOLVED or UNRESOLVED per pixel. */
+  /** STILL, RESOLVED, INFERRED or UNRESOLVED per pixel. */
   state = new Uint8Array(0);
-  /** Speed per flow cell, at cell resolution rather than pixel resolution. */
-  private cellSpeed = new Float32Array(0);
-  /** The same grid after a one-cell dilation. */
-  private cellFilled = new Float32Array(0);
-  private cellsX = 0;
-  private cellsY = 0;
-  private originX = 0;
-  private originY = 0;
-  private cellSize = 0;
+  private raw = new Float32Array(0);
+  private scratch = new Uint8Array(0);
   private width = 0;
   private height = 0;
   private autoScale = MIN_AUTO_SCALE;
@@ -227,8 +242,7 @@ export class MotionSpeedField {
     this.lastReport = EMPTY_REPORT;
     this.speed.fill(0);
     this.state.fill(0);
-    this.cellSpeed.fill(-1);
-    this.cellFilled.fill(-1);
+    this.raw.fill(0);
   }
 
   private ensure(width: number, height: number): void {
@@ -237,115 +251,59 @@ export class MotionSpeedField {
     this.height = height;
     this.speed = new Float32Array(width * height);
     this.state = new Uint8Array(width * height);
+    this.raw = new Float32Array(width * height);
+    this.scratch = new Uint8Array(width * height);
   }
 
   /**
-   * Lay the accepted vectors onto a grid at cell resolution and dilate it by
-   * one cell.
+   * Per-pixel speed from the normal-flow constraint.
    *
-   * At cell resolution this is a few hundred entries rather than a few tens of
-   * thousands, so the dilation is free — the earlier version painted every
-   * vector across its own box in the full-size frame, which cost far more and
-   * could not reach past a cell edge at all.
-   */
-  private buildCellGrid(flow: FlowLike, width: number, height: number): boolean {
-    const cellSize = Math.max(1, Math.round(flow.cellSize));
-    let minX = Infinity;
-    let minY = Infinity;
-    for (const vector of flow.vectors) {
-      if (vector.x < minX) minX = vector.x;
-      if (vector.y < minY) minY = vector.y;
-    }
-    if (!Number.isFinite(minX)) return false;
-
-    // Vector positions are cell centres at an offset the flow module picks, so
-    // the grid takes its PHASE from the vectors but its extent from the frame.
-    // Anchoring it to the vectors' own bounding box instead put every pixel
-    // outside that box off the grid, where it read as unresolved no matter what
-    // had been measured — the dilation then had nothing to reach into.
-    this.cellSize = cellSize;
-    this.originX = ((minX % cellSize) + cellSize) % cellSize;
-    this.originY = ((minY % cellSize) + cellSize) % cellSize;
-    this.cellsX = Math.max(1, Math.ceil((width - this.originX) / cellSize) + 1);
-    this.cellsY = Math.max(1, Math.ceil((height - this.originY) / cellSize) + 1);
-
-    const cells = this.cellsX * this.cellsY;
-    if (this.cellSpeed.length < cells) {
-      this.cellSpeed = new Float32Array(cells);
-      this.cellFilled = new Float32Array(cells);
-    }
-    this.cellSpeed.fill(-1, 0, cells);
-    this.cellFilled.fill(-1, 0, cells);
-    return true;
-  }
-
-  /**
-   * @param difference absolute frame difference, analysis resolution
-   * @param flow block flow for the same pair of frames, or null
-   * @param dtSeconds elapsed time between the two frames
+   * REPLACES a block-matching approach, and the reason is what the two can
+   * resolve. Block matching searched 16-pixel cells, so a 256-pixel frame held
+   * about sixteen real samples across — smooth once interpolated, but visibly a
+   * grid, and worst on a front camera where fewer cells carry enough texture to
+   * match at all. This estimate exists at every pixel, which is why Difference
+   * always looked sharper than Speed did: Difference was per-pixel and Speed
+   * was not.
+   *
+   * The constraint is the standard one. For a patch that moves without changing
+   * brightness, the intensity change over time equals the spatial gradient
+   * times the displacement, so dividing one by the other recovers the
+   * displacement along the gradient:
+   *
+   *     speed = |I_t| / |grad I|
+   *
+   * Two honest limits come with it, and both are reported rather than hidden.
+   * It measures NORMAL flow — only the component across the local edge — so an
+   * edge sliding along its own direction reads as slower than it is; that is
+   * the aperture problem, and no local method escapes it. And the linearisation
+   * degrades past a few pixels of displacement, so genuinely fast motion is
+   * understated and clipped at MAX_PIXELS_PER_FRAME.
+   *
+   * @param difference |I_t|, the absolute frame difference
+   * @param gray the current frame, for the spatial gradient
    */
   update(
     difference: ArrayLike<number>,
-    flow: FlowLike | null,
+    gray: ArrayLike<number>,
     width: number,
     height: number,
     dtSeconds: number,
     options: MotionSpeedOptions = {}
   ): MotionSpeedReport {
     this.ensure(width, height);
-    const { speed, state } = this;
+    const { speed, state, raw } = this;
     speed.fill(0);
     state.fill(STILL);
+    raw.fill(0);
 
     const threshold = options.motionThreshold ?? 18;
     // A dt of zero would divide every speed to infinity, and a very small one
     // amplifies a single pixel of jitter into a white streak. Both are reported
     // as "no measurement" rather than guessed at.
-    if (!(dtSeconds > 0.004) || width < 2 || height < 2) {
+    if (!(dtSeconds > 0.004) || width < 3 || height < 3) {
       this.lastReport = { ...EMPTY_REPORT, fullScale: options.fullScale ?? this.autoScale };
       return this.lastReport;
-    }
-
-    const hasFlow = !!flow && flow.vectors.length > 0 && flow.cellSize > 0
-      && this.buildCellGrid(flow, width, height);
-
-    if (hasFlow && flow) {
-      const { cellSpeed, cellsX, cellsY, originX, originY, cellSize } = this;
-      for (const vector of flow.vectors) {
-        // Pixels per frame -> frame widths per second: the frame-rate and
-        // resolution independence this whole module rests on.
-        const widthsPerSecond = vector.magnitude / width / dtSeconds;
-        const col = Math.round((vector.x - originX) / cellSize);
-        const row = Math.round((vector.y - originY) / cellSize);
-        if (col < 0 || row < 0 || col >= cellsX || row >= cellsY) continue;
-        const index = row * cellsX + col;
-        // Two vectors in one grid slot keep the faster claim; a slow background
-        // must not erase a fast object crossing the same cell.
-        if (widthsPerSecond > cellSpeed[index]) cellSpeed[index] = widthsPerSecond;
-      }
-
-      // One-cell dilation, so a textured edge can explain the plain interior
-      // it belongs to without reaching any further than that.
-      const { cellFilled } = this;
-      for (let row = 0; row < cellsY; row++) {
-        for (let col = 0; col < cellsX; col++) {
-          const index = row * cellsX + col;
-          let best = cellSpeed[index];
-          if (best < 0) {
-            for (let dy = -1; dy <= 1; dy++) {
-              const ny = row + dy;
-              if (ny < 0 || ny >= cellsY) continue;
-              for (let dx = -1; dx <= 1; dx++) {
-                const nx = col + dx;
-                if (nx < 0 || nx >= cellsX) continue;
-                const neighbour = cellSpeed[ny * cellsX + nx];
-                if (neighbour > best) best = neighbour;
-              }
-            }
-          }
-          cellFilled[index] = best;
-        }
-      }
     }
 
     let peak = 0;
@@ -353,61 +311,64 @@ export class MotionSpeedField {
     let speedCount = 0;
     let moving = 0;
     let unresolved = 0;
-    let inferred = 0;
-    const pixels = width * height;
-    const { cellSpeed, cellFilled, cellsX, cellsY, originX, originY, cellSize } = this;
+    let saturated = 0;
 
-    for (let y = 0; y < height; y++) {
-      // Continuous cell coordinate. The NEAREST cell decides the pixel's state,
-      // which keeps a direct reading bounded to half a cell and a carried one
-      // to one and a half. The VALUE is interpolated between cells instead of
-      // taken flat from one, because painting each cell a single colour draws
-      // the sampling grid rather than the scene — 16-pixel rectangles of solid
-      // colour, which is not what the motion looked like.
-      const cellY = hasFlow ? (y - originY) / cellSize : -1;
-      const row = Math.round(cellY);
-      const rowInside = hasFlow && row >= 0 && row < cellsY;
-      for (let x = 0; x < width; x++) {
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
         const i = y * width + x;
-        if ((difference[i] ?? 0) < threshold) continue;
+        const change = difference[i] ?? 0;
+        if (change < threshold) continue;
         moving++;
 
-        if (!rowInside) {
-          unresolved++;
-          state[i] = UNRESOLVED;
-          continue;
-        }
-        const cellX = (x - originX) / cellSize;
-        const col = Math.round(cellX);
-        if (col < 0 || col >= cellsX) {
+        // Central differences: a symmetric estimate of the local slope, which
+        // is what the constraint needs. (High-frequency BLINDNESS is a real
+        // property of central differences, but that matters when measuring
+        // spectral energy, not when estimating a slope for this division.)
+        const gx = ((gray[i + 1] ?? 0) - (gray[i - 1] ?? 0)) * 0.5;
+        const gy = ((gray[i + width] ?? 0) - (gray[i - width] ?? 0)) * 0.5;
+        const gradient = Math.hypot(gx, gy);
+
+        if (gradient < GRADIENT_FLOOR) {
+          // Something changed here with no edge to explain how far it went.
+          // Dividing anyway would turn sensor noise into a confident speed.
           unresolved++;
           state[i] = UNRESOLVED;
           continue;
         }
 
-        const index = row * cellsX + col;
-        const measured = cellSpeed[index];
-        const carried = cellFilled[index];
-        if (measured < 0 && carried < 0) {
-          unresolved++;
-          state[i] = UNRESOLVED;
-          continue;
+        let pixelsPerFrame = change / gradient;
+        if (pixelsPerFrame > MAX_PIXELS_PER_FRAME) {
+          pixelsPerFrame = MAX_PIXELS_PER_FRAME;
+          saturated++;
         }
 
-        const value = sampleCells(cellFilled, cellsX, cellsY, cellX, cellY,
-          measured >= 0 ? measured : carried);
-        if (measured >= 0) {
-          state[i] = RESOLVED;
-        } else {
-          inferred++;
-          state[i] = INFERRED;
-        }
-        speed[i] = value;
-        speedSum += value;
+        // Pixels per frame -> frame widths per second, so the reading survives
+        // a change of frame rate or of analysis resolution.
+        const widthsPerSecond = pixelsPerFrame / width / dtSeconds;
+        raw[i] = widthsPerSecond;
+        state[i] = RESOLVED;
+        speedSum += widthsPerSecond;
         speedCount++;
-        if (value > peak) peak = value;
+        if (widthsPerSecond > peak) peak = widthsPerSecond;
       }
     }
+
+    // Edges of the frame have no full neighbourhood, so any change there is
+    // unmeasurable rather than still. They count toward `moving` as well: a
+    // border pixel left out of that total while counted as unresolved makes the
+    // unresolved FRACTION exceed one.
+    for (let x = 0; x < width; x++) {
+      moving += this.markBorder(difference, threshold, x, 0, width);
+      moving += this.markBorder(difference, threshold, x, height - 1, width);
+    }
+    for (let y = 1; y < height - 1; y++) {
+      moving += this.markBorder(difference, threshold, 0, y, width);
+      moving += this.markBorder(difference, threshold, width - 1, y, width);
+    }
+
+    const filled = this.fillFlat(width, height, options.fillRadius ?? DEFAULT_FILL_RADIUS);
+    unresolved = 0;
+    for (let i = 0; i < width * height; i++) if (state[i] === UNRESOLVED) unresolved++;
 
     // Auto scale opens fast toward a new peak and closes slowly, so a single
     // quick pass is not immediately re-normalised into looking ordinary.
@@ -418,10 +379,9 @@ export class MotionSpeedField {
     }
     const fullScale = options.fullScale ?? Math.max(MIN_AUTO_SCALE, this.autoScale);
 
-    // Normalise in place now that the scale is known.
-    for (let i = 0; i < pixels; i++) {
+    for (let i = 0; i < width * height; i++) {
       if (state[i] === RESOLVED || state[i] === INFERRED) {
-        speed[i] = clamp(speed[i] / fullScale, 0, 1);
+        speed[i] = clamp(raw[i] / fullScale, 0, 1);
       }
     }
 
@@ -429,12 +389,71 @@ export class MotionSpeedField {
       peakWidthsPerSecond: peak,
       meanWidthsPerSecond: speedCount ? speedSum / speedCount : 0,
       peakPixelsPerSecond: peak * width,
-      movingFraction: moving / pixels,
+      movingFraction: moving / (width * height),
       unresolvedFraction: moving ? unresolved / moving : 0,
-      inferredFraction: moving ? inferred / moving : 0,
+      inferredFraction: moving ? filled / moving : 0,
+      saturatedFraction: speedCount ? saturated / speedCount : 0,
       fullScale
     };
     return this.lastReport;
+  }
+
+  /** @returns 1 if this border pixel was moving, so the caller can count it. */
+  private markBorder(
+    difference: ArrayLike<number>,
+    threshold: number,
+    x: number,
+    y: number,
+    width: number
+  ): number {
+    const i = y * width + x;
+    if (this.state[i] !== STILL) return 0;
+    if ((difference[i] ?? 0) < threshold) return 0;
+    this.state[i] = UNRESOLVED;
+    return 1;
+  }
+
+  /**
+   * Carry measured speed into neighbouring pixels that had no gradient.
+   *
+   * A moving object's plain interior — a cheek, a wall, a coat — changes
+   * brightness without carrying an edge to measure it by, so it lands in
+   * UNRESOLVED with speed all around its rim. Growing that rim inward by a
+   * bounded number of pixels describes the object better than leaving it
+   * hollow, and the pixels it reaches are counted separately so an inference
+   * never passes for a measurement.
+   */
+  private fillFlat(width: number, height: number, radius: number): number {
+    if (radius <= 0) return 0;
+    const { state, raw, scratch } = this;
+    let filled = 0;
+
+    for (let pass = 0; pass < radius; pass++) {
+      scratch.set(state);
+      let grew = 0;
+      for (let y = 1; y < height - 1; y++) {
+        for (let x = 1; x < width - 1; x++) {
+          const i = y * width + x;
+          if (scratch[i] !== UNRESOLVED) continue;
+          let best = -1;
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              const n = i + dy * width + dx;
+              if (scratch[n] !== RESOLVED && scratch[n] !== INFERRED) continue;
+              if (raw[n] > best) best = raw[n];
+            }
+          }
+          if (best < 0) continue;
+          raw[i] = best;
+          state[i] = INFERRED;
+          grew++;
+        }
+      }
+      filled += grew;
+      // Nothing left adjacent to a measurement; further passes cannot help.
+      if (!grew) break;
+    }
+    return filled;
   }
 }
 

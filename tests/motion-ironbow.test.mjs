@@ -38,23 +38,90 @@ test('the ramp runs cool-and-dark to hot-and-bright', () => {
   const luma = ([r, g, b]) => r * 0.2126 + g * 0.7152 + b * 0.0722;
   assert.ok(luma(still) < luma(mid), 'still must be darker than medium');
   assert.ok(luma(mid) < luma(fast), 'medium must be darker than fast');
-  // Cool at the bottom: blue dominant. Hot at the top: near-white.
   assert.ok(still[2] > still[0], `slow end should be blue-dominant, got ${still}`);
   assert.ok(fast[0] > 240 && fast[1] > 240, `fast end should be near white, got ${fast}`);
 });
 
+/**
+ * A triangle wave, so the spatial gradient has a known constant MAGNITUDE and
+ * the recovered speed can be checked against arithmetic.
+ *
+ * A plain ramp was the obvious choice and the wrong one: at any useful slope it
+ * saturates against 255 partway across, and a saturated region has no gradient
+ * at all, so the estimator correctly resolved nothing and the test measured its
+ * own scaffolding. A triangle folds back instead and never clips at any width.
+ */
+const PERIOD = 32;
+function rampFrame(slope, width = W, height = H) {
+  const gray = new Uint8ClampedArray(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const phase = x % PERIOD;
+      const up = phase < PERIOD / 2 ? phase : PERIOD - phase;
+      gray[y * width + x] = 40 + up * slope;
+    }
+  }
+  return gray;
+}
+
+/** The difference a translation of `shift` pixels produces on that gradient. */
+function rampDifference(slope, shift, width = W, height = H) {
+  const diff = new Uint8ClampedArray(width * height);
+  diff.fill(Math.round(Math.abs(slope * shift)));
+  return diff;
+}
+
+/** The turning points of the triangle carry no gradient, so they never resolve. */
+const SENSITIVE = { motionThreshold: 2, autoScale: false, fillRadius: 0 };
+
+test('speed comes from the gradient, at every pixel', () => {
+  // The whole reason for changing method: a block search resolved about
+  // sixteen samples across a 256-pixel frame, which read as a grid. This
+  // estimate exists at every pixel, so a smooth ramp produces a full field.
+  const field = new MotionSpeedField();
+  const slope = 3;
+  const gray = rampFrame(slope);
+  const diff = rampDifference(slope, 2);
+  field.update(diff, gray, W, H, 1 / 30, { ...SENSITIVE, fullScale: 10 });
+
+  let resolved = 0;
+  for (const s of field.state) if (s === RESOLVED) resolved++;
+  // Every interior pixel should carry its own reading, not one shared by a cell.
+  // The triangle's turning points have no gradient by construction, so a
+  // little under the full interior is the correct answer, not a shortfall.
+  assert.ok(resolved > (W - 2) * (H - 2) * 0.85,
+    `expected a per-pixel field, only ${resolved} pixels resolved`);
+});
+
+test('the recovered displacement matches the arithmetic', () => {
+  // speed = |I_t| / |grad I|. On a ramp of slope 4 shifted by 2 pixels the
+  // difference is 8, so the estimate must come back at 2 pixels per frame.
+  const field = new MotionSpeedField();
+  const slope = 3;
+  const dt = 1 / 30;
+  field.update(rampDifference(slope, 2), rampFrame(slope), W, H, dt,
+    { ...SENSITIVE, fullScale: 1 });
+
+  const expectedWidthsPerSecond = 2 / W / dt;
+  assert.ok(Math.abs(field.report.peakWidthsPerSecond - expectedWidthsPerSecond) < 1e-6,
+    `got ${field.report.peakWidthsPerSecond}, expected ${expectedWidthsPerSecond}`);
+});
+
 test('speed is measured per second, not per frame', () => {
-  // The same real movement sampled at two different frame rates must land on
-  // the same colour. Reading flow in pixels-per-FRAME would make the slower
-  // pipeline report the scene as moving twice as fast, so the palette would
-  // track the phone's workload instead of the world.
-  const diff = movingPatch(20, 16);
+  // The same real movement sampled at two frame rates must land on the same
+  // colour. Reading displacement per FRAME would make the slower pipeline
+  // report the scene as moving twice as fast, so the palette would track the
+  // phone's workload instead of the world.
+  const slope = 3;
+  const gray = rampFrame(slope);
   const fast = new MotionSpeedField();
   const slow = new MotionSpeedField();
 
-  // 4 px in 1/30 s and 8 px in 1/15 s are the same speed.
-  const a = fast.update(diff, flowAt(24, 20, 4), W, H, 1 / 30, { fullScale: 2 });
-  const b = slow.update(diff, flowAt(24, 20, 8), W, H, 1 / 15, { fullScale: 2 });
+  // 2 px in 1/30 s and 4 px in 1/15 s are the same speed.
+  const a = fast.update(rampDifference(slope, 2), gray, W, H, 1 / 30,
+    { ...SENSITIVE, fullScale: 2 });
+  const b = slow.update(rampDifference(slope, 4), gray, W, H, 1 / 15,
+    { ...SENSITIVE, fullScale: 2 });
 
   assert.ok(Math.abs(a.peakWidthsPerSecond - b.peakWidthsPerSecond) < 1e-6,
     `${a.peakWidthsPerSecond} vs ${b.peakWidthsPerSecond} widths/sec`);
@@ -63,15 +130,17 @@ test('speed is measured per second, not per frame', () => {
 test('speed is independent of analysis resolution', () => {
   // The adaptive governor changes the analysis width while the app runs. A
   // gull must not change colour because the pipeline stepped down a notch.
+  const slope = 3;
   const wide = new MotionSpeedField();
   const narrow = new MotionSpeedField();
 
-  const bigDiff = new Uint8ClampedArray(128 * 96).fill(90);
-  const smallDiff = new Uint8ClampedArray(64 * 48).fill(90);
-
-  // Crossing a tenth of the frame per frame, at both resolutions.
-  const a = wide.update(bigDiff, flowAt(64, 48, 12.8, 16), 128, 96, 1 / 30, { fullScale: 5 });
-  const b = narrow.update(smallDiff, flowAt(32, 24, 6.4, 8), 64, 48, 1 / 30, { fullScale: 5 });
+  // Crossing the same FRACTION of the frame at both sizes.
+  // A sixteenth of the frame per frame at both sizes, and both well inside the
+  // estimator's ceiling so neither reading is clipped.
+  const a = wide.update(rampDifference(slope, 8, 128, 96), rampFrame(slope, 128, 96),
+    128, 96, 1 / 30, { ...SENSITIVE, fullScale: 5 });
+  const b = narrow.update(rampDifference(slope, 4, 64, 48), rampFrame(slope, 64, 48),
+    64, 48, 1 / 30, { ...SENSITIVE, fullScale: 5 });
 
   assert.ok(Math.abs(a.peakWidthsPerSecond - b.peakWidthsPerSecond) < 1e-6,
     `${a.peakWidthsPerSecond} vs ${b.peakWidthsPerSecond} widths/sec`);
@@ -79,60 +148,102 @@ test('speed is independent of analysis resolution', () => {
 
 test('a still scene produces no motion colour at all', () => {
   const field = new MotionSpeedField();
-  const report = field.update(new Uint8ClampedArray(W * H), null, W, H, 1 / 30);
+  const report = field.update(new Uint8ClampedArray(W * H), rampFrame(3), W, H, 1 / 30);
   assert.equal(report.movingFraction, 0);
   assert.equal(report.peakWidthsPerSecond, 0);
   assert.ok(field.state.every((s) => s === STILL));
 });
 
-test('movement with no flow behind it reads as unresolved, not as slow', () => {
-  // A moving surface too flat to match must not be coloured as though its
-  // speed had been measured, and must not vanish either.
+test('change with no gradient behind it reads as unresolved, not as slow', () => {
+  // A flat surface changing brightness carries no edge to measure displacement
+  // by. Dividing anyway would turn sensor noise into a confident speed.
   const field = new MotionSpeedField();
-  const report = field.update(movingPatch(20, 16), null, W, H, 1 / 30);
+  const flat = new Uint8ClampedArray(W * H).fill(128);
+  const diff = new Uint8ClampedArray(W * H).fill(90);
+  const report = field.update(diff, flat, W, H, 1 / 30, { fillRadius: 0 });
 
   assert.ok(report.movingFraction > 0, 'the change should be detected');
-  assert.equal(report.unresolvedFraction, 1, 'no flow means nothing was resolved');
+  assert.equal(report.unresolvedFraction, 1, 'no gradient means nothing was resolved');
   assert.equal(report.peakWidthsPerSecond, 0, 'no speed may be claimed');
   assert.ok(field.state.some((s) => s === UNRESOLVED));
   assert.ok(!field.state.some((s) => s === RESOLVED));
 });
 
 test('an implausibly small time step is refused rather than guessed at', () => {
-  // dt near zero divides every speed toward infinity and paints a white streak
-  // out of one pixel of jitter.
   const field = new MotionSpeedField();
-  const report = field.update(movingPatch(20, 16), flowAt(24, 20, 4), W, H, 0.0001);
+  const report = field.update(rampDifference(3, 2), rampFrame(3), W, H, 0.0001);
   assert.equal(report.peakWidthsPerSecond, 0);
   assert.equal(report.movingFraction, 0);
 });
 
 test('faster movement lands higher on the ramp', () => {
   const field = new MotionSpeedField();
-  const diff = movingPatch(20, 16);
-
-  field.update(diff, flowAt(24, 20, 2), W, H, 1 / 30, { fullScale: 4, autoScale: false });
-  const slow = field.speed[20 * W + 24];
-  field.update(diff, flowAt(24, 20, 8), W, H, 1 / 30, { fullScale: 4, autoScale: false });
-  const fast = field.speed[20 * W + 24];
+  const gray = rampFrame(3);
+  field.update(rampDifference(3, 1), gray, W, H, 1 / 30,
+    { ...SENSITIVE, fullScale: 4 });
+  const slow = field.report.peakWidthsPerSecond;
+  field.update(rampDifference(3, 4), gray, W, H, 1 / 30,
+    { ...SENSITIVE, fullScale: 4 });
+  const fast = field.report.peakWidthsPerSecond;
 
   assert.ok(fast > slow, `fast ${fast} must exceed slow ${slow}`);
   assert.ok(slow > 0);
 });
 
-test('overlapping flow cells keep the faster claim', () => {
-  // A fast object crossing a slow background must not be erased by whichever
-  // cell happens to be scattered last.
+test('motion past what the method can resolve is reported, not hidden', () => {
+  // The linearisation degrades past a few pixels, so fast motion is understated
+  // and clipped. A reading that is a floor rather than a measurement has to say
+  // so, or it reads as a confident slow number.
   const field = new MotionSpeedField();
-  const diff = movingPatch(20, 16);
-  const flow = {
-    cellSize: 8,
-    vectors: [{ x: 24, y: 20, magnitude: 9 }, { x: 25, y: 20, magnitude: 1 }]
-  };
-  field.update(diff, flow, W, H, 1 / 30, { fullScale: 20, autoScale: false });
-  const here = field.speed[20 * W + 24];
-  field.update(diff, flowAt(24, 20, 9), W, H, 1 / 30, { fullScale: 20, autoScale: false });
-  assert.equal(here, field.speed[20 * W + 24]);
+  // A measurable gradient with a huge change: the division wants a displacement
+  // far past what a local linearisation can support.
+  const gray = rampFrame(4);
+  const diff = new Uint8ClampedArray(W * H).fill(200);
+  const report = field.update(diff, gray, W, H, 1 / 30, SENSITIVE);
+  assert.ok(report.saturatedFraction > 0.5,
+    `expected most readings clipped, got ${report.saturatedFraction}`);
+
+  // And an ordinary scene must not be reported as saturated.
+  const ordinary = field.update(rampDifference(3, 1), rampFrame(3), W, H, 1 / 30, SENSITIVE);
+  assert.equal(ordinary.saturatedFraction, 0);
+});
+
+test('a flat interior inherits speed from the edges around it', () => {
+  // A cheek or a coat changes brightness without carrying an edge, so it lands
+  // in UNRESOLVED with speed all round its rim. Leaving it hollow describes the
+  // object worse than growing the rim inward does.
+  const field = new MotionSpeedField();
+  const gray = new Uint8ClampedArray(W * H).fill(128);
+  const diff = new Uint8ClampedArray(W * H);
+  // A textured band down the middle, flat either side, all of it changing.
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      diff[y * W + x] = 90;
+      if (x >= 30 && x < 34) gray[y * W + x] = 128 + (x % 2) * 90;
+    }
+  }
+  const hollow = field.update(diff, gray, W, H, 1 / 30, { fillRadius: 0 });
+  const grown = new MotionSpeedField()
+    .update(diff, gray, W, H, 1 / 30, { fillRadius: 6 });
+
+  assert.equal(hollow.inferredFraction, 0, 'no fill means no inference');
+  assert.ok(grown.inferredFraction > 0, 'the fill should reach the flat pixels');
+  assert.ok(grown.unresolvedFraction < hollow.unresolvedFraction,
+    'and unknown should shrink by exactly what it filled');
+});
+
+test('the fill reaches only as far as it is allowed', () => {
+  // Bounded, so this stays interpolation near a measurement rather than
+  // extrapolation across the whole frame.
+  const gray = new Uint8ClampedArray(W * H).fill(128);
+  const diff = new Uint8ClampedArray(W * H).fill(90);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) if (x < 4) gray[y * W + x] = 128 + (x % 2) * 90;
+  }
+  const near = new MotionSpeedField().update(diff, gray, W, H, 1 / 30, { fillRadius: 2 });
+  const far = new MotionSpeedField().update(diff, gray, W, H, 1 / 30, { fillRadius: 10 });
+  assert.ok(far.inferredFraction > near.inferredFraction, 'a longer reach fills more');
+  assert.ok(far.unresolvedFraction > 0.5, 'but must not reach the whole frame');
 });
 
 test('the renderer distinguishes still, resolved and unresolved pixels', () => {
@@ -262,66 +373,8 @@ test('resizing the analysis frame does not carry stale trails across', () => {
   assert.equal(report.framesAccumulated, 1);
 });
 
-test('a plain interior inherits the speed measured at its own edges', () => {
-  // Block matching only accepts a cell with enough texture, so a moving coat or
-  // wing routinely has measured speed all around its edge and none in the
-  // middle. Leaving the middle blank describes the scene worse than carrying
-  // the neighbouring measurement in.
-  const field = new MotionSpeedField();
-  const diff = movingPatch(16, 16, 32);
-  // One vector, at the patch's leading edge only.
-  const report = field.update(diff, flowAt(20, 20, 6, 16), W, H, 1 / 30,
-    { fullScale: 5, autoScale: false });
 
-  assert.ok(report.inferredFraction > 0, 'the interior should inherit a speed');
-  assert.ok(field.state.some((s) => s === RESOLVED), 'the measured cell stays measured');
-  assert.ok(field.state.some((s) => s === INFERRED), 'neighbours are marked as inherited');
-  // The ledger has to add up, or the readout is lying about what was measured.
-  let measured = 0;
-  let inferred = 0;
-  let unresolved = 0;
-  let moving = 0;
-  for (let i = 0; i < field.state.length; i++) {
-    if (diff[i] < 18) continue;
-    moving++;
-    if (field.state[i] === RESOLVED) measured++;
-    else if (field.state[i] === INFERRED) inferred++;
-    else if (field.state[i] === UNRESOLVED) unresolved++;
-  }
-  assert.equal(measured + inferred + unresolved, moving, 'every moving pixel needs a state');
-  assert.ok(Math.abs(report.inferredFraction - inferred / moving) < 1e-9);
-  assert.ok(Math.abs(report.unresolvedFraction - unresolved / moving) < 1e-9);
-});
 
-test('inference reaches one cell and no further', () => {
-  // Bounded reach is what keeps this interpolation between measurements rather
-  // than extrapolation into empty space.
-  const field = new MotionSpeedField();
-  const diff = new Uint8ClampedArray(W * H).fill(90);
-  field.update(diff, flowAt(8, 8, 6, 8), W, H, 1 / 30, { fullScale: 5, autoScale: false });
-
-  // The vector sits at (8,8) with 8px cells, so a pixel four cells away has no
-  // business carrying its speed.
-  const far = field.state[40 * W + 56];
-  assert.equal(far, UNRESOLVED, 'distant movement must stay unresolved');
-  assert.equal(field.state[8 * W + 8], RESOLVED);
-});
-
-test('an inferred speed is never counted as a measured one', () => {
-  const field = new MotionSpeedField();
-  const diff = new Uint8ClampedArray(W * H).fill(90);
-  const report = field.update(diff, flowAt(24, 24, 6, 8), W, H, 1 / 30,
-    { fullScale: 5, autoScale: false });
-
-  let measured = 0;
-  let inferred = 0;
-  for (const s of field.state) {
-    if (s === RESOLVED) measured++;
-    if (s === INFERRED) inferred++;
-  }
-  assert.ok(inferred > measured, 'one cell of measurement should seed more inference than itself');
-  assert.ok(Math.abs(report.inferredFraction - inferred / (W * H)) < 0.02);
-});
 
 test('a speed field enlarges smoothly but keeps its categories intact', () => {
   // Speed is a quantity and interpolates; measured/inferred/unknown are
@@ -347,31 +400,3 @@ test('enlarging a field with nothing in it stays empty', () => {
   assert.ok(out.state.every((v) => v === STILL));
 });
 
-test('speed varies smoothly across cells instead of in flat blocks', () => {
-  // Painting each flow cell one colour draws the sampling grid rather than the
-  // scene: a saved frame came back as large flat rectangles of solid colour.
-  // The cells are samples of a continuous motion field, so the value between
-  // them is interpolated.
-  const field = new MotionSpeedField();
-  const diff = new Uint8ClampedArray(W * H).fill(90);
-  // Three cells in a row with clearly different speeds.
-  const flow = {
-    cellSize: 16,
-    vectors: [
-      { x: 8, y: 24, magnitude: 2 },
-      { x: 24, y: 24, magnitude: 8 },
-      { x: 40, y: 24, magnitude: 3 }
-    ]
-  };
-  field.update(diff, flow, W, H, 1 / 30, { fullScale: 20, autoScale: false });
-
-  const row = [];
-  for (let x = 8; x <= 40; x++) row.push(field.speed[24 * W + x]);
-  const levels = new Set(row.map((v) => v.toFixed(4)));
-  assert.ok(levels.size > 12, `expected a gradient across the cells, got ${levels.size} levels`);
-
-  // And it must actually rise toward the fast cell and fall away from it.
-  const at = (x) => field.speed[24 * W + x];
-  assert.ok(at(24) > at(16), 'speed should climb toward the fast cell');
-  assert.ok(at(24) > at(32), 'and fall away from it');
-});

@@ -49,10 +49,10 @@ test('service worker accepts immediate activation request', () => {
   assert.match(swSource, /skipWaiting\(\)/);
 });
 
-test('settings version is 0.9.0 everywhere it is stated', () => {
-  assert.match(htmlSource, /Visual Sensor Studio v0\.9\.0/);
-  assert.match(mainSource, /APP_VERSION\s*=\s*['"]0\.9\.0['"]/);
-  assert.match(swSource, /visual-sensor-studio-v0\.9\.0/);
+test('settings version is 0.10.0 everywhere it is stated', () => {
+  assert.match(htmlSource, /Visual Sensor Studio v0\.10\.0/);
+  assert.match(mainSource, /APP_VERSION\s*=\s*['"]0\.10\.0['"]/);
+  assert.match(swSource, /visual-sensor-studio-v0\.10\.0/);
 });
 
 test('the service worker update check bypasses the HTTP cache', () => {

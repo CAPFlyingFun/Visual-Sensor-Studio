@@ -142,6 +142,7 @@
               <div class="readout wide"><span>Speed source</span><strong id="motionUnresolved">—</strong></div>
               <div class="readout"><span>Trail coverage</span><strong id="motionTrailCoverage">—</strong></div>
               <div class="readout"><span>Angular speed</span><strong id="motionAngular">—</strong></div>
+              <div class="readout"><span>At the ceiling</span><strong id="motionSaturated">—</strong></div>
               <div class="readout wide"><span>Event</span><strong id="motionEventState">Trigger off</strong></div>
               <div class="readout wide"><span>Steady gate</span><strong id="steadyState">Gate off</strong></div>
             </div>
@@ -150,6 +151,11 @@
               <button class="secondary-button" id="motionClearButton" type="button">Clear Trails</button>
               <button class="secondary-button" id="motionSnapshotButton" type="button">Save Observation</button>
             </div>
+            <div class="button-row">
+              <button class="secondary-button" id="motionCalibrateButton" type="button">Hold Still &amp; Calibrate</button>
+              <button class="secondary-button" id="motionSteadyToggle" type="button" aria-pressed="false">Steady Gate: Off</button>
+            </div>
+            <p class="helper" id="motionCalibrationHint">Calibration measures how still this phone is in your hand, so tremor stops counting as motion. It is a gate, not stabilisation.</p>
             <p class="helper">
               Save Observation writes a JSON record — speeds, the measured/inferred/unknown split,
               camera settings, and position and heading when those are enabled — alongside the frame
@@ -333,7 +339,7 @@
       </section>
     </main>
 
-    <footer><strong>Visual Sensor Studio v0.9.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.10.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">

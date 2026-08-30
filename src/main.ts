@@ -72,7 +72,7 @@ import {
 import { StabilityMonitor } from './sensors/stability.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 
-const APP_VERSION = '0.9.0';
+const APP_VERSION = '0.10.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -1024,6 +1024,7 @@ function renderMotionReadouts(): void {
     setText('motionFullScale', '—');
     setText('motionMovingFraction', '—');
     setText('motionUnresolved', '—');
+    setText('motionSaturated', '—');
   } else {
     // Both units, because neither is enough on its own: widths/sec is what the
     // colour actually maps and stays comparable as the pipeline retunes, while
@@ -1032,6 +1033,11 @@ function renderMotionReadouts(): void {
       ? `${latestSpeed.peakWidthsPerSecond.toFixed(2)} w/s · ${Math.round(latestSpeed.peakPixelsPerSecond)} px/s`
       : 'still');
     setText('motionFullScale', `${latestSpeed.fullScale.toFixed(2)} w/s = white`);
+    // A reading that is a floor rather than a measurement has to say so, or a
+    // clipped speed reads as a confident slow one.
+    setText('motionSaturated', latestSpeed.saturatedFraction > 0.001
+      ? `${(latestSpeed.saturatedFraction * 100).toFixed(0)}% clipped — faster than this method resolves`
+      : 'none');
     setText('motionMovingFraction', `${(latestSpeed.movingFraction * 100).toFixed(1)}%`);
     // Measured, inherited from a neighbouring cell, and not established at all
     // are three different claims, and the panel says which is which rather than
@@ -1369,15 +1375,22 @@ function renderCalibration(): void {
   const stored = stabilityCalibration;
   if (calibrator.running) {
     const progress = calibrator.progress(performance.now(), CALIBRATION_MS);
-    setText('calibrationState', `Measuring… ${Math.round(progress * 100)}% · ${calibrator.samples} samples`);
+    const measuring = `Measuring… ${Math.round(progress * 100)}% · ${calibrator.samples} samples`;
+    setText('calibrationState', measuring);
+    setText('motionCalibrationHint', `${measuring} — hold the phone as you mean to use it.`);
     return;
   }
+  const hint = 'Calibration measures how still this phone is in your hand, so tremor stops'
+    + ' counting as motion. It is a gate, not stabilisation.';
   if (!stored) {
     setText('calibrationState', 'Not calibrated — using a generic floor');
     setText('calibrationDeadzone', '—');
     setText('calibrationSpread', '—');
+    setText('motionCalibrationHint', `Not calibrated — using a generic floor. ${hint}`);
     return;
   }
+  setText('motionCalibrationHint',
+    `Deadzone ${stored.rotationDeadzone.toFixed(2)} °/s, measured over ${(stored.durationMs / 1000).toFixed(0)}s. ${hint}`);
   setText('calibrationState', `${stored.samples} samples over ${(stored.durationMs / 1000).toFixed(1)}s`
     + ` · ${new Date(stored.capturedAt).toLocaleDateString()}`);
   setText('calibrationDeadzone', `${stored.rotationDeadzone.toFixed(2)} °/s · ${stored.accelerationDeadzone.toFixed(2)} m/s²`);
@@ -1412,13 +1425,13 @@ function startCalibration(): void {
     return;
   }
   calibrator.start(performance.now());
-  byId<HTMLButtonElement>('calibrateButton').textContent = 'Cancel';
+  setCalibrateLabel('Cancel');
   renderCalibration();
 
   window.setTimeout(() => {
     if (!calibrator.running) return;
     const result = calibrator.finish(performance.now());
-    byId<HTMLButtonElement>('calibrateButton').textContent = 'Hold Still & Calibrate';
+    setCalibrateLabel('Hold Still & Calibrate');
     if (!result) {
       setText('calibrationState', 'Too few samples to trust — the motion sensor stopped reporting. Try again.');
       return;
@@ -1435,8 +1448,21 @@ function startCalibration(): void {
 
 function cancelCalibration(): void {
   calibrator.cancel();
-  byId<HTMLButtonElement>('calibrateButton').textContent = 'Hold Still & Calibrate';
+  setCalibrateLabel('Hold Still & Calibrate');
   renderCalibration();
+}
+
+/** The same control exists on the main screen and in Settings; both track it. */
+function setCalibrateLabel(label: string): void {
+  byId<HTMLButtonElement>('calibrateButton').textContent = label;
+  byId<HTMLButtonElement>('motionCalibrateButton').textContent = label;
+}
+
+function syncSteadyToggle(): void {
+  const button = byId<HTMLButtonElement>('motionSteadyToggle');
+  button.textContent = `Steady Gate: ${settings.steadyGate ? 'On' : 'Off'}`;
+  button.setAttribute('aria-pressed', String(settings.steadyGate));
+  button.classList.toggle('active', settings.steadyGate);
 }
 
 /**
@@ -1854,10 +1880,10 @@ function processVisionFrame(timestamp: number): boolean {
     trackedObjects = [];
   }
 
-  // Speed and Trails colour by measured velocity, so they need the same flow
-  // field Flow mode draws — the difference mask alone says only that something
-  // changed, never how fast.
-  const wantsFlow = visionMode === 'flow' || visionMode === 'speed' || visionMode === 'motiontrails';
+  // Only Flow mode needs the block-matched field now. Speed and Trails derive
+  // their own per-pixel estimate from the difference and the frame gradient,
+  // which is both finer and far cheaper than a block search.
+  const wantsFlow = visionMode === 'flow';
   const flowOptions = flowOptionsForPreset();
   if (wantsFlow && hadPrevious) {
     latestFlow = computeBlockFlow(buffers.previousGray, buffers.gray, buffers.width, buffers.height, flowOptions);
@@ -1875,7 +1901,7 @@ function processVisionFrame(timestamp: number): boolean {
   if (visionMode === 'speed' || visionMode === 'motiontrails') {
     latestSpeed = speedField.update(
       buffers.difference,
-      latestFlow,
+      buffers.gray,
       buffers.width,
       buffers.height,
       usableDt,
@@ -2304,6 +2330,7 @@ function syncSettingsControls(): void {
   byId<HTMLInputElement>('autoStartGps').checked = settings.autoStartGps;
   byId<HTMLInputElement>('autoStartMotion').checked = settings.autoStartMotion;
   byId<HTMLInputElement>('steadyGate').checked = settings.steadyGate;
+  syncSteadyToggle();
   byId<HTMLInputElement>('motionFov').value = settings.motionFovDegrees > 0
     ? String(settings.motionFovDegrees)
     : '';
@@ -2782,12 +2809,10 @@ function renderStill(mode: VisionMode, frame: ImageData, previous: ImageData | n
       return drawFlowIntoRgba(rgba, field, width, height);
     }
     case 'speed': {
-      // Deliberately NOT a fresh full-resolution flow. Cell size, patch radius
-      // and search range all scale with the image, so matching at this size
-      // either paints 125-pixel cells as flat rectangles or costs hundreds of
-      // millions of operations. The measurement stays where it was made and
-      // only the picture is enlarged, so the saved frame is the one that was on
-      // screen — at full size, over a full-resolution scene.
+      // Deliberately NOT re-derived at full resolution. The measurement is a
+      // per-pixel estimate made on the analysis frame; enlarging the picture
+      // keeps the saved frame the one that was on screen, at full size, over a
+      // full-resolution scene.
       const analysis = visionBuffers;
       if (!analysis) return frame.data;
       const scaled = upscaleSpeedField(
@@ -3542,6 +3567,19 @@ on('autoStartMotion', 'change', (event) => {
 on('steadyGate', 'change', (event) => {
   settings.steadyGate = (event.target as HTMLInputElement).checked;
   saveSettings();
+  syncSteadyToggle();
+  renderSteadyState();
+});
+on('motionCalibrateButton', 'click', () => {
+  if (calibrator.running) cancelCalibration();
+  else startCalibration();
+});
+on('motionSteadyToggle', 'click', () => {
+  settings.steadyGate = !settings.steadyGate;
+  saveSettings();
+  byId<HTMLInputElement>('steadyGate').checked = settings.steadyGate;
+  syncSteadyToggle();
+  syncSteadyToggle();
   renderSteadyState();
 });
 on('calibrateButton', 'click', () => {

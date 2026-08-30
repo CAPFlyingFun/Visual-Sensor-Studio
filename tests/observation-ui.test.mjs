@@ -707,3 +707,38 @@ test('a calibration is a deliberate act with a stated length', () => {
   assert.match(htmlSource, /id=["']clearCalibrationButton["']/);
   assert.match(mainSource, /MIN_CALIBRATION_SAMPLES|Too few samples to trust/);
 });
+
+
+test('speed is estimated per pixel, not per block', () => {
+  // A block search resolved about sixteen samples across a 256-pixel frame,
+  // which read as a grid — worst on the front camera, where fewer cells carry
+  // enough texture to match at all. Difference always looked sharper for
+  // exactly this reason: it was per-pixel and Speed was not.
+  assert.match(mainSource, /const wantsFlow = visionMode === 'flow';/);
+  const call = mainSource.slice(mainSource.indexOf('latestSpeed = speedField.update('));
+  const args = call.slice(0, call.indexOf(');'));
+  assert.match(args, /buffers\.difference/);
+  assert.match(args, /buffers\.gray/);
+  assert.doesNotMatch(args, /latestFlow/, 'the speed field must not take a block-flow field');
+});
+
+test('a clipped speed is reported as a floor, not as a reading', () => {
+  // The linearisation degrades past a few pixels, so fast motion is understated.
+  // Hiding that would turn a clipped estimate into a confident slow number.
+  assert.match(mainSource, /saturatedFraction/);
+  assert.match(mainSource, /faster than this method resolves/);
+  assert.match(htmlSource, /id=["']motionSaturated["']/);
+});
+
+test('calibration is reachable without opening Settings', () => {
+  for (const id of ['motionCalibrateButton', 'motionSteadyToggle', 'motionCalibrationHint']) {
+    assert.match(htmlSource, new RegExp(`id=["']${id}["']`), `missing #${id}`);
+    assert.match(mainSource, new RegExp(`'${id}'`), `#${id} not referenced by main.ts`);
+  }
+  // Both copies of the control have to move together, or one of them lies.
+  assert.match(mainSource, /function setCalibrateLabel\(label: string\)/);
+  const label = mainSource.slice(mainSource.indexOf('function setCalibrateLabel'));
+  const body = label.slice(0, label.indexOf('\n}'));
+  assert.match(body, /'calibrateButton'/);
+  assert.match(body, /'motionCalibrateButton'/);
+});
