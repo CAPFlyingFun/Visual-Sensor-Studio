@@ -621,3 +621,23 @@ test('angular speed is never shown without the field of view it assumed', () => 
   assert.match(mainSource, /assumes \$\{settings\.motionFovDegrees\}°/);
   assert.match(mainSource, /assumedHorizontalFovDegrees/);
 });
+
+test('the full-screen viewer has a findable camera swap', () => {
+  // The control was wired the whole time behind a bare reset arrow, which reads
+  // as "undo" rather than "other camera", so it could not be found.
+  assert.match(htmlSource, /id=["']viewerSwitchButton["']/);
+  assert.match(mainSource, /on\('viewerSwitchButton', 'click'/);
+  assert.doesNotMatch(htmlSource, /viewerSwitchButton[^>]*>⟲/);
+  assert.match(htmlSource, /id=["']viewerSwitchLabel["']/);
+});
+
+test('both camera toggles name the same destination', () => {
+  // Two controls for one action disagreeing about which side is live is worse
+  // than having only one of them.
+  const sync = mainSource.slice(mainSource.indexOf('function syncCameraSwitchLabel'));
+  const body = sync.slice(0, sync.indexOf('\n}'));
+  assert.match(body, /switchCameraButton/);
+  assert.match(body, /viewerSwitchButton/);
+  assert.match(body, /viewerSwitchLabel/);
+  assert.match(body, /const destination = onFront \? 'rear' : 'front'/);
+});

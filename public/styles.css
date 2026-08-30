@@ -827,3 +827,36 @@ footer strong { color: #9fb2c3; }
   color: #eaf3ff;
   box-shadow: inset 0 0 0 1px rgba(96, 208, 255, 0.35);
 }
+
+/* Camera swap in the full-screen viewer.
+   The glyph this replaced was a bare reset arrow, which reads as "undo" rather
+   than "other camera" — the control was wired the whole time and simply could
+   not be found. A camera outline with rotation arrows, plus the side it will
+   move to in words, says what it does without being tapped to find out. */
+.viewer-swap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 0;
+}
+.viewer-swap svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.viewer-swap .swap-arc,
+.viewer-swap .swap-tip { stroke-width: 1.6; }
+.viewer-swap-label {
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+.viewer-secondary:disabled { opacity: 0.4; }

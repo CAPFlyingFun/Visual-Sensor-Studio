@@ -332,7 +332,7 @@
       </section>
     </main>
 
-    <footer><strong>Visual Sensor Studio v0.8.1</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.8.2</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">
@@ -352,7 +352,14 @@
       <div class="viewer-actions">
         <button class="viewer-secondary" id="viewerTorchButton" type="button" hidden>🔦</button>
         <button class="viewer-shutter" id="viewerShutterButton" type="button" aria-label="Save frame"></button>
-        <button class="viewer-secondary" id="viewerSwitchButton" type="button" aria-label="Switch camera">⟲</button>
+        <button class="viewer-secondary viewer-swap" id="viewerSwitchButton" type="button" aria-label="Use front camera" title="Use front camera">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M9 4h6l1.2 2H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3.8Z" />
+            <path d="M8.6 12.4a3.4 3.4 0 0 1 5.8-2.4M15.4 12.4a3.4 3.4 0 0 1-5.8 2.4" class="swap-arc" />
+            <path d="M14.4 7.2v2.8h-2.8M9.6 17.6v-2.8h2.8" class="swap-tip" />
+          </svg>
+          <span class="viewer-swap-label" id="viewerSwitchLabel">Front</span>
+        </button>
       </div>
     </div>
   </div>

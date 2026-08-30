@@ -59,7 +59,7 @@ import {
 import { StabilityMonitor } from './sensors/stability.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 
-const APP_VERSION = '0.8.1';
+const APP_VERSION = '0.8.2';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -561,7 +561,6 @@ async function initializeFusion(): Promise<void> {
 function applyCameraStatus(status: CameraStatus): void {
   const button = byId<HTMLButtonElement>('cameraButton');
   const overlay = byId<HTMLButtonElement>('cameraOverlayButton');
-  const switchButton = byId<HTMLButtonElement>('switchCameraButton');
   const parallaxButton = byId<HTMLButtonElement>('captureParallaxButton');
 
   zoomState = status.zoom;
@@ -576,10 +575,9 @@ function applyCameraStatus(status: CameraStatus): void {
   trace.hidden = status.state === 'idle' || status.state === 'live';
   trace.textContent = `stage: ${status.stage}`;
 
-  switchButton.disabled = !live;
-  // Re-label on every status change, so the toggle also stays correct when the
-  // side changes for a reason other than the button — a lens pick, a restart.
-  switchButton.textContent = status.facing === 'user' ? 'Use Rear Camera' : 'Use Front Camera';
+  // Re-label on every status change, so both toggles stay correct when the side
+  // changes for a reason other than the button — a lens pick, a restart.
+  syncCameraSwitchLabel(status.facing, live);
   parallaxButton.disabled = !live;
   syncZoomControls();
 
@@ -1052,11 +1050,26 @@ function setNightMode(active: boolean): void {
  * "Switch Camera" gives no way to tell which side is live, so a press that
  * silently failed looks the same as one that worked.
  */
-function syncCameraSwitchLabel(): void {
+function syncCameraSwitchLabel(
+  facing: CameraFacing = camera.diagnostics.facing,
+  live = camera.active
+): void {
+  // Both taken as parameters so a status callback can pass the state it was
+  // handed rather than re-reading a getter that may not have caught up yet.
+  const onFront = facing === 'user';
+  const destination = onFront ? 'rear' : 'front';
+
   const button = byId<HTMLButtonElement>('switchCameraButton');
-  const onFront = camera.diagnostics.facing === 'user';
   button.textContent = onFront ? 'Use Rear Camera' : 'Use Front Camera';
-  button.disabled = !camera.active;
+  button.disabled = !live;
+
+  // The viewer's swap has to say the same thing. Two controls for one action
+  // disagreeing about which side is live is worse than having only one.
+  const viewerButton = byId<HTMLButtonElement>('viewerSwitchButton');
+  viewerButton.setAttribute('aria-label', `Use ${destination} camera`);
+  viewerButton.title = `Use ${destination} camera`;
+  viewerButton.disabled = !live;
+  setText('viewerSwitchLabel', destination === 'rear' ? 'Rear' : 'Front');
 }
 
 async function switchCamera(): Promise<void> {
