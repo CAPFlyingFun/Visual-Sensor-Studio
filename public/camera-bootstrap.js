@@ -122,6 +122,16 @@
    * makes, and the negotiated result is always reported rather than assumed.
    */
   let requestedHeight = 720;
+  /**
+   * Explicitly chosen camera, or null for facingMode selection.
+   *
+   * An iPhone exposes the ultrawide as its own input alongside the virtual
+   * "Dual Wide" device. Asking the virtual device for zoom 0.5 does not
+   * reliably switch lenses — it can scale the wide sensor instead, which
+   * cannot add field of view and looks soft. Selecting the dedicated ultrawide
+   * gets its real optics at its own native resolution.
+   */
+  let requestedDeviceId = null;
   let negotiatedFrameRate = 0;
   let frameRateCapability = null;
   let deliveryHandle = 0;
@@ -683,9 +693,13 @@
     // negotiated down rather than failing the request outright.
     const height = Number(requestedHeight) || 720;
     const width = Math.round(height * (16 / 9));
+    const device = requestedDeviceId ? { deviceId: { exact: requestedDeviceId } } : {};
 
     return [
-      withRate({ width: { ideal: width }, height: { ideal: height } }),
+      withRate(Object.assign({ width: { ideal: width }, height: { ideal: height } }, device)),
+      withRate(device),
+      // Then the same request without the device pin, so a camera that has
+      // disappeared since it was chosen cannot leave the app with no camera.
       withRate({}),
       // Final fallback drops the frame-rate request entirely: a rate the
       // device cannot honour must never be the reason the camera fails.
@@ -929,7 +943,8 @@
    * getUserMedia, so the gesture's transient activation is still in effect
    * when WebKit decides whether to show the permission prompt.
    */
-  async function start(requestedFacing = facing) {
+  async function start(requestedFacing = facing, deviceId = requestedDeviceId) {
+    requestedDeviceId = deviceId || null;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       const error = new Error('This browser context does not expose getUserMedia.');
       error.name = 'NotAllowedError';
@@ -1161,6 +1176,22 @@
      * re-prompting for permission. The result is whatever the device settles
      * on, which the caller must read back rather than assume.
      */
+    /**
+     * Switch to a specific camera by deviceId.
+     *
+     * A device change cannot go through applyConstraints, so this restarts the
+     * stream. Permission is already granted for the origin, so it does not
+     * re-prompt, and the standing frame-delivery subscription is re-armed by
+     * start() itself.
+     */
+    async selectDevice(deviceId) {
+      return start(facing, deviceId || null);
+    },
+
+    get selectedDeviceId() {
+      return requestedDeviceId;
+    },
+
     async setCaptureHeight(height) {
       requestedHeight = Number(height) || 720;
       const track = videoTrack;

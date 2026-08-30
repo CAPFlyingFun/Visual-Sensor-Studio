@@ -157,6 +157,8 @@ interface CameraEngine {
   clearAttempts(): void;
   permissionState(): Promise<string>;
   setCaptureHeight(height: number): Promise<{ applied: boolean; reason?: string }>;
+  selectDevice(deviceId: string | null): Promise<CameraFacing>;
+  readonly selectedDeviceId: string | null;
   setFrameRate(requested: 'auto' | number): Promise<{ applied: boolean; reason?: string; reported: number }>;
   benchmarkFrameRates(
     rates: number[],
@@ -272,6 +274,15 @@ export class CameraController {
 
   async setFrameRate(requested: 'auto' | number): Promise<{ applied: boolean; reason?: string; reported: number }> {
     return engine().setFrameRate(requested);
+  }
+
+  get selectedDeviceId(): string | null {
+    return engine().selectedDeviceId;
+  }
+
+  /** Switch to a specific camera. Restarts the stream; does not re-prompt. */
+  async selectDevice(deviceId: string | null): Promise<CameraFacing> {
+    return engine().selectDevice(deviceId);
   }
 
   /** Request a capture resolution by target height. The result must be read back. */

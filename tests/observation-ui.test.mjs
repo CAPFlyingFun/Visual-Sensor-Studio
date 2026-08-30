@@ -451,3 +451,37 @@ test('fit and fill are both offered, and the preview is described honestly', () 
   // says so rather than letting it look like lost resolution.
   assert.match(htmlSource, /upscaled from the analysis frame, saved stills are full resolution/);
 });
+
+test('each camera the device exposes can be selected directly', () => {
+  // An iPhone lists the ultrawide separately from the virtual "Dual Wide"
+  // device. Asking the virtual device for zoom 0.5 does not reliably switch
+  // lenses — it can scale the wide sensor instead, which cannot add field of
+  // view and looks soft at high resolution.
+  assert.match(cameraSource, /async selectDevice\(deviceId\)/);
+  assert.match(cameraSource, /deviceId: \{ exact: requestedDeviceId \}/);
+  assert.match(mainSource, /async function renderLensPicker\(/);
+  assert.match(htmlSource, /id=["']lensRow["']/);
+  // Fewer than two cameras means nothing to choose between; labels also only
+  // exist after a permission grant.
+  assert.match(mainSource, /if \(devices\.length < 2\)/);
+  assert.match(mainSource, /devices\.filter\(\(device\) => device\.label\)/);
+});
+
+test('a pinned camera that vanishes cannot leave the app with none', () => {
+  // The device-pinned profiles are followed by the same request without the
+  // pin, so an unplugged or renamed camera degrades instead of failing.
+  const profiles = cameraSource.slice(cameraSource.indexOf('function buildProfiles('));
+  const body = profiles.slice(0, profiles.indexOf('\n  }'));
+  const pinned = body.indexOf('withRate(device)');
+  const unpinned = body.indexOf('withRate({})');
+  assert.ok(pinned >= 0 && unpinned > pinned, 'an unpinned fallback must follow the pinned requests');
+  assert.match(body, /\{ audio: false, video: true \}/);
+});
+
+test('a zoom that changes capture geometry is reported', () => {
+  // A virtual multi-lens device can answer a zoom request by scaling one
+  // sensor rather than switching lenses, and the track keeps reporting the
+  // same resolution while the image softens.
+  assert.match(mainSource, /Zoom changed the capture size to/);
+  assert.match(mainSource, /afterWidth !== beforeWidth/);
+});

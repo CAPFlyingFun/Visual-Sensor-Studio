@@ -195,6 +195,27 @@ Higher resolutions usually cost frame rate — the sensor cannot read out
 are reported rather than assumed. Nothing is uploaded. Video and GIF recording
 are not built yet.
 
+## Lens selection, and why 0.5x can look soft
+
+An iPhone exposes the ultrawide as its **own video input** alongside the
+virtual "Back Dual Wide Camera". Asking the virtual device for zoom 0.5 does
+not reliably switch lenses — it can answer by scaling the wide sensor instead,
+which cannot add field of view and looks noticeably soft at high capture
+resolutions.
+
+So each camera the device exposes gets its own button. Selecting the dedicated
+ultrawide gets its real optics at its own native resolution rather than a
+stretched crop of another lens. The row only appears when the device exposes
+more than one camera, and labels are only available after a permission grant.
+
+**Simultaneous dual-camera capture is not possible in a browser.** WebKit does
+not allow two back cameras to stream at once, so blending a sharp 1x centre
+into a wide 0.5x frame — with the alignment and feathering that would need —
+cannot be done here at all. It is a native-app capability. The `FrameSource`
+interface exists so a future native provider could supply multiple streams
+without the processing modes changing, and this app does not pretend to have
+it in the meantime.
+
 ## Manual camera controls
 
 Torch, white balance and focus distance appear only when the live track

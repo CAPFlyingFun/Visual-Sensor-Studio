@@ -42,7 +42,7 @@ import {
 import { StabilityMonitor } from './sensors/stability.js';
 import { computeBlockDisparity } from './vision/parallax.js';
 
-const APP_VERSION = '0.5.2';
+const APP_VERSION = '0.6.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -535,6 +535,7 @@ function applyCameraStatus(status: CameraStatus): void {
       button.textContent = 'Restart Camera';
       setBrowserCameraFallback(false);
       syncManualControls();
+      void renderLensPicker();
       break;
 
     case 'suspended':
@@ -724,8 +725,18 @@ async function requestZoom(value: number): Promise<void> {
   }
 
   zoomWriteInFlight = true;
+  const beforeWidth = camera.diagnostics.videoWidth;
   try {
     zoomState = await camera.setZoom(clamped);
+    // A virtual multi-lens device can answer a zoom request by scaling one
+    // sensor rather than switching lenses, and the track keeps reporting the
+    // same resolution while the image softens. Say so when the geometry moves.
+    window.setTimeout(() => {
+      const afterWidth = camera.diagnostics.videoWidth;
+      if (afterWidth && beforeWidth && afterWidth !== beforeWidth) {
+        setText('cameraMessage', `Zoom changed the capture size to ${afterWidth}×${camera.diagnostics.videoHeight}.`);
+      }
+    }, 500);
   } catch {
     // The engine already falls back to a digital crop when a track refuses.
   } finally {
@@ -2007,6 +2018,70 @@ function saveCanvas(source: HTMLCanvasElement, description: string): void {
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     setText('cameraMessage', `Saved ${description} · ${visionMode}. It stays on this device.`);
   }, 'image/png');
+}
+
+/**
+ * Offer each camera the device exposes as its own button.
+ *
+ * An iPhone lists the ultrawide separately from the virtual "Dual Wide"
+ * device. Asking the virtual device for zoom 0.5 does not reliably switch
+ * lenses — it can scale the wide sensor instead, which cannot add field of
+ * view and looks soft at high resolutions. Picking the dedicated ultrawide
+ * gets its real optics at its own native resolution.
+ */
+async function renderLensPicker(): Promise<void> {
+  const row = byId('lensRow');
+  const report = await camera.videoInputs();
+  const devices = report.devices.filter((device) => device.label);
+
+  // Labels only appear after a permission grant, and with fewer than two
+  // cameras there is nothing to choose between.
+  if (devices.length < 2) {
+    row.hidden = true;
+    return;
+  }
+
+  const signature = devices.map((device) => device.deviceId).join(',');
+  if (row.dataset.signature !== signature) {
+    row.dataset.signature = signature;
+    row.textContent = '';
+    for (const device of devices) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'lens-button';
+      button.dataset.deviceId = device.deviceId;
+      button.textContent = device.label.replace(/\s*Camera$/i, '');
+      button.addEventListener('click', () => void selectLens(device.deviceId, device.label));
+      row.appendChild(button);
+    }
+  }
+
+  const selected = camera.selectedDeviceId;
+  for (const button of row.querySelectorAll<HTMLButtonElement>('.lens-button')) {
+    button.classList.toggle('active', button.dataset.deviceId === selected);
+  }
+  row.hidden = false;
+}
+
+async function selectLens(deviceId: string, label: string): Promise<void> {
+  for (const button of byId('lensRow').querySelectorAll<HTMLButtonElement>('.lens-button')) {
+    button.disabled = true;
+  }
+  resetVisionState();
+
+  try {
+    await camera.selectDevice(deviceId);
+    await applyCaptureResolution();
+    await applyCameraFrameRate();
+    const diagnostics = camera.diagnostics;
+    setText('cameraMessage', `Switched to ${label} · ${diagnostics.videoWidth}×${diagnostics.videoHeight}.`
+      + ' A dedicated lens gives its own optics rather than a scaled crop of another one.');
+  } catch (error) {
+    setText('cameraMessage', describeCameraError(error, isStandalone()));
+  } finally {
+    void renderLensPicker();
+    void refreshSettingsDiagnostics();
+  }
 }
 
 // --- Manual camera controls ---------------------------------------------

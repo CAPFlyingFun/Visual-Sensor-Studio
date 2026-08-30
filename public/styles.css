@@ -754,3 +754,27 @@ footer strong { color: #9fb2c3; }
 }
 .viewer-secondary[aria-pressed="true"] { background: var(--amber); color: #08131c; }
 .vision-stage { cursor: zoom-in; }
+
+.lens-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 9px;
+}
+.lens-button {
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: rgba(9, 17, 26, 0.8);
+  color: #9eb1c2;
+  font-size: 0.76rem;
+  cursor: pointer;
+}
+.lens-button.active {
+  color: #eaffff;
+  border-color: rgba(118, 209, 255, 0.55);
+  background: rgba(28, 99, 132, 0.35);
+  font-weight: 700;
+}
+.lens-button:disabled { opacity: 0.42; cursor: not-allowed; }
