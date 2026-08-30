@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#071019" />
+  <meta name="description" content="A privacy-first iPhone camera, motion, GPS, parallax and 3D sensor-fusion playground." />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Sensor Studio" />
+  <title>Visual Sensor Studio</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="./icons/icon-180.png" />
+  <link rel="stylesheet" href="./styles.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.min.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">IPHONE SENSOR PLAYGROUND</p>
+        <h1>Visual Sensor Studio</h1>
+        <p class="subtitle">Camera + motion + GPS + experimental parallax + interactive 3D fusion.</p>
+      </div>
+      <div class="status-row" aria-label="Sensor status">
+        <span class="status-chip" id="cameraChip" data-state="idle">Camera idle</span>
+        <span class="status-chip" id="motionChip" data-state="idle">Motion idle</span>
+        <span class="status-chip" id="gpsChip" data-state="idle">GPS idle</span>
+        <span class="status-chip" id="pwaChip" data-state="idle">PWA</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="primary-grid">
+        <article class="panel vision-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="section-kicker">LIVE VISION</p>
+              <h2>Camera Lab</h2>
+            </div>
+            <span class="small-badge" id="visionModeLabel">RGB camera</span>
+          </div>
+
+          <div class="vision-stage" aria-label="Live camera view">
+            <video id="cameraVideo" autoplay muted playsinline></video>
+            <canvas id="visionCanvas" hidden></canvas>
+            <div class="reticle" aria-hidden="true"></div>
+            <div class="horizon-wrap" aria-hidden="true">
+              <div id="horizonLine" class="horizon-line"></div>
+            </div>
+          </div>
+
+          <div class="mode-strip" aria-label="Camera visualization mode">
+            <button class="segmented active" type="button" data-vision-mode="camera">RGB</button>
+            <button class="segmented" type="button" data-vision-mode="relief">Relief</button>
+            <button class="segmented" type="button" data-vision-mode="edges">Edges</button>
+          </div>
+
+          <div class="button-row">
+            <button class="primary-button" id="cameraButton" type="button">Start Camera</button>
+            <button class="secondary-button" id="switchCameraButton" type="button" disabled>Switch Camera</button>
+          </div>
+          <p class="helper" id="cameraMessage">Relief is an image-derived surface visualization, not physical depth. The parallax tool below estimates relative depth from camera movement.</p>
+        </article>
+
+        <article class="panel scene-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="section-kicker">3D FUSION</p>
+              <h2>Sensor Space</h2>
+            </div>
+            <button class="icon-button" id="resetViewButton" type="button" title="Reset 3D view">Reset view</button>
+          </div>
+          <div id="fusionScene" class="fusion-scene" aria-label="Interactive 3D sensor visualization"></div>
+          <div class="scene-legend">
+            <span><i class="legend-swatch phone"></i> phone orientation</span>
+            <span><i class="legend-swatch accel"></i> acceleration</span>
+            <span><i class="legend-swatch gps"></i> GPS trail</span>
+          </div>
+          <p class="helper">Drag to orbit, pinch to zoom. GPS uses 1 scene unit ≈ 1 meter from the first accepted point. Accelerometer position is not integrated because phone IMUs drift rapidly.</p>
+        </article>
+      </section>
+
+      <section class="sensor-grid">
+        <article class="panel compact-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="section-kicker">DEVICE MOTION</p>
+              <h2>Orientation + IMU</h2>
+            </div>
+          </div>
+          <button class="primary-button full" id="motionButton" type="button">Enable Motion Sensors</button>
+          <div class="readout-grid three">
+            <div class="readout"><span>Alpha</span><strong id="alphaValue">—</strong></div>
+            <div class="readout"><span>Beta</span><strong id="betaValue">—</strong></div>
+            <div class="readout"><span>Gamma</span><strong id="gammaValue">—</strong></div>
+          </div>
+          <div class="wide-readout"><span>Acceleration XYZ</span><strong id="accelValue">—</strong></div>
+          <div class="wide-readout"><span>Rotation αβγ</span><strong id="rotationValue">—</strong></div>
+          <p class="helper" id="motionMessage">On iPhone, Safari requires a tap before it can ask for motion/orientation permission.</p>
+        </article>
+
+        <article class="panel compact-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="section-kicker">POSITION DATA</p>
+              <h2>GPS Track</h2>
+            </div>
+          </div>
+          <div class="button-row">
+            <button class="primary-button" id="gpsButton" type="button">Start GPS Track</button>
+            <button class="secondary-button" id="resetGpsButton" type="button">Clear Track</button>
+          </div>
+          <div class="readout-grid two">
+            <div class="readout"><span>Latitude</span><strong id="latValue">—</strong></div>
+            <div class="readout"><span>Longitude</span><strong id="lonValue">—</strong></div>
+            <div class="readout"><span>Altitude</span><strong id="altValue">—</strong></div>
+            <div class="readout"><span>Speed</span><strong id="speedValue">—</strong></div>
+          </div>
+          <div class="wide-readout"><span>3D track points</span><strong id="trackValue">0</strong></div>
+          <p class="helper" id="gpsMessage">Outdoor GPS usually produces the most interesting 3D path. Accuracy can vary substantially indoors.</p>
+        </article>
+      </section>
+
+      <section class="panel parallax-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">EXPERIMENTAL DEPTH</p>
+            <h2>Two-Frame Parallax Scan</h2>
+          </div>
+          <span class="small-badge warning">Relative, not LiDAR</span>
+        </div>
+        <p class="lead-copy">Capture A, slide the phone sideways about 5–10 cm while keeping the scene framed, then analyze B. The matcher searches textured image blocks for displacement. Bigger disparity generally corresponds to nearer structure.</p>
+
+        <div class="parallax-layout">
+          <div class="capture-pair">
+            <figure>
+              <canvas id="referenceCanvas"></canvas>
+              <figcaption>A · reference</figcaption>
+            </figure>
+            <figure>
+              <canvas id="currentCanvas"></canvas>
+              <figcaption>B · moved</figcaption>
+            </figure>
+          </div>
+          <figure class="depth-output">
+            <canvas id="parallaxCanvas"></canvas>
+            <figcaption>Relative disparity map · warm = larger shift</figcaption>
+          </figure>
+        </div>
+
+        <div class="button-row">
+          <button class="primary-button" id="captureParallaxButton" type="button">Capture A</button>
+          <button class="secondary-button" id="analyzeParallaxButton" type="button" disabled>Analyze B</button>
+        </div>
+        <p class="helper" id="parallaxMessage">Start the camera first. Textured scenes work better than blank walls, glass, or shiny surfaces.</p>
+      </section>
+
+      <section class="panel export-panel">
+        <div>
+          <p class="section-kicker">DATA SNAPSHOT</p>
+          <h2>Take the numbers with you</h2>
+          <p class="lead-copy">Exports the latest motion, GPS and parallax summary as JSON. Camera frames stay on the device and are not uploaded by this app.</p>
+        </div>
+        <div class="export-actions">
+          <div class="security-readout"><span>Context</span><strong id="secureContextValue">Checking…</strong></div>
+          <button class="primary-button" id="downloadButton" type="button">Export Sensor JSON</button>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <strong>Visual Sensor Studio v0.1</strong>
+      <span>Experimental instrument, not calibrated survey or safety equipment.</span>
+    </footer>
+  </div>
+
+  <script type="module" src="./app/main.js"></script>
+</body>
+</html>
