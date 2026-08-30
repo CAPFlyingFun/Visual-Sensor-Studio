@@ -18,8 +18,19 @@ test('camera preview exposes a direct enable control', () => {
 
 test('camera prepares iOS inline playback before requesting media', () => {
   const playsInlineIndex = cameraSource.indexOf("setAttribute('playsinline'");
-  const getUserMediaIndex = cameraSource.indexOf('getUserMedia(constraints)');
+  const getUserMediaIndex = cameraSource.indexOf('getUserMedia(');
   assert.ok(playsInlineIndex >= 0, 'camera should configure playsinline');
   assert.ok(getUserMediaIndex >= 0, 'camera should request getUserMedia');
   assert.ok(playsInlineIndex < getUserMediaIndex, 'playsinline setup must happen before getUserMedia on iOS');
+});
+
+test('camera startup includes a generic video fallback after preferred rear-camera requests', () => {
+  assert.match(cameraSource, /video:\s*true/);
+  assert.match(cameraSource, /requestProfiles/);
+});
+
+test('standalone camera UI provides a browser launch fallback', () => {
+  assert.match(htmlSource, /id=["']cameraBrowserFallback["']/);
+  assert.match(mainSource, /cameraBrowserFallback/);
+  assert.match(mainSource, /window\.open\(/);
 });
