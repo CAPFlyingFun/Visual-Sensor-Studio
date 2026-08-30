@@ -930,3 +930,7 @@ footer strong { color: #9fb2c3; }
 .compact-warning a { color: var(--cyan); }
 /* Bounded, so the square map cannot push everything else off a phone screen. */
 .terrain-output canvas { max-height: 45vh; }
+/* The browser would otherwise take a drag on the map as a page scroll, which
+   on a card this tall is exactly what it does. */
+.terrain-output canvas { touch-action: none; cursor: grab; }
+.terrain-output canvas:active { cursor: grabbing; }

@@ -11,6 +11,66 @@
 import { NO_DATA, type Heightfield } from './tiles.js';
 import { clamp } from '../core/math.js';
 
+export interface RoughnessReport {
+  /** Mean |second difference| across the field, in metres. The noise floor. */
+  mean: number;
+  /**
+   * Ratio between the roughest and smoothest quarter of the field.
+   *
+   * Well above 1 means the tiles came from different surveys. That is a real
+   * property of the dataset — it mosaics national and satellite sources — and
+   * it shows up as a hard seam along a tile edge, which looks like a rendering
+   * bug and is not one.
+   */
+  variation: number;
+}
+
+/**
+ * How jagged the surface is, and whether that jaggedness is uniform.
+ *
+ * Second differences rather than first: a hillside has a large gradient and is
+ * perfectly smooth, so measuring slope would call every mountain noisy. What
+ * matters here is how much the gradient CHANGES from cell to cell, which is
+ * what survey noise looks like and what terrain mostly does not do.
+ */
+export function estimateRoughness(field: Heightfield): RoughnessReport {
+  const { data, width, height } = field;
+  if (width < 4 || height < 4) return { mean: 0, variation: 1 };
+
+  const quadrants = [0, 0, 0, 0];
+  const counts = [0, 0, 0, 0];
+  let total = 0;
+  let counted = 0;
+
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      const i = y * width + x;
+      const left = data[i - 1];
+      const centre = data[i];
+      const right = data[i + 1];
+      if (left <= NO_DATA + 1 || centre <= NO_DATA + 1 || right <= NO_DATA + 1) continue;
+
+      const curvature = Math.abs(left - 2 * centre + right);
+      total += curvature;
+      counted++;
+
+      const q = (y < height / 2 ? 0 : 2) + (x < width / 2 ? 0 : 1);
+      quadrants[q] += curvature;
+      counts[q]++;
+    }
+  }
+
+  const means = quadrants.map((sum, i) => (counts[i] > 32 ? sum / counts[i] : Number.NaN))
+    .filter((value) => Number.isFinite(value));
+  const low = Math.min(...means);
+  const high = Math.max(...means);
+
+  return {
+    mean: counted ? total / counted : 0,
+    variation: means.length > 1 && low > 1e-6 ? high / low : 1
+  };
+}
+
 export interface TerrainStats {
   min: number;
   max: number;
@@ -54,11 +114,67 @@ export function terrainStats(field: Heightfield): TerrainStats {
  * a mountain are unreadable ink, and 100 m lines across Florida are no lines at
  * all. The steps are the ones a real map would use.
  */
-export function contourInterval(relief: number): number {
+export function contourInterval(relief: number, noiseFloor = 0): number {
   const steps = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000];
-  const target = Math.max(1, relief) / 12;
+  // Also kept clear of the survey noise. An interval near the noise floor draws
+  // contours of the noise rather than of the ground, which is what turned a
+  // flat coastal plain into speckle: 60 m of relief chose 5 m lines, and the
+  // southern tiles carried more than a metre of jitter.
+  const target = Math.max(Math.max(1, relief) / 12, noiseFloor * 4);
   for (const step of steps) if (step >= target) return step;
   return steps[steps.length - 1];
+}
+
+/**
+ * A lightly smoothed copy, for shading and contours only.
+ *
+ * Never for the elevation readout: that should report what the survey said,
+ * not what looks tidy. This exists because a contour line is a threshold, and a
+ * threshold applied to noisy data produces a tangle whose detail is entirely
+ * spurious.
+ */
+export function smoothField(field: Heightfield, passes = 1): Float32Array {
+  const { width, height } = field;
+  // Two owned buffers, ping-ponged. Starting from the field's own array and
+  // swapping into it would write smoothed values back over the survey data
+  // every other pass.
+  let source = new Float32Array(field.data.length);
+  source.set(field.data);
+  let out = new Float32Array(source.length);
+
+  for (let pass = 0; pass < Math.max(0, passes); pass++) {
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = y * width + x;
+        if (source[i] <= NO_DATA + 1) {
+          out[i] = source[i];
+          continue;
+        }
+        let total = 0;
+        let weight = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          const ny = y + dy;
+          if (ny < 0 || ny >= height) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = x + dx;
+            if (nx < 0 || nx >= width) continue;
+            const value = source[ny * width + nx];
+            // No-data neighbours are skipped rather than blurred in, or a
+            // coastline would bleed a kilometre of ocean into the land.
+            if (value <= NO_DATA + 1) continue;
+            const w = dx === 0 && dy === 0 ? 4 : dx === 0 || dy === 0 ? 2 : 1;
+            total += value * w;
+            weight += w;
+          }
+        }
+        out[i] = weight > 0 ? total / weight : source[i];
+      }
+    }
+    const swap = source;
+    source = out;
+    out = swap;
+  }
+  return source;
 }
 
 /** Cool low ground through green and tan to bare rock and snow. */
@@ -90,6 +206,18 @@ export interface TerrainRenderOptions {
   /** Vertical exaggeration. 1 is true scale. */
   exaggeration?: number;
   contours?: boolean;
+  /** Smoothing passes for the shading. Never applied to readouts. */
+  smoothing?: number;
+  /**
+   * Smoothing passes for the contours, separately and usually higher.
+   *
+   * A contour is a THRESHOLD, so noise that merely textures the shading breaks
+   * a contour line into a field of closed blobs. Shading and contouring have
+   * genuinely different tolerances and one setting cannot serve both.
+   */
+  contourSmoothing?: number;
+  /** Measured noise, so the contour interval can stay clear of it. */
+  noiseFloor?: number;
 }
 
 /**
@@ -106,7 +234,13 @@ export function renderTerrain(
   out: Uint8ClampedArray,
   options: TerrainRenderOptions = {}
 ): Uint8ClampedArray {
-  const { data, width, height } = field;
+  const { width, height } = field;
+  // Shading and contours read SMOOTHED copies; every number reported to the
+  // user still comes from the survey's own values.
+  const data = options.smoothing ? smoothField(field, options.smoothing) : field.data;
+  const contourData = options.contourSmoothing
+    ? smoothField(field, options.contourSmoothing)
+    : data;
   // Compass bearing to the mathematical convention aspect is measured in.
   // Used raw, a sun in the west lands perpendicular to an east-west slope and
   // lights neither flank — the shading silently vanishes rather than erroring.
@@ -117,7 +251,7 @@ export function renderTerrain(
   const showContours = options.contours ?? true;
 
   const relief = Math.max(1, stats.max - stats.min);
-  const interval = contourInterval(relief);
+  const interval = contourInterval(relief, options.noiseFloor ?? 0);
   const spacing = field.metresPerPixel * 2;
 
   const zenith = Math.PI / 2 - altitude;
@@ -163,13 +297,16 @@ export function renderTerrain(
       let green = g * light;
       let blue = b * light;
 
-      if (showContours) {
+      if (showContours && contourData[i] > NO_DATA + 1) {
         // A line wherever the surface crosses a multiple of the interval,
         // detected by the band changing between neighbours rather than by
         // testing the height itself — which would draw lines of varying width
         // depending on how steep the ground is.
-        const band = Math.floor(centre / interval);
-        if (Math.floor(right / interval) !== band || Math.floor(down / interval) !== band) {
+        const contourRight = contourData[i + (x < width - 1 ? 1 : 0)];
+        const contourDown = contourData[i + (y < height - 1 ? width : 0)];
+        const band = Math.floor(contourData[i] / interval);
+        if (Math.floor(contourRight / interval) !== band
+          || Math.floor(contourDown / interval) !== band) {
           const major = band % 5 === 0;
           const ink = major ? 0.45 : 0.7;
           red = red * ink;

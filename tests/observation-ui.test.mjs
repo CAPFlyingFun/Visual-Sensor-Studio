@@ -6,6 +6,7 @@ const htmlSource = readFileSync(new URL('../public/index.html', import.meta.url)
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 const cameraSource = readFileSync(new URL('../public/camera-bootstrap.js', import.meta.url), 'utf8');
 const swSource = readFileSync(new URL('../public/sw.js', import.meta.url), 'utf8');
+const cssSource = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
 
 test('analysis is driven by delivered frames, not by the display clock', () => {
   // The old loop was requestAnimationFrame + a wall-clock throttle, so it was
@@ -953,4 +954,56 @@ test('the network disclosure appears before the button that triggers it', () => 
 test('two loads cannot interleave into one heightfield', () => {
   assert.match(mainSource, /for \(const button of buttons\) button\.disabled = true/);
   assert.match(mainSource, /would interleave two sets of tiles/);
+});
+
+test('the map pans and zooms without re-rendering the hillshade', () => {
+  // A full hillshade at 512x512 per frame would be far too slow to follow a
+  // finger, so panning blits a sub-rectangle of an already-rendered surface.
+  assert.match(mainSource, /let terrainSurface: HTMLCanvasElement \| null = null/);
+  assert.match(mainSource, /function paintTerrainView/);
+  assert.match(mainSource, /context\.drawImage\(surface, sourceX, sourceY/);
+  assert.match(mainSource, /function installTerrainGestures/);
+});
+
+test('a drag moves the ground with the finger at every zoom', () => {
+  // Without dividing by the current scale the map slides faster the further in
+  // you are, which feels broken rather than fast.
+  assert.match(mainSource, /\/ terrainView\.scale;/);
+  assert.match(mainSource, /the ground moves\s*\n?\s*\/\/ with the finger at every scale/);
+});
+
+test('the map keeps the gesture instead of scrolling the page', () => {
+  assert.match(cssSource, /\.terrain-output canvas \{ touch-action: none/);
+  assert.match(mainSource, /setPointerCapture/);
+});
+
+test('the position marker holds its screen size as the map zooms', () => {
+  // A crosshair drawn into the surface becomes a stripe across the view at 8x.
+  const paint = mainSource.slice(mainSource.indexOf('function paintTerrainView'));
+  const body = paint.slice(0, paint.indexOf('\n}\n'));
+  assert.match(body, /const reach = 11 \* ratio/);
+  assert.doesNotMatch(body, /field\.width \/ 40/);
+});
+
+test('panning cannot run off the edge of the map', () => {
+  assert.match(mainSource, /function clampTerrainView/);
+  assert.match(mainSource, /const half = 0\.5 \/ terrainView\.scale/);
+});
+
+test('a survey seam is reported as data rather than left looking like a bug', () => {
+  // The tile set mosaics national and satellite surveys, and they carry very
+  // different noise — a hard line along a tile edge is real.
+  assert.match(mainSource, /roughness\.variation > 1\.8/);
+  assert.match(mainSource, /mosaics different surveys, so a seam along a tile edge is the data/);
+  assert.match(htmlSource, /id=["']terrainSourceMix["']/);
+});
+
+test('contours and shading are smoothed separately', () => {
+  // A contour is a threshold, so noise that merely textures the shading breaks
+  // a contour line into a field of closed blobs.
+  assert.match(mainSource, /contourSmoothing: clamp\(Math\.round\(2 \+ roughness\.mean \* 5\)/);
+  assert.match(mainSource, /smoothing: clamp\(Math\.round\(1 \+ roughness\.mean \* 2\)/);
+  const render = readFileSync(new URL('../src/terrain/render.ts', import.meta.url), 'utf8');
+  assert.match(render, /const contourData = options\.contourSmoothing/);
+  assert.match(render, /every number reported to the\s*\n?\s*\/\/ user still comes from the survey/);
 });

@@ -408,3 +408,86 @@ test('mesh arrays are consistent and in range', () => {
   for (const v of mesh.positions) assert.ok(Number.isFinite(v), 'positions must be finite');
   assert.ok(mesh.spanMetres > 1000, `a two-mile field should span metres, got ${mesh.spanMetres}`);
 });
+
+// --- Survey noise ----------------------------------------------------------
+
+import { estimateRoughness, smoothField } from '../.test-build/terrain/render.js';
+
+/** A field whose lower half carries survey noise and whose upper half does not. */
+function mixedSurveyField(size = 32, noise = 3) {
+  const data = new Float32Array(size * size);
+  let seed = 7;
+  const rand = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff - 0.5;
+  };
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const ground = 30 + x * 0.4 + y * 0.3;
+      data[y * size + x] = y < size / 2 ? ground : ground + rand() * noise;
+    }
+  }
+  return {
+    data, width: size, height: size,
+    west: -87.5, east: -87.4, north: 30.55, south: 30.45,
+    zoom: 12, metresPerPixel: 30
+  };
+}
+
+test('roughness measures curvature, not slope', () => {
+  // A hillside has a large gradient and is perfectly smooth. Measuring slope
+  // would call every mountain noisy.
+  const steep = ramp(60);
+  assert.ok(estimateRoughness(steep).mean < 0.01,
+    `a smooth ramp must read as smooth, got ${estimateRoughness(steep).mean}`);
+});
+
+test('a mosaic of two surveys is detected and reported', () => {
+  // A hard seam along a tile edge is the dataset, not the renderer — it
+  // mosaics national and satellite sources with different noise.
+  const mixed = estimateRoughness(mixedSurveyField());
+  assert.ok(mixed.mean > 0.5, `noise should register, got ${mixed.mean}`);
+  assert.ok(mixed.variation > 1.8,
+    `an uneven field should report variation, got ${mixed.variation}`);
+
+  const even = estimateRoughness(mixedSurveyField(32, 0));
+  assert.ok(even.variation < 1.8, `a uniform field should not, got ${even.variation}`);
+});
+
+test('the contour interval stays clear of the survey noise', () => {
+  // An interval near the noise floor draws contours OF the noise, which is what
+  // turned a flat coastal plain into speckle.
+  const relief = 60;
+  assert.equal(contourInterval(relief, 0), 5);
+  assert.ok(contourInterval(relief, 1.3) > 5,
+    'more than a metre of jitter must push the interval up');
+  assert.ok(contourInterval(relief, 1.3) >= 1.3 * 4);
+});
+
+test('smoothing never touches the survey data itself', () => {
+  // The elevation readout has to report what the survey said, not what looks
+  // tidy.
+  const field = mixedSurveyField();
+  const before = Float32Array.from(field.data);
+  const smoothed = smoothField(field, 2);
+  assert.deepEqual(field.data, before, 'the field must be left alone');
+  assert.notDeepEqual(smoothed, before, 'and the copy must actually be smoother');
+
+  const roughBefore = estimateRoughness(field).mean;
+  const roughAfter = estimateRoughness({ ...field, data: smoothed }).mean;
+  assert.ok(roughAfter < roughBefore * 0.6,
+    `smoothing should cut noise: ${roughBefore} -> ${roughAfter}`);
+});
+
+test('smoothing does not bleed the ocean into the land', () => {
+  const field = mixedSurveyField(16, 0);
+  for (let y = 0; y < 16; y++) for (let x = 0; x < 6; x++) field.data[y * 16 + x] = NO_DATA;
+  const smoothed = smoothField(field, 2);
+  for (let y = 0; y < 16; y++) {
+    for (let x = 0; x < 6; x++) {
+      assert.ok(smoothed[y * 16 + x] <= NO_DATA + 1, 'no-data must stay no-data');
+    }
+    // And the first land cell must not have been dragged toward -32768.
+    assert.ok(smoothed[y * 16 + 6] > 0, `land next to the sea got ${smoothed[y * 16 + 6]}`);
+  }
+});

@@ -87,7 +87,7 @@ import {
   type Heightfield
 } from './terrain/tiles.js';
 import { loadHeightfield } from './terrain/loader.js';
-import { contourInterval, renderTerrain, terrainStats } from './terrain/render.js';
+import { contourInterval, estimateRoughness, renderTerrain, terrainStats } from './terrain/render.js';
 import { buildTerrainMesh, type TerrainMesh } from './terrain/mesh.js';
 import {
   BaselineTracker,
@@ -98,7 +98,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.14.1';
+const APP_VERSION = '0.15.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -2542,6 +2542,10 @@ async function loadTerrain(lat: number, lon: number, source: string): Promise<vo
 
     terrainField = field;
     terrainOrigin = { lat, lon };
+    // A fresh area starts framed, not at whatever zoom the last one was left at.
+    terrainView.scale = 1;
+    terrainView.centreX = 0.5;
+    terrainView.centreY = 0.5;
     drawTerrain();
     pushTerrainToScene();
     // The tiles cover at LEAST the radius asked for, and usually rather more,
@@ -2561,34 +2565,62 @@ async function loadTerrain(lat: number, lon: number, source: string): Promise<vo
   }
 }
 
+/**
+ * The full map, rendered once at field resolution.
+ *
+ * Pan and zoom then blit a sub-rectangle of this to the visible canvas, so
+ * dragging costs a drawImage rather than a full hillshade — which at 512x512
+ * would be far too slow to follow a finger.
+ */
+let terrainSurface: HTMLCanvasElement | null = null;
+const terrainView = { scale: 1, centreX: 0.5, centreY: 0.5 };
+
 function drawTerrain(): void {
   const field = terrainField;
   if (!field) return;
 
-  const canvas = byId<HTMLCanvasElement>('terrainCanvas');
+  terrainSurface ??= document.createElement('canvas');
+  const canvas = terrainSurface;
   canvas.width = field.width;
   canvas.height = field.height;
   const context = canvas.getContext('2d');
   if (!context) return;
 
   const stats = terrainStats(field);
+  const roughness = estimateRoughness(field);
   const rgba = new Uint8ClampedArray(field.width * field.height * 4);
   renderTerrain(field, stats, rgba, {
     azimuth: Number(byId<HTMLInputElement>('terrainAzimuth').value),
     exaggeration: Number(byId<HTMLInputElement>('terrainExaggeration').value),
-    contours: byId<HTMLInputElement>('terrainContours').checked
+    contours: byId<HTMLInputElement>('terrainContours').checked,
+    // Both scaled by the noise actually measured, and contours far harder,
+    // because a threshold breaks into blobs where shading only gets textured.
+    smoothing: clamp(Math.round(1 + roughness.mean * 2), 1, 4),
+    contourSmoothing: clamp(Math.round(2 + roughness.mean * 5), 2, 9),
+    noiseFloor: roughness.mean
   });
   const image = new ImageData(field.width, field.height);
   image.data.set(rgba);
   context.putImageData(image, 0, 0);
 
-  const interval = contourInterval(Math.max(1, stats.max - stats.min));
+  const interval = contourInterval(Math.max(1, stats.max - stats.min), roughness.mean);
   setText('terrainRange', `${stats.min.toFixed(0)}–${stats.max.toFixed(0)} m`
     + (stats.missingFraction > 0.01 ? ` · ${(stats.missingFraction * 100).toFixed(0)}% no data` : ''));
   setText('terrainContour', `${interval} m`);
   setText('terrainResolution', `${field.metresPerPixel.toFixed(1)} m per pixel`);
 
-  if (!terrainOrigin) return;
+  // A visible seam along a tile edge is the dataset, not the renderer: it
+  // mosaics national and satellite surveys, and they carry different amounts of
+  // noise. Saying so is better than leaving it looking like a bug.
+  setText('terrainSourceMix', roughness.variation > 1.8
+    ? `Uneven — one part of this area is ${roughness.variation.toFixed(1)}× rougher than another.`
+      + ' The tile set mosaics different surveys, so a seam along a tile edge is the data.'
+    : `Consistent · noise about ${roughness.mean.toFixed(2)} m`);
+
+  if (!terrainOrigin) {
+    paintTerrainView();
+    return;
+  }
   const point = projectToField(field, terrainOrigin.lon, terrainOrigin.lat);
   const elevation = sampleHeight(field, point.x, point.y);
   const slope = slopeAt(field, point.x, point.y);
@@ -2600,20 +2632,150 @@ function drawTerrain(): void {
     ? '—'
     : `${slope.degrees.toFixed(1)}° facing ${compassPoint(slope.aspectDegrees)}`);
 
-  // Drawn after the image rather than into it, so moving the sun or the
-  // exaggeration never redraws the marker in the wrong place.
+  paintTerrainView();
+}
+
+/**
+ * Blit the visible part of the rendered map, then draw the marker on top.
+ *
+ * The marker is drawn HERE rather than into the surface so it keeps a constant
+ * screen size as the map is zoomed — a crosshair that grows with the image
+ * becomes a stripe across the whole view at 8x.
+ */
+function paintTerrainView(): void {
+  const field = terrainField;
+  const surface = terrainSurface;
+  if (!field || !surface) return;
+
+  const canvas = byId<HTMLCanvasElement>('terrainCanvas');
+  const box = canvas.getBoundingClientRect();
+  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  const width = Math.max(1, Math.round((box.width || 320) * ratio));
+  const height = Math.max(1, Math.round((box.height || 320) * ratio));
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
+
+  const context = canvas.getContext('2d');
+  if (!context) return;
+
+  clampTerrainView();
+  const sourceWidth = field.width / terrainView.scale;
+  const sourceHeight = field.height / terrainView.scale;
+  const sourceX = terrainView.centreX * field.width - sourceWidth / 2;
+  const sourceY = terrainView.centreY * field.height - sourceHeight / 2;
+
+  context.imageSmoothingEnabled = terrainView.scale < 3;
+  context.clearRect(0, 0, width, height);
+  context.drawImage(surface, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, width, height);
+
+  if (!terrainOrigin) return;
+  const point = projectToField(field, terrainOrigin.lon, terrainOrigin.lat);
+  const x = ((point.x - sourceX) / sourceWidth) * width;
+  const y = ((point.y - sourceY) / sourceHeight) * height;
+  if (x < -40 || y < -40 || x > width + 40 || y > height + 40) return;
+
+  const reach = 11 * ratio;
   context.strokeStyle = '#ff3b6b';
-  context.lineWidth = Math.max(1.5, field.width / 220);
-  const reach = Math.max(6, field.width / 40);
+  context.lineWidth = 2 * ratio;
   context.beginPath();
-  context.moveTo(point.x - reach, point.y);
-  context.lineTo(point.x + reach, point.y);
-  context.moveTo(point.x, point.y - reach);
-  context.lineTo(point.x, point.y + reach);
+  context.moveTo(x - reach, y);
+  context.lineTo(x + reach, y);
+  context.moveTo(x, y - reach);
+  context.lineTo(x, y + reach);
   context.stroke();
   context.beginPath();
-  context.arc(point.x, point.y, reach * 0.55, 0, Math.PI * 2);
+  context.arc(x, y, reach * 0.55, 0, Math.PI * 2);
   context.stroke();
+}
+
+/** Keep the view inside the map, so panning cannot run off into blank space. */
+function clampTerrainView(): void {
+  terrainView.scale = clamp(terrainView.scale, 1, 12);
+  const half = 0.5 / terrainView.scale;
+  terrainView.centreX = clamp(terrainView.centreX, half, 1 - half);
+  terrainView.centreY = clamp(terrainView.centreY, half, 1 - half);
+}
+
+function resetTerrainView(): void {
+  terrainView.scale = 1;
+  terrainView.centreX = 0.5;
+  terrainView.centreY = 0.5;
+  paintTerrainView();
+}
+
+/**
+ * Drag to pan, pinch to zoom, double-tap to reset.
+ *
+ * Pointer events rather than touch events so a mouse works too, and the canvas
+ * takes `touch-action: none` so the browser does not steal the gesture to
+ * scroll the page — which on a card this tall is exactly what it would do.
+ */
+function installTerrainGestures(): void {
+  const canvas = byId<HTMLCanvasElement>('terrainCanvas');
+  const active = new Map<number, { x: number; y: number }>();
+  let pinchDistance = 0;
+  let lastTap = 0;
+
+  const centreOf = (): { x: number; y: number } => {
+    let x = 0;
+    let y = 0;
+    for (const point of active.values()) {
+      x += point.x;
+      y += point.y;
+    }
+    return { x: x / active.size, y: y / active.size };
+  };
+  const spread = (): number => {
+    const points = [...active.values()];
+    return points.length < 2 ? 0 : Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+  };
+
+  canvas.addEventListener('pointerdown', (event) => {
+    if (!terrainField) return;
+    canvas.setPointerCapture(event.pointerId);
+    active.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    pinchDistance = spread();
+
+    const now = performance.now();
+    if (active.size === 1 && now - lastTap < 320) resetTerrainView();
+    lastTap = now;
+  });
+
+  canvas.addEventListener('pointermove', (event) => {
+    if (!active.has(event.pointerId) || !terrainField) return;
+    const previousCentre = centreOf();
+    const previousSpread = spread();
+    active.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const centre = centreOf();
+
+    const box = canvas.getBoundingClientRect();
+    // Drag distance is converted through the CURRENT zoom, so the ground moves
+    // with the finger at every scale rather than sliding faster when zoomed in.
+    terrainView.centreX -= (centre.x - previousCentre.x) / Math.max(1, box.width) / terrainView.scale;
+    terrainView.centreY -= (centre.y - previousCentre.y) / Math.max(1, box.height) / terrainView.scale;
+
+    if (active.size >= 2 && previousSpread > 0 && pinchDistance > 0) {
+      terrainView.scale *= spread() / previousSpread;
+    }
+    pinchDistance = spread();
+    paintTerrainView();
+  });
+
+  const release = (event: PointerEvent): void => {
+    active.delete(event.pointerId);
+    pinchDistance = spread();
+  };
+  canvas.addEventListener('pointerup', release);
+  canvas.addEventListener('pointercancel', release);
+
+  canvas.addEventListener('wheel', (event) => {
+    if (!terrainField) return;
+    event.preventDefault();
+    terrainView.scale *= event.deltaY < 0 ? 1.12 : 1 / 1.12;
+    paintTerrainView();
+  }, { passive: false });
+
+  window.addEventListener('resize', () => paintTerrainView());
 }
 
 /**
@@ -4279,6 +4441,7 @@ setChip('pwaChip', 'good', isStandalone() ? 'PWA installed' : browserCameraMode 
 syncSettingsControls();
 updateVisionMode('camera');
 installPinchZoom();
+installTerrainGestures();
 installViewerGestures();
 camera.subscribe(applyCameraStatus);
 renderMetrics();

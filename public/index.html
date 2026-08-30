@@ -349,7 +349,7 @@
 
         <figure class="terrain-output">
           <canvas id="terrainCanvas"></canvas>
-          <figcaption>Hypsometric tint + hillshade + contours · ✛ marks your position</figcaption>
+          <figcaption>Drag to pan · pinch or scroll to zoom · double-tap to reset. Hypsometric tint + hillshade + contours; ✛ marks your position.</figcaption>
         </figure>
 
         <div class="button-row">
@@ -366,6 +366,7 @@
             <div class="readout"><span>Contour interval</span><strong id="terrainContour">—</strong></div>
             <div class="readout"><span>Resolution</span><strong id="terrainResolution">—</strong></div>
             <div class="readout"><span>Tiles</span><strong id="terrainTiles">—</strong></div>
+            <div class="readout wide"><span>Survey consistency</span><strong id="terrainSourceMix">—</strong></div>
             <div class="readout wide"><span>In 3D view</span><strong id="terrainSceneState">Not loaded</strong></div>
             <div class="readout wide"><span>Datum difference</span><strong id="terrainDatumGap">—</strong></div>
           </div>
@@ -445,7 +446,7 @@
       </section>
     </main>
 
-    <footer><strong>Visual Sensor Studio v0.14.1</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.15.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">
