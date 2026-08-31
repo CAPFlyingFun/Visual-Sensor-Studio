@@ -1192,3 +1192,35 @@ test('the filter costs nothing at the default setting', () => {
   assert.match(mainSource, /function exposureActive\(\)/);
   assert.match(htmlSource, /id="exposureResetButton"/);
 });
+
+test('every element id the app reads exists in the markup', () => {
+  /*
+   * THE CHEAP SUBSTITUTE FOR A BROWSER PROBE.
+   *
+   * Joshua, on process: "instead of you doing probes and testing yourself
+   * which could be inconclusive due to your non-Device capabilities, all you
+   * do is code and make sure there's no syntax errors and let me test manually
+   * on my phone as the probe."
+   *
+   * Agreed — but a typo'd id is the one failure that passes typecheck, passes
+   * every logic test, and then silently does nothing on the device. That wastes
+   * exactly the resource this arrangement is trying to protect: his time
+   * holding the phone. A machine can settle it for nothing, so it should.
+   *
+   * This generalises an older check that only covered the lens editor's ids.
+   */
+  const ids = new Set();
+  for (const pattern of [
+    /byId(?:<[^>]+>)?\('([\w-]+)'\)/g,
+    /setText\('([\w-]+)'/g,
+    /\bon\('([\w-]+)',/g,
+    /getElementById\('([\w-]+)'\)/g
+  ]) {
+    for (const match of mainSource.matchAll(pattern)) ids.add(match[1]);
+  }
+  // A guard that matches nothing would pass forever while proving nothing.
+  assert.ok(ids.size > 200, `only found ${ids.size} ids — the patterns have gone stale`);
+
+  const missing = [...ids].filter((id) => !new RegExp(`id="${id}"`).test(htmlSource));
+  assert.deepEqual(missing, [], `read from main.ts but absent from the markup: ${missing.join(', ')}`);
+});
