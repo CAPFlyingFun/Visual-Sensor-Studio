@@ -19,6 +19,7 @@ import {
   throughputMegapixelsPerSecond
 } from './vision/display-metrics.js';
 import { aspectRatioFor, cropToAspect, retainedFraction, type SaveAspect } from './vision/aspect.js';
+import { frameShape, widthForShortSide, type FrameShape } from './vision/frame-shape.js';
 import type { GpsSample, MotionSample, SensorSnapshot, VisionMetrics, VisionMode } from './core/types.js';
 
 /**
@@ -174,7 +175,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.28.2';
+const APP_VERSION = '0.28.3';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -735,16 +736,24 @@ function analysisBudget(): number {
   return 256 * 144;
 }
 
+/**
+ * The camera frame's shape, and the only place it is derived.
+ *
+ * Everything that needs the short side, the long side or the aspect ratio
+ * reads it from here, so those three facts cannot disagree with each other.
+ * See `frame-shape.ts` for the two bugs that came of deriving them separately.
+ */
+function cameraShape(): FrameShape {
+  return frameShape(camera.diagnostics.videoWidth, camera.diagnostics.videoHeight);
+}
+
 function analysisWidth(): number {
   const budget = analysisBudget();
-  const diagnostics = camera.diagnostics;
-  const sourceWidth = diagnostics.videoWidth;
-  const sourceHeight = diagnostics.videoHeight;
-  if (!sourceWidth || !sourceHeight) return Math.round(Math.sqrt(budget * (16 / 9)));
+  const shape = cameraShape();
+  if (!shape.valid) return Math.round(Math.sqrt(budget * (16 / 9)));
 
   // width * height = budget, with height = width / aspect.
-  const aspect = sourceWidth / sourceHeight;
-  return Math.max(96, Math.round(Math.sqrt(budget * aspect)));
+  return Math.max(96, Math.round(Math.sqrt(budget * shape.aspect)));
 }
 
 /**
@@ -1330,10 +1339,7 @@ function renderLensReadouts(): void {
     const settled = settings.lensDetail === 'auto' ? ' · auto' : '';
     // A picture smaller than the setting asked for must say why, or it reads
     // as the setting being ignored.
-    const sourceShort = Math.min(
-      camera.diagnostics.videoWidth,
-      camera.diagnostics.videoHeight || camera.diagnostics.videoWidth
-    );
+    const sourceShort = cameraShape().short;
     const capped = measuredDetailScale !== null
       && sourceShort > 0
       && detailCappedShortSide(sourceShort) < sourceShort;
@@ -3284,10 +3290,10 @@ function stepAutoRung(direction: 1 | -1): void {
 
 /** Target width for the live processed picture, never above what the camera gives. */
 function lensDisplayWidth(): number {
-  const source = camera.diagnostics.videoWidth;
+  const shape = cameraShape();
   const analysis = visionBuffers?.width ?? analysisWidth();
-  if (!source) return analysis;
-  const sourceShort = Math.min(source, camera.diagnostics.videoHeight || source);
+  if (!shape.valid) return analysis;
+  const sourceShort = shape.short;
 
   // Every tier names a SHORT SIDE. Naming a width would make one setting mean
   // two different pictures depending on which way the phone is held.
@@ -3315,11 +3321,13 @@ function lensDisplayWidth(): number {
   // The screen bound applies at every setting. Pixels the display cannot
   // resolve are not wasteful, they are invisible, and no setting should be
   // read as a request for invisible ones.
-  const aspect = Math.max(source, camera.diagnostics.videoHeight || source)
-    / Math.max(1, sourceShort);
-  const onScreen = displayedShortSide(aspect, performance.now());
+  // shape.aspect is WIDTH/HEIGHT, which is what the display arithmetic wants.
+  // This site used to build long/short here and hand 1.333 to a function that
+  // needed 0.75 on a portrait camera, loosening the screen bound by a third —
+  // so the render drew about 1.8x the pixels the window could actually show.
+  const onScreen = displayedShortSide(shape.aspect, performance.now());
   const short = Math.min(sourceShort, ceiling, wantedShort, onScreen > 0 ? onScreen : sourceShort);
-  return Math.max(analysis, widthForShortSide(short));
+  return Math.max(analysis, widthForShortSide(shape, short));
 }
 
 /** Buffers for the enlarged picture, kept across frames and shared by modes. */
@@ -3476,14 +3484,6 @@ function displayedShortSide(sourceAspect: number, now: number): number {
   return displayedShort;
 }
 
-/** The width that produces this short side, in the source's own orientation. */
-function widthForShortSide(shortSide: number): number {
-  const w = camera.diagnostics.videoWidth;
-  const h = camera.diagnostics.videoHeight;
-  const sourceShort = Math.min(w, h);
-  if (!w || !h || sourceShort <= 0) return shortSide;
-  return Math.round(shortSide * (w / sourceShort));
-}
 
 function ensureLensDisplay(width: number, height: number) {
   if (lensDisplay && lensDisplay.width === width && lensDisplay.height === height) return lensDisplay;
@@ -5482,9 +5482,7 @@ function reportDisplayMetrics(): void {
     ? `${throughput.toFixed(1)} MP/s in this mode`
     : 'run a filter mode to measure');
 
-  const sourceAspect = diagnostics.videoHeight > 0
-    ? diagnostics.videoWidth / diagnostics.videoHeight
-    : 0;
+  const sourceAspect = cameraShape().aspect;
   const ceiling = Math.min(report.contentDevice.width, report.contentDevice.height) || 0;
   const rows = throughput > 0 && sourceAspect > 0 && ceiling > 0
     ? projectTiers(

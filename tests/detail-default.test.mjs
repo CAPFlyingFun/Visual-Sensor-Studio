@@ -225,7 +225,7 @@ test('the screen is a hard bound at every setting, including the explicit ones',
   // about a display: pixels beyond what a screen can resolve are invisible,
   // so no setting can reasonably be read as a request for them.
   assert.match(mainSource, /function displayedShortSide\(sourceAspect: number, now: number\)/);
-  assert.match(mainSource, /const onScreen = displayedShortSide\(aspect, performance\.now\(\)\)/);
+  assert.match(mainSource, /const onScreen = displayedShortSide\(shape\.aspect, performance\.now\(\)\)/);
   // Contain and cover swap which axis limits the content box.
   assert.match(mainSource, /const heightLimited = fill \? boxAspect < sourceAspect : boxAspect > sourceAspect/);
 });

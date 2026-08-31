@@ -17,6 +17,7 @@
     "src/sensors/zoom.ts",
     "src/sensors/stability.ts",
     "src/vision/display-metrics.ts",
+    "src/vision/frame-shape.ts",
     "src/vision/aspect.ts",
     "src/vision/lens.ts",
     "src/vision/lens-preview.ts",
