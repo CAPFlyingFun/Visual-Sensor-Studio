@@ -72,6 +72,7 @@ import { computeHistogram, createHistogram } from './vision/histogram.js';
 import {
   applyFocusPeaking,
   applyLightBoost,
+  lightBoostTable,
   applyPalette,
   applyZebra,
   type NightPalette
@@ -100,7 +101,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.18.0';
+const APP_VERSION = '0.19.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -3994,15 +3995,14 @@ function applyExposureToPreview(): void {
   // The live RGB preview shows the video element directly, so there is no
   // buffer to adjust — the filter does it in the compositor instead.
   //
-  // feComponentTransfer, not CSS brightness/contrast: amplitude * C^exponent is
-  // exactly gain * (v/255)^gamma, the curve applyLightBoost builds. CSS has no
-  // gamma at all, so a contrast() stand-in would leave the preview and the
-  // saved frame showing different pictures.
+  // A sampled table, not CSS brightness/contrast and not feComponentTransfer's
+  // own `gamma` type: neither can express the soft shoulder, so the preview
+  // would diverge from the pipeline exactly where the shoulder does its work.
+  const table = lightBoostTable(settings.exposureGain, settings.exposureGamma).join(' ');
   for (const id of ['R', 'G', 'B']) {
-    const node = document.getElementById('exposureFilter')?.querySelector(`feFunc${id}`);
-    if (!node) continue;
-    node.setAttribute('amplitude', String(settings.exposureGain));
-    node.setAttribute('exponent', String(settings.exposureGamma));
+    document.getElementById('exposureFilter')
+      ?.querySelector(`feFunc${id}`)
+      ?.setAttribute('tableValues', table);
   }
   video.style.filter = exposureActive() ? 'url(#exposureFilter)' : '';
   setText('exposureGainValue', `${settings.exposureGain.toFixed(2)}×`);

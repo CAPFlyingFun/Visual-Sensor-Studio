@@ -45,11 +45,10 @@
     <!--
     Exposure filter for the live preview.
 
-    An SVG feComponentTransfer rather than CSS brightness/contrast, because it
-    can express exactly what the analysis path computes: amplitude * C^exponent
-    is gain * (v/255)^gamma, the same curve applyLightBoost builds into its
-    lookup table. CSS has no gamma, so a contrast() approximation would make the
-    preview and the saved frame disagree.
+    An SVG feComponentTransfer rather than CSS brightness/contrast, because CSS
+    has no gamma at all and no way to express the soft shoulder. The table is
+    sampled from the same curve the pipeline uses, so the preview and the saved
+    frame cannot drift apart.
 
     Only referenced while exposure is actually adjusted, so it costs nothing at
     the default setting.
@@ -57,9 +56,9 @@
   <svg class="filter-defs" aria-hidden="true" focusable="false" width="0" height="0">
     <filter id="exposureFilter" color-interpolation-filters="sRGB">
       <feComponentTransfer>
-        <feFuncR type="gamma" amplitude="1" exponent="1" offset="0" />
-        <feFuncG type="gamma" amplitude="1" exponent="1" offset="0" />
-        <feFuncB type="gamma" amplitude="1" exponent="1" offset="0" />
+        <feFuncR type="table" tableValues="0 1" />
+        <feFuncG type="table" tableValues="0 1" />
+        <feFuncB type="table" tableValues="0 1" />
       </feComponentTransfer>
     </filter>
   </svg>
@@ -598,7 +597,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.18.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.19.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">

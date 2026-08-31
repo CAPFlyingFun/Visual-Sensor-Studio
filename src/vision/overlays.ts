@@ -87,6 +87,49 @@ export function applyPalette(rgba: Uint8ClampedArray, palette: NightPalette): Ui
  * with signal — this makes a dark frame readable, it does not make the camera
  * more sensitive.
  */
+/**
+ * The brightness transfer curve, shared by the preview filter and the pipeline.
+ *
+ * Gamma shapes the tone, gain multiplies it, and then a SOFT SHOULDER catches
+ * whatever the gain pushed past white.
+ *
+ * The shoulder is not decoration. With a hard clip, a gain of 4 sent 192 of the
+ * 256 input levels to exactly 255 — three quarters of the tonal range collapsed
+ * into one flat value. A picture survives that; an edge map, a frame difference
+ * and a speed field do not, because all three read GRADIENTS and a plateau has
+ * none. The filters went black, and the cause was here rather than in them.
+ *
+ * The shoulder spans the whole range the gain can reach, so the curve stays
+ * strictly monotonic: nothing ever flattens, and no setting can leave a filter
+ * with nothing to find. It engages only above gain 1, so the default is exactly
+ * the identity — a picture at rest is untouched, not subtly rolled off.
+ */
+export function lightBoostCurve(value: number, gain: number, gamma: number): number {
+  const safeGamma = gamma > 0 ? gamma : 1;
+  const shaped = Math.pow(clamp(value, 0, 1), safeGamma) * gain;
+  if (gain <= 1) return clamp(shaped, 0, 1);
+
+  const knee = 0.8;
+  if (shaped <= knee) return shaped;
+  const width = Math.max(1e-6, gain - knee);
+  return knee + (1 - knee) * Math.tanh((shaped - knee) / width);
+}
+
+/**
+ * Sample the curve for an SVG feFunc `type="table"`.
+ *
+ * feComponentTransfer's `gamma` type can express a power and a multiply but not
+ * a shoulder, so the preview would diverge from the pipeline exactly where the
+ * shoulder matters. A sampled table follows any curve.
+ */
+export function lightBoostTable(gain: number, gamma: number, samples = 33): number[] {
+  const points: number[] = [];
+  for (let i = 0; i < samples; i++) {
+    points.push(Number(lightBoostCurve(i / (samples - 1), gain, gamma).toFixed(5)));
+  }
+  return points;
+}
+
 export function applyLightBoost(
   rgba: Uint8ClampedArray,
   gain: number,
@@ -97,10 +140,8 @@ export function applyLightBoost(
 
   // A 256-entry lookup table turns a per-channel pow() into an array read.
   const table = lut && lut.length === 256 ? lut : new Uint8ClampedArray(256);
-  const safeGamma = gamma > 0 ? gamma : 1;
   for (let i = 0; i < 256; i++) {
-    const normalised = Math.pow(i / 255, safeGamma);
-    table[i] = clamp(Math.round(normalised * 255 * gain), 0, 255);
+    table[i] = clamp(Math.round(lightBoostCurve(i / 255, gain, gamma) * 255), 0, 255);
   }
 
   for (let p = 0; p < rgba.length; p += 4) {

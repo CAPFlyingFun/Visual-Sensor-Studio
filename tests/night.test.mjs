@@ -112,11 +112,52 @@ test('palettes only change appearance and monochrome equalises channels', () => 
   assert.ok(green[1] > green[0] && green[1] > green[2]);
 });
 
-test('light boost lifts shadows and clamps rather than wrapping', () => {
+test('light boost lifts shadows and stays in range rather than wrapping', () => {
   const boosted = applyLightBoost(frame(() => [20, 20, 20]), 2, 0.5);
   assert.ok(boosted[0] > 20, 'shadows must lift');
-  const clamped = applyLightBoost(frame(() => [250, 250, 250]), 4, 1);
-  assert.equal(clamped[0], 255, 'must clamp, not wrap');
+  const bright = applyLightBoost(frame(() => [250, 250, 250]), 4, 1);
+  assert.ok(bright[0] > 200 && bright[0] <= 255, `in range, got ${bright[0]}`);
+});
+
+test('no setting can flatten the tonal range', async () => {
+  // This is the failure it was written for. With a hard clip, a gain of 4 sent
+  // 192 of the 256 input levels to exactly 255 — three quarters of the range
+  // collapsed into one value. A picture survives that; an edge map, a frame
+  // difference and a speed field do not, because all three read GRADIENTS and
+  // a plateau has none. Every filter went black at high brightness.
+  const { lightBoostCurve } = await import('../.test-build/vision/overlays.js');
+
+  for (const [gain, gamma] of [[1, 1], [2, 1], [4, 1], [4, 2.2], [2.5, 0.4]]) {
+    let clipped = 0;
+    let previous = -1;
+    for (let i = 0; i < 256; i++) {
+      const out = lightBoostCurve(i / 255, gain, gamma);
+      assert.ok(out >= 0 && out <= 1, `out of range at ${i}: ${out}`);
+      assert.ok(out >= previous, `curve must never decrease (gain ${gain}, gamma ${gamma})`);
+      previous = out;
+      if (out >= 1) clipped++;
+    }
+    assert.ok(clipped <= 1, `gain ${gain} gamma ${gamma} flattened ${clipped} levels to white`);
+  }
+});
+
+test('the default setting is exactly the identity', async () => {
+  // A shoulder that engaged at rest would subtly roll off every picture the
+  // app has ever shown, to fix a problem nobody had yet.
+  const { lightBoostCurve } = await import('../.test-build/vision/overlays.js');
+  for (const i of [0, 32, 64, 128, 192, 255]) {
+    assert.ok(Math.abs(lightBoostCurve(i / 255, 1, 1) * 255 - i) < 1e-6,
+      `${i} should pass through untouched`);
+  }
+});
+
+test('brightening still genuinely brightens', async () => {
+  // A shoulder that protected the range by refusing to brighten would be a
+  // control that does nothing.
+  const { lightBoostCurve } = await import('../.test-build/vision/overlays.js');
+  const midtone = (gain) => Math.round(lightBoostCurve(128 / 255, gain, 1) * 255);
+  assert.ok(midtone(2) > 190, `gain 2 should lift a midtone well past 128, got ${midtone(2)}`);
+  assert.ok(midtone(4) > midtone(2), 'and more gain should lift it further');
 });
 
 test('zebra marks clipped pixels and leaves correct ones alone', () => {

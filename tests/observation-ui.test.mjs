@@ -1155,16 +1155,18 @@ test('digital brightness is never called exposure', () => {
 });
 
 test('the preview filter computes the same curve as the pipeline', () => {
-  // CSS has no gamma, so a contrast\(\) stand-in would leave the preview and the
-  // saved frame showing different pictures.
-  assert.match(htmlSource, /feFuncR type="gamma"/);
-  assert.match(mainSource, /node\.setAttribute\('amplitude', String\(settings\.exposureGain\)\)/);
-  assert.match(mainSource, /node\.setAttribute\('exponent', String\(settings\.exposureGamma\)\)/);
+  // The curve has a shoulder above the knee, which neither a CSS filter nor an
+  // SVG gamma function can express — only a sampled table can. If the preview
+  // used a different shape, the live picture and the saved frame would disagree.
+  assert.match(htmlSource, /feFuncR type="table"/);
+  assert.match(mainSource, /lightBoostTable\(settings\.exposureGain, settings\.exposureGamma\)/);
+  assert.match(mainSource, /setAttribute\('tableValues', table\)/);
   assert.match(mainSource, /url\(#exposureFilter\)/);
   const overlays = readFileSync(new URL('../src/vision/overlays.ts', import.meta.url), 'utf8');
-  // amplitude * C^exponent against gain * (v/255)^gamma.
-  assert.match(overlays, /Math\.pow\(i \/ 255, safeGamma\)/);
-  assert.match(overlays, /normalised \* 255 \* gain/);
+  // Both the preview table and the pipeline LUT must come from one function.
+  assert.match(overlays, /export function lightBoostCurve/);
+  assert.match(overlays, /points\.push\(Number\(lightBoostCurve/);
+  assert.match(overlays, /lightBoostCurve\(i \/ 255, gain, gamma\)/);
 });
 
 test('the adjustment is applied before anything reads the frame', () => {
