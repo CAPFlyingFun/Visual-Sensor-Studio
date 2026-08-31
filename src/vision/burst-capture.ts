@@ -49,16 +49,35 @@ function windowSad(
   const { width, height } = reference;
   let total = 0;
   let count = 0;
+  let possible = 0;
   // Step by 2: a quarter of the work for an estimate this coarse, and the
   // sub-pixel fit that follows is what sets the final precision anyway.
   for (let y = margin; y < height - margin; y += 2) {
     for (let x = margin; x < width - margin; x += 2) {
-      const a = reference.data[y * width + x];
-      const b = samplePlane(frame, x + dx, y + dy);
-      total += Math.abs(a - b);
+      possible++;
+      const sx = x + dx;
+      const sy = y + dy;
+      // SKIP, DO NOT CLAMP.
+      //
+      // samplePlane clamps out-of-range coordinates to the border pixel, so a
+      // large offset used to compare real content against a smeared edge —
+      // which biases the score and destroys the match exactly where the search
+      // is widest. On Joshua's phone this collapsed above about 13 pixels of
+      // travel: bursts that moved further reported as few as 1 of 32 frames
+      // measurable, from the same patch of grass that gave 32 when he held
+      // steadier.
+      //
+      // It survived a synthetic range test because shiftPlane clamps too, so
+      // reference and frame shared identical borders and matched each other.
+      // Real frames do not: what moves in from outside is new content.
+      if (sx < 0 || sy < 0 || sx > frame.width - 1 || sy > frame.height - 1) continue;
+      total += Math.abs(reference.data[y * width + x] - samplePlane(frame, sx, sy));
       count++;
     }
   }
+  // Too little overlap and the average is computed over a sliver that any
+  // offset can make look good. A quarter is enough to be a measurement.
+  if (count < possible * 0.25) return Number.POSITIVE_INFINITY;
   return count > 0 ? total / count : Number.POSITIVE_INFINITY;
 }
 
@@ -333,8 +352,13 @@ export function judgeBurst(
 ): BurstVerdict {
   const frames = shifts.length;
   const confident = shifts.filter((s) => s.confidence >= minConfidence).length;
+  // Over the MEASURABLE frames only. A refused estimate still carries the
+  // numbers the search happened to land on, and reporting those as travel
+  // describes a movement the probe explicitly declined to believe in.
   const travelPixels = shifts.reduce(
-    (worst, s) => Math.max(worst, Math.hypot(s.shiftX, s.shiftY)),
+    (worst, s) => s.confidence >= minConfidence
+      ? Math.max(worst, Math.hypot(s.shiftX, s.shiftY))
+      : worst,
     0
   );
   const selected = selectDiverseSubset(shifts, keep, minConfidence);
@@ -352,11 +376,15 @@ export function judgeBurst(
   let worthMerging = false;
   if (frames < 2) {
     reason = 'A burst needs at least two frames.';
+  } else if (confident < 2) {
+    // BEFORE the stationary check, deliberately. Stillness is INFERRED from
+    // measurements, so with nothing measurable there is no basis for claiming
+    // the camera was still — and "it was on a tripod" sends someone to fix a
+    // grip when the problem is what they are pointing at.
+    reason = 'Too little texture to measure movement. Point at something with detail.';
   } else if (stationary) {
     reason = 'Nothing moved. On a tripod or a fixed mount there is no second '
       + 'viewpoint to merge, so a single frame is the honest answer.';
-  } else if (confident < 2) {
-    reason = 'Too little texture to measure movement. Point at something with detail.';
   } else if (confident < keep) {
     // Distinguished from a low spread because the fix is different: this is
     // about what the box is pointed at, not about how the phone was held.

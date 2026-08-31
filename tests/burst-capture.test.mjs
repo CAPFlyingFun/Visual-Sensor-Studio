@@ -187,21 +187,51 @@ test('rotation converts to pixels through the focal length, and refuses without 
   assert.equal(bc.rotationToPixels(0.001, 0), 0);
 });
 
+/**
+ * Crop two windows from a LARGER scene at different offsets.
+ *
+ * This is the honest harness and it replaced a misleading one. Shifting a
+ * whole plane with `shiftPlane` clamps its borders, so reference and frame
+ * ended up sharing identical smeared edges that matched each other — the test
+ * passed at every offset while the real thing collapsed above about 13 px.
+ * Cropping from a bigger scene means content entering the window is REAL,
+ * exactly as it is on a camera.
+ */
+const bigScene = pinkScene(512, 3);
+function cropAt(offsetX, offsetY, size = 256) {
+  const p = sr.createPlane(size, size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      p.data[y * size + x] = sr.samplePlane(bigScene, x + 128 + offsetX, y + 128 + offsetY);
+    }
+  }
+  return p;
+}
+
 test('the search covers the motion a real hand actually produces', () => {
-  // Joshua's bursts travelled 8.5 to 11.7 px while the window was plus-or-minus
-  // eight, so most frames fell outside it and were refused — correctly, but the
-  // probe then reported as few as 2 of 32 frames measurable and threw the burst
-  // away for no reason but the size of the window. A two-level pyramid buys
-  // four times the range for less work than the flat search it replaced.
+  // Joshua's bursts travelled 6 to 15 px, and above about 13 the probe reported
+  // as few as 1 of 32 frames measurable — from the same patch of grass that
+  // gave 32 when he held steadier. The cause was clamping, not range: samples
+  // past the edge were compared against a smeared border rather than skipped.
+  const reference = cropAt(0, 0);
   let worst = 0;
-  for (const [dx, dy] of [[0.1, 0.1], [2.3, 1.1], [8.5, 3.2], [-11.7, 6.4], [17.0, -9.8]]) {
-    const moved = sr.noisyPlane(sr.shiftPlane(scene, dx, dy), 2, 11);
-    const got = bc.estimateShift(scene, moved);
+  for (const [dx, dy] of [[0.3, 0.2], [2.4, 1.1], [9.8, 4.1], [13.8, 2.0], [17.2, -8.4], [22.0, 6.0]]) {
+    const moved = sr.noisyPlane(cropAt(-dx, -dy), 2, 11);
+    const got = bc.estimateShift(reference, moved);
     assert.ok(got.confidence > bc.MIN_CONFIDENCE,
-      `a ${Math.hypot(dx, dy).toFixed(1)} px shift should be measurable`);
+      `a ${Math.hypot(dx, dy).toFixed(1)} px shift should be measurable, `
+      + `got confidence ${got.confidence.toFixed(2)}`);
     worst = Math.max(worst, Math.hypot(got.shiftX - dx, got.shiftY - dy));
   }
   assert.ok(worst <= 0.1, `worst error ${worst.toFixed(3)} px exceeds the 0.1 px budget`);
+});
+
+test('too little overlap is refused, however good the sliver looks', () => {
+  // With most of the window outside the frame, the average is taken over a
+  // fragment that almost any offset can make look good.
+  const reference = cropAt(0, 0);
+  const wayOff = sr.noisyPlane(cropAt(-31, -10), 2, 11);
+  assert.equal(bc.estimateShift(reference, wayOff).confidence, 0);
 });
 
 test('a match on the edge of the search window is refused, not reported as small', () => {
@@ -318,4 +348,28 @@ test('too few measurable frames is reported as texture, not as a bad hold', () =
   assert.equal(verdict.worthMerging, false);
   assert.match(verdict.reason, /had enough texture to measure/);
   assert.match(verdict.reason, /gravel, foliage, brickwork/);
+});
+
+test('travel describes the frames that were believed, not the ones refused', () => {
+  // A refused estimate still carries whatever numbers the search landed on.
+  // Reporting those as travel describes a movement the probe explicitly
+  // declined to believe in — and Joshua's log read 14 px of travel on bursts
+  // where only one frame in thirty-two was measurable.
+  const shifts = [
+    { shiftX: 0, shiftY: 0, confidence: 0.9 },
+    { shiftX: 3, shiftY: 4, confidence: 0.9 },
+    { shiftX: 90, shiftY: 90, confidence: 0 }
+  ];
+  const verdict = bc.judgeBurst(shifts, 8);
+  assert.ok(verdict.travelPixels < 6, `travel ${verdict.travelPixels.toFixed(1)} includes a refused frame`);
+});
+
+test('stillness is never claimed from measurements that were refused', () => {
+  // Stationary is inferred from shifts. With nothing measurable there is no
+  // basis for the claim, and "it was on a tripod" sends someone to fix their
+  // grip when the problem is what they are pointing at.
+  const blind = Array.from({ length: 8 }, () => ({ shiftX: 0, shiftY: 0, confidence: 0.01 }));
+  const verdict = bc.judgeBurst(blind, 8);
+  assert.match(verdict.reason, /texture/i);
+  assert.doesNotMatch(verdict.reason, /tripod/i);
 });

@@ -184,7 +184,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.32.2';
+const APP_VERSION = '0.32.3';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -7579,7 +7579,16 @@ function renderBurstAgreement(
 
   if (!focal || gyro.length === 0) {
     setText('burstGyroMove', '—');
-    setText('burstAgreement', 'needs a field of view');
+    // Two different causes with two different fixes, and "needs a field of
+    // view" was wrong whenever the cause was the other one. Joshua's log read
+    // a gyro figure on two runs and n/a on every run after, with no obvious
+    // change in between — which is unanswerable while the message is the same
+    // either way.
+    setText('burstAgreement', !(settings.motionFovDegrees > 0)
+      ? 'needs a field of view'
+      : !motion.active
+        ? 'motion sensors stopped'
+        : 'camera size unknown');
     return null;
   }
   const gyroTravel = gyro.reduce((worst, g) => Math.max(worst,
