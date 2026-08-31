@@ -123,6 +123,13 @@
    */
   let requestedHeight = 720;
   /**
+   * Requesting this asks for the camera's largest mode rather than a size.
+   *
+   * Expressed as a sentinel rather than a boolean so it travels through the
+   * same one number every other part of the resolution path already carries.
+   */
+  const MAX_SIZE_SENTINEL = 10000;
+  /**
    * Explicitly chosen camera, or null for facingMode selection.
    *
    * An iPhone exposes the ultrawide as its own input alongside the virtual
@@ -694,9 +701,33 @@
 
     // `ideal` for resolution throughout, so a size the device cannot provide is
     // negotiated down rather than failing the request outright.
-    const height = Number(requestedHeight) || 720;
-    const width = Math.round(height * (16 / 9));
-    const size = { width: { ideal: width }, height: { ideal: height } };
+    //
+    // THE REQUEST HAS TO MATCH THE DEVICE'S ORIENTATION. A phone held upright
+    // hands back portrait frames — 1080x1920, not 1920x1080 — and this used to
+    // hard-code width = height * 16/9, so it asked a portrait camera for a
+    // landscape mode and took whatever poor fit came back. `ideal` never
+    // fails, so there was no error to notice: just a smaller picture than the
+    // camera could have given, for the whole session.
+    //
+    // "1080p" names the SHORT side, which is what the tier means in both
+    // orientations. `maxSize` is the special case: a very large ideal on both
+    // axes has its lowest fitness distance at the biggest mode the camera has,
+    // so it resolves to the device's maximum without anyone having to know
+    // what that is in advance.
+    const requested = Number(requestedHeight) || 720;
+    const portrait = typeof window !== 'undefined'
+      && typeof window.innerHeight === 'number'
+      && window.innerHeight >= window.innerWidth;
+    let size;
+    if (requested >= MAX_SIZE_SENTINEL) {
+      size = { width: { ideal: 8192 }, height: { ideal: 8192 } };
+    } else {
+      const shortSide = requested;
+      const longSide = Math.round(shortSide * (16 / 9));
+      size = portrait
+        ? { width: { ideal: shortSide }, height: { ideal: longSide } }
+        : { width: { ideal: longSide }, height: { ideal: shortSide } };
+    }
     const device = requestedDeviceId ? { deviceId: { exact: requestedDeviceId } } : {};
 
     const profiles = [];
@@ -1275,10 +1306,17 @@
         return { applied: false, reason: 'no live track' };
       }
       try {
-        await track.applyConstraints({
-          width: { ideal: Math.round(requestedHeight * (16 / 9)) },
-          height: { ideal: requestedHeight }
-        });
+        const portrait = typeof window !== 'undefined'
+          && typeof window.innerHeight === 'number'
+          && window.innerHeight >= window.innerWidth;
+        const longSide = Math.round(requestedHeight * (16 / 9));
+        await track.applyConstraints(
+          requestedHeight >= MAX_SIZE_SENTINEL
+            ? { width: { ideal: 8192 }, height: { ideal: 8192 } }
+            : portrait
+              ? { width: { ideal: requestedHeight }, height: { ideal: longSide } }
+              : { width: { ideal: longSide }, height: { ideal: requestedHeight } }
+        );
         readFrameRateCapability();
         return { applied: true };
       } catch (error) {

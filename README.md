@@ -168,6 +168,19 @@ That is four to eighteen times fewer pixels, before considering that the
 native photo also gets multi-frame HDR, noise reduction and sharpening that
 no browser API exposes.
 
+The stream request also has to match the phone's ORIENTATION. A phone held
+upright hands back portrait frames — 1080×1920, not 1920×1080 — and asking a
+portrait camera for a landscape mode gets whatever poor fit the browser
+settles on. `ideal` constraints never fail, so there is no error to notice:
+just a smaller picture than the camera could have given. The capture tier
+therefore names the SHORT side, and the request is built in the device's
+current orientation.
+
+There is also a **Maximum this camera has** tier. It asks for a very large
+ideal on both axes, whose lowest fitness distance lands on the biggest mode
+the camera actually has — so it resolves to the device maximum without anyone
+needing to know in advance what that is.
+
 What the app CAN do about the stream is ask for the most it will give and
 report what it actually got. The Camera Resolution control does that, and the
 message beside it names three separate things: what was asked for, what was

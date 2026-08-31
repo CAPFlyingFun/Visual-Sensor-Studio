@@ -203,6 +203,38 @@ test('the wanted resolution reaches getUserMedia, not just applyConstraints', ()
   );
 });
 
+test('the resolution request follows the phone\'s orientation', () => {
+  // A phone held upright hands back portrait frames — 1080x1920, not
+  // 1920x1080. This used to hard-code width = height * 16/9, so it asked a
+  // portrait camera for a landscape mode and took whatever poor fit came
+  // back. `ideal` never fails, so there was no error to notice: just a
+  // smaller picture than the camera could have given, all session.
+  assert.doesNotMatch(cameraSource, /const width = Math\.round\(height \* \(16 \/ 9\)\)/);
+  assert.match(cameraSource, /window\.innerHeight >= window\.innerWidth/);
+  assert.match(cameraSource, /portrait\s*\n?\s*\? \{ width: \{ ideal: shortSide \}, height: \{ ideal: longSide \} \}/);
+  // The live-track path must agree, or a later change undoes the orientation
+  // the stream opened with.
+  const applyBlock = cameraSource.slice(cameraSource.indexOf('async setCaptureHeight'));
+  assert.match(applyBlock.slice(0, 900), /innerHeight >= window\.innerWidth/);
+});
+
+test('a maximum tier asks for the largest mode rather than a guessed size', () => {
+  // A very large ideal on both axes has its lowest fitness distance at the
+  // biggest mode the camera has, so it resolves to the device maximum without
+  // anyone needing to know what that is in advance.
+  assert.match(cameraSource, /MAX_SIZE_SENTINEL/);
+  assert.match(cameraSource, /\{ width: \{ ideal: 8192 \}, height: \{ ideal: 8192 \} \}/);
+  assert.match(htmlSource, /<option value="10000">Maximum this camera has<\/option>/);
+  assert.match(mainSource, /'720' \| '1080' \| '1440' \| '2160' \| '10000'/);
+  // And "maximum" has no target, so it can never report falling short of one.
+  assert.match(mainSource, /rawAsked >= 10000 \? 0 : rawAsked/);
+});
+
+test('the resolution control says the number names the short side', () => {
+  const help = htmlSource.slice(htmlSource.indexOf('id="captureResolution"'));
+  assert.match(help.slice(0, 900), /SHORT side/);
+});
+
 test('the camera reports the ceiling it advertises, not only what it gave', () => {
   // "This camera cannot do more" and "we did not ask for more" look identical
   // from a negotiated size alone, and the second one was the actual bug.

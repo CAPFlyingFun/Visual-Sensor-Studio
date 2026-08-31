@@ -165,7 +165,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.23.0';
+const APP_VERSION = '0.23.1';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -174,7 +174,14 @@ type QualityPreference = 'low' | 'normal' | 'high';
 type VisionRatePreference = 'battery' | 'balanced' | 'fast' | 'adaptive';
 type CameraFrameRatePreference = 'auto' | '30' | '60' | '120' | '240';
 type TrailPreference = 'off' | 'short' | 'medium' | 'long';
-type CaptureResolution = '720' | '1080' | '1440' | '2160';
+/**
+ * Capture tier, naming the SHORT side in pixels.
+ *
+ * '10000' is not a size: it asks the camera for its largest mode, which the
+ * engine expresses as a very large ideal on both axes so the fitness distance
+ * lands on whatever that device actually has.
+ */
+type CaptureResolution = '720' | '1080' | '1440' | '2160' | '10000';
 type GpsAccuracyPreference = 'balanced' | 'high';
 
 interface AppSettings {
@@ -320,7 +327,7 @@ function loadSettings(): AppSettings {
       cameraFrameRate: ['auto', '30', '60', '120', '240'].includes(String(parsed.cameraFrameRate))
         ? parsed.cameraFrameRate as CameraFrameRatePreference
         : DEFAULT_SETTINGS.cameraFrameRate,
-      captureResolution: ['720', '1080', '1440', '2160'].includes(String(parsed.captureResolution))
+      captureResolution: ['720', '1080', '1440', '2160', '10000'].includes(String(parsed.captureResolution))
         ? parsed.captureResolution as CaptureResolution
         : DEFAULT_SETTINGS.captureResolution,
       trackingEnabled: typeof parsed.trackingEnabled === 'boolean'
@@ -936,7 +943,10 @@ async function applyCaptureResolution(): Promise<void> {
     const diagnostics = camera.diagnostics;
     const info = camera.frameRateInfo;
     if (!diagnostics.videoWidth) return;
-    const asked = Number(settings.captureResolution);
+    const rawAsked = Number(settings.captureResolution);
+    // The tier names the short side; "maximum" asks for whatever is largest,
+    // so there is no target to fall short of.
+    const asked = rawAsked >= 10000 ? 0 : rawAsked;
     const short = Math.min(diagnostics.videoWidth, diagnostics.videoHeight);
     // What was asked for, beside what arrived, beside what the camera says it
     // could do. The difference between "this camera cannot" and "we did not
@@ -944,7 +954,7 @@ async function applyCaptureResolution(): Promise<void> {
     const ceiling = diagnostics.capabilityWidth && diagnostics.capabilityHeight
       ? ` This camera advertises up to ${diagnostics.capabilityWidth}×${diagnostics.capabilityHeight} as a video stream.`
       : ' This browser does not expose the camera\'s maximum stream size.';
-    const shortfall = short < asked * 0.95
+    const shortfall = asked && short < asked * 0.95
       ? ` It would not give ${asked}p here; restart the camera to renegotiate.`
       : '';
     setText('cameraMessage', `Camera negotiated ${diagnostics.videoWidth}×${diagnostics.videoHeight}`

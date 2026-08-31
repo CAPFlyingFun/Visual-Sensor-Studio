@@ -736,7 +736,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.23.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.23.1</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">
@@ -806,8 +806,11 @@
             <option value="1080">1080p · balanced</option>
             <option value="1440">1440p</option>
             <option value="2160">2160p · highest detail</option>
+            <option value="10000">Maximum this camera has</option>
           </select>
           <span class="helper">
+            The number names the SHORT side, and the request follows the phone's
+            orientation — a phone held upright gets 1080&times;1920, not 1920&times;1080.
             This is a VIDEO STREAM, and it is the ceiling for everything here including
             saved frames. It is not the sensor's still resolution: a 36MP or 48MP shot comes
             from a capture API only an installed app can use, so a frame saved here will not
