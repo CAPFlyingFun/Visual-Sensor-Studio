@@ -166,7 +166,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.24.1';
+const APP_VERSION = '0.24.2';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -3595,6 +3595,39 @@ function handleViewportRotation(): void {
 
 let rotationSettle = 0;
 
+/**
+ * Check for a new build every time the app comes back to the front.
+ *
+ * An installed app is resumed far more often than it is launched, and iOS can
+ * keep one suspended for days. The service worker already claims clients the
+ * moment it activates — but only once it has been FETCHED, and nothing was
+ * asking for it after the first load. The visible symptom is the installed app
+ * quietly running an older build than the same URL opened in the browser,
+ * which looks like the two containers having different camera capabilities
+ * rather than different code.
+ *
+ * `update()` is a conditional request; when nothing has changed it costs a 304.
+ */
+function watchForUpdatesOnResume(): void {
+  if (!('serviceWorker' in navigator)) return;
+  let lastCheck = 0;
+  const check = () => {
+    if (document.visibilityState !== 'visible') return;
+    const now = Date.now();
+    // Resuming repeatedly in a minute is one return, not several.
+    if (now - lastCheck < 60_000) return;
+    lastCheck = now;
+    void navigator.serviceWorker.getRegistration()
+      .then((registration) => registration?.update())
+      .catch(() => {
+        // Offline, or the registration is gone. Neither is worth reporting:
+        // the app keeps working from cache either way.
+      });
+  };
+  document.addEventListener('visibilitychange', check);
+  window.addEventListener('focus', check);
+}
+
 function watchForRotation(): void {
   const onChange = () => {
     // iOS reports the change before the video track has transposed, so a
@@ -4652,7 +4685,17 @@ function paintViewer(): void {
   viewerContext.drawImage(source, 0, 0, width, height);
 
   const rates = frameRateMeter.report;
-  setText('viewerStats', `${rates.deliveredFps.toFixed(0)} fps in · ${rates.processingFps.toFixed(0)} fps analysed · ${zoomState.value.toFixed(1)}×`);
+  // The negotiated stream size and the build both belong here, not buried in
+  // Settings. The same app in an installed PWA and in Safari can negotiate
+  // DIFFERENT camera modes and can be running DIFFERENT builds, and comparing
+  // the two took digging through two menus on two containers to find out.
+  // One glance should answer it.
+  const diagnostics = camera.diagnostics;
+  const stream = diagnostics.videoWidth
+    ? ` · ${diagnostics.videoWidth}×${diagnostics.videoHeight}`
+    : '';
+  setText('viewerStats', `${rates.deliveredFps.toFixed(0)} fps in · ${rates.processingFps.toFixed(0)} fps analysed`
+    + ` · ${zoomState.value.toFixed(1)}×${stream} · v${APP_VERSION}${isStandalone() ? ' PWA' : ''}`);
   setText('viewerMode', MODE_LABELS[visionMode].split(' • ')[0]);
 }
 
@@ -6364,6 +6407,7 @@ updateVisionMode('camera');
 // its own lens without that being overwritten a line later.
 void initialiseLenses();
 watchForRotation();
+watchForUpdatesOnResume();
 installPinchZoom();
 installTerrainGestures();
 installTabs();

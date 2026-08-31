@@ -149,6 +149,29 @@ Speeds are in **analysis-frame pixels per second** and stay that way.
 Converting to m/s or mph needs distance to the subject and the lens's angular
 scale, neither of which this app has.
 
+## Installed app vs browser
+
+The same URL can behave differently installed to the home screen than opened in
+the browser, and the two most likely reasons are worth separating before
+reaching for anything exotic:
+
+1. **Different builds.** An installed app is resumed far more often than it is
+   launched and iOS can keep one suspended for days, so it can quietly run an
+   older build than the same URL in the browser. The service worker claims
+   clients the moment it activates, but only once something has fetched it —
+   so the app now checks for a new build whenever it comes back to the front.
+2. **Different negotiated camera modes.** Standalone and in-browser can
+   genuinely land on different sensor modes for the same constraints.
+
+The viewer chip therefore states the **negotiated stream size** and the
+**running version** (with `PWA` when standalone) beside the frame rates, so
+comparing the two containers is one glance rather than a dig through two menus.
+
+Note that on iOS there is no engine to switch to: Safari, Chrome, Firefox and
+every in-app browser are all WebKit, and an installed web app cannot bring its
+own. A difference between containers is a difference in configuration or in
+build, not in engine.
+
 ## What the camera can and cannot give a web page
 
 `getUserMedia` delivers a **video stream**, and that stream is the ceiling for
