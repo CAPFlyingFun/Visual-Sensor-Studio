@@ -167,7 +167,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.26.1';
+const APP_VERSION = '0.26.2';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -1323,14 +1323,21 @@ function renderLensReadouts(): void {
     const settled = settings.lensDetail === 'auto' ? ' · auto' : '';
     // A picture smaller than the setting asked for must say why, or it reads
     // as the setting being ignored.
-    const source = camera.diagnostics.videoWidth;
+    const sourceShort = Math.min(
+      camera.diagnostics.videoWidth,
+      camera.diagnostics.videoHeight || camera.diagnostics.videoWidth
+    );
     const capped = measuredDetailScale !== null
-      && source > 0
-      && detailCappedWidth(source) < source;
+      && sourceShort > 0
+      && detailCappedShortSide(sourceShort) < sourceShort;
+    // A PEGGED reading is a bound, not a measurement: the search ran out of
+    // levels without finding where detail stops. Quoting a pixel figure from
+    // it states a precision that was never established.
+    const real = Math.round(sourceShort * (measuredDetailScale ?? 1));
     setText('lensDetailCap', capped
-      ? `This stream reports ${source}px across but measures about`
-        + ` ${Math.round(source * (measuredDetailScale ?? 1))}px of real detail, so rendering`
-        + ' larger costs frame rate for pixels that are interpolation.'
+      ? `This stream is ${sourceShort}px on its short side but carries`
+        + `${measuredDetailPegged ? ' at most about' : ' about'} ${real}px of real detail,`
+        + ' so rendering larger costs frame rate for pixels that are interpolation.'
       : '');
     setText('lensCostValue', lensRenderMs > 0
       ? `${size} · ${lensRenderMs.toFixed(0)} ms/frame${settled}`
@@ -3143,7 +3150,8 @@ function buildLensSources(buffers: VisionBuffers, lens: CustomLens): ChannelSour
  *
  * The settled rung is remembered, so a device only learns this once.
  */
-const AUTO_LADDER = [0, 960, 1280, 1920, Number.POSITIVE_INFINITY] as const;
+/** Ladder rungs as SHORT SIDES, so a rung means the same in either orientation. */
+const AUTO_LADDER = [0, 540, 720, 1080, Number.POSITIVE_INFINITY] as const;
 /**
  * The band the ladder holds inside, from measurements on a real device.
  *
@@ -3157,8 +3165,19 @@ const AUTO_LADDER = [0, 960, 1280, 1920, Number.POSITIVE_INFINITY] as const;
  * A gap between the two thresholds is what stops oscillation: a single
  * boundary would make every rung both too slow and fast enough.
  */
-const AUTO_TARGET_FPS = 12;
+const AUTO_TARGET_FPS = 10;
 const AUTO_HEADROOM_FPS = 20;
+/**
+ * Headroom needed to climb OFF the bottom rungs.
+ *
+ * A flat threshold trapped the ladder at the very bottom: once it had stepped
+ * down to the analysis frame, any rate inside the dead band held it there
+ * forever, so a phone that could manage 540 across at fifteen frames a second
+ * sat at 166 instead. The gain from the analysis frame to a real picture is
+ * enormous and worth a few frames; the gain from 720 to 1080 is marginal and
+ * is not. So the low rungs climb on less evidence than the high ones.
+ */
+const AUTO_LOW_RUNG_HEADROOM_FPS = 14;
 const AUTO_SETTLE_KEY = 'vss.detail.auto.v1';
 /** Consecutive verdicts needed before moving — one slow frame is not a trend. */
 const AUTO_VOTES = 4;
@@ -3196,7 +3215,8 @@ function updateAutoDetail(processingFps: number, now: number): void {
   autoLastCheck = now;
 
   const tooSlow = processingFps > 0 && processingFps < AUTO_TARGET_FPS;
-  const hasHeadroom = processingFps >= AUTO_HEADROOM_FPS && autoRung < AUTO_LADDER.length - 1;
+  const needed = autoRung <= 1 ? AUTO_LOW_RUNG_HEADROOM_FPS : AUTO_HEADROOM_FPS;
+  const hasHeadroom = processingFps >= needed && autoRung < AUTO_LADDER.length - 1;
 
   if (tooSlow && autoRung > 0) {
     autoVotes = autoVotes < 0 ? autoVotes - 1 : -1;
@@ -3229,14 +3249,21 @@ function lensDisplayWidth(): number {
   const source = camera.diagnostics.videoWidth;
   const analysis = visionBuffers?.width ?? analysisWidth();
   if (!source) return analysis;
-  const wanted = settings.lensDetail === 'auto' ? (AUTO_LADDER[autoRung] || analysis)
-    : settings.lensDetail === 'full' ? source
-    : settings.lensDetail === '720' ? 1280
-    : settings.lensDetail === '540' ? 960
-    : analysis;
-  // Asking for more pixels than the sensor delivered buys nothing but cost —
-  // and neither does asking for more than the frame was measured to contain.
-  return Math.max(analysis, Math.min(source, detailCappedWidth(source), wanted));
+  const sourceShort = Math.min(source, camera.diagnostics.videoHeight || source);
+
+  // Every tier names a SHORT SIDE. Naming a width would make one setting mean
+  // two different pictures depending on which way the phone is held.
+  const wantedShort = settings.lensDetail === 'auto' ? (AUTO_LADDER[autoRung] || 0)
+    : settings.lensDetail === 'full' ? sourceShort
+    : settings.lensDetail === '720' ? 720
+    : settings.lensDetail === '540' ? 540
+    : 0;
+  if (wantedShort <= 0) return analysis;
+
+  // Neither more than the sensor delivered nor more than the frame was
+  // measured to contain: both are pixels paid for and not received.
+  const short = Math.min(sourceShort, detailCappedShortSide(sourceShort), wantedShort);
+  return Math.max(analysis, widthForShortSide(short));
 }
 
 /** Buffers for the enlarged picture, kept across frames and shared by modes. */
@@ -3292,10 +3319,31 @@ let lensRenderMs = 0;
  * frame holds is detail that cannot be got back.
  */
 const DETAIL_CAP_MARGIN = 4;
-const DETAIL_CAP_FLOOR = 1280;
+/**
+ * Floor for the cap, as a SHORT SIDE.
+ *
+ * Everything about the picture's size is expressed as a short side, because
+ * width is orientation-dependent and a setting must not mean two different
+ * things depending on how the phone is held. Capping width at 1280 gave a
+ * landscape frame 1280x960 and a portrait one 1280x1707 — the same setting
+ * rendering 1.78x more pixels upright, which is exactly why one read 63
+ * ms/frame and the other 92.
+ */
+const DETAIL_CAP_FLOOR = 720;
 const DETAIL_SAMPLE_INTERVAL_MS = 5000;
 /** Real detail as a fraction of the reported size, or null when unmeasured. */
 let measuredDetailScale: number | null = null;
+/**
+ * Whether that scale is a MEASUREMENT or only a bound.
+ *
+ * A pegged search ran out of levels without finding where detail stops, so
+ * its scale is the smallest number it can express rather than what it found.
+ * Both of Joshua's readings were exactly 1/16 — the floor of a four-level
+ * search — and stating "measures about 252px of real detail" from that is the
+ * same false precision already fixed once in the readout and reintroduced
+ * here the moment the number was reused for something.
+ */
+let measuredDetailPegged = false;
 let lastDetailSample = 0;
 
 /**
@@ -3311,13 +3359,23 @@ function sampleDetailForCap(now: number): void {
   const reading = readEffectiveDetail();
   if (!reading || reading.flat || reading.scale === null) return;
   measuredDetailScale = reading.scale;
+  measuredDetailPegged = reading.pegged;
 }
 
-/** The largest width worth rendering, given what the frame actually holds. */
-function detailCappedWidth(sourceWidth: number): number {
-  if (measuredDetailScale === null || measuredDetailScale >= 1) return sourceWidth;
-  const real = sourceWidth * measuredDetailScale;
+/** The largest SHORT SIDE worth rendering, given what the frame holds. */
+function detailCappedShortSide(sourceShort: number): number {
+  if (measuredDetailScale === null || measuredDetailScale >= 1) return sourceShort;
+  const real = sourceShort * measuredDetailScale;
   return Math.max(DETAIL_CAP_FLOOR, Math.round(real * DETAIL_CAP_MARGIN));
+}
+
+/** The width that produces this short side, in the source's own orientation. */
+function widthForShortSide(shortSide: number): number {
+  const w = camera.diagnostics.videoWidth;
+  const h = camera.diagnostics.videoHeight;
+  const sourceShort = Math.min(w, h);
+  if (!w || !h || sourceShort <= 0) return shortSide;
+  return Math.round(shortSide * (w / sourceShort));
 }
 
 function ensureLensDisplay(width: number, height: number) {

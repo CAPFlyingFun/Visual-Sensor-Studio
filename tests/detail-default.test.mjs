@@ -19,11 +19,16 @@ test('auto climbs the ladder and never starts at the top', () => {
   // Starting high and backing off is NOT equivalent: the first measurement at
   // a level too expensive is taken while the device is already failing, and on
   // a phone that can mean the tab is reclaimed before any adjustment happens.
-  assert.match(mainSource, /const AUTO_LADDER = \[0, 960, 1280, 1920, Number\.POSITIVE_INFINITY\] as const/);
+  assert.match(mainSource, /const AUTO_LADDER = \[0, 540, 720, 1080, Number\.POSITIVE_INFINITY\] as const/);
   // The two thresholds must differ, or every rung is both too slow and fast
   // enough and the ladder oscillates forever.
-  assert.match(mainSource, /const AUTO_TARGET_FPS = 12;/);
+  assert.match(mainSource, /const AUTO_TARGET_FPS = 10;/);
   assert.match(mainSource, /const AUTO_HEADROOM_FPS = 20;/);
+  // And the bottom rungs climb on less evidence, or the ladder is trapped
+  // there: any rate inside the dead band held it at the analysis frame
+  // forever, so a phone that could manage 540 sat at 166.
+  assert.match(mainSource, /const AUTO_LOW_RUNG_HEADROOM_FPS = 14;/);
+  assert.match(mainSource, /autoRung <= 1 \? AUTO_LOW_RUNG_HEADROOM_FPS : AUTO_HEADROOM_FPS/);
   assert.match(mainSource, /let autoRung = 1;/, 'start one rung above the analysis frame');
   assert.match(mainSource, /function updateAutoDetail\(processingFps: number, now: number\)/);
 });
@@ -112,10 +117,10 @@ test('the display size is capped by measured detail, not by the reported size', 
   // same. They looked the same because they were: the larger stream carries
   // about as much real detail, so eight times the pixels bought eight times
   // the cost and nothing else.
-  assert.match(mainSource, /function detailCappedWidth\(sourceWidth: number\)/);
+  assert.match(mainSource, /function detailCappedShortSide\(sourceShort: number\)/);
   assert.match(mainSource, /const DETAIL_CAP_MARGIN = 4;/);
-  assert.match(mainSource, /const DETAIL_CAP_FLOOR = 1280;/);
-  assert.match(mainSource, /Math\.min\(source, detailCappedWidth\(source\), wanted\)/);
+  assert.match(mainSource, /const DETAIL_CAP_FLOOR = 720;/);
+  assert.match(mainSource, /Math\.min\(sourceShort, detailCappedShortSide\(sourceShort\), wantedShort\)/);
 });
 
 test('the cap only acts on a confident, textured reading', () => {
@@ -144,7 +149,12 @@ test('the margin errs towards rendering too much rather than too little', () => 
 test('a capped picture explains itself', () => {
   // Smaller than the setting asked for reads as the setting being ignored,
   // unless it says why.
-  assert.match(mainSource, /px of real detail, so rendering/);
+  assert.match(mainSource, /px of real detail,/);
   assert.match(mainSource, /pixels that are interpolation/);
   assert.match(htmlSource, /id="lensDetailCap"/);
+  // And a pegged reading is reported as a bound, never as a figure. Both of
+  // the readings that exposed this were exactly 1/16 — the floor of a
+  // four-level search — quoted as though they had been measured.
+  assert.match(mainSource, /let measuredDetailPegged = false;/);
+  assert.match(mainSource, /measuredDetailPegged \? ' at most about' : ' about'/);
 });

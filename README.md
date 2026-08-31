@@ -401,6 +401,17 @@ does not hold costs a visible stutter, a step down that was not needed costs
 only detail nobody had yet. The settled rung is remembered, so a device learns
 this once.
 
+### Everything about size is a SHORT SIDE
+
+Width is orientation-dependent, so a setting named in width means two
+different pictures depending on how the phone is held. Capping width at 1280
+gave a landscape frame 1280×960 and a portrait one 1280×1707 — 1.78× the
+pixels for the same choice, which is why one read 63 ms/frame and the other
+92.
+
+Every tier, every ladder rung and the detail cap are therefore short sides.
+`short=720` is 960×720 held sideways and 720×960 upright: 0.69 MP either way.
+
 ### The display size is capped by measured detail
 
 Measured on one phone, same build, same **Full** setting, two containers:
@@ -424,7 +435,13 @@ counts — a flat scene has nothing to measure, and treating that as "upscaled"
 would shrink the picture because someone pointed the camera at a wall.
 
 When the cap is active it says so, because a picture smaller than the setting
-asked for otherwise reads as the setting being ignored.
+asked for otherwise reads as the setting being ignored — and it says whether
+the reading behind it was a measurement or only a BOUND. A pegged search ran
+out of levels without finding where detail stops, so quoting a pixel figure
+from it states a precision never established. Two readings of exactly 1/16 —
+the floor of a four-level search — were being reported as "measures about
+252px", which is the same false precision fixed once in the readout and
+reintroduced the moment the number was reused for something.
 
 ### Saved shape
 
