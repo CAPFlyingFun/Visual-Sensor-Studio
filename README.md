@@ -219,6 +219,24 @@ deliberately does not use `capture` — the native photo fallback was removed on
 purpose and a test keeps it out — so the flow is: take the picture with the
 Camera app, then load it here.
 
+### Effective detail is a bound, not always a number
+
+**Measure Effective Detail** takes a native-pixel crop from the centre of the
+frame and halves it repeatedly, watching for the level where real information
+stops. It is a coarse search, and it has a floor: with N halvings the smallest
+scale it can express is 1/2^N, and a frame upscaled by more than that pegs
+there.
+
+A pegged search has NOT measured anything — it has run out of levels. So it
+now reports a bound ("at least 8× coarser than that") instead of quoting a
+pixel size, and shows the raw energy ratio either way so the verdict can be
+checked. The sample is 512 px rather than 256, which buys a fourth halving;
+range, not per-level accuracy, is what a bigger sample is for.
+
+This mattered in practice: a 3024×4032 stream reported "≈378×504 real detail",
+which is exactly 3024/8 — the floor of a three-level search presented as a
+measurement.
+
 ## Custom Lenses
 
 A **lens** is a false-colour mapping you design: pick one of the per-pixel

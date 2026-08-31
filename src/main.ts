@@ -165,7 +165,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.23.3';
+const APP_VERSION = '0.23.4';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -4697,7 +4697,16 @@ let stillContext: CanvasRenderingContext2D | null = null;
  * would only rediscover our own downsampling. One crop is a few milliseconds,
  * so this runs on request rather than per frame.
  */
-const DETAIL_SAMPLE = 256;
+/**
+ * Side of the native-pixel crop the detail estimate is measured on.
+ *
+ * Bigger is not about accuracy at one level, it is about RANGE: each halving
+ * costs a factor of two, and a 256-pixel sample runs out after three of them.
+ * A 12-megapixel frame that is upscaled by more than eight then pegs the
+ * search at its floor, which used to be reported as though it were a
+ * measurement.
+ */
+const DETAIL_SAMPLE = 512;
 let detailCanvas: HTMLCanvasElement | null = null;
 let detailContext: CanvasRenderingContext2D | null = null;
 
@@ -4730,12 +4739,24 @@ function measureEffectiveDetail(): string {
   const report = estimateEffectiveResolution(gray, size, size);
 
   if (report.detailRatio >= 1) return 'too flat to judge — aim at some texture';
+  const ratio = report.detailRatio.toFixed(2);
   if (!report.likelyUpscaled) {
-    return `${sourceWidth}×${sourceHeight} · detail at full pixel scale`;
+    return `${sourceWidth}×${sourceHeight} · detail at full pixel scale (ratio ${ratio})`;
+  }
+
+  const factor = Math.round(1 / report.effectiveScale);
+  if (report.pegged) {
+    // The search ran out of levels without ever finding real detail, so the
+    // scale it stopped at is the floor of what it can express rather than an
+    // estimate. Quoting a pixel size here would state a precision the method
+    // does not have — the honest reading is a bound.
+    return `${sourceWidth}×${sourceHeight} reported · at least ${factor}× coarser than that`
+      + ` — beyond what a ${size}px sample can resolve (ratio ${ratio})`;
   }
   const effectiveWidth = Math.round(sourceWidth * report.effectiveScale);
   const effectiveHeight = Math.round(sourceHeight * report.effectiveScale);
-  return `${sourceWidth}×${sourceHeight} reported · ≈${effectiveWidth}×${effectiveHeight} real detail (upscaled)`;
+  return `${sourceWidth}×${sourceHeight} reported · ≈${effectiveWidth}×${effectiveHeight} real detail`
+    + ` (about ${factor}× upscaled, ratio ${ratio})`;
 }
 
 /** Grab the live video at native resolution, honouring any digital crop. */

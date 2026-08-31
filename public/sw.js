@@ -1,4 +1,4 @@
-const CACHE = 'visual-sensor-studio-v0.23.3';
+const CACHE = 'visual-sensor-studio-v0.23.4';
 const APP_SHELL = [
   './',
   './index.html',

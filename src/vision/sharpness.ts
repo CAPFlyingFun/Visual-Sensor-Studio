@@ -124,6 +124,35 @@ export interface SharpnessReport {
   effectiveScale: number;
   /** True when the frame looks materially upscaled. */
   likelyUpscaled: boolean;
+  /**
+   * True when the search ran out of levels without ever finding real detail.
+   *
+   * At the floor `effectiveScale` is no longer an estimate of anything — it is
+   * simply the smallest number this many levels can express. Quoting it as a
+   * pixel size states a precision the method does not have, so a caller that
+   * ignores this flag will report a measurement it did not make.
+   */
+  pegged: boolean;
+  /** Levels actually searched, so the floor can be described. */
+  levelsSearched: number;
+}
+
+/**
+ * How many halvings are worth attempting for a sample of this size.
+ *
+ * Each level measures gradient energy at its own geometry, and below about 32
+ * pixels a side there are too few differences left for that to mean anything —
+ * the reading becomes noise, and noise at the bottom of the search reads as
+ * "detail", which would end the search with a confident wrong answer.
+ */
+export function usefulLevels(size: number, floor = 32): number {
+  let levels = 0;
+  let current = size;
+  while (current / 2 >= floor) {
+    current /= 2;
+    levels++;
+  }
+  return Math.max(1, levels);
 }
 
 /**
@@ -138,7 +167,7 @@ export function estimateEffectiveResolution(
   gray: ArrayLike<number>,
   width: number,
   height: number,
-  levels = 3
+  levels = usefulLevels(Math.min(width, height))
 ): SharpnessReport {
   let current: ArrayLike<number> = gray;
   let currentWidth = width;
@@ -154,7 +183,13 @@ export function estimateEffectiveResolution(
     if (reference < FLATNESS_FLOOR) {
       // Too flat to judge. Claiming an upscale from an empty image would be
       // reading noise, so stop wherever we got to and call it honest.
-      return { detailRatio, effectiveScale: level === 1 ? 1 : effectiveScale, likelyUpscaled: false };
+      return {
+        detailRatio,
+        effectiveScale: level === 1 ? 1 : effectiveScale,
+        likelyUpscaled: false,
+        pegged: false,
+        levelsSearched: level - 1
+      };
     }
 
     const small = halve(current, currentWidth, currentHeight);
@@ -165,7 +200,13 @@ export function estimateEffectiveResolution(
     if (ratio < DETAIL_THRESHOLD) {
       // Halving destroyed real information, so this level is carrying detail
       // and the search stops here.
-      return { detailRatio, effectiveScale, likelyUpscaled: effectiveScale < 0.75 };
+      return {
+        detailRatio,
+        effectiveScale,
+        likelyUpscaled: effectiveScale < 0.75,
+        pegged: false,
+        levelsSearched: level
+      };
     }
 
     effectiveScale /= 2;
@@ -174,5 +215,14 @@ export function estimateEffectiveResolution(
     currentHeight = small.height;
   }
 
-  return { detailRatio, effectiveScale, likelyUpscaled: effectiveScale < 0.75 };
+  // Every level held up, so the search never found the scale where real
+  // information stops. `effectiveScale` is now the floor of what this many
+  // levels can express rather than an estimate of anything.
+  return {
+    detailRatio,
+    effectiveScale,
+    likelyUpscaled: effectiveScale < 0.75,
+    pegged: true,
+    levelsSearched: levels
+  };
 }
