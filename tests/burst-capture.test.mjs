@@ -185,3 +185,21 @@ test('rotation converts to pixels through the focal length, and refuses without 
   // would silently mis-scale every trigger decision.
   assert.equal(bc.rotationToPixels(0.001, 0), 0);
 });
+
+test('a match on the edge of the search window is refused, not reported as small', () => {
+  // When the frame moved further than the window covers, the best score inside
+  // it sits at the boundary and the true match is outside. The estimate is not
+  // "large" then, it is WRONG — and wrong in the direction that looks like a
+  // small, well-behaved shift, so nothing downstream could catch it.
+  //
+  // Found from the device: waving the phone scored worse than holding it
+  // still, partly because motion past the window read as a steady hand.
+  const farMoved = sr.shiftPlane(scene, 14, 0);
+  const beyond = bc.estimateShift(scene, farMoved, 6);
+  assert.equal(beyond.confidence, 0, 'a shift outside the window must not be trusted');
+
+  // And a shift comfortably inside it still is.
+  const within = bc.estimateShift(scene, sr.shiftPlane(scene, 2.25, -1.5), 6);
+  assert.ok(within.confidence > 0.5);
+  assert.ok(Math.hypot(within.shiftX - 2.25, within.shiftY + 1.5) < 0.1);
+});

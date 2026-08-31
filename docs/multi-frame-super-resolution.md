@@ -1,6 +1,6 @@
 # Multi-frame super-resolution — specification
 
-Status: **Phase 0 complete. Gate passed, conditionally.** See "Phase 0 results"
+Status: **Phase 1 complete. Gate passed on the device.** See "Phase 0 results"
 at the foot of this document — it corrects three claims made above, which are
 left in place so the corrections have something to point at.
 
@@ -291,3 +291,53 @@ Phase 1 is no longer "alignment on real bursts". It is:
 
 The gate for Phase 1 is a measured `offsetSpread` above about 0.6 on a real
 handheld burst. Below that, Phase 0 says the merge will not pay for itself.
+
+
+---
+
+# Phase 1 results — measured on the device
+
+Joshua ran the Burst tab on an iPhone 15 Plus. **Grid coverage 55-70%, above the
+55% floor.** A handheld burst on this device does carry more detail than any
+single frame in it, so Phase 2 is unblocked.
+
+## The first reading was the probe's fault, not the hand's
+
+The first run returned 39-48% and would have retired the idea. The capture loop
+polled on `requestAnimationFrame` plus 40ms, which on a twelve-megapixel capture
+delivering 8-12 frames a second is faster than frames arrive — so much of the
+burst was the same image recorded twice, and a repeated frame measures a shift
+of exactly zero. The probe was reporting a steady hand when the truth was a fast
+loop.
+
+This was the FIRST check the phase specified ("confirm the frames are
+distinct") and it shipped without it. The probe now waits on
+`requestVideoFrameCallback` and reports the distinct-frame count beside the
+rest, so the reading can be checked rather than trusted.
+
+## Holding still beats moving deliberately
+
+Joshua: "moving my hand less during it makes the results better than moving
+more hoping to catch more offsets." Correct, for three separate reasons:
+
+1. **Only the fractional part of a shift carries information.** Seven pixels
+   and a fifth of a pixel are the same offset as far as the sampling grid is
+   concerned, so deliberate travel contributes nothing.
+2. **Travel blurs each frame.** Phase 0: four scene pixels of smear during
+   exposure costs about a quarter of the gain.
+3. **The aligner could not measure large motion**, and scored it as small.
+   `estimateShift` searches a fixed window; when the frame moved further, the
+   best score inside sat on the boundary and the true match was outside. That
+   estimate is not "large", it is wrong in the direction that looks like a
+   steady hand. Now refused with zero confidence rather than reported.
+
+Point 3 was a real defect the device found. Points 1 and 2 make "hold it
+normally" the right instruction regardless, and the tab now says so — it is the
+opposite of what the feature sounds like it wants.
+
+## Phase 2 is now the next gate
+
+Merge on a 1024x1024 crop, behind a dev route, measured with a slanted-edge MTF
+against the bicubic control. The estimator is still unsettled from Phase 0
+(splat alone won on 1/f noise, splat-then-back-project on a real photograph), so
+Phase 2 chooses between them on real captures rather than assuming.

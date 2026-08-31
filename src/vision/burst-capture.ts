@@ -115,7 +115,22 @@ export function estimateShift(
 
   // Depth of the minimum against the spread of the surface. A flat wall gives
   // a shallow basin and a meaningless argmin; this is what says so.
-  const confidence = worst > 0 ? Math.min(1, Math.max(0, 1 - best / worst)) : 0;
+  const basin = worst > 0 ? Math.min(1, Math.max(0, 1 - best / worst)) : 0;
+
+  // A MINIMUM ON THE EDGE OF THE SEARCH IS NOT A MINIMUM.
+  //
+  // When the frame moved further than the window covers, the best score inside
+  // it sits at the boundary and the real match is somewhere outside. The
+  // estimate is then not "large", it is WRONG — and it is wrong in the
+  // direction that looks like a small, well-behaved shift, so nothing
+  // downstream can tell. Joshua found this from the other end: waving the
+  // phone about scored WORSE than holding it still, partly because motion
+  // beyond the window was being scored as a steady hand.
+  //
+  // Refusing to answer is the honest result. The caller already knows what to
+  // do with a low-confidence estimate.
+  const onBoundary = Math.abs(bestX) === maxShift || Math.abs(bestY) === maxShift;
+  const confidence = onBoundary ? 0 : basin;
 
   return {
     // NOT negated. windowSad compares reference(x, y) against
