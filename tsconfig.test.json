@@ -18,6 +18,7 @@
     "src/sensors/stability.ts",
     "src/vision/display-metrics.ts",
     "src/vision/aspect.ts",
+    "src/vision/save-format.ts",
     "src/vision/lens.ts",
     "src/vision/lens-preview.ts",
     "src/vision/photo-lens.ts",

@@ -19,6 +19,10 @@ import {
   throughputMegapixelsPerSecond
 } from './vision/display-metrics.js';
 import { aspectRatioFor, cropToAspect, retainedFraction, type SaveAspect } from './vision/aspect.js';
+import {
+  SAVE_FORMATS, clampQuality, describeBytes, fileName, formatInfo,
+  resolveFormat, supportedFormats, DEFAULT_QUALITY, type SaveFormat
+} from './vision/save-format.js';
 import type { GpsSample, MotionSample, SensorSnapshot, VisionMetrics, VisionMode } from './core/types.js';
 
 /**
@@ -174,7 +178,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.28.6';
+const APP_VERSION = '0.29.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -199,6 +203,8 @@ interface AppSettings {
   visionRatePreference: VisionRatePreference;
   lensDetail: LensDetail;
   saveAspect: SaveAspect;
+  saveFormat: SaveFormat;
+  saveQuality: number;
   /**
    * Whether the live detail was actually PICKED, rather than left at whatever
    * the app defaulted to.
@@ -251,6 +257,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   visionRatePreference: 'adaptive',
   lensDetail: 'auto',
   saveAspect: 'sensor',
+  // JPEG by default: the first full-resolution saves were 22-23MB of
+  // lossless PNG, which is a share sheet nobody wants to wait for.
+  saveFormat: 'jpeg',
+  saveQuality: DEFAULT_QUALITY,
   lensDetailChosen: false,
   gpsAccuracyPreference: 'high',
   cameraFrameRate: 'auto',
@@ -347,6 +357,10 @@ function loadSettings(): AppSettings {
       saveAspect: ['sensor', 'wide'].includes(String(parsed.saveAspect))
         ? parsed.saveAspect as SaveAspect
         : DEFAULT_SETTINGS.saveAspect,
+      saveFormat: SAVE_FORMATS.some((f) => f.id === parsed.saveFormat)
+        ? parsed.saveFormat as SaveFormat
+        : DEFAULT_SETTINGS.saveFormat,
+      saveQuality: clampQuality(Number(parsed.saveQuality)),
       qualityPreference: ['low', 'normal', 'high'].includes(String(parsed.qualityPreference))
         ? parsed.qualityPreference as QualityPreference
         : DEFAULT_SETTINGS.qualityPreference,
@@ -4854,6 +4868,9 @@ function downloadSnapshot(): void {
 }
 
 function syncSettingsControls(): void {
+  // Built rather than declared in the markup, because which entries exist
+  // depends on what this browser can encode.
+  buildSaveFormatOptions();
   byId<HTMLSelectElement>('cameraFrameRate').value = settings.cameraFrameRate;
   byId<HTMLSelectElement>('captureResolution').value = settings.captureResolution;
   byId<HTMLInputElement>('trackingToggle').checked = settings.trackingEnabled;
@@ -5941,6 +5958,12 @@ function finishStill(frame: ImageData, previous: ImageData | null): void {
 }
 
 function saveCanvas(source: HTMLCanvasElement, description: string): void {
+  // Resolved rather than trusted: a browser asked for a type it cannot encode
+  // does not throw, it quietly returns a PNG. Writing 22MB of PNG under a
+  // .webp name would be the file lying about what it is.
+  const format = resolveFormat(settings.saveFormat, encodableFormats());
+  const info = formatInfo(format);
+  const quality = clampQuality(settings.saveQuality);
   source.toBlob((blob) => {
     if (!blob) {
       setText('cameraMessage', 'The frame could not be encoded.');
@@ -5949,7 +5972,7 @@ function saveCanvas(source: HTMLCanvasElement, description: string): void {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = `visual-sensor-${visionMode}-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+    anchor.download = fileName(visionMode, format, new Date());
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
@@ -5962,8 +5985,70 @@ function saveCanvas(source: HTMLCanvasElement, description: string): void {
     const cropped = byId('cameraViewer').dataset.fit === 'fill'
       ? ' Fill crops the screen, not the file — this is the whole frame.'
       : '';
-    setText('cameraMessage', `Saved ${description} · ${visionMode}. It stays on this device.${cropped}`);
-  }, 'image/png');
+    // The size is stated because it is the thing that surprised him: the same
+    // frame is 22MB as PNG and about a tenth of that as JPEG, and no part of
+    // the UI said so until after the file existed.
+    const size = describeBytes(blob.size);
+    setText('cameraMessage',
+      `Saved ${description} · ${visionMode} · ${size} ${info.extension.toUpperCase()}.`
+      + ` It stays on this device.${cropped}`);
+  }, info.mime, info.lossy ? quality : undefined);
+}
+
+/**
+ * Offer only what this browser can encode, and say which one is in force.
+ *
+ * An unavailable option must never look functional: a WebP entry on a browser
+ * that silently returns PNG would be a control that appears to work and
+ * quietly does something else.
+ */
+function buildSaveFormatOptions(): void {
+  const select = document.getElementById('saveFormat') as HTMLSelectElement | null;
+  if (!select) return;
+  const available = encodableFormats();
+  select.innerHTML = '';
+  for (const format of SAVE_FORMATS) {
+    if (!available.includes(format.id)) continue;
+    const option = document.createElement('option');
+    option.value = format.id;
+    option.textContent = format.label;
+    select.appendChild(option);
+  }
+  select.value = resolveFormat(settings.saveFormat, available);
+  syncSaveFormatControls();
+}
+
+function syncSaveFormatControls(): void {
+  const active = formatInfo(resolveFormat(settings.saveFormat, encodableFormats()));
+  const quality = clampQuality(settings.saveQuality);
+  const slider = document.getElementById('saveQuality') as HTMLInputElement | null;
+  if (slider) {
+    slider.value = String(Math.round(quality * 100));
+    // Disabled rather than hidden: the control keeps its place, and the note
+    // below says why it is inert, so PNG does not look like a broken slider.
+    slider.disabled = !active.lossy;
+  }
+  setText('saveQualityValue', active.lossy ? `${Math.round(quality * 100)}%` : 'n/a');
+  setText('saveQualityNote', active.lossy
+    ? 'Only applies to JPEG and WebP. Lossless PNG ignores it.'
+    : 'PNG is lossless, so there is no quality to trade. Choose JPEG or WebP to use this.');
+}
+
+/**
+ * The image types this browser can actually encode, measured once.
+ *
+ * A version table would be one more thing claiming a capability the device may
+ * not have. Asking the canvas is cheap and cannot be wrong.
+ */
+let encodable: SaveFormat[] | null = null;
+function encodableFormats(): SaveFormat[] {
+  encodable ??= supportedFormats((mime) => {
+    const probe = document.createElement('canvas');
+    probe.width = 1;
+    probe.height = 1;
+    return probe.toDataURL(mime);
+  });
+  return encodable;
 }
 
 /**
@@ -7013,6 +7098,16 @@ on('cameraPreference', 'change', handleCameraPreferenceChange);
 on('qualityPreference', 'change', handleQualityChange);
 on('saveAspect', 'change', () => {
   saveSettingFromControls();
+});
+on('saveFormat', 'change', (event) => {
+  settings.saveFormat = (event.target as HTMLSelectElement).value as SaveFormat;
+  saveSettings();
+  syncSaveFormatControls();
+});
+on('saveQuality', 'input', (event) => {
+  settings.saveQuality = clampQuality(Number((event.target as HTMLInputElement).value) / 100);
+  saveSettings();
+  syncSaveFormatControls();
 });
 on('lensDetail', 'change', (event) => {
   settings.lensDetail = (event.target as HTMLSelectElement).value as LensDetail;

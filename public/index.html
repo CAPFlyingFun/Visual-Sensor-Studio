@@ -754,7 +754,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.28.6</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.29.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">
@@ -846,6 +846,21 @@
             A camera cannot change its aspect ratio, so widescreen is a CROP of what it
             captured — sides in portrait, top and bottom in landscape. It can only ever
             give up field of view, never gain it.
+          </span>
+        </label>
+        <label>Saved Format
+          <select id="saveFormat"></select>
+          <span class="helper" id="saveFormatNote">
+            A twelve-megapixel frame is about 22 MB as lossless PNG. JPEG and WebP are
+            allowed to discard what the eye does not miss, which is where the order of
+            magnitude comes from. Zipping a PNG saves almost nothing — PNG already uses
+            the same compression a .zip does.
+          </span>
+        </label>
+        <label>Saved Quality <span class="value" id="saveQualityValue">92%</span>
+          <input id="saveQuality" type="range" min="30" max="100" step="1" value="92" />
+          <span class="helper" id="saveQualityNote">
+            Only applies to JPEG and WebP. Lossless PNG ignores it.
           </span>
         </label>
         <label>Camera Frame Rate
