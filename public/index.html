@@ -725,6 +725,15 @@
           is already the right size.
         </p>
 
+        <div class="burst-enable" id="burstEnableRow">
+          <button class="secondary-button" id="burstEnableCamera" type="button">Enable Camera</button>
+          <button class="secondary-button" id="burstEnableMotion" type="button">Enable Motion</button>
+          <label class="burst-fov">Lens FOV
+            <input id="burstFov" type="number" min="0" max="180" step="1" placeholder="degrees" />
+          </label>
+        </div>
+        <p class="helper" id="burstReadiness">Camera and motion can both be started from here.</p>
+
         <div class="metric-strip">
           <div class="metric"><span>Frames</span><strong id="burstFrames">&mdash;</strong></div>
           <div class="metric"><span>Measurable</span><strong id="burstConfident">&mdash;</strong></div>
@@ -765,6 +774,16 @@
           <div class="metric"><span>From the image</span><strong id="burstImageMove">&mdash;</strong></div>
           <div class="metric"><span>From the gyroscope</span><strong id="burstGyroMove">&mdash;</strong></div>
           <div class="metric"><span>Agreement</span><strong id="burstAgreement">&mdash;</strong></div>
+        </div>
+
+        <label class="burst-log-label">Run log
+          <textarea id="burstLog" rows="10" readonly
+                    placeholder="Each capture appends a line here. Copy it and send it over."></textarea>
+        </label>
+        <div class="button-row">
+          <button class="secondary-button" id="burstCopyLog" type="button">Copy Log</button>
+          <button class="secondary-button" id="burstClearLog" type="button">Clear</button>
+          <span class="helper" id="burstCopyStatus" aria-live="polite"></span>
         </div>
       </section>
       </section>
@@ -819,7 +838,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.30.2</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.31.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">

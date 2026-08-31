@@ -1347,3 +1347,33 @@ button.ghost.danger {
   border: 1px solid rgba(120, 190, 255, .18);
 }
 .burst-side { display: flex; flex-direction: column; gap: .6rem; }
+
+.burst-enable {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  align-items: center;
+}
+.burst-fov {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  font-size: .85rem;
+  color: rgba(226, 240, 255, .72);
+}
+.burst-fov input { width: 5.5rem; }
+.burst-log-label { display: flex; flex-direction: column; gap: .35rem; }
+/*
+ * Monospace and nowrap: the log is meant to be selected, copied and pasted
+ * into a message, and a proportional font with soft wrapping turns aligned
+ * columns into something nobody can read at the other end.
+ */
+#burstLog {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .74rem;
+  line-height: 1.5;
+  white-space: pre;
+  overflow-x: auto;
+  resize: vertical;
+}

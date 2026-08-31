@@ -183,7 +183,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.30.2';
+const APP_VERSION = '0.31.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -6868,6 +6868,10 @@ on('zoomSlider', 'input', (event) => {
 });
 on('captureStillButton', 'click', () => void captureStill());
 on('burstCaptureButton', 'click', () => void runBurstProbe());
+// The row must follow the sensors rather than only the buttons: camera and
+// motion can also be started from their own tabs, or dropped when the app is
+// backgrounded, and a stale "Enable Camera" on a running camera reads as broken.
+window.setInterval(syncBurstReadiness, 1000);
 on('expandViewButton', 'click', () => setViewerOpen(true));
 on('viewerCloseButton', 'click', () => setViewerOpen(false));
 on('viewerFitButton', 'click', () => {
@@ -7392,7 +7396,8 @@ let burstRunning = false;
 async function runBurstProbe(): Promise<void> {
   if (burstRunning) return;
   if (!camera.active) {
-    setText('burstReason', 'Enable the camera on the Camera tab first.');
+    setText('burstReason', 'Start the camera first — the button is just above.');
+    syncBurstReadiness();
     return;
   }
   burstRunning = true;
@@ -7460,7 +7465,8 @@ async function runBurstProbe(): Promise<void> {
 
     const verdict = judgeBurst(shifts, KEEP_FRAMES);
     renderBurstVerdict(verdict, shifts);
-    renderBurstAgreement(shifts, gyro);
+    const gyroTravel = renderBurstAgreement(shifts, gyro);
+    appendBurstLog(burstLogLine(verdict, distinct, gyroTravel));
   } finally {
     burstRunning = false;
     byId<HTMLButtonElement>('burstCaptureButton').disabled = false;
@@ -7560,7 +7566,7 @@ function drawBurstScatter(shifts: ShiftEstimate[], selected: number[]): void {
 function renderBurstAgreement(
   shifts: ShiftEstimate[],
   gyro: Array<{ x: number; y: number }>
-): void {
+): number | null {
   const focal = focalLengthPixels(video.videoWidth, settings.motionFovDegrees);
   const imageTravel = shifts.reduce(
     (worst, s) => Math.max(worst, Math.hypot(s.shiftX, s.shiftY)), 0);
@@ -7569,7 +7575,7 @@ function renderBurstAgreement(
   if (!focal || gyro.length === 0) {
     setText('burstGyroMove', '—');
     setText('burstAgreement', 'needs a field of view');
-    return;
+    return null;
   }
   const gyroTravel = gyro.reduce((worst, g) => Math.max(worst,
     Math.hypot(rotationToPixels(g.x, focal), rotationToPixels(g.y, focal))), 0);
@@ -7577,8 +7583,120 @@ function renderBurstAgreement(
 
   if (imageTravel < 0.05 && gyroTravel < 0.05) {
     setText('burstAgreement', 'both still');
-    return;
+    return gyroTravel;
   }
   const ratio = gyroTravel > 0 ? imageTravel / gyroTravel : 0;
   setText('burstAgreement', ratio > 0 ? `${ratio.toFixed(2)}× image/gyro` : '—');
+  return gyroTravel;
 }
+
+/* --- Burst tab: self-contained setup and a shareable log -----------------
+ *
+ * Joshua: "the prompt to allow camera and phone motion should be in that tab
+ * as well so I don't have to open up each tab and except before opening up
+ * that one" — and a log he can copy and send back, since he is the probe now
+ * and a screenshot of six numbers is a poor way to report a measurement.
+ */
+
+/** Reuse the real enable paths rather than duplicating the permission dance. */
+function syncBurstReadiness(): void {
+  const cameraButton = document.getElementById('burstEnableCamera') as HTMLButtonElement | null;
+  const motionButton = document.getElementById('burstEnableMotion') as HTMLButtonElement | null;
+  if (!cameraButton || !motionButton) return;
+
+  cameraButton.disabled = camera.active;
+  cameraButton.textContent = camera.active ? 'Camera on' : 'Enable Camera';
+  motionButton.disabled = motion.active;
+  motionButton.textContent = motion.active ? 'Motion on' : 'Enable Motion';
+
+  const fov = document.getElementById('burstFov') as HTMLInputElement | null;
+  if (fov && document.activeElement !== fov) {
+    fov.value = settings.motionFovDegrees > 0 ? String(settings.motionFovDegrees) : '';
+  }
+
+  const missing: string[] = [];
+  if (!camera.active) missing.push('the camera');
+  if (!motion.active) missing.push('motion');
+  if (!(settings.motionFovDegrees > 0)) missing.push('a lens field of view');
+
+  setText('burstReadiness', missing.length === 0
+    ? 'Ready. Capture measures the image and the gyroscope together.'
+    : `Still needed: ${missing.join(', ')}. `
+      + 'Without motion or a field of view the burst is still measured from the '
+      + 'image alone — only the gyroscope comparison is skipped.');
+}
+
+/**
+ * One line per capture, in a form that survives being pasted into a message.
+ *
+ * Fixed-width columns and a leading timestamp, because these are meant to be
+ * compared across runs — a screenshot of the panel shows one result and loses
+ * the run before it, which is the comparison that actually says anything.
+ */
+function appendBurstLog(line: string): void {
+  const log = document.getElementById('burstLog') as HTMLTextAreaElement | null;
+  if (!log) return;
+  const stamp = new Date().toLocaleTimeString();
+  log.value += `${log.value ? '\n' : ''}${stamp}  ${line}`;
+  log.scrollTop = log.scrollHeight;
+}
+
+function burstLogLine(
+  verdict: ReturnType<typeof judgeBurst>,
+  distinct: number,
+  gyroTravel: number | null
+): string {
+  const pct = (value: number) => `${(value * 100).toFixed(0)}%`;
+  const gyro = gyroTravel === null ? 'n/a' : `${gyroTravel.toFixed(1)}px`;
+  return [
+    `frames ${String(verdict.frames).padStart(2)}`,
+    `distinct ${String(distinct).padStart(2)}`,
+    `measurable ${String(verdict.confident).padStart(2)}`,
+    `travel ${verdict.travelPixels.toFixed(1).padStart(5)}px`,
+    `raw ${pct(verdict.rawSpread).padStart(4)}`,
+    `selected ${pct(verdict.selectedSpread).padStart(4)}`,
+    `gyro ${gyro.padStart(7)}`,
+    verdict.worthMerging ? 'WORTH' : 'no',
+    `v${APP_VERSION}`
+  ].join(' · ');
+}
+
+async function copyBurstLog(): Promise<void> {
+  const log = document.getElementById('burstLog') as HTMLTextAreaElement | null;
+  if (!log || !log.value) {
+    setText('burstCopyStatus', 'Nothing captured yet.');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(log.value);
+    setText('burstCopyStatus', 'Copied.');
+  } catch {
+    // Clipboard access can be refused outright, and on iOS it is refused
+    // whenever the write is not tied closely enough to the tap. Selecting the
+    // text leaves the reader one long-press from copying it by hand rather
+    // than at a dead end.
+    log.focus();
+    log.select();
+    setText('burstCopyStatus', 'Copy blocked — the log is selected, copy it by hand.');
+  }
+}
+
+on('burstEnableCamera', 'click', () => void startCamera().then(syncBurstReadiness));
+on('burstEnableMotion', 'click', () => void enableMotion().then(syncBurstReadiness));
+on('burstFov', 'change', (event) => {
+  const degrees = Number((event.target as HTMLInputElement).value);
+  settings.motionFovDegrees = Number.isFinite(degrees) && degrees > 0 && degrees < 180
+    ? degrees
+    : 0;
+  saveSettings();
+  // The Motion tab shows the same setting, so it has to follow.
+  const twin = document.getElementById('motionFov') as HTMLInputElement | null;
+  if (twin) twin.value = settings.motionFovDegrees > 0 ? String(settings.motionFovDegrees) : '';
+  syncBurstReadiness();
+});
+on('burstCopyLog', 'click', () => void copyBurstLog());
+on('burstClearLog', 'click', () => {
+  const log = document.getElementById('burstLog') as HTMLTextAreaElement | null;
+  if (log) log.value = '';
+  setText('burstCopyStatus', '');
+});

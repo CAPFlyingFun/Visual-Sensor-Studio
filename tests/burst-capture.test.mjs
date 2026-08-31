@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as sr from '../.test-build/vision/super-resolution.js';
 import * as bc from '../.test-build/vision/burst-capture.js';
+import { readFileSync } from 'node:fs';
 
 /** 1/f noise: the spectrum real scenes have. See super-resolution.test.mjs. */
 function pinkScene(size, seed) {
@@ -202,4 +203,45 @@ test('a match on the edge of the search window is refused, not reported as small
   const within = bc.estimateShift(scene, sr.shiftPlane(scene, 2.25, -1.5), 6);
   assert.ok(within.confidence > 0.5);
   assert.ok(Math.hypot(within.shiftX - 2.25, within.shiftY + 1.5) < 0.1);
+});
+
+test('the burst tab can start its own sensors and hand back a shareable log', () => {
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+
+  // Joshua is the probe now, so the tab has to be usable without touring the
+  // other tabs first — and it reuses the real enable paths rather than
+  // duplicating the permission dance, which is the part that goes stale.
+  assert.match(main, /on\('burstEnableCamera', 'click', \(\) => void startCamera\(\)/);
+  assert.match(main, /on\('burstEnableMotion', 'click', \(\) => void enableMotion\(\)/);
+  assert.match(html, /id="burstEnableCamera"/);
+  assert.match(html, /id="burstEnableMotion"/);
+
+  // The field of view is the same setting the Motion tab edits, so the two
+  // controls must not be able to disagree.
+  assert.match(main, /const twin = document\.getElementById\('motionFov'\)/);
+
+  // A log that can be copied out, because six numbers in a screenshot lose the
+  // run before them — and the comparison across runs is what says anything.
+  assert.match(html, /id="burstLog"/);
+  assert.match(main, /navigator\.clipboard\.writeText\(log\.value\)/);
+  // Clipboard writes are refused outright on iOS often enough that a dead end
+  // is not acceptable; selecting the text leaves a long-press to finish it.
+  assert.match(main, /log\.select\(\);/);
+  assert.match(main, /Copy blocked/);
+});
+
+test('every log line carries the version and the numbers that decide the verdict', () => {
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const line = main.slice(main.indexOf('function burstLogLine'), main.indexOf('async function copyBurstLog'));
+  for (const field of ['frames', 'distinct', 'measurable', 'travel', 'raw', 'selected', 'gyro']) {
+    assert.ok(line.includes(`${field} `), `the log line omits ${field}`);
+  }
+  // Without the build, a pasted reading cannot be tied to the code that
+  // produced it — and two readings in this project have already turned out to
+  // be measuring a defect rather than the phone.
+  assert.match(line, /v\$\{APP_VERSION\}/);
+  // Distinct especially: a burst of 32 samples of 8 frames looks exactly like
+  // a steady hand from the offsets alone.
+  assert.match(main, /appendBurstLog\(burstLogLine\(verdict, distinct, gyroTravel\)\)/);
 });
