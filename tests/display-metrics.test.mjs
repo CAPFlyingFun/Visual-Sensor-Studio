@@ -219,3 +219,130 @@ test('full screen is measured on the viewer canvas, not the panel one', () => {
   assert.match(measure, /presentingElement\(\)\.getBoundingClientRect\(\)/);
   assert.doesNotMatch(measure, /visionCanvas\.getBoundingClientRect/);
 });
+
+test('the detail verdict reads render cost against the camera delivery interval', async () => {
+  const { detailVerdict } = await import('../.test-build/vision/display-metrics.js');
+  const keepingUp = { deliveredFps: 10, processingFps: 9 };
+
+  // The reading that exposed the bug. A 12MP capture delivers about 10fps, so
+  // the frame interval is 100ms; the panel drew 609x812 in 51ms and ran
+  // smoothly. That is a settled place, not a reason to shrink the picture.
+  assert.equal(detailVerdict({ renderMs: 51, ...keepingUp }), 'hold');
+
+  // Full screen on the same device is about 4.5x the panel's area, so the same
+  // rung costs about 230ms against the same 100ms interval. That is drawing
+  // holding frames up, and is the one case that must step down.
+  assert.equal(detailVerdict({ renderMs: 230, ...keepingUp }), 'back-off');
+
+  // And the analysis frame at 0.3ms is not a settled answer, it is the ladder
+  // sitting at the bottom with almost the whole interval unspent.
+  assert.equal(detailVerdict({ renderMs: 0.3, ...keepingUp }), 'climb');
+});
+
+test('a slow camera never by itself walks the ladder down', async () => {
+  const { detailVerdict } = await import('../.test-build/vision/display-metrics.js');
+  // THE ORIGINAL BUG, as a test. A 12MP capture delivers 10fps and analyses 8.
+  // The old rule compared 8 against a fixed 10fps target, found it short at
+  // every rung, and walked to the bottom. The rate is now read as a RATIO, so
+  // 8 of 10 is keeping up and a cheap render is still free to grow.
+  assert.equal(
+    detailVerdict({ renderMs: 2, deliveredFps: 10, processingFps: 8 }),
+    'climb'
+  );
+  // Even at a crawl: 2 delivered, 2 analysed is keeping up perfectly, and the
+  // ladder must not read the absolute rate as failure.
+  assert.equal(
+    detailVerdict({ renderMs: 1, deliveredFps: 2, processingFps: 2 }),
+    'climb'
+  );
+});
+
+test('dropped frames are only blamed on a render big enough to cause them', async () => {
+  const { detailVerdict } = await import('../.test-build/vision/display-metrics.js');
+  // Badly behind — 3 analysed of 10 delivered — but drawing costs a third of a
+  // millisecond. A pipeline can fall behind for reasons no rung can fix (a
+  // twelve-megapixel decode, a throttled phone), and shrinking a picture that
+  // is not the cause is precisely the failure this rewrite removes.
+  assert.equal(
+    detailVerdict({ renderMs: 0.3, deliveredFps: 10, processingFps: 3 }),
+    'hold'
+  );
+  // Behind AND drawing is a real share of the budget: now it is a plausible
+  // cause, so give back a rung and see.
+  assert.equal(
+    detailVerdict({ renderMs: 40, deliveredFps: 10, processingFps: 3 }),
+    'back-off'
+  );
+  // The same cost while keeping up is a settled place, not a retreat. (60ms
+  // rather than 40: 40 is under the climb threshold, so it would grow — which
+  // is right, and not what this assertion is about.)
+  assert.equal(
+    detailVerdict({ renderMs: 60, deliveredFps: 10, processingFps: 9 }),
+    'hold'
+  );
+  // And the same 60ms while behind is a retreat.
+  assert.equal(
+    detailVerdict({ renderMs: 60, deliveredFps: 10, processingFps: 3 }),
+    'back-off'
+  );
+});
+
+test('room to grow is only spent while the pipeline is keeping up', async () => {
+  const { detailVerdict } = await import('../.test-build/vision/display-metrics.js');
+  // A cheap render with the interval going spare would otherwise climb. But
+  // reading 95ms of "slack" off a queue that is already behind is reading it
+  // off a queue that does not have it.
+  assert.equal(
+    detailVerdict({ renderMs: 5, deliveredFps: 10, processingFps: 4 }),
+    'hold'
+  );
+});
+
+test('no measurement is never read as a verdict', async () => {
+  const { detailVerdict } = await import('../.test-build/vision/display-metrics.js');
+  const rates = { deliveredFps: 10, processingFps: 9 };
+  // A rung that has not drawn a frame yet has no cost. Guessing here is how a
+  // ladder moves twice on one piece of evidence, which is what made the old
+  // one walk to the bottom in a few seconds.
+  assert.equal(detailVerdict({ renderMs: 0, ...rates }), 'hold');
+  assert.equal(detailVerdict({ renderMs: -1, ...rates }), 'hold');
+  assert.equal(detailVerdict({ renderMs: Number.NaN, ...rates }), 'hold');
+  // An absent RATE is not evidence of a problem either, so it must not block a
+  // climb the cost reading has earned.
+  assert.equal(
+    detailVerdict({ renderMs: 5, deliveredFps: 0, processingFps: 0 }),
+    'climb'
+  );
+});
+
+test('a stalled or very fast camera cannot drive the budget to an extreme', async () => {
+  const { detailVerdict } = await import('../.test-build/vision/display-metrics.js');
+  // A stalled camera reporting a near-zero rate would otherwise license an
+  // unbounded render: 0.01fps is a 100-SECOND budget.
+  assert.equal(
+    detailVerdict({ renderMs: 400, deliveredFps: 0.01, processingFps: 0.01 }),
+    'back-off'
+  );
+  // And 120fps delivery does not mean the render must fit in 8ms. Unclamped,
+  // a 20ms render against an 8.3ms interval would back off; the 33ms floor
+  // holds it instead, rather than chasing a rate no eye resolves down a
+  // ladder. (30ms would still back off, and should — that is 75% of 33.)
+  assert.equal(
+    detailVerdict({ renderMs: 20, deliveredFps: 120, processingFps: 118 }),
+    'hold'
+  );
+});
+
+test('the two thresholds leave a band, or the ladder oscillates forever', async () => {
+  const { DETAIL_CLIMB_SHARE, DETAIL_BACK_OFF_SHARE, detailVerdict } =
+    await import('../.test-build/vision/display-metrics.js');
+  assert.ok(DETAIL_CLIMB_SHARE < DETAIL_BACK_OFF_SHARE);
+  // With one boundary every rung reads as both too expensive and cheap enough
+  // to leave, so prove a real gap exists at a real interval.
+  const interval = 100;
+  const middle = interval * (DETAIL_CLIMB_SHARE + DETAIL_BACK_OFF_SHARE) / 2;
+  assert.equal(
+    detailVerdict({ renderMs: middle, deliveredFps: 10, processingFps: 9 }),
+    'hold'
+  );
+});

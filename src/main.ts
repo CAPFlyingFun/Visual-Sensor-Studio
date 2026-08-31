@@ -12,6 +12,7 @@ import { GpsController } from './sensors/gps.js';
 import { zoomPresetStops } from './sensors/zoom.js';
 import { clamp, median } from './core/math.js';
 import {
+  detailVerdict,
   measureDisplay,
   megapixels,
   projectTiers,
@@ -136,7 +137,7 @@ import {
   type MotionSpeedReport,
   type MotionTrailReport
 } from './vision/motion-ironbow.js';
-import { FrameRateMeter, type PresentedFrame } from './vision/frame-rate.js';
+import { FrameRateMeter, type FrameRateReport, type PresentedFrame } from './vision/frame-rate.js';
 import { AdaptiveGovernor, type AdaptiveState } from './vision/adaptive.js';
 import { ObjectTracker, type TrackedObject } from './vision/tracking.js';
 import { FrameIntegrator, type StackMode } from './vision/integration.js';
@@ -173,7 +174,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.28.1';
+const APP_VERSION = '0.28.2';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -1324,7 +1325,7 @@ function renderLensReadouts(): void {
   if (!byId('displayDetailRow').hidden) {
     const canvas = visionCanvas;
     const size = canvas.width && !canvas.hidden ? `${canvas.width}×${canvas.height}` : '—';
-      // Auto that says nothing looks like auto that is not working, so the
+    // Auto that says nothing looks like auto that is not working, so the
     // rung it has settled on is part of the readout.
     const settled = settings.lensDetail === 'auto' ? ' · auto' : '';
     // A picture smaller than the setting asked for must say why, or it reads
@@ -1353,9 +1354,23 @@ function renderLensReadouts(): void {
         + ' so rendering larger costs frame rate for pixels that are interpolation.'
       : '';
     setText('lensDetailCap', [screenBound, detailNote].filter(Boolean).join(' '));
-    setText('lensCostValue', lensRenderMs > 0
-      ? `${size} · ${lensRenderMs.toFixed(0)} ms/frame${settled}`
-      : `${size}${settled}`);
+    // "0 ms/frame" was true and misleading at once. It timed the display
+    // render alone, so a small picture honestly cost nothing — while the phone
+    // was running at 100-140ms a frame and felt it. Reported next to a picture
+    // that had just been shrunk, it read as the shrinking having been for
+    // nothing, and gave no clue that the time was going somewhere else.
+    //
+    // So state both: what drawing costs, and what a whole frame costs. When
+    // they are far apart the difference IS the answer — it is the camera and
+    // the analysis, and no detail setting can reach it.
+    const frameMs = frameRateMeter.report.processingFps > 0
+      ? 1000 / frameRateMeter.report.processingFps
+      : 0;
+    const drawn = lensRenderMs > 0
+      ? `${lensRenderMs.toFixed(lensRenderMs < 10 ? 1 : 0)} ms drawing`
+      : 'measuring';
+    const whole = frameMs > 0 ? ` of a ${frameMs.toFixed(0)} ms frame` : '';
+    setText('lensCostValue', `${size} · ${drawn}${whole}${settled}`);
   }
   if (byId('lensPanel').hidden) return;
   setText('lensCoverage', activeLens
@@ -3167,31 +3182,21 @@ function buildLensSources(buffers: VisionBuffers, lens: CustomLens): ChannelSour
 /** Ladder rungs as SHORT SIDES, so a rung means the same in either orientation. */
 const AUTO_LADDER = [0, 540, 720, 1080, Number.POSITIVE_INFINITY] as const;
 /**
- * The band the ladder holds inside, from measurements on a real device.
- *
- * Reported from an iPhone: full resolution on a twelve-megapixel stream gave
- * one to two frames a second and crashed the camera; around 1080 across gave
- * about eighteen, described as good. So below twelve is failing and needs a
- * step down, above twenty is comfortable enough to try one more, and the
- * range between is a settled place to stay rather than something to keep
- * adjusting around.
- *
- * A gap between the two thresholds is what stops oscillation: a single
- * boundary would make every rung both too slow and fast enough.
+ * The band lives in `detailVerdict`, which judges RENDER COST against the
+ * camera's own delivery interval. See that function for why the frame rate
+ * this ladder used to read could not steer it.
  */
-const AUTO_TARGET_FPS = 10;
-const AUTO_HEADROOM_FPS = 20;
 /**
- * Headroom needed to climb OFF the bottom rungs.
+ * The lowest rung auto will settle on.
  *
- * A flat threshold trapped the ladder at the very bottom: once it had stepped
- * down to the analysis frame, any rate inside the dead band held it there
- * forever, so a phone that could manage 540 across at fifteen frames a second
- * sat at 166 instead. The gain from the analysis frame to a real picture is
- * enormous and worth a few frames; the gain from 720 to 1080 is marginal and
- * is not. So the low rungs climb on less evidence than the high ones.
+ * Rung 0 is the analysis frame — a fallback for modes that cannot honestly be
+ * enlarged, not a picture to choose. Auto reached it on a real device and the
+ * result was a 166px image beside a 609px "Full" that ran smoothly, which is
+ * the setting doing the opposite of its job. Even the smallest real rung is a
+ * fraction of a megapixel; if a device cannot manage that, a coarser picture
+ * is a better answer than no picture.
  */
-const AUTO_LOW_RUNG_HEADROOM_FPS = 14;
+const AUTO_FLOOR_RUNG = 1;
 // Bumped: rungs stored by earlier versions were widths, and one release could
 // persist a 0 that then survived every launch.
 const AUTO_SETTLE_KEY = 'vss.detail.auto.v2';
@@ -3211,7 +3216,7 @@ function loadAutoRung(): void {
     // showing a real picture at all. A remembered 0 is the record of one bad
     // session, and restoring it makes that session permanent.
     if (Number.isFinite(stored) && stored >= 0 && stored < AUTO_LADDER.length) {
-      autoRung = Math.max(1, stored);
+      autoRung = Math.max(AUTO_FLOOR_RUNG, stored);
     }
   } catch {
     // The default rung is a safe place to start learning again.
@@ -3232,39 +3237,49 @@ function saveAutoRung(): void {
  * Called once per processed frame; it does its own rate limiting so the
  * caller cannot make it thrash by calling more often.
  */
-function updateAutoDetail(processingFps: number, now: number): void {
+function updateAutoDetail(renderMs: number, rates: FrameRateReport, now: number): void {
   if (settings.lensDetail !== 'auto') return;
   if (now - autoLastCheck < 1000) return;
   autoLastCheck = now;
 
-  const tooSlow = processingFps > 0 && processingFps < AUTO_TARGET_FPS;
-  const needed = autoRung <= 1 ? AUTO_LOW_RUNG_HEADROOM_FPS : AUTO_HEADROOM_FPS;
-  const hasHeadroom = processingFps >= needed && autoRung < AUTO_LADDER.length - 1;
+  const verdict = detailVerdict({
+    renderMs,
+    deliveredFps: rates.deliveredFps,
+    processingFps: rates.processingFps
+  });
 
-  if (tooSlow && autoRung > 0) {
+  if (verdict === 'back-off' && autoRung > AUTO_FLOOR_RUNG) {
     autoVotes = autoVotes < 0 ? autoVotes - 1 : -1;
-    if (autoVotes <= -AUTO_VOTES) {
-      autoRung--;
-      autoVotes = 0;
-      lensDisplay = null;
-      saveAutoRung();
-    }
+    if (autoVotes <= -AUTO_VOTES) stepAutoRung(-1);
     return;
   }
-  if (hasHeadroom) {
+  if (verdict === 'climb' && autoRung < AUTO_LADDER.length - 1) {
     autoVotes = autoVotes > 0 ? autoVotes + 1 : 1;
     // Climbing needs more agreement than backing off: a step up that does not
     // hold costs a visible stutter, a step down that was not needed costs
     // only detail nobody had yet.
-    if (autoVotes >= AUTO_VOTES * 2) {
-      autoRung++;
-      autoVotes = 0;
-      lensDisplay = null;
-      saveAutoRung();
-    }
+    if (autoVotes >= AUTO_VOTES * 2) stepAutoRung(1);
     return;
   }
   autoVotes = 0;
+}
+
+/**
+ * Move one rung and forget what the old size cost.
+ *
+ * The cost reading is a rolling average, so carrying it across a size change
+ * would judge the new picture by the old one's price for several frames — long
+ * enough to vote again on stale evidence and step twice for one measurement.
+ * `detailVerdict` holds while the reading is zero, so clearing it makes the
+ * ladder wait for the rung it is actually standing on.
+ */
+function stepAutoRung(direction: 1 | -1): void {
+  autoRung += direction;
+  autoVotes = 0;
+  // Dropping the buffers forces ensureLensDisplay to rebuild at the new size,
+  // and that is where the stale cost reading is cleared.
+  lensDisplay = null;
+  saveAutoRung();
 }
 
 /** Target width for the live processed picture, never above what the camera gives. */
@@ -3472,6 +3487,13 @@ function widthForShortSide(shortSide: number): number {
 
 function ensureLensDisplay(width: number, height: number) {
   if (lensDisplay && lensDisplay.width === width && lensDisplay.height === height) return lensDisplay;
+  // A new size makes the old cost reading meaningless, and this is the one
+  // place EVERY size change passes through — a rung step, a change of the
+  // detail setting, and opening full screen alike. Full screen is the case
+  // that matters most: the viewer canvas is several times the panel's area,
+  // so a carried-over panel reading would tell the ladder it had room to climb
+  // at the exact moment it needed to back off.
+  lensRenderMs = 0;
   const count = width * height;
   lensDisplay = {
     width,
@@ -3752,10 +3774,16 @@ function processVisionFrame(timestamp: number): boolean {
   // Sampled here because this runs only while a view is actually on screen.
   sampleStageBox(displayStarted);
   const drewLarge = renderDisplayMode(visionMode, buffers);
-  if (drewLarge) lensRenderMs += (performance.now() - displayStarted - lensRenderMs) * 0.2;
-  // Measured on the mode actually running, so the ladder settles differently
-  // for a cheap lens than for relief — which is the point of measuring.
-  updateAutoDetail(frameRateMeter.report.processingFps, displayStarted);
+  if (drewLarge) {
+    lensRenderMs += (performance.now() - displayStarted - lensRenderMs) * 0.2;
+    // Only while something is actually being drawn at the display size. A mode
+    // that accumulates over time (speed, trails) renders at the analysis frame
+    // whatever the rung says, so letting it vote would settle the ladder on
+    // evidence from a picture the rung never produced.
+    // Measured on the mode actually running, so the ladder settles differently
+    // for a cheap lens than for relief — which is the point of measuring.
+    updateAutoDetail(lensRenderMs, frameRateMeter.report, displayStarted);
+  }
   sampleDetailForCap(displayStarted);
 
   switch (drewLarge ? 'camera' : visionMode) {
