@@ -47,7 +47,11 @@ test('auto needs a run of agreeing measurements, and more to climb than to fall'
 });
 
 test('the settled rung is remembered so a device learns this once', () => {
-  assert.match(mainSource, /const AUTO_SETTLE_KEY = 'vss\.detail\.auto\.v1'/);
+  assert.match(mainSource, /const AUTO_SETTLE_KEY = 'vss\.detail\.auto\.v2'/);
+  // Never START at the bottom, whatever was remembered: that rung is the
+  // analysis frame, a fallback rather than a settled answer, and restoring a
+  // remembered 0 makes one bad session permanent.
+  assert.match(mainSource, /autoRung = Math\.max\(1, stored\)/);
   assert.match(mainSource, /function loadAutoRung/);
   assert.match(mainSource, /function saveAutoRung/);
   assert.match(mainSource, /loadAutoRung\(\);/);
@@ -120,7 +124,8 @@ test('the display size is capped by measured detail, not by the reported size', 
   assert.match(mainSource, /function detailCappedShortSide\(sourceShort: number\)/);
   assert.match(mainSource, /const DETAIL_CAP_MARGIN = 4;/);
   assert.match(mainSource, /const DETAIL_CAP_FLOOR = 720;/);
-  assert.match(mainSource, /Math\.min\(sourceShort, detailCappedShortSide\(sourceShort\), wantedShort\)/);
+  assert.match(mainSource, /const ceiling = auto \? detailCappedShortSide\(sourceShort\) : sourceShort;/);
+  assert.match(mainSource, /Math\.min\(sourceShort, ceiling, wantedShort\)/);
 });
 
 test('the cap only acts on a confident, textured reading', () => {
@@ -157,4 +162,24 @@ test('a capped picture explains itself', () => {
   // four-level search — quoted as though they had been measured.
   assert.match(mainSource, /let measuredDetailPegged = false;/);
   assert.match(mainSource, /measuredDetailPegged \? ' at most about' : ' about'/);
+});
+
+test('an explicit tier is honoured exactly, never capped', () => {
+  // Choosing "Full — sensor resolution" is an instruction, not a starting
+  // point for a heuristic to argue with. Capping it produced 756x1008 from a
+  // 3024 stream under a label promising the sensor's own size — the control
+  // lying about what it did.
+  const fn = mainSource.slice(
+    mainSource.indexOf('function lensDisplayWidth'),
+    mainSource.indexOf('/** Buffers for the enlarged picture')
+  );
+  assert.match(fn, /const ceiling = auto \? detailCappedShortSide\(sourceShort\) : sourceShort;/);
+  // Full must resolve to the stream's own short side with nothing in between.
+  assert.match(fn, /settings\.lensDetail === 'full' \? sourceShort/);
+});
+
+test('the cap notice only appears where the cap applies', () => {
+  // Explaining an auto-only behaviour under an explicit setting would describe
+  // something that is not happening.
+  assert.match(mainSource, /capped && settings\.lensDetail === 'auto'/);
 });

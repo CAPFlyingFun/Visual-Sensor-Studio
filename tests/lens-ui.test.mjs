@@ -203,7 +203,7 @@ test('the live picture can be drawn larger than the analysis frame', () => {
   // different pictures: 1280 gave a landscape frame 1280x960 and a portrait
   // one 1280x1707, which is 1.78x the pixels for the same choice.
   assert.match(mainSource, /function widthForShortSide\(shortSide: number\)/);
-  assert.match(mainSource, /const wantedShort = settings\.lensDetail === 'auto'/);
+  assert.match(mainSource, /const wantedShort = auto \? \(AUTO_LADDER\[autoRung\] \|\| 0\)/);
 });
 
 test('the enlarged live path does not go through the 960px capture clamp', () => {

@@ -167,7 +167,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.26.2';
+const APP_VERSION = '0.26.3';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -1334,7 +1334,7 @@ function renderLensReadouts(): void {
     // levels without finding where detail stops. Quoting a pixel figure from
     // it states a precision that was never established.
     const real = Math.round(sourceShort * (measuredDetailScale ?? 1));
-    setText('lensDetailCap', capped
+    setText('lensDetailCap', capped && settings.lensDetail === 'auto'
       ? `This stream is ${sourceShort}px on its short side but carries`
         + `${measuredDetailPegged ? ' at most about' : ' about'} ${real}px of real detail,`
         + ' so rendering larger costs frame rate for pixels that are interpolation.'
@@ -3178,7 +3178,9 @@ const AUTO_HEADROOM_FPS = 20;
  * is not. So the low rungs climb on less evidence than the high ones.
  */
 const AUTO_LOW_RUNG_HEADROOM_FPS = 14;
-const AUTO_SETTLE_KEY = 'vss.detail.auto.v1';
+// Bumped: rungs stored by earlier versions were widths, and one release could
+// persist a 0 that then survived every launch.
+const AUTO_SETTLE_KEY = 'vss.detail.auto.v2';
 /** Consecutive verdicts needed before moving — one slow frame is not a trend. */
 const AUTO_VOTES = 4;
 
@@ -3189,7 +3191,14 @@ let autoLastCheck = 0;
 function loadAutoRung(): void {
   try {
     const stored = Number(localStorage.getItem(AUTO_SETTLE_KEY));
-    if (Number.isFinite(stored) && stored >= 0 && stored < AUTO_LADDER.length) autoRung = stored;
+    // Never START at the bottom, whatever was remembered. The bottom rung is
+    // the analysis frame — a fallback, not a settled answer — and a session
+    // that begins there has to earn its way out through the dead band before
+    // showing a real picture at all. A remembered 0 is the record of one bad
+    // session, and restoring it makes that session permanent.
+    if (Number.isFinite(stored) && stored >= 0 && stored < AUTO_LADDER.length) {
+      autoRung = Math.max(1, stored);
+    }
   } catch {
     // The default rung is a safe place to start learning again.
   }
@@ -3253,16 +3262,28 @@ function lensDisplayWidth(): number {
 
   // Every tier names a SHORT SIDE. Naming a width would make one setting mean
   // two different pictures depending on which way the phone is held.
-  const wantedShort = settings.lensDetail === 'auto' ? (AUTO_LADDER[autoRung] || 0)
+  const auto = settings.lensDetail === 'auto';
+  const wantedShort = auto ? (AUTO_LADDER[autoRung] || 0)
     : settings.lensDetail === 'full' ? sourceShort
     : settings.lensDetail === '720' ? 720
     : settings.lensDetail === '540' ? 540
     : 0;
   if (wantedShort <= 0) return analysis;
 
-  // Neither more than the sensor delivered nor more than the frame was
-  // measured to contain: both are pixels paid for and not received.
-  const short = Math.min(sourceShort, detailCappedShortSide(sourceShort), wantedShort);
+  // THE DETAIL CAP APPLIES TO AUTO ONLY.
+  //
+  // Choosing "Full — sensor resolution" is an instruction, and an instruction
+  // is not a starting point for a heuristic to argue with. Capping it produced
+  // 756x1008 from a 3024 stream and reported it under a label promising the
+  // sensor's own size, which is the control lying about what it did.
+  //
+  // The evidence behind the cap is also weaker than it looked: the readings
+  // driving it were pegged at the estimator's floor, so "about 189px of real
+  // detail" was only ever "no more than roughly that". Good enough to inform a
+  // ladder that is explicitly asking to be told what to do; nowhere near good
+  // enough to overrule someone who has said what they want.
+  const ceiling = auto ? detailCappedShortSide(sourceShort) : sourceShort;
+  const short = Math.min(sourceShort, ceiling, wantedShort);
   return Math.max(analysis, widthForShortSide(short));
 }
 

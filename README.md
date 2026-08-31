@@ -426,8 +426,18 @@ stream carries about as much real detail as the smaller one, so eight times
 the pixels bought eight times the cost and nothing else. A stream can report a
 size its sensor mode never resolved.
 
-So the display size is capped by what the frame is measured to CONTAIN rather
-than by what it claims. The margin is deliberately generous (4×, floor 1280):
+**The cap applies to Auto only.** Choosing a tier is an instruction, and an
+instruction is not a starting point for a heuristic to argue with: capping
+"Full" produced 756×1008 from a 3024 stream under a label promising the
+sensor's own size, which is the control lying about what it did. The evidence
+is also weaker than it looked — the readings driving it were pegged at the
+estimator's floor, so "about 189px of real detail" only ever meant "no more
+than roughly that". Good enough to inform a ladder that is explicitly asking
+to be told what to do; nowhere near good enough to overrule someone who has
+said what they want.
+
+Within Auto, the display size is capped by what the frame is measured to
+CONTAIN rather than by what it claims. The margin is deliberately generous (4×, floor 1280):
 the estimator is a coarse halving search, and rendering somewhat more than
 necessary costs a little speed, while rendering less than the frame holds
 costs detail that cannot be got back. Only a confident, textured reading
