@@ -1007,3 +1007,63 @@ test('contours and shading are smoothed separately', () => {
   assert.match(render, /const contourData = options\.contourSmoothing/);
   assert.match(render, /every number reported to the\s*\n?\s*\/\/ user still comes from the survey/);
 });
+
+test('the rig is driven by the gyroscope, not by the camera', () => {
+  // The phone is a puppet handle: sub-degree rotation in the hand, in any
+  // light, with nothing to download. A landmark model would be a multi-megabyte
+  // dependency giving noisier data than the gyro already in your palm.
+  assert.match(htmlSource, /The phone is the controller, not the camera/);
+  assert.match(mainSource, /rigSmoother\.filter\(latestMotion\.quaternion/);
+});
+
+test('a bone take composes onto the rest pose rather than replacing it', () => {
+  // Replacing throws away the rig's own construction, and a leg authored at
+  // 40 degrees snaps straight the instant it is touched.
+  const puppet = readFileSync(new URL('../src/rig/puppet.ts', import.meta.url), 'utf8');
+  assert.match(puppet, /bone\.quaternion\.copy\(rest\)\.multiply\(/);
+  assert.match(puppet, /a leg authored at 40 degrees snaps\s*\n?\s*\/\/ straight/);
+});
+
+test('recording one bone leaves the rest playing', () => {
+  // Thirteen moving parts is thirteen easy takes, not thirteen at once.
+  assert.match(mainSource, /Everything already recorded is playing back/);
+  const tick = mainSource.slice(mainSource.indexOf('function rigTick'));
+  const body = tick.slice(0, tick.indexOf('\n}\n'));
+  assert.match(body, /rigRecorder\.pose\(position, gait, source\)/);
+  assert.match(body, /if \(bone === rigArmedBone && rigRecorder\.isRecording\) continue/);
+});
+
+test('a gait is exported as the rule, not baked into six copies', () => {
+  // Baked, it cannot be retimed or swapped in the engine that consumes it.
+  assert.match(mainSource, /exported as the RULE rather than baked into six copies/);
+  assert.match(mainSource, /gait: gait\.length \? \{ pattern:/);
+});
+
+test('the export says what its rotations mean', () => {
+  // A quaternion with no stated convention is a number nobody can apply.
+  assert.match(mainSource, /composed ONTO each bone/);
+  assert.match(mainSource, /rest pose, not to replace it/);
+});
+
+test('the leg guess is offered as a guess', () => {
+  // Rigs do not agree on naming, and getting it wrong should cost a tap rather
+  // than produce an ant that walks sideways with nothing to explain why.
+  const puppet = readFileSync(new URL('../src/rig/puppet.ts', import.meta.url), 'utf8');
+  assert.match(puppet, /offered as a\s*\n? \* SUGGESTION/);
+  assert.match(mainSource, /Check the order before relying on it/);
+  assert.match(mainSource, /Could not find six leg bones by name/);
+});
+
+test('models are never uploaded', () => {
+  assert.match(htmlSource, /Models stay on the device; nothing is uploaded/);
+  const puppet = readFileSync(new URL('../src/rig/puppet.ts', import.meta.url), 'utf8');
+  assert.match(puppet, /createObjectURL/);
+  assert.match(puppet, /revokeObjectURL/);
+  assert.doesNotMatch(puppet, /fetch\(|XMLHttpRequest/);
+});
+
+test('three.js loads only when a model is actually loaded', () => {
+  // The rig module pulls in GLTFLoader, which nobody who never opens this
+  // panel should pay for.
+  assert.match(mainSource, /await import\('\.\/rig\/puppet\.js'\)/);
+});

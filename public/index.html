@@ -414,6 +414,96 @@
         </p>
       </section>
 
+      <section class="panel rig-panel" id="rigPanel">
+        <div class="panel-heading">
+          <div><p class="section-kicker">RIG PUPPET</p><h2>Animate a model by hand</h2></div>
+        </div>
+        <p class="lead-copy">
+          Load a rigged GLB, pick a bone, and move the phone — the bone copies its rotation.
+          Record a loop, then record the next bone over the top of it.
+        </p>
+        <p class="helper">
+          The phone is the controller, not the camera. The gyroscope gives sub-degree rotation in
+          your hand, in any light, with nothing to download — a puppet handle rather than a tracker.
+          Models stay on the device; nothing is uploaded.
+        </p>
+
+        <div class="button-row">
+          <label class="file-button" for="rigFile">Load GLB / glTF</label>
+          <input id="rigFile" type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" hidden />
+          <button class="secondary-button" id="rigClearButton" type="button">Remove Model</button>
+        </div>
+        <p class="helper" id="rigMessage">No model loaded.</p>
+
+        <div class="readout-grid two">
+          <div class="readout"><span>Armed bone</span><strong id="rigArmedBone">none</strong></div>
+          <div class="readout"><span>Loop position</span><strong id="rigClock">0.00 s</strong></div>
+          <div class="readout"><span>Channels</span><strong id="rigChannelCount">0</strong></div>
+          <div class="readout"><span>State</span><strong id="rigState">Idle</strong></div>
+        </div>
+
+        <div class="button-row">
+          <button class="primary-button" id="rigRecordButton" type="button" disabled>Record Bone</button>
+          <button class="secondary-button" id="rigPlayButton" type="button" disabled>Play Loop</button>
+          <button class="secondary-button" id="rigResetPoseButton" type="button" disabled>Reset Pose</button>
+        </div>
+
+        <div class="bone-list" id="rigBoneList">Load a model to list its bones.</div>
+
+        <details class="disclosure">
+          <summary>Smoothing &amp; loop</summary>
+          <div class="night-grid">
+            <label>Loop length
+              <select id="rigLoop">
+                <option value="1">1 sec</option>
+                <option value="2" selected>2 sec</option>
+                <option value="4">4 sec</option>
+                <option value="8">8 sec</option>
+              </select>
+            </label>
+            <label>Steadiness <span class="range-value" id="rigMinCutoffValue">1.2 Hz</span>
+              <input id="rigMinCutoff" type="range" min="0.2" max="6" step="0.1" value="1.2" />
+            </label>
+            <label>Responsiveness <span class="range-value" id="rigBetaValue">0.05</span>
+              <input id="rigBeta" type="range" min="0" max="1" step="0.01" value="0.05" />
+            </label>
+          </div>
+          <p class="helper">Steadiness is the cutoff while you hold still — lower is calmer. Responsiveness lets fast movement through unfiltered, so a deliberate gesture does not arrive late.</p>
+        </details>
+
+        <details class="disclosure">
+          <summary>Gait — six legs from one take</summary>
+          <p class="helper">
+            A walking hexapod's legs are one cycle at six offsets, not six separate performances.
+            Record a single leg, name the six here, and the gait distributes it. A leg you record
+            by hand keeps its own take.
+          </p>
+          <div class="night-grid">
+            <label>Pattern
+              <select id="rigGait">
+                <option value="none">Off</option>
+                <option value="tripod">Tripod — three down at all times</option>
+                <option value="wave">Wave — one leg at a time</option>
+              </select>
+            </label>
+            <label>Source channel
+              <select id="rigGaitSource"><option value="">—</option></select>
+            </label>
+          </div>
+          <label class="stacked-field">Leg bones, in order: front-left, mid-left, rear-left, front-right, mid-right, rear-right
+            <input id="rigLegs" type="text" placeholder="legL1, legL2, legL3, legR1, legR2, legR3" />
+          </label>
+          <div class="button-row">
+            <button class="secondary-button" id="rigGuessLegsButton" type="button">Guess From Names</button>
+          </div>
+        </details>
+
+        <div class="button-row">
+          <button class="secondary-button" id="rigExportButton" type="button" disabled>Export Animation JSON</button>
+          <button class="secondary-button" id="rigClearTakesButton" type="button">Clear All Takes</button>
+        </div>
+      </section>
+
       <section class="panel parallax-panel">
         <div class="panel-heading">
           <div><p class="section-kicker">EXPERIMENTAL DEPTH</p><h2>Two-Frame Parallax Scan</h2></div>
@@ -446,7 +536,7 @@
       </section>
     </main>
 
-    <footer><strong>Visual Sensor Studio v0.15.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.16.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">

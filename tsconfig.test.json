@@ -33,6 +33,8 @@
     "src/terrain/tiles.ts",
     "src/terrain/render.ts",
     "src/terrain/mesh.ts",
+    "src/rig/one-euro.ts",
+    "src/rig/recorder.ts",
     "src/vision/overlays.ts"
   ]
 }

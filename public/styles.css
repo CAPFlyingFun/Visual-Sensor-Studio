@@ -934,3 +934,60 @@ footer strong { color: #9fb2c3; }
    on a card this tall is exactly what it does. */
 .terrain-output canvas { touch-action: none; cursor: grab; }
 .terrain-output canvas:active { cursor: grabbing; }
+
+/* Rig puppet. */
+.file-button {
+  flex: 1 1 145px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(20, 34, 50, 0.9);
+  color: #cfe2f1;
+  font-size: 0.82rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+.bone-list {
+  max-height: 210px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(8, 15, 24, 0.5);
+  padding: 6px;
+  margin-bottom: 10px;
+  font-size: 0.74rem;
+  color: #9fb2c3;
+}
+.bone-button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: #cfe2f1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.bone-button:hover { background: rgba(96, 208, 255, 0.08); }
+.bone-button.active { border-color: var(--cyan); background: rgba(96, 208, 255, 0.14); }
+.bone-button .tip { color: var(--amber); }
+.bone-button .has-take { color: #6be6a7; }
+.stacked-field { display: grid; gap: 6px; color: #9fb2c3; font-size: 0.72rem; font-weight: 700; margin-bottom: 10px; }
+.stacked-field input {
+  min-height: 42px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #071019;
+  color: #eaf3ff;
+  font-size: 0.8rem;
+}
+.rig-panel { padding: 15px; }
+@media (max-width: 720px) { .rig-panel { padding: 12px; } }

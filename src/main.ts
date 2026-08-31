@@ -89,6 +89,8 @@ import {
 import { loadHeightfield } from './terrain/loader.js';
 import { contourInterval, estimateRoughness, renderTerrain, terrainStats } from './terrain/render.js';
 import { buildTerrainMesh, type TerrainMesh } from './terrain/mesh.js';
+import { QuaternionSmoother } from './rig/one-euro.js';
+import { RigRecorder, tripodGait, waveGait, type GaitLeg } from './rig/recorder.js';
 import {
   BaselineTracker,
   MAX_BASELINE_ROTATION_DEGREES,
@@ -98,7 +100,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.15.0';
+const APP_VERSION = '0.16.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -327,6 +329,8 @@ interface FusionBridge {
   setQuality(value: QualityPreference): void;
   setTerrain(mesh: TerrainMesh | null): void;
   clearTerrain(): void;
+  setRig(root: unknown, radius: number): void;
+  clearRig(): void;
   resetView(): void;
   /**
    * False when the 3D module could not load — a blocked CDN, an old WebGL
@@ -343,6 +347,8 @@ const fallbackFusion: FusionBridge = {
   setQuality: (_value) => undefined,
   setTerrain: (_mesh) => undefined,
   clearTerrain: () => undefined,
+  setRig: (_root, _radius) => undefined,
+  clearRig: () => undefined,
   resetView: () => undefined,
   available: false
 };
@@ -381,6 +387,15 @@ const baseline = new BaselineTracker();
 let lastBaseline: BaselineEstimate | null = null;
 let lastMotionAt = 0;
 let parallaxDepthMetres: number | null = null;
+
+const rigRecorder = new RigRecorder();
+const rigSmoother = new QuaternionSmoother();
+let rigPuppet: import('./rig/puppet.js').RigPuppet | null = null;
+let rigArmedBone: string | null = null;
+let rigRecordingFrom = 0;
+let rigPlaying = false;
+let rigLoopStart = 0;
+let rigFrame = 0;
 let terrainField: Heightfield | null = null;
 let terrainOrigin: { lat: number; lon: number } | null = null;
 /** Elevation data is ~30 m, so a higher zoom would upsample rather than reveal. */
@@ -2901,6 +2916,176 @@ function compassPoint(degrees: number): string {
   return points[Math.round(degrees / 45) % 8];
 }
 
+/**
+ * The rig puppet loop.
+ *
+ * Runs only while a model is loaded. Every frame it drives the armed bone from
+ * the live IMU, plays every committed channel back, and — when a gait is set —
+ * fills the remaining legs from one recorded cycle at their phase offsets.
+ */
+function rigTick(now: number): void {
+  rigFrame = requestAnimationFrame(rigTick);
+  const puppet = rigPuppet;
+  if (!puppet?.rig) return;
+
+  const loop = rigRecorder.loopSeconds;
+  const position = rigPlaying || rigRecorder.isRecording
+    ? (((now - rigLoopStart) / 1000) % loop + loop) % loop
+    : 0;
+
+  // Playback first, so the armed bone's live motion is not overwritten by its
+  // own previous take a frame later.
+  const gait = rigGaitLegs();
+  const source = byId<HTMLSelectElement>('rigGaitSource').value || undefined;
+  for (const [bone, rotation] of rigRecorder.pose(position, gait, source)) {
+    if (bone === rigArmedBone && rigRecorder.isRecording) continue;
+    puppet.setBoneRotation(bone, rotation);
+  }
+
+  if (rigArmedBone && latestMotion) {
+    // Relative to the device's own resting orientation is deliberately NOT
+    // done here: the rig composes onto the bone's rest pose instead, so the
+    // phone's absolute orientation maps directly and predictably.
+    const smoothed = rigSmoother.filter(latestMotion.quaternion, now / 1000);
+    puppet.setBoneRotation(rigArmedBone, smoothed);
+    if (rigRecorder.isRecording) rigRecorder.record(position, smoothed);
+  }
+
+  setText('rigClock', `${position.toFixed(2)} s`);
+}
+
+function rigGaitLegs(): GaitLeg[] {
+  const pattern = byId<HTMLSelectElement>('rigGait').value;
+  if (pattern === 'none') return [];
+  const legs = byId<HTMLInputElement>('rigLegs').value
+    .split(',').map((name) => name.trim()).filter(Boolean);
+  if (legs.length < 6) return [];
+  return pattern === 'wave' ? waveGait(legs) : tripodGait(legs);
+}
+
+function renderRigBones(): void {
+  const list = byId('rigBoneList');
+  const rig = rigPuppet?.rig;
+  if (!rig) {
+    list.textContent = 'Load a model to list its bones.';
+    return;
+  }
+  list.textContent = '';
+  for (const bone of rig.bones) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'bone-button';
+    button.classList.toggle('active', bone.name === rigArmedBone);
+    const recorded = rigRecorder.channel(bone.name);
+    // Indented by depth, so a skeleton reads as a tree rather than a word list.
+    button.innerHTML = `${'&nbsp;'.repeat(bone.depth * 2)}`
+      + `<span class="${recorded ? 'has-take' : bone.isTip ? 'tip' : ''}">`
+      + `${bone.isTip ? '•' : '▸'} ${bone.name}</span>`
+      + (recorded ? ` <span class="has-take">(${recorded.keys.length} keys)</span>` : '');
+    button.addEventListener('click', () => armRigBone(bone.name));
+    list.appendChild(button);
+  }
+  setText('rigChannelCount', String(rigRecorder.boneNames.length));
+
+  const source = byId<HTMLSelectElement>('rigGaitSource');
+  const chosen = source.value;
+  source.textContent = '';
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = '—';
+  source.appendChild(none);
+  for (const name of rigRecorder.boneNames) {
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = name;
+    source.appendChild(option);
+  }
+  source.value = chosen;
+}
+
+function armRigBone(name: string | null): void {
+  rigArmedBone = name;
+  rigSmoother.reset();
+  setText('rigArmedBone', name ?? 'none');
+  byId<HTMLButtonElement>('rigRecordButton').disabled = !name;
+  byId<HTMLButtonElement>('rigResetPoseButton').disabled = !rigPuppet?.rig;
+  renderRigBones();
+  setText('rigMessage', name
+    ? `${name} armed. Move the phone to pose it${latestMotion ? '' : ' — enable motion sensors first'}.`
+    : 'No bone armed.');
+}
+
+async function loadRigModel(file: File): Promise<void> {
+  setText('rigMessage', `Loading ${file.name}…`);
+  try {
+    if (!rigPuppet) {
+      const { RigPuppet } = await import('./rig/puppet.js');
+      rigPuppet = new RigPuppet();
+    }
+    const rig = await rigPuppet.load(file);
+    fusion.setRig(rig.root, rig.radius);
+    rigRecorder.clear();
+    armRigBone(null);
+    renderRigBones();
+    byId<HTMLButtonElement>('rigPlayButton').disabled = false;
+    byId<HTMLButtonElement>('rigExportButton').disabled = false;
+    byId<HTMLButtonElement>('rigResetPoseButton').disabled = false;
+
+    cancelAnimationFrame(rigFrame);
+    rigFrame = requestAnimationFrame(rigTick);
+
+    setText('rigMessage', `${file.name} · ${rig.bones.length} nodes`
+      + (rig.clips.length ? ` · ${rig.clips.length} existing clip${rig.clips.length === 1 ? '' : 's'}` : '')
+      + (fusion.available ? '. Tap a bone below.' : '. The 3D view could not load, so nothing will be shown.'));
+  } catch (error) {
+    // A glTF that will not parse is the common case here — a .gltf whose
+    // textures and buffers sit in sibling files a file picker never handed us.
+    setText('rigMessage', `Could not load that model: ${
+      error instanceof Error ? error.message : 'unknown error'
+    }. A single self-contained .glb is the safest format.`);
+  }
+}
+
+function exportRigAnimation(): void {
+  const gait = rigGaitLegs();
+  const source = byId<HTMLSelectElement>('rigGaitSource').value;
+  const document_ = {
+    format: 'visual-sensor-studio/rig-take',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    loopSeconds: rigRecorder.loopSeconds,
+    // The gait is exported as the RULE rather than baked into six copies of
+    // the same curve, so it can be retimed or swapped in the engine.
+    gait: gait.length ? { pattern: byId<HTMLSelectElement>('rigGait').value, source, legs: gait } : null,
+    channels: rigRecorder.boneNames.map((bone) => {
+      const channel = rigRecorder.channel(bone)!;
+      return {
+        bone,
+        phase: channel.phase,
+        muted: channel.muted,
+        keys: channel.keys.map((key) => ({
+          t: Number(key.time.toFixed(4)),
+          q: [key.rotation.x, key.rotation.y, key.rotation.z, key.rotation.w]
+            .map((v) => Number(v.toFixed(5)))
+        }))
+      };
+    }),
+    note: 'Rotations are quaternions to be composed ONTO each bone\'s rest pose, not to replace it.'
+  };
+
+  const blob = new Blob([JSON.stringify(document_, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `rig-take-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setText('rigMessage', `Exported ${document_.channels.length} channel`
+    + `${document_.channels.length === 1 ? '' : 's'}. It stays on this device.`);
+}
+
 function downloadSnapshot(): void {
   const snapshot: SensorSnapshot = {
     capturedAt: new Date().toISOString(),
@@ -4141,6 +4326,87 @@ on('switchCameraButton', 'click', () => void switchCamera());
 on('motionButton', 'click', () => void enableMotion());
 on('gpsButton', 'click', toggleGps);
 on('resetGpsButton', 'click', resetGps);
+on('rigFile', 'change', (event) => {
+  const file = (event.target as HTMLInputElement).files?.[0];
+  if (file) void loadRigModel(file);
+});
+on('rigClearButton', 'click', () => {
+  rigPuppet?.dispose();
+  fusion.clearRig();
+  rigRecorder.clear();
+  armRigBone(null);
+  cancelAnimationFrame(rigFrame);
+  byId<HTMLButtonElement>('rigPlayButton').disabled = true;
+  byId<HTMLButtonElement>('rigExportButton').disabled = true;
+  byId<HTMLButtonElement>('rigResetPoseButton').disabled = true;
+  renderRigBones();
+  setText('rigMessage', 'Model removed.');
+});
+on('rigRecordButton', 'click', () => {
+  const button = byId<HTMLButtonElement>('rigRecordButton');
+  if (rigRecorder.isRecording) {
+    const channel = rigRecorder.stopRecording();
+    button.textContent = 'Record Bone';
+    setText('rigState', 'Idle');
+    setText('rigMessage', channel
+      ? `${channel.bone}: ${channel.keys.length} keys committed. Arm the next bone — this one keeps playing.`
+      : 'That take was too short to keep. Hold the record for at least a moment of the loop.');
+    renderRigBones();
+    return;
+  }
+  if (!rigArmedBone) return;
+  rigRecorder.startRecording(rigArmedBone);
+  rigLoopStart = performance.now();
+  rigPlaying = true;
+  button.textContent = 'Stop Recording';
+  setText('rigState', `Recording ${rigArmedBone}`);
+  setText('rigMessage', 'Everything already recorded is playing back. Move the phone.');
+});
+on('rigPlayButton', 'click', () => {
+  rigPlaying = !rigPlaying;
+  if (rigPlaying) rigLoopStart = performance.now();
+  byId<HTMLButtonElement>('rigPlayButton').textContent = rigPlaying ? 'Stop Loop' : 'Play Loop';
+  setText('rigState', rigPlaying ? 'Playing' : 'Idle');
+});
+on('rigResetPoseButton', 'click', () => {
+  rigPuppet?.resetBone();
+  setText('rigMessage', 'Every bone back to the pose the file authored.');
+});
+on('rigClearTakesButton', 'click', () => {
+  rigRecorder.clear();
+  rigPuppet?.resetBone();
+  renderRigBones();
+  setText('rigMessage', 'All takes cleared. The model is untouched.');
+});
+on('rigExportButton', 'click', exportRigAnimation);
+on('rigLoop', 'change', (event) => {
+  rigRecorder.loopSeconds = Number((event.target as HTMLSelectElement).value) || 2;
+});
+on('rigMinCutoff', 'input', (event) => {
+  const value = Number((event.target as HTMLInputElement).value);
+  setText('rigMinCutoffValue', `${value.toFixed(1)} Hz`);
+  rigSmoother.configure({ minCutoff: value });
+});
+on('rigBeta', 'input', (event) => {
+  const value = Number((event.target as HTMLInputElement).value);
+  setText('rigBetaValue', value.toFixed(2));
+  rigSmoother.configure({ beta: value });
+});
+on('rigGuessLegsButton', 'click', () => {
+  void (async () => {
+    const rig = rigPuppet?.rig;
+    if (!rig) return;
+    const { guessLegOrder } = await import('./rig/puppet.js');
+    const guess = guessLegOrder(rig.bones);
+    if (guess.length < 6) {
+      setText('rigMessage', 'Could not find six leg bones by name. Type them in order instead —'
+        + ' the guess only reads common naming conventions and rigs do not agree on one.');
+      return;
+    }
+    byId<HTMLInputElement>('rigLegs').value = guess.join(', ');
+    setText('rigMessage', `Guessed: ${guess.join(', ')}. Check the order before relying on it.`);
+  })();
+});
 on('captureParallaxButton', 'click', captureParallaxReference);
 on('locateAndLoadButton', 'click', () => void locateAndLoadTerrain());
 on('loadTerrainManualButton', 'click', () => {

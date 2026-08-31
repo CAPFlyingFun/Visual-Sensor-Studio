@@ -20,6 +20,7 @@ export class FusionScene {
   private terrain: any = null;
   private terrainWire: any = null;
   private beacon: any = null;
+  private rig: any = null;
   private readonly phoneBaseScale = 1;
   private readonly grid: any;
   private readonly defaultFogDensity = 0.008;
@@ -215,6 +216,36 @@ export class FusionScene {
     this.frameTerrain(mesh.spanMetres);
   }
 
+  /**
+   * Show a loaded rig, framed and lit.
+   *
+   * Scaled to a consistent on-screen size rather than shown at its authored
+   * scale: a glTF may be in metres, centimetres or arbitrary units, and a rig
+   * that arrives as a speck or fills the sky is indistinguishable from one that
+   * failed to load.
+   */
+  setRig(root: any, radius: number): void {
+    this.clearRig();
+    if (!root) return;
+    const scale = 2.2 / Math.max(0.001, radius);
+    root.scale.setScalar(scale);
+    root.position.set(0, 0, 0);
+    this.rig = root;
+    this.scene.add(root);
+    this.phoneGroup.visible = false;
+    this.camera.position.set(4.5, 3.2, 5.5);
+    this.controls.target.set(0, 1, 0);
+    this.controls.minDistance = 1;
+    this.controls.maxDistance = 40;
+    this.controls.update();
+  }
+
+  clearRig(): void {
+    if (this.rig) this.scene.remove(this.rig);
+    this.rig = null;
+    this.phoneGroup.visible = true;
+  }
+
   clearTerrain(): void {
     for (const object of [this.terrain, this.terrainWire, this.beacon]) {
       if (!object) continue;
@@ -259,6 +290,7 @@ export class FusionScene {
   }
 
   destroy(): void {
+    this.clearRig();
     this.clearTerrain();
     cancelAnimationFrame(this.animationFrame);
     this.resizeObserver.disconnect();
