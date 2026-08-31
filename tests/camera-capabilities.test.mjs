@@ -23,7 +23,23 @@ test('exposureMode alone is not enough to command an exposure', () => {
   // built, which is exactly what this readout exists to prevent.
   const report = cc.readCapabilities({ exposureMode: ['continuous'], zoom: { min: 1, max: 5 } }, {});
   assert.equal(report.hdrPath, 'opportunistic');
-  assert.match(report.summary, /cannot be set/);
+  assert.match(report.summary, /browser does not expose/);
+});
+
+test('an absent control is reported as the browser withholding it, never as the phone lacking it', () => {
+  // Joshua: "everything including depth is available, as different photo apps I
+  // have on my phone allow more control than what's shown as available."
+  // Correct, and the distinction is not cosmetic: "the sensor cannot" is a dead
+  // end, while "the browser will not" is a boundary a native provider crosses.
+  // Wording that conflates them would close a door that is open.
+  for (const caps of [null, {}, { zoom: { min: 1, max: 5 } }]) {
+    const summary = cc.readCapabilities(caps, null).summary;
+    assert.doesNotMatch(summary, /this device (cannot|lacks)|the camera cannot|phone cannot/i,
+      `summary blames the hardware: ${summary}`);
+  }
+  assert.match(cc.readCapabilities({ zoom: { min: 1, max: 5 } }, null).summary,
+    /native apps use it/);
+  assert.match(cc.readCapabilities({}, null).summary, /describes\s+the browser, not the camera/);
 });
 
 test('no capability data at all means tone mapping, and says it is not HDR', () => {
@@ -64,5 +80,7 @@ test('the readout asks the live track and survives the methods being absent', ()
   // An unsupported control must not render as one with an empty range.
   assert.match(main, /if \(!control\.supported\) row\.className = 'cap-no';/);
   const css = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
-  assert.match(css, /\.cap-no \.cap-range::before \{ content: 'not supported'; \}/);
+  // "not exposed by this browser" rather than "not supported": the row is
+  // about what WebKit hands a page, not about what the camera can do.
+  assert.match(css, /\.cap-no \.cap-range::before \{ content: 'not exposed by this browser'; \}/);
 });

@@ -792,8 +792,10 @@
           <button class="secondary-button" id="burstReadCaps" type="button">Read Capabilities</button>
         </div>
         <p class="helper" id="burstCapsSummary">
-          Not read yet. This asks the camera what it will let the browser set &mdash; the answer
-          decides whether real exposure bracketing is possible, or only tone mapping.
+          Not read yet. This asks what <em>this browser</em> will let a web page set &mdash; which
+          is narrower than what the camera can do. Native apps reach controls WebKit does not
+          pass through, so an absent row means the browser withholds it, not that the phone
+          lacks it.
         </p>
         <div class="burst-caps" id="burstCapsList"></div>
 
@@ -859,7 +861,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.32.1</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.32.2</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">

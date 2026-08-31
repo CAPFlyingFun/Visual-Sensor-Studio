@@ -1431,4 +1431,4 @@ button.ghost.danger {
 .burst-caps .cap-range { color: rgba(160, 200, 240, .8); }
 /* Unsupported must not read as merely empty — it is the finding, not a gap. */
 .burst-caps .cap-no { opacity: .5; }
-.burst-caps .cap-no .cap-range::before { content: 'not supported'; }
+.burst-caps .cap-no .cap-range::before { content: 'not exposed by this browser'; }

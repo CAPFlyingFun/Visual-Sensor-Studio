@@ -12,6 +12,20 @@
  *
  * So it is measured on the device, and the result decides what gets built.
  * Nothing here assumes an answer.
+ *
+ * WHAT AN ABSENT CONTROL MEANS, precisely, because the two readings lead to
+ * opposite conclusions and only one of them is true here.
+ *
+ * Joshua: "everything including depth is available, as different photo apps I
+ * have on my phone allow more control than what's shown as available." He is
+ * right, and it is the whole point. The sensor has exposure control, and depth,
+ * and everything else those apps reach. What this report measures is the far
+ * narrower question of WHAT WEBKIT HANDS A WEB PAGE — and the gap between the
+ * two is a browser boundary, not a hardware limit.
+ *
+ * So nothing here may say the device cannot do a thing. It says the browser
+ * does not offer it, which is a boundary a native provider could cross later
+ * and is exactly why the camera stays behind a provider interface.
  */
 
 /** The constraints that decide whether exposure can be commanded. */
@@ -50,7 +64,8 @@ export interface CapabilityReport {
   controls: ControlReport[];
   exposure: ControlReport[];
   /**
-   * Which dynamic-range approach this device permits.
+   * Which dynamic-range approach this BROWSER permits. The camera's own
+   * abilities are wider and are not what is being measured.
    *
    *  bracketed      — exposure can be commanded, so a real bracket is possible.
    *  opportunistic  — it cannot, but auto-exposure drift can still be measured
@@ -88,8 +103,8 @@ function describeCurrent(value: unknown): string {
  *
  * Both arguments are whatever `getCapabilities()` and `getSettings()` returned,
  * which on WebKit is routinely a near-empty object. An empty result is a real
- * answer — it means the controls are not there — and is reported as such
- * rather than as a failure.
+ * answer — the browser is not offering those controls to a web page — and is
+ * reported as such rather than as a failure. It says nothing about the camera.
  */
 export function readCapabilities(
   capabilities: Record<string, unknown> | null,
@@ -125,14 +140,16 @@ export function readCapabilities(
       + 'frames captured at chosen exposures and merged.';
   } else if (available) {
     hdrPath = 'opportunistic';
-    summary = 'Exposure cannot be set on this device. Auto-exposure drift during a '
-      + 'burst can still be measured and the frames sorted by brightness, which is '
-      + 'weaker and depends on the scene.';
+    summary = 'This browser does not expose exposure control — the camera almost '
+      + 'certainly has it, since native apps use it, but WebKit does not pass it '
+      + 'through. Auto-exposure drift during a burst can still be measured and the '
+      + 'frames sorted by brightness, which is weaker and depends on the scene.';
   } else {
     hdrPath = 'tone-map-only';
-    summary = 'This browser reports no camera capabilities at all. Only single-frame '
-      + 'tone mapping is possible — that redistributes the range one frame captured '
-      + 'and is not HDR, so it would not be labelled as such.';
+    summary = 'This browser reports no camera capabilities at all — which describes '
+      + 'the browser, not the camera. Only single-frame tone mapping is possible '
+      + 'here: that redistributes the range one frame captured and is not HDR, so '
+      + 'it would not be labelled as such.';
   }
 
   return { available, controls, exposure, hdrPath, summary };
