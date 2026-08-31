@@ -183,7 +183,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.30.0';
+const APP_VERSION = '0.30.1';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -7415,11 +7415,17 @@ async function runBurstProbe(): Promise<void> {
       gyro.push({ x: rotX, y: rotY });
       setText('burstProgress', `Capturing ${i + 1} of ${CAPTURE_CANDIDATES}…`);
 
-      // Yield so the camera can deliver a genuinely new frame; capturing
-      // faster than delivery just records the same one repeatedly, and
-      // repeated frames carry no new offset at all.
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-      await new Promise((resolve) => setTimeout(resolve, 40));
+      // WAIT FOR A GENUINELY NEW FRAME, via requestVideoFrameCallback.
+      //
+      // The first version polled on requestAnimationFrame plus 40ms, which on
+      // a twelve-megapixel capture delivering 8-12 frames a second is FASTER
+      // THAN FRAMES ARRIVE — so a good share of the burst was the same image
+      // recorded twice. A repeated frame measures a shift of exactly zero, so
+      // it piles candidates onto one offset and drags the coverage figure
+      // down: the probe would have reported a steady hand when the truth was
+      // a fast loop. Joshua's 39-48% readings were taken with that bug in
+      // place and cannot be trusted.
+      await nextFrame();
 
       const now = performance.now();
       const dt = Math.min(0.5, (now - lastAt) / 1000);
@@ -7446,6 +7452,12 @@ async function runBurstProbe(): Promise<void> {
         : estimateShift(reference, plane, 8)
     );
 
+    // Reported, not assumed. A burst of thirty-two samples of eight distinct
+    // frames looks exactly like a very steady hand from the offsets alone, and
+    // the two need completely different fixes.
+    const distinct = countDistinctFrames(planes);
+    setText('burstDistinct', `${distinct}/${planes.length}`);
+
     const verdict = judgeBurst(shifts, KEEP_FRAMES);
     renderBurstVerdict(verdict, shifts);
     renderBurstAgreement(shifts, gyro);
@@ -7453,6 +7465,28 @@ async function runBurstProbe(): Promise<void> {
     burstRunning = false;
     byId<HTMLButtonElement>('burstCaptureButton').disabled = false;
   }
+}
+
+/**
+ * How many frames in the burst are actually different images.
+ *
+ * Compares each frame against the previous one over a sparse grid. Two
+ * captures of the SAME delivered frame are bit-identical, so any difference at
+ * all — even camera noise — means the sensor read again.
+ */
+function countDistinctFrames(planes: Plane[]): number {
+  if (planes.length === 0) return 0;
+  let distinct = 1;
+  for (let i = 1; i < planes.length; i++) {
+    const previous = planes[i - 1].data;
+    const current = planes[i].data;
+    let changed = false;
+    for (let p = 0; p < current.length; p += 37) {
+      if (current[p] !== previous[p]) { changed = true; break; }
+    }
+    if (changed) distinct++;
+  }
+  return distinct;
 }
 
 function renderBurstVerdict(
