@@ -33,3 +33,25 @@ test('a deliberate choice is never overridden by a default', () => {
 test('the note points at the measured cost rather than urging caution', () => {
   assert.match(mainSource, /Full matches the camera; drop it only if the frame rate beside it says you should/);
 });
+
+test('Fill is a display crop and the save says so', () => {
+  // A shot framed in Fill contains more than was on screen. Finding that out
+  // later, after the moment has gone, is worse than reading one clause now.
+  assert.match(mainSource, /Fill crops the screen, not the file/);
+  assert.match(mainSource, /dataset\.fit === 'fill'/);
+  // And the toggle itself says it, so it need not be learned by saving one.
+  assert.match(mainSource, /Saving always writes the whole frame/);
+  assert.match(mainSource, /Saving still writes the whole frame/);
+});
+
+test('the saved frame is never cropped to the view', () => {
+  // Extra frame can be cropped afterwards; a frame cropped at capture cannot
+  // be got back, so the file keeps everything the sensor gave.
+  const still = mainSource.slice(
+    mainSource.indexOf('function finishStill'),
+    mainSource.indexOf('function saveCanvas')
+  );
+  assert.match(still, /output\.width = frame\.width/);
+  assert.match(still, /output\.height = frame\.height/);
+  assert.doesNotMatch(still, /dataset\.fit/, 'the display setting must not reach the file');
+});

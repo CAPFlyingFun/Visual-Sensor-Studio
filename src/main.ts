@@ -166,7 +166,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.25.1';
+const APP_VERSION = '0.25.2';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -5359,7 +5359,15 @@ function saveCanvas(source: HTMLCanvasElement, description: string): void {
     anchor.click();
     anchor.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    setText('cameraMessage', `Saved ${description} · ${visionMode}. It stays on this device.`);
+    // Fill is a DISPLAY crop, and the save is always the whole frame. Saying
+    // so matters: a shot framed in Fill contains more than was on screen, and
+    // finding that out later — after the moment has gone — is worse than
+    // reading one clause now. Extra frame can be cropped afterwards; a frame
+    // cropped at capture cannot be got back.
+    const cropped = byId('cameraViewer').dataset.fit === 'fill'
+      ? ' Fill crops the screen, not the file — this is the whole frame.'
+      : '';
+    setText('cameraMessage', `Saved ${description} · ${visionMode}. It stays on this device.${cropped}`);
   }, 'image/png');
 }
 
@@ -6186,6 +6194,11 @@ on('viewerFitButton', 'click', () => {
   const button = byId<HTMLButtonElement>('viewerFitButton');
   button.textContent = filling ? 'Fill' : 'Fit';
   button.setAttribute('aria-pressed', String(!filling));
+  // Neither setting changes what is captured, and the label should not have to
+  // be discovered by saving one and comparing.
+  button.title = filling
+    ? 'Showing the whole frame. Saving always writes the whole frame.'
+    : 'Cropping the view to the screen. Saving still writes the whole frame.';
 });
 on('viewerShutterButton', 'click', () => void captureStill());
 on('viewerSwitchButton', 'click', () => void switchCamera());
