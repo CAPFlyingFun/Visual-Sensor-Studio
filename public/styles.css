@@ -1054,3 +1054,4 @@ footer strong { color: #9fb2c3; }
   .tabbar { padding: 5px; gap: 3px; }
   .tab { font-size: 0.72rem; padding: 0 6px; }
 }
+.filter-defs { position: absolute; width: 0; height: 0; overflow: hidden; }

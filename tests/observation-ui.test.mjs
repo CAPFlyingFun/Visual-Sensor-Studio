@@ -1124,3 +1124,61 @@ test('tabs are reachable from the keyboard', () => {
   assert.match(mainSource, /key !== 'ArrowLeft' && key !== 'ArrowRight'/);
   assert.match(mainSource, /button\.tabIndex = tab === key \? 0 : -1/);
 });
+
+test('real exposure controls appear only where the device exposes them', () => {
+  // WebKit implements almost none of the photo capabilities, so on iOS these
+  // rows will simply be absent. Showing an inert slider would be worse than
+  // showing none.
+  for (const id of ['exposureModeWrap', 'exposureCompWrap', 'exposureTimeWrap', 'isoWrap']) {
+    assert.match(htmlSource, new RegExp(`id="${id}"[^>]*hidden`), `#${id} must start hidden`);
+  }
+  assert.match(mainSource, /fields\.exposureMode/);
+  assert.match(mainSource, /camera\.applyCameraSetting\('exposureCompensation'/);
+  assert.match(mainSource, /camera\.applyCameraSetting\('iso'/);
+});
+
+test('shutter and ISO follow the exposure mode', () => {
+  // They are only meaningful once exposure is off automatic.
+  assert.match(mainSource, /const manualExposure = exposureModes\.includes\('manual'\)/);
+  assert.match(mainSource, /\['exposureTime', 'exposureTimeWrap', true\]/);
+  assert.match(mainSource, /\['isoValue', 'isoWrap', true\]/);
+  assert.match(mainSource, /\['exposureCompensation', 'exposureCompWrap', false\]/);
+});
+
+test('digital brightness is never called exposure', () => {
+  // Real exposure decides how much light the sensor collects. This multiplies
+  // what it already collected, so it lifts the noise too and a clipped
+  // highlight stays clipped.
+  assert.match(htmlSource, /applied after capture/);
+  assert.match(htmlSource, /cannot recover a blown highlight/);
+  assert.match(mainSource, /Not exposure — it cannot un-clip a highlight/);
+});
+
+test('the preview filter computes the same curve as the pipeline', () => {
+  // CSS has no gamma, so a contrast\(\) stand-in would leave the preview and the
+  // saved frame showing different pictures.
+  assert.match(htmlSource, /feFuncR type="gamma"/);
+  assert.match(mainSource, /node\.setAttribute\('amplitude', String\(settings\.exposureGain\)\)/);
+  assert.match(mainSource, /node\.setAttribute\('exponent', String\(settings\.exposureGamma\)\)/);
+  assert.match(mainSource, /url\(#exposureFilter\)/);
+  const overlays = readFileSync(new URL('../src/vision/overlays.ts', import.meta.url), 'utf8');
+  // amplitude * C^exponent against gain * (v/255)^gamma.
+  assert.match(overlays, /Math\.pow\(i \/ 255, safeGamma\)/);
+  assert.match(overlays, /normalised \* 255 \* gain/);
+});
+
+test('the adjustment is applied before anything reads the frame', () => {
+  // Applied after the grayscale conversion, half the pipeline would work from
+  // the unadjusted frame and every metric would disagree with the picture.
+  const process = mainSource.slice(mainSource.indexOf('function processVisionFrame'));
+  const boost = process.indexOf('applyLightBoost(frame.data');
+  const gray = process.indexOf('rgbaToGray(frame.data');
+  assert.ok(boost > 0 && gray > 0, 'both steps should be in the vision frame');
+  assert.ok(boost < gray, 'the adjustment must come first');
+});
+
+test('the filter costs nothing at the default setting', () => {
+  assert.match(mainSource, /video\.style\.filter = exposureActive\(\) \? 'url\(#exposureFilter\)' : ''/);
+  assert.match(mainSource, /function exposureActive\(\)/);
+  assert.match(htmlSource, /id="exposureResetButton"/);
+});

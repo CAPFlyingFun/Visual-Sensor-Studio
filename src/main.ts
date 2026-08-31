@@ -100,7 +100,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.17.0';
+const APP_VERSION = '0.18.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -140,6 +140,9 @@ interface AppSettings {
   steadyGate: boolean;
   /** Horizontal field of view in degrees, entered by hand. 0 means unknown. */
   motionFovDegrees: number;
+  /** Post-capture gain. Not exposure — it cannot un-clip a highlight. */
+  exposureGain: number;
+  exposureGamma: number;
   amplifyGain: number;
   chronoSpacing: number;
   slitColumn: number;
@@ -173,6 +176,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoStartMotion: false,
   steadyGate: false,
   motionFovDegrees: 0,
+  exposureGain: 1,
+  exposureGamma: 1,
   amplifyGain: 12,
   chronoSpacing: 4,
   slitColumn: 0.5
@@ -299,6 +304,12 @@ function loadSettings(): AppSettings {
       motionFovDegrees: Number.isFinite(parsed.motionFovDegrees)
         ? clamp(Number(parsed.motionFovDegrees), 0, 180)
         : DEFAULT_SETTINGS.motionFovDegrees,
+      exposureGain: Number.isFinite(parsed.exposureGain)
+        ? clamp(Number(parsed.exposureGain), 0.25, 4)
+        : DEFAULT_SETTINGS.exposureGain,
+      exposureGamma: Number.isFinite(parsed.exposureGamma)
+        ? clamp(Number(parsed.exposureGamma), 0.4, 2.2)
+        : DEFAULT_SETTINGS.exposureGamma,
       amplifyGain: Number.isFinite(parsed.amplifyGain)
         ? clamp(Number(parsed.amplifyGain), 1, 40)
         : DEFAULT_SETTINGS.amplifyGain,
@@ -2013,6 +2024,16 @@ function processVisionFrame(timestamp: number): boolean {
   const frame = cameraSource.captureFrame(analysisWidth());
   if (!frame) return false;
 
+  // BEFORE the grayscale conversion, so every stage downstream — edges,
+  // difference, speed, night, the histogram, the saved still — sees the same
+  // pixels the preview shows. Applied after it, half the pipeline would work
+  // from the unadjusted frame and the metrics would disagree with the picture.
+  //
+  // Moving the slider does momentarily read as whole-frame motion, because it
+  // genuinely changes every pixel between one frame and the next. That settles
+  // as soon as the value stops changing.
+  if (exposureActive()) applyLightBoost(frame.data, settings.exposureGain, settings.exposureGamma);
+
   const buffers = ensureVisionBuffers(frame.width, frame.height);
   buffers.previousGray.set(buffers.gray);
   const hadPrevious = buffers.hasPrevious;
@@ -3145,6 +3166,9 @@ function syncSettingsControls(): void {
   byId<HTMLInputElement>('nightGamma').value = String(settings.nightGamma);
   setText('nightGainValue', `${settings.nightGain.toFixed(1)}×`);
   setText('nightGammaValue', settings.nightGamma.toFixed(2));
+  byId<HTMLInputElement>('exposureGain').value = String(settings.exposureGain);
+  byId<HTMLInputElement>('exposureGamma').value = String(settings.exposureGamma);
+  applyExposureToPreview();
   byId<HTMLInputElement>('amplifyGain').value = String(settings.amplifyGain);
   setText('amplifyGainValue', `${settings.amplifyGain}×`);
   byId<HTMLInputElement>('chronoSpacing').value = String(settings.chronoSpacing);
@@ -3901,8 +3925,88 @@ function syncManualControls(): void {
     focusInput.step = String(focusField.step ?? (focusField.max! - focusField.min!) / 100);
   }
 
+  // Exposure, where the hardware offers it. On iOS these are usually "not
+  // exposed" — WebKit implements almost none of the photo capabilities — so
+  // these rows simply will not appear, and the digital pair below still works.
+  const exposureField = fields.exposureMode;
+  const exposureWrap = byId('exposureModeWrap');
+  const exposureSelect = byId<HTMLSelectElement>('exposureMode');
+  const exposureModes = exposureField?.state === 'supported' && Array.isArray(exposureField.options)
+    ? exposureField.options
+    : [];
+  exposureWrap.hidden = exposureModes.length === 0;
+  if (exposureModes.length && exposureSelect.dataset.signature !== exposureModes.join(',')) {
+    exposureSelect.dataset.signature = exposureModes.join(',');
+    exposureSelect.textContent = '';
+    for (const option of exposureModes) {
+      const element = document.createElement('option');
+      element.value = String(option);
+      element.textContent = String(option);
+      exposureSelect.appendChild(element);
+    }
+    const current = report.settings.exposureMode;
+    if (typeof current === 'string') exposureSelect.value = current;
+  }
+
+  // Shutter and ISO are only meaningful once exposure is off automatic, so
+  // they follow the mode rather than standing alone.
+  const manualExposure = exposureModes.includes('manual')
+    && exposureSelect.value === 'manual';
+  for (const [id, wrapId, needsManual] of [
+    ['exposureCompensation', 'exposureCompWrap', false],
+    ['exposureTime', 'exposureTimeWrap', true],
+    ['isoValue', 'isoWrap', true]
+  ] as Array<[string, string, boolean]>) {
+    const key = id === 'isoValue' ? 'iso' : id;
+    const field = fields[key];
+    const usable = field?.state === 'supported'
+      && typeof field.min === 'number' && typeof field.max === 'number'
+      && (!needsManual || manualExposure);
+    byId(wrapId).hidden = !usable;
+    if (!usable) continue;
+    const input = byId<HTMLInputElement>(id);
+    input.min = String(field.min);
+    input.max = String(field.max);
+    input.step = String(field.step ?? (field.max! - field.min!) / 100);
+    const current = report.settings[key];
+    if (typeof current === 'number') input.value = String(current);
+  }
+
   byId('manualRow').hidden = false;
   syncTorchButtons();
+}
+
+/**
+ * Post-capture brightness, which always works and is never exposure.
+ *
+ * Real exposure decides how much light the sensor collects. This multiplies
+ * what it already collected, so it lifts a dark frame at the cost of lifting
+ * its noise too, and a highlight that clipped to 255 stays clipped — there is
+ * nothing above white to recover. Worth having because WebKit exposes almost no
+ * real photo controls, and worth labelling because the two are not the same
+ * thing and a slider called Brightness invites believing they are.
+ */
+function exposureActive(): boolean {
+  return Math.abs(settings.exposureGain - 1) > 0.01 || Math.abs(settings.exposureGamma - 1) > 0.01;
+}
+
+function applyExposureToPreview(): void {
+  // The live RGB preview shows the video element directly, so there is no
+  // buffer to adjust — the filter does it in the compositor instead.
+  //
+  // feComponentTransfer, not CSS brightness/contrast: amplitude * C^exponent is
+  // exactly gain * (v/255)^gamma, the curve applyLightBoost builds. CSS has no
+  // gamma at all, so a contrast() stand-in would leave the preview and the
+  // saved frame showing different pictures.
+  for (const id of ['R', 'G', 'B']) {
+    const node = document.getElementById('exposureFilter')?.querySelector(`feFunc${id}`);
+    if (!node) continue;
+    node.setAttribute('amplitude', String(settings.exposureGain));
+    node.setAttribute('exponent', String(settings.exposureGamma));
+  }
+  video.style.filter = exposureActive() ? 'url(#exposureFilter)' : '';
+  setText('exposureGainValue', `${settings.exposureGain.toFixed(2)}×`);
+  setText('exposureGammaValue', settings.exposureGamma.toFixed(2));
 }
 
 /** Live histogram, drawn as a compact luminance plot. */
@@ -4332,6 +4436,46 @@ on('switchCameraButton', 'click', () => void switchCamera());
 on('motionButton', 'click', () => void enableMotion());
 on('gpsButton', 'click', toggleGps);
 on('resetGpsButton', 'click', resetGps);
+on('exposureGain', 'input', (event) => {
+  settings.exposureGain = Number((event.target as HTMLInputElement).value);
+  applyExposureToPreview();
+  saveSettings();
+});
+on('exposureGamma', 'input', (event) => {
+  settings.exposureGamma = Number((event.target as HTMLInputElement).value);
+  applyExposureToPreview();
+  saveSettings();
+});
+on('exposureResetButton', 'click', () => {
+  settings.exposureGain = 1;
+  settings.exposureGamma = 1;
+  byId<HTMLInputElement>('exposureGain').value = '1';
+  byId<HTMLInputElement>('exposureGamma').value = '1';
+  applyExposureToPreview();
+  saveSettings();
+});
+on('exposureMode', 'change', (event) => {
+  const mode = (event.target as HTMLSelectElement).value;
+  void camera.applyCameraSetting('exposureMode', mode).then((result) => {
+    setText('cameraMessage', result.applied
+      ? `Exposure set to ${mode}.`
+      : `This camera refused exposureMode (${result.reason}).`);
+    // Shutter and ISO only appear once exposure is off automatic.
+    syncManualControls();
+  });
+});
+on('exposureCompensation', 'input', (event) => {
+  const value = Number((event.target as HTMLInputElement).value);
+  void camera.applyCameraSetting('exposureCompensation', value);
+});
+on('exposureTime', 'input', (event) => {
+  const value = Number((event.target as HTMLInputElement).value);
+  void camera.applyCameraSetting('exposureTime', value);
+});
+on('isoValue', 'input', (event) => {
+  const value = Number((event.target as HTMLInputElement).value);
+  void camera.applyCameraSetting('iso', value);
+});
 on('rigFile', 'change', (event) => {
   const file = (event.target as HTMLInputElement).files?.[0];
   if (file) void loadRigModel(file);

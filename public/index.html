@@ -42,7 +42,29 @@
       </div>
     </header>
 
-    <main>
+    <!--
+    Exposure filter for the live preview.
+
+    An SVG feComponentTransfer rather than CSS brightness/contrast, because it
+    can express exactly what the analysis path computes: amplitude * C^exponent
+    is gain * (v/255)^gamma, the same curve applyLightBoost builds into its
+    lookup table. CSS has no gamma, so a contrast() approximation would make the
+    preview and the saved frame disagree.
+
+    Only referenced while exposure is actually adjusted, so it costs nothing at
+    the default setting.
+  -->
+  <svg class="filter-defs" aria-hidden="true" focusable="false" width="0" height="0">
+    <filter id="exposureFilter" color-interpolation-filters="sRGB">
+      <feComponentTransfer>
+        <feFuncR type="gamma" amplitude="1" exponent="1" offset="0" />
+        <feFuncG type="gamma" amplitude="1" exponent="1" offset="0" />
+        <feFuncB type="gamma" amplitude="1" exponent="1" offset="0" />
+      </feComponentTransfer>
+    </filter>
+  </svg>
+
+  <main>
       <nav class="tabbar" role="tablist" aria-label="Sections">
         <button class="tab" type="button" role="tab" id="tabbtn-camera" data-tab="camera" aria-controls="tab-camera" aria-selected="false" title="Live vision">Camera</button>
         <button class="tab" type="button" role="tab" id="tabbtn-motion" data-tab="motion" aria-controls="tab-motion" aria-selected="false" title="Orientation and steadiness">Motion</button>
@@ -261,6 +283,26 @@
             <label class="manual-slider" id="focusDistanceWrap" hidden>Focus
               <input id="focusDistance" type="range" min="0" max="1" step="0.01" value="0.5" />
             </label>
+            <label class="toggle inline-select" id="exposureModeWrap" hidden>Exp
+              <select id="exposureMode"></select>
+            </label>
+            <label class="manual-slider" id="exposureCompWrap" hidden>EV
+              <input id="exposureCompensation" type="range" min="-3" max="3" step="0.1" value="0" />
+            </label>
+            <label class="manual-slider" id="exposureTimeWrap" hidden>Shutter
+              <input id="exposureTime" type="range" min="0" max="1" step="0.01" value="0.5" />
+            </label>
+            <label class="manual-slider" id="isoWrap" hidden>ISO
+              <input id="isoValue" type="range" min="0" max="1" step="0.01" value="0.5" />
+            </label>
+            <label class="manual-slider">Brightness <span class="range-value" id="exposureGainValue">1.0×</span>
+              <input id="exposureGain" type="range" min="0.25" max="4" step="0.05" value="1" />
+            </label>
+            <label class="manual-slider">Gamma <span class="range-value" id="exposureGammaValue">1.00</span>
+              <input id="exposureGamma" type="range" min="0.4" max="2.2" step="0.05" value="1" />
+            </label>
+            <button class="secondary-button" id="exposureResetButton" type="button">Reset Exposure</button>
+            <p class="helper" id="exposureNote">Brightness and Gamma are applied after capture — they cannot recover a blown highlight or add light that was never collected. Real exposure controls appear above only where this device exposes them.</p>
             <button class="secondary-button shutter-button" id="captureStillButton" type="button">📸 Save Frame</button>
             <button class="secondary-button" id="expandViewButton" type="button">⤢ Full Screen</button>
           </div>
@@ -556,7 +598,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.17.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.18.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">
