@@ -346,6 +346,32 @@ block the local gradient varies, and where it is weak the ratio inflates, so
 it reads high rather than recovering the quoted number. What survives — and
 what setting a range actually needs — is the ordering.
 
+### Which modes can be drawn large, and which cannot
+
+**Live detail** applies to every processed mode, not just custom lenses — but
+only six of them can honestly use it, and the division is about what a mode
+MEASURES rather than about effort.
+
+| Drawn at the display size | Drawn at the analysis size |
+|---------------------------|----------------------------|
+| Relief, Edges, Motion, Difference, Night, Custom lens | Speed, Trails, Amplify, Background, Chronochrome, Slit scan |
+
+The left column reads only the current frame — shading, edges, tone, and the
+difference against the previous frame — so recomputing at the display size
+produces genuinely more detail. A display-size difference is taken against a
+display-size PREVIOUS frame, kept for exactly this: differencing against an
+analysis-size one compares two different pictures and is not a frame
+difference at all.
+
+The right column accumulates over time on the analysis frame. There is no
+full-resolution history to re-derive those from, so drawing them larger would
+enlarge a small measurement and pass it off as a big one. They stay at the
+analysis size, and the note under the control says which case the current mode
+is in.
+
+RGB is always full resolution because it is the video element itself, not a
+processed picture — which is why the control hides in that mode.
+
 ### Live detail, and what it costs
 
 The live lens picture is drawn at the analysis frame's size by default, which

@@ -166,7 +166,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.24.3';
+const APP_VERSION = '0.25.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -1291,23 +1291,18 @@ function saveSnapshot(): void {
  * "nothing is moving" and "this is broken".
  */
 function renderLensReadouts(): void {
+  if (!byId('displayDetailRow').hidden) {
+    const canvas = visionCanvas;
+    const size = canvas.width && !canvas.hidden ? `${canvas.width}×${canvas.height}` : '—';
+    setText('lensCostValue', lensRenderMs > 0
+      ? `${size} · ${lensRenderMs.toFixed(0)} ms/frame`
+      : size);
+  }
   if (byId('lensPanel').hidden) return;
   setText('lensCoverage', activeLens
     ? `${(latestLensCoverage * 100).toFixed(0)}% measured`
     : 'no lens');
 
-  // The cost measured HERE, not a number from a table written on a laptop.
-  // Raising the detail is a real trade and the size of it depends on the
-  // device, the lens and the camera, so the panel reports what it is costing
-  // rather than asking anyone to take a claim on trust.
-  const canvas = visionCanvas;
-  const size = canvas.width && !canvas.hidden ? `${canvas.width}×${canvas.height}` : '—';
-  setText('lensCostValue', lensRenderMs > 0
-    ? `${size} · ${lensRenderMs.toFixed(0)} ms/frame`
-    : size);
-  setText('lensDetailNote', settings.lensDetail === 'analysis'
-    ? 'The measurement frame. Cheapest, and blocky when enlarged.'
-    : 'A sharper picture of the same measurement — detail does not improve the reading.');
 }
 
 function renderMotionReadouts(): void {
@@ -2077,6 +2072,13 @@ function updateVisionMode(mode: VisionMode): void {
   setMotionPanel(mode === 'speed' || mode === 'motiontrails', mode);
   setLayerPanel(mode);
   byId('lensPanel').hidden = mode !== 'lens';
+  // RGB shows the video element itself and is always full resolution; the
+  // control only means anything for a mode that draws a processed picture.
+  byId('displayDetailRow').hidden = mode === 'camera';
+  setText('lensDetailNote', DISPLAY_SCALABLE_MODES.has(mode)
+    ? 'This mode reads the current frame, so a larger picture is genuinely more detail.'
+    : 'This mode builds up over frames on the analysis picture, so it stays that size —'
+      + ' drawing it larger would enlarge a small measurement, not improve it.');
   if (mode === 'lens') renderLensChips();
   else stopLensPreview();
   setText('visionModeLabel', `${MODE_LABELS[mode]} • ${settings.visionRatePreference}`);
@@ -3084,7 +3086,7 @@ function buildLensSources(buffers: VisionBuffers, lens: CustomLens): ChannelSour
   return sources;
 }
 
-/** Target width for the live lens picture, never above what the camera gives. */
+/** Target width for the live processed picture, never above what the camera gives. */
 function lensDisplayWidth(): number {
   const source = camera.diagnostics.videoWidth;
   const analysis = visionBuffers?.width ?? analysisWidth();
@@ -3097,25 +3099,51 @@ function lensDisplayWidth(): number {
   return Math.max(analysis, Math.min(source, wanted));
 }
 
-/** Buffers for the enlarged lens picture, kept across frames. */
+/** Buffers for the enlarged picture, kept across frames and shared by modes. */
 let lensDisplay: {
   width: number;
   height: number;
   gray: Uint8ClampedArray;
+  previousGray: Uint8ClampedArray;
+  difference: Uint8ClampedArray;
+  hasPrevious: boolean;
   rgba: Uint8ClampedArray;
   imageData: ImageData;
 } | null = null;
+
+/**
+ * Modes whose picture can honestly be drawn larger than the analysis frame.
+ *
+ * The division is not about effort, it is about what the mode MEASURES. These
+ * read only the current frame — shading, edges, tone, and the difference
+ * against the previous frame — so recomputing them at the display size
+ * produces genuinely more detail.
+ *
+ * Everything else accumulates over time on the analysis frame: speed, trails,
+ * amplification, the learned background, chronochrome, slit scan. There is no
+ * full-resolution history to re-derive those from, so drawing them larger
+ * would enlarge a small measurement and call it a big one. They stay at the
+ * analysis size and the browser scales the canvas, which is honest about being
+ * a scaled small picture rather than pretending to be a large one.
+ */
+const DISPLAY_SCALABLE_MODES: ReadonlySet<VisionMode> = new Set<VisionMode>([
+  'relief', 'edges', 'motion', 'difference', 'night', 'lens'
+]);
 
 /** Rolling cost of the lens render, so the panel can report what it costs HERE. */
 let lensRenderMs = 0;
 
 function ensureLensDisplay(width: number, height: number) {
   if (lensDisplay && lensDisplay.width === width && lensDisplay.height === height) return lensDisplay;
+  const count = width * height;
   lensDisplay = {
     width,
     height,
-    gray: new Uint8ClampedArray(width * height),
-    rgba: new Uint8ClampedArray(width * height * 4),
+    gray: new Uint8ClampedArray(count),
+    previousGray: new Uint8ClampedArray(count),
+    difference: new Uint8ClampedArray(count),
+    hasPrevious: false,
+    rgba: new Uint8ClampedArray(count * 4),
     imageData: new ImageData(width, height)
   };
   return lensDisplay;
@@ -3131,11 +3159,78 @@ function ensureLensDisplay(width: number, height: number) {
  * frame — so raising the detail buys a sharper picture and not a better
  * reading, and the panel says so.
  */
-function renderLensFrame(buffers: VisionBuffers, lens: CustomLens): void {
+/**
+ * Draw a processed mode at the display size rather than the analysis size.
+ *
+ * Returns false when it could not — no larger frame available, or the mode is
+ * one whose measurement only exists at the analysis size — and the caller then
+ * takes the ordinary path. Silently drawing a small picture large is the one
+ * outcome this must not produce.
+ */
+function renderDisplayMode(mode: VisionMode, buffers: VisionBuffers): boolean {
+  if (!DISPLAY_SCALABLE_MODES.has(mode)) return false;
+  const target = lensDisplayWidth();
+  if (target <= buffers.width) return false;
+
+  const frame = grabFullFrame(target);
+  if (!frame) return false;
+  const display = ensureLensDisplay(frame.width, frame.height);
+  const { width, height } = display;
+
+  // The previous frame has to be kept at the DISPLAY size too. Differencing a
+  // display-size frame against an analysis-size one compares two different
+  // pictures, and the result is not a frame difference at all.
+  display.previousGray.set(display.gray);
+  const hadPrevious = display.hasPrevious;
+  rgbaToGray(frame.data, display.gray);
+  display.hasPrevious = true;
+
+  switch (mode) {
+    case 'relief':
+      display.rgba.set(reliefFromGray(display.gray, width, height));
+      break;
+    case 'edges':
+      display.rgba.set(grayToRgba(sobelEdges(display.gray, width, height)));
+      break;
+    case 'difference':
+      if (!hadPrevious) return false;
+      absoluteDifference(display.gray, display.previousGray, display.difference);
+      display.rgba.set(differenceToRgba(display.difference, 3.2));
+      break;
+    case 'motion':
+      if (!hadPrevious) return false;
+      absoluteDifference(display.gray, display.previousGray, display.difference);
+      motionMaskToRgba(display.gray, display.difference, width, height, 18, display.rgba);
+      break;
+    case 'night': {
+      display.rgba.set(frame.data);
+      applyLightBoost(display.rgba, settings.nightGain, settings.nightGamma);
+      applyPalette(display.rgba, settings.nightPalette);
+      break;
+    }
+    case 'lens': {
+      if (!activeLens) return false;
+      const report = renderLens(
+        activeLens,
+        buildStillLensSources(activeLens, display.gray, width, height, null),
+        display.gray, width, height, display.rgba, lensLut(activeLens)
+      );
+      latestLensCoverage = report.coverage;
+      break;
+    }
+    default:
+      return false;
+  }
+
+  paintVisionCanvas(width, height, display.imageData, display.rgba);
+  return true;
+}
+
+function renderLensFrame(buffers: VisionBuffers, lens: CustomLens, alreadyTried = false): void {
   const started = performance.now();
   const target = lensDisplayWidth();
 
-  if (target <= buffers.width) {
+  if (alreadyTried || target <= buffers.width) {
     const report = renderLens(
       lens,
       buildLensSources(buffers, lens),
@@ -3151,8 +3246,7 @@ function renderLensFrame(buffers: VisionBuffers, lens: CustomLens): void {
     return;
   }
 
-  const frame = grabFullFrame(target);
-  if (!frame) {
+  if (!renderDisplayMode('lens', buffers)) {
     // No larger frame this time; the analysis-size picture is still a picture.
     const report = renderLens(
       lens, buildLensSources(buffers, lens), buffers.gray,
@@ -3160,23 +3254,7 @@ function renderLensFrame(buffers: VisionBuffers, lens: CustomLens): void {
     );
     latestLensCoverage = report.coverage;
     putBuffer(buffers, buffers.rgba);
-    return;
   }
-
-  const display = ensureLensDisplay(frame.width, frame.height);
-  rgbaToGray(frame.data, display.gray);
-  const report = renderLens(
-    lens,
-    buildStillLensSources(lens, display.gray, display.width, display.height, null),
-    display.gray,
-    display.width,
-    display.height,
-    display.rgba,
-    lensLut(lens)
-  );
-  latestLensCoverage = report.coverage;
-
-  paintVisionCanvas(display.width, display.height, display.imageData, display.rgba);
 
   // Exponentially smoothed, so the readout is the steady cost rather than
   // whichever frame happened to be sampled.
@@ -3329,7 +3407,15 @@ function processVisionFrame(timestamp: number): boolean {
     integrator.addFrame(frame.data, buffers.width, buffers.height, timestamp);
   }
 
-  switch (visionMode) {
+  // Modes whose measurement is made on THIS frame can be redrawn at the
+  // display size; the ones that accumulate over time cannot, and fall through
+  // to the analysis-size path below rather than being enlarged and passed off
+  // as something larger.
+  const displayStarted = performance.now();
+  const drewLarge = renderDisplayMode(visionMode, buffers);
+  if (drewLarge) lensRenderMs += (performance.now() - displayStarted - lensRenderMs) * 0.2;
+
+  switch (drewLarge ? 'camera' : visionMode) {
     case 'relief':
       putBuffer(buffers, reliefFromGray(buffers.gray, buffers.width, buffers.height));
       break;
@@ -3389,7 +3475,7 @@ function processVisionFrame(timestamp: number): boolean {
       renderNightFrame(buffers, frame.data);
       break;
     case 'lens':
-      if (activeLens) renderLensFrame(buffers, activeLens);
+      if (activeLens) renderLensFrame(buffers, activeLens, true);
       break;
     default:
       break;

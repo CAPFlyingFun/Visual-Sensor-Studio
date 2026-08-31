@@ -205,12 +205,49 @@ test('the enlarged live path does not go through the 960px capture clamp', () =>
   // cameraSource.captureFrame clamps to 960 for the analysis pipeline it was
   // written for, which silently made 720p and Full both come back at 960.
   const fn = mainSource.slice(
-    mainSource.indexOf('function renderLensFrame'),
-    mainSource.indexOf('function processVisionFrame')
+    mainSource.indexOf('function renderDisplayMode'),
+    mainSource.indexOf('function renderLensFrame')
   );
   assert.match(fn, /grabFullFrame\(target\)/);
   assert.doesNotMatch(fn, /cameraSource\.captureFrame/);
   assert.match(mainSource, /function grabFullFrame\(targetWidth\?: number\)/);
+});
+
+test('every mode that can be drawn larger is, and the rest are not', () => {
+  // The division is about what a mode MEASURES, not about effort. These read
+  // only the current frame, so recomputing at the display size is genuinely
+  // more detail. The accumulating ones have no full-resolution history to be
+  // re-derived from.
+  assert.match(mainSource, /const DISPLAY_SCALABLE_MODES: ReadonlySet<VisionMode>/);
+  const set = mainSource.slice(
+    mainSource.indexOf('const DISPLAY_SCALABLE_MODES'),
+    mainSource.indexOf('function ensureLensDisplay')
+  );
+  for (const mode of ['relief', 'edges', 'motion', 'difference', 'night', 'lens']) {
+    assert.match(set, new RegExp(`'${mode}'`), `${mode} reads the current frame`);
+  }
+  for (const mode of ['speed', 'motiontrails', 'amplify', 'background', 'chrono', 'slitscan']) {
+    assert.doesNotMatch(set, new RegExp(`'${mode}'`), `${mode} accumulates and must not be enlarged`);
+  }
+});
+
+test('a display-size difference is taken against a display-size previous frame', () => {
+  // Differencing a display-size frame against an analysis-size one compares
+  // two different pictures, and the result is not a frame difference at all.
+  const fn = mainSource.slice(
+    mainSource.indexOf('function renderDisplayMode'),
+    mainSource.indexOf('function renderLensFrame')
+  );
+  assert.match(fn, /display\.previousGray\.set\(display\.gray\)/);
+  assert.match(fn, /absoluteDifference\(display\.gray, display\.previousGray/);
+  // And the very first frame has no previous, so it must decline rather than
+  // difference against an empty buffer.
+  assert.match(fn, /if \(!hadPrevious\) return false;/);
+});
+
+test('a mode that cannot be drawn larger falls through instead of being faked', () => {
+  assert.match(mainSource, /if \(!DISPLAY_SCALABLE_MODES\.has\(mode\)\) return false;/);
+  assert.match(mainSource, /switch \(drewLarge \? 'camera' : visionMode\)/);
 });
 
 test('the panel reports the cost measured on this device', () => {
@@ -220,8 +257,12 @@ test('the panel reports the cost measured on this device', () => {
   assert.match(mainSource, /lensRenderMs \+= \(performance\.now\(\) - started - lensRenderMs\) \* 0\.2/);
   assert.match(mainSource, /ms\/frame/);
   assert.match(htmlSource, /id="lensCostValue"/);
-  // And it must not imply a sharper picture is a better measurement.
-  assert.match(mainSource, /detail does not improve the reading/);
+  // The note is now PER MODE, because the honest claim differs: for a mode
+  // that reads the current frame a larger picture really is more detail, and
+  // for one that accumulates it is the same measurement drawn bigger.
+  assert.match(mainSource, /genuinely more detail/);
+  assert.match(mainSource, /would enlarge a small measurement, not improve it/);
+  assert.match(mainSource, /DISPLAY_SCALABLE_MODES\.has\(mode\)/);
 });
 
 test('the detail setting survives a reload', () => {
@@ -236,7 +277,7 @@ test('only one line in the app may reveal the overlay canvas', () => {
   const reveals = [...mainSource.matchAll(/visionCanvas\.hidden = false/g)];
   assert.equal(reveals.length, 1, 'only paintVisionCanvas may reveal the overlay');
   assert.match(mainSource, /function paintVisionCanvas\(/);
-  assert.match(mainSource, /paintVisionCanvas\(display\.width, display\.height/);
+  assert.match(mainSource, /paintVisionCanvas\(width, height, display\.imageData, display\.rgba\)/);
 });
 
 test('a lens can be shared without opening the editor', () => {
