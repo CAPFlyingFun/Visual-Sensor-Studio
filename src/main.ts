@@ -167,7 +167,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.26.0';
+const APP_VERSION = '0.26.1';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -1321,6 +1321,17 @@ function renderLensReadouts(): void {
       // Auto that says nothing looks like auto that is not working, so the
     // rung it has settled on is part of the readout.
     const settled = settings.lensDetail === 'auto' ? ' · auto' : '';
+    // A picture smaller than the setting asked for must say why, or it reads
+    // as the setting being ignored.
+    const source = camera.diagnostics.videoWidth;
+    const capped = measuredDetailScale !== null
+      && source > 0
+      && detailCappedWidth(source) < source;
+    setText('lensDetailCap', capped
+      ? `This stream reports ${source}px across but measures about`
+        + ` ${Math.round(source * (measuredDetailScale ?? 1))}px of real detail, so rendering`
+        + ' larger costs frame rate for pixels that are interpolation.'
+      : '');
     setText('lensCostValue', lensRenderMs > 0
       ? `${size} · ${lensRenderMs.toFixed(0)} ms/frame${settled}`
       : `${size}${settled}`);
@@ -3223,8 +3234,9 @@ function lensDisplayWidth(): number {
     : settings.lensDetail === '720' ? 1280
     : settings.lensDetail === '540' ? 960
     : analysis;
-  // Asking for more pixels than the sensor delivered buys nothing but cost.
-  return Math.max(analysis, Math.min(source, wanted));
+  // Asking for more pixels than the sensor delivered buys nothing but cost —
+  // and neither does asking for more than the frame was measured to contain.
+  return Math.max(analysis, Math.min(source, detailCappedWidth(source), wanted));
 }
 
 /** Buffers for the enlarged picture, kept across frames and shared by modes. */
@@ -3260,6 +3272,53 @@ const DISPLAY_SCALABLE_MODES: ReadonlySet<VisionMode> = new Set<VisionMode>([
 
 /** Rolling cost of the lens render, so the panel can report what it costs HERE. */
 let lensRenderMs = 0;
+
+/* --- Not rendering pixels that carry no information ------------------ *
+ *
+ * Measured on one phone, same build, same "Full" setting, two containers:
+ *
+ *   installed app   3024x4032   289 ms/frame
+ *   a browser       1080x1440    35 ms/frame
+ *
+ * and the two pictures looked the same. They looked the same because they
+ * ARE the same: the larger stream carries about as much real detail as the
+ * smaller one, so eight times the pixels bought eight times the cost and
+ * nothing else. A stream can report a size its sensor mode never resolved.
+ *
+ * So the display size is capped by what the frame is MEASURED to contain,
+ * not by what it claims. The margin is deliberately generous — the estimator
+ * is a coarse halving search, and the cost of rendering somewhat more than
+ * necessary is a little speed, while the cost of rendering less than the
+ * frame holds is detail that cannot be got back.
+ */
+const DETAIL_CAP_MARGIN = 4;
+const DETAIL_CAP_FLOOR = 1280;
+const DETAIL_SAMPLE_INTERVAL_MS = 5000;
+/** Real detail as a fraction of the reported size, or null when unmeasured. */
+let measuredDetailScale: number | null = null;
+let lastDetailSample = 0;
+
+/**
+ * Re-measure occasionally while a processed mode runs.
+ *
+ * Only a confident, textured reading counts. A flat scene has nothing to
+ * measure and the estimator says so; treating that as "upscaled" would cap
+ * the display because someone pointed the camera at a wall.
+ */
+function sampleDetailForCap(now: number): void {
+  if (now - lastDetailSample < DETAIL_SAMPLE_INTERVAL_MS) return;
+  lastDetailSample = now;
+  const reading = readEffectiveDetail();
+  if (!reading || reading.flat || reading.scale === null) return;
+  measuredDetailScale = reading.scale;
+}
+
+/** The largest width worth rendering, given what the frame actually holds. */
+function detailCappedWidth(sourceWidth: number): number {
+  if (measuredDetailScale === null || measuredDetailScale >= 1) return sourceWidth;
+  const real = sourceWidth * measuredDetailScale;
+  return Math.max(DETAIL_CAP_FLOOR, Math.round(real * DETAIL_CAP_MARGIN));
+}
 
 function ensureLensDisplay(width: number, height: number) {
   if (lensDisplay && lensDisplay.width === width && lensDisplay.height === height) return lensDisplay;
@@ -3545,6 +3604,7 @@ function processVisionFrame(timestamp: number): boolean {
   // Measured on the mode actually running, so the ladder settles differently
   // for a cheap lens than for relief — which is the point of measuring.
   updateAutoDetail(frameRateMeter.report.processingFps, displayStarted);
+  sampleDetailForCap(displayStarted);
 
   switch (drewLarge ? 'camera' : visionMode) {
     case 'relief':

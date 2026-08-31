@@ -198,7 +198,7 @@ test('the live picture can be drawn larger than the analysis frame', () => {
   assert.match(mainSource, /function lensDisplayWidth\(\)/);
   assert.match(mainSource, /function renderLensFrame\(/);
   // Never more pixels than the sensor actually delivered.
-  assert.match(mainSource, /Math\.max\(analysis, Math\.min\(source, wanted\)\)/);
+  assert.match(mainSource, /Math\.max\(analysis, Math\.min\(source, detailCappedWidth\(source\), wanted\)\)/);
 });
 
 test('the enlarged live path does not go through the 960px capture clamp', () => {

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+const htmlSource = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 
 test('live detail defaults to measuring rather than to any fixed cap', () => {
   // Both fixed guesses were wrong in opposite directions: 540p threw away
@@ -103,4 +104,47 @@ test('a saved-shape crop is taken after the mode renders, never before', () => {
   assert.ok(rendered >= 0 && cropped > rendered, 'render at full frame, then crop');
   // And the cost of the crop is stated in the confirmation.
   assert.match(still, /% of the \$\{frame\.width\}×\$\{frame\.height\} frame/);
+});
+
+test('the display size is capped by measured detail, not by the reported size', () => {
+  // Same build, same "Full" setting, two containers on one phone: 3024x4032
+  // at 289 ms/frame and 1080x1440 at 35, and the two pictures looked the
+  // same. They looked the same because they were: the larger stream carries
+  // about as much real detail, so eight times the pixels bought eight times
+  // the cost and nothing else.
+  assert.match(mainSource, /function detailCappedWidth\(sourceWidth: number\)/);
+  assert.match(mainSource, /const DETAIL_CAP_MARGIN = 4;/);
+  assert.match(mainSource, /const DETAIL_CAP_FLOOR = 1280;/);
+  assert.match(mainSource, /Math\.min\(source, detailCappedWidth\(source\), wanted\)/);
+});
+
+test('the cap only acts on a confident, textured reading', () => {
+  // A flat scene has nothing to measure. Treating that as "upscaled" would
+  // shrink the picture because someone pointed the camera at a wall.
+  const fn = mainSource.slice(
+    mainSource.indexOf('function sampleDetailForCap'),
+    mainSource.indexOf('function detailCappedWidth')
+  );
+  assert.match(fn, /if \(!reading \|\| reading\.flat \|\| reading\.scale === null\) return;/);
+  assert.match(fn, /now - lastDetailSample < DETAIL_SAMPLE_INTERVAL_MS/, 'and it is rate-limited');
+});
+
+test('the margin errs towards rendering too much rather than too little', () => {
+  // The estimator is a coarse halving search. Rendering somewhat more than
+  // necessary costs a little speed; rendering less than the frame holds
+  // costs detail that cannot be got back.
+  const block = mainSource.slice(
+    mainSource.indexOf('const DETAIL_CAP_MARGIN'),
+    mainSource.indexOf('function sampleDetailForCap')
+  );
+  assert.match(mainSource, /Math\.max\(DETAIL_CAP_FLOOR, Math\.round\(real \* DETAIL_CAP_MARGIN\)\)/);
+  assert.ok(block.length > 0);
+});
+
+test('a capped picture explains itself', () => {
+  // Smaller than the setting asked for reads as the setting being ignored,
+  // unless it says why.
+  assert.match(mainSource, /px of real detail, so rendering/);
+  assert.match(mainSource, /pixels that are interpolation/);
+  assert.match(htmlSource, /id="lensDetailCap"/);
 });

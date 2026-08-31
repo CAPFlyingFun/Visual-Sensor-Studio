@@ -401,6 +401,31 @@ does not hold costs a visible stutter, a step down that was not needed costs
 only detail nobody had yet. The settled rung is remembered, so a device learns
 this once.
 
+### The display size is capped by measured detail
+
+Measured on one phone, same build, same **Full** setting, two containers:
+
+| container | stream | cost |
+|-----------|--------|------|
+| installed app | 3024×4032 | 289 ms/frame |
+| a browser | 1080×1440 | 35 ms/frame |
+
+The two pictures looked the same — because they *were* the same. The larger
+stream carries about as much real detail as the smaller one, so eight times
+the pixels bought eight times the cost and nothing else. A stream can report a
+size its sensor mode never resolved.
+
+So the display size is capped by what the frame is measured to CONTAIN rather
+than by what it claims. The margin is deliberately generous (4×, floor 1280):
+the estimator is a coarse halving search, and rendering somewhat more than
+necessary costs a little speed, while rendering less than the frame holds
+costs detail that cannot be got back. Only a confident, textured reading
+counts — a flat scene has nothing to measure, and treating that as "upscaled"
+would shrink the picture because someone pointed the camera at a wall.
+
+When the cap is active it says so, because a picture smaller than the setting
+asked for otherwise reads as the setting being ignored.
+
 ### Saved shape
 
 A camera cannot change its aspect ratio: the sensor reads out 4:3 and that is
