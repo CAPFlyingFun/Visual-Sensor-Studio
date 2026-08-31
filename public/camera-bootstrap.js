@@ -714,15 +714,15 @@
     // axes has its lowest fitness distance at the biggest mode the camera has,
     // so it resolves to the device's maximum without anyone having to know
     // what that is in advance.
-    const requested = Number(requestedHeight) || 720;
+    const wantedShortSide = Number(requestedHeight) || 720;
     const portrait = typeof window !== 'undefined'
       && typeof window.innerHeight === 'number'
       && window.innerHeight >= window.innerWidth;
     let size;
-    if (requested >= MAX_SIZE_SENTINEL) {
+    if (wantedShortSide >= MAX_SIZE_SENTINEL) {
       size = { width: { ideal: 8192 }, height: { ideal: 8192 } };
     } else {
-      const shortSide = requested;
+      const shortSide = wantedShortSide;
       const longSide = Math.round(shortSide * (16 / 9));
       size = portrait
         ? { width: { ideal: shortSide }, height: { ideal: longSide } }
