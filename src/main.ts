@@ -11,6 +11,7 @@ import { MotionController } from './sensors/motion.js';
 import { GpsController } from './sensors/gps.js';
 import { zoomPresetStops } from './sensors/zoom.js';
 import { clamp, median } from './core/math.js';
+import { aspectRatioFor, cropToAspect, retainedFraction, type SaveAspect } from './vision/aspect.js';
 import type { GpsSample, MotionSample, SensorSnapshot, VisionMetrics, VisionMode } from './core/types.js';
 
 /**
@@ -36,7 +37,7 @@ import type { GpsSample, MotionSample, SensorSnapshot, VisionMetrics, VisionMode
  * reports the cost measured on THIS device rather than asking anyone to
  * trust the table above.
  */
-export type LensDetail = 'analysis' | '540' | '720' | 'full';
+export type LensDetail = 'auto' | 'analysis' | '540' | '720' | 'full';
 import {
   CHANNELS,
   buildRampLut,
@@ -166,7 +167,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.25.2';
+const APP_VERSION = '0.26.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -190,6 +191,7 @@ interface AppSettings {
   qualityPreference: QualityPreference;
   visionRatePreference: VisionRatePreference;
   lensDetail: LensDetail;
+  saveAspect: SaveAspect;
   /**
    * Whether the live detail was actually PICKED, rather than left at whatever
    * the app defaulted to.
@@ -240,7 +242,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   // Adaptive is the default: it idles lower than Balanced on a still scene and
   // climbs far above it when something actually moves, which is the whole point.
   visionRatePreference: 'adaptive',
-  lensDetail: 'full',
+  lensDetail: 'auto',
+  saveAspect: 'sensor',
   lensDetailChosen: false,
   gpsAccuracyPreference: 'high',
   cameraFrameRate: 'auto',
@@ -330,10 +333,13 @@ function loadSettings(): AppSettings {
       // current default, so a default corrected later actually reaches the
       // installs that never had an opinion.
       lensDetail: parsed.lensDetailChosen === true
-        && ['analysis', '540', '720', 'full'].includes(String(parsed.lensDetail))
+        && ['auto', 'analysis', '540', '720', 'full'].includes(String(parsed.lensDetail))
         ? parsed.lensDetail as LensDetail
         : DEFAULT_SETTINGS.lensDetail,
       lensDetailChosen: parsed.lensDetailChosen === true,
+      saveAspect: ['sensor', 'wide'].includes(String(parsed.saveAspect))
+        ? parsed.saveAspect as SaveAspect
+        : DEFAULT_SETTINGS.saveAspect,
       qualityPreference: ['low', 'normal', 'high'].includes(String(parsed.qualityPreference))
         ? parsed.qualityPreference as QualityPreference
         : DEFAULT_SETTINGS.qualityPreference,
@@ -1312,9 +1318,12 @@ function renderLensReadouts(): void {
   if (!byId('displayDetailRow').hidden) {
     const canvas = visionCanvas;
     const size = canvas.width && !canvas.hidden ? `${canvas.width}×${canvas.height}` : '—';
+      // Auto that says nothing looks like auto that is not working, so the
+    // rung it has settled on is part of the readout.
+    const settled = settings.lensDetail === 'auto' ? ' · auto' : '';
     setText('lensCostValue', lensRenderMs > 0
-      ? `${size} · ${lensRenderMs.toFixed(0)} ms/frame`
-      : size);
+      ? `${size} · ${lensRenderMs.toFixed(0)} ms/frame${settled}`
+      : `${size}${settled}`);
   }
   if (byId('lensPanel').hidden) return;
   setText('lensCoverage', activeLens
@@ -3105,12 +3114,112 @@ function buildLensSources(buffers: VisionBuffers, lens: CustomLens): ChannelSour
   return sources;
 }
 
+/**
+ * Auto detail: find the largest picture this device sustains, by measuring.
+ *
+ * A fixed cap is a guess about a phone made somewhere else, and both guesses
+ * tried here were wrong in opposite directions — 540p threw away detail the
+ * device had, and full resolution on a twelve-megapixel stream produced one to
+ * two frames a second and took the camera down with it.
+ *
+ * So the ladder is CLIMBED, never fallen down. Starting high and backing off
+ * sounds equivalent and is not: the first measurement at a level too expensive
+ * for the device is taken while the device is already failing, and on a phone
+ * that can mean the tab is reclaimed before any adjustment happens. Starting
+ * one rung above the analysis frame and stepping up only from a position of
+ * measured headroom means every level the app occupies is one it has already
+ * seen work.
+ *
+ * The settled rung is remembered, so a device only learns this once.
+ */
+const AUTO_LADDER = [0, 960, 1280, 1920, Number.POSITIVE_INFINITY] as const;
+/**
+ * The band the ladder holds inside, from measurements on a real device.
+ *
+ * Reported from an iPhone: full resolution on a twelve-megapixel stream gave
+ * one to two frames a second and crashed the camera; around 1080 across gave
+ * about eighteen, described as good. So below twelve is failing and needs a
+ * step down, above twenty is comfortable enough to try one more, and the
+ * range between is a settled place to stay rather than something to keep
+ * adjusting around.
+ *
+ * A gap between the two thresholds is what stops oscillation: a single
+ * boundary would make every rung both too slow and fast enough.
+ */
+const AUTO_TARGET_FPS = 12;
+const AUTO_HEADROOM_FPS = 20;
+const AUTO_SETTLE_KEY = 'vss.detail.auto.v1';
+/** Consecutive verdicts needed before moving — one slow frame is not a trend. */
+const AUTO_VOTES = 4;
+
+let autoRung = 1;
+let autoVotes = 0;
+let autoLastCheck = 0;
+
+function loadAutoRung(): void {
+  try {
+    const stored = Number(localStorage.getItem(AUTO_SETTLE_KEY));
+    if (Number.isFinite(stored) && stored >= 0 && stored < AUTO_LADDER.length) autoRung = stored;
+  } catch {
+    // The default rung is a safe place to start learning again.
+  }
+}
+
+function saveAutoRung(): void {
+  try {
+    localStorage.setItem(AUTO_SETTLE_KEY, String(autoRung));
+  } catch {
+    // Re-learning next launch costs a few seconds, not correctness.
+  }
+}
+
+/**
+ * Move the auto rung at most one step, on a run of agreeing measurements.
+ *
+ * Called once per processed frame; it does its own rate limiting so the
+ * caller cannot make it thrash by calling more often.
+ */
+function updateAutoDetail(processingFps: number, now: number): void {
+  if (settings.lensDetail !== 'auto') return;
+  if (now - autoLastCheck < 1000) return;
+  autoLastCheck = now;
+
+  const tooSlow = processingFps > 0 && processingFps < AUTO_TARGET_FPS;
+  const hasHeadroom = processingFps >= AUTO_HEADROOM_FPS && autoRung < AUTO_LADDER.length - 1;
+
+  if (tooSlow && autoRung > 0) {
+    autoVotes = autoVotes < 0 ? autoVotes - 1 : -1;
+    if (autoVotes <= -AUTO_VOTES) {
+      autoRung--;
+      autoVotes = 0;
+      lensDisplay = null;
+      saveAutoRung();
+    }
+    return;
+  }
+  if (hasHeadroom) {
+    autoVotes = autoVotes > 0 ? autoVotes + 1 : 1;
+    // Climbing needs more agreement than backing off: a step up that does not
+    // hold costs a visible stutter, a step down that was not needed costs
+    // only detail nobody had yet.
+    if (autoVotes >= AUTO_VOTES * 2) {
+      autoRung++;
+      autoVotes = 0;
+      lensDisplay = null;
+      saveAutoRung();
+    }
+    return;
+  }
+  autoVotes = 0;
+}
+
 /** Target width for the live processed picture, never above what the camera gives. */
 function lensDisplayWidth(): number {
   const source = camera.diagnostics.videoWidth;
   const analysis = visionBuffers?.width ?? analysisWidth();
   if (!source) return analysis;
-  const wanted = settings.lensDetail === 'full' ? source
+  const wanted = settings.lensDetail === 'auto' ? (AUTO_LADDER[autoRung] || analysis)
+    : settings.lensDetail === 'full' ? source
     : settings.lensDetail === '720' ? 1280
     : settings.lensDetail === '540' ? 960
     : analysis;
@@ -3433,6 +3542,9 @@ function processVisionFrame(timestamp: number): boolean {
   const displayStarted = performance.now();
   const drewLarge = renderDisplayMode(visionMode, buffers);
   if (drewLarge) lensRenderMs += (performance.now() - displayStarted - lensRenderMs) * 0.2;
+  // Measured on the mode actually running, so the ladder settles differently
+  // for a cheap lens than for relief — which is the point of measuring.
+  updateAutoDetail(frameRateMeter.report.processingFps, displayStarted);
 
   switch (drewLarge ? 'camera' : visionMode) {
     case 'relief':
@@ -5333,16 +5445,37 @@ async function captureStill(): Promise<void> {
 
 function finishStill(frame: ImageData, previous: ImageData | null): void {
   const rgba = renderStill(visionMode, frame, previous);
-  const output = document.createElement('canvas');
-  output.width = frame.width;
-  output.height = frame.height;
-  const context = output.getContext('2d');
-  if (!context) return;
-
+  // The mode renders at the FULL frame first and the crop is taken from the
+  // result, not before it. Cropping first would change what the edge and
+  // relief filters see at the new border, so the same scene would render
+  // differently depending on a setting about the file's shape.
+  const source = document.createElement('canvas');
+  source.width = frame.width;
+  source.height = frame.height;
+  const sourceContext = source.getContext('2d');
+  if (!sourceContext) return;
   const image = new ImageData(frame.width, frame.height);
   image.data.set(rgba);
-  context.putImageData(image, 0, 0);
-  saveCanvas(output, `${frame.width}×${frame.height}`);
+  sourceContext.putImageData(image, 0, 0);
+
+  const ratio = aspectRatioFor(settings.saveAspect);
+  const crop = ratio
+    ? cropToAspect(frame.width, frame.height, ratio)
+    : { x: 0, y: 0, width: frame.width, height: frame.height };
+
+  if (crop.width === frame.width && crop.height === frame.height) {
+    saveCanvas(source, `${frame.width}×${frame.height}`);
+    return;
+  }
+
+  const output = document.createElement('canvas');
+  output.width = crop.width;
+  output.height = crop.height;
+  const context = output.getContext('2d');
+  if (!context) return;
+  context.drawImage(source, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
+  const kept = Math.round(retainedFraction(frame.width, frame.height, crop) * 100);
+  saveCanvas(output, `${crop.width}×${crop.height} · ${kept}% of the ${frame.width}×${frame.height} frame`);
 }
 
 function saveCanvas(source: HTMLCanvasElement, description: string): void {
@@ -6415,6 +6548,9 @@ on('cameraFrameRate', 'change', () => {
 });
 on('cameraPreference', 'change', handleCameraPreferenceChange);
 on('qualityPreference', 'change', handleQualityChange);
+on('saveAspect', 'change', () => {
+  saveSettingFromControls();
+});
 on('lensDetail', 'change', (event) => {
   settings.lensDetail = (event.target as HTMLSelectElement).value as LensDetail;
   // From here on this install has an opinion, and no future default overrides it.
@@ -6568,6 +6704,7 @@ void initializeFusion();
 void refreshSettingsDiagnostics();
 
 stabilityCalibration = loadCalibration();
+loadAutoRung();
 renderCalibration();
 renderSteadyState();
 void applyAutoStart();

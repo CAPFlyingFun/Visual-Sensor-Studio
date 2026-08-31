@@ -16,6 +16,7 @@
     "src/core/math.ts",
     "src/sensors/zoom.ts",
     "src/sensors/stability.ts",
+    "src/vision/aspect.ts",
     "src/vision/lens.ts",
     "src/vision/lens-preview.ts",
     "src/vision/photo-lens.ts",

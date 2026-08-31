@@ -194,7 +194,7 @@ test('the explanation appears once and then gets out of the way', () => {
 
 test('the live picture can be drawn larger than the analysis frame', () => {
   assert.match(htmlSource, /id="lensDetail"/);
-  assert.match(mainSource, /export type LensDetail = 'analysis' \| '540' \| '720' \| 'full'/);
+  assert.match(mainSource, /export type LensDetail = 'auto' \| 'analysis' \| '540' \| '720' \| 'full'/);
   assert.match(mainSource, /function lensDisplayWidth\(\)/);
   assert.match(mainSource, /function renderLensFrame\(/);
   // Never more pixels than the sensor actually delivered.
@@ -267,7 +267,7 @@ test('the panel reports the cost measured on this device', () => {
 
 test('the detail setting survives a reload', () => {
   assert.match(mainSource, /lensDetail: LensDetail;/);
-  assert.match(mainSource, /\['analysis', '540', '720', 'full'\]\.includes\(String\(parsed\.lensDetail\)\)/);
+  assert.match(mainSource, /\['auto', 'analysis', '540', '720', 'full'\]\.includes\(String\(parsed\.lensDetail\)\)/);
   assert.match(mainSource, /detail\.value = settings\.lensDetail/);
 });
 

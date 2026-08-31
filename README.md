@@ -379,6 +379,40 @@ is in.
 RGB is always full resolution because it is the video element itself, not a
 processed picture — which is why the control hides in that mode.
 
+### Auto detail climbs; it never falls
+
+Two fixed guesses were tried and both were wrong in opposite directions. 540p
+threw away detail the device had. Full resolution on a twelve-megapixel stream
+gave one to two frames a second and took the camera down with it.
+
+**Auto** is the default, and it CLIMBS a ladder rather than falling down one.
+That distinction matters: starting high and backing off sounds equivalent, but
+the first measurement at a level too expensive is taken while the device is
+already failing, and on a phone that can mean the tab is reclaimed before any
+adjustment happens. Starting one rung above the analysis frame and stepping up
+only from measured headroom means every level the app occupies is one it has
+already seen work.
+
+The band comes from device measurements — below 12 fps is failing, above 20 is
+comfortable enough to try one more — and the gap between them is what stops
+oscillation, since a single boundary would make every rung both too slow and
+fast enough. Climbing needs twice the agreement of backing off: a step up that
+does not hold costs a visible stutter, a step down that was not needed costs
+only detail nobody had yet. The settled rung is remembered, so a device learns
+this once.
+
+### Saved shape
+
+A camera cannot change its aspect ratio: the sensor reads out 4:3 and that is
+what arrives. **Saved Shape → Widescreen** is therefore a CROP — sides in
+portrait, top and bottom in landscape — and the confirmation states what
+fraction of the frame it kept. It can only ever give up field of view, never
+gain it.
+
+The crop is taken AFTER the mode renders, never before. Cropping first would
+change what the edge and relief filters see at the new border, so the same
+scene would render differently depending on a setting about the file's shape.
+
 ### Live detail, and what it costs
 
 The live lens picture is drawn at the analysis frame's size by default, which

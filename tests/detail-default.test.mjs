@@ -4,13 +4,47 @@ import { readFileSync } from 'node:fs';
 
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 
-test('live detail defaults to the camera resolution', () => {
-  // The first version of this setting shipped capped at 540p, from a
-  // benchmark run in a slow container rather than measured on a phone. A
-  // device pass showed a full-resolution preview keeping up, so the cap was a
-  // guess and the guess was wrong.
-  assert.match(mainSource, /lensDetail: 'full',/);
+test('live detail defaults to measuring rather than to any fixed cap', () => {
+  // Both fixed guesses were wrong in opposite directions: 540p threw away
+  // detail the device had, and full resolution on a twelve-megapixel stream
+  // produced one to two frames a second and took the camera down. The device
+  // is the only thing that knows, so the default asks it.
+  assert.match(mainSource, /lensDetail: 'auto',/);
   assert.doesNotMatch(mainSource, /lensDetail: '540',/);
+  assert.doesNotMatch(mainSource, /lensDetail: 'full',/);
+});
+
+test('auto climbs the ladder and never starts at the top', () => {
+  // Starting high and backing off is NOT equivalent: the first measurement at
+  // a level too expensive is taken while the device is already failing, and on
+  // a phone that can mean the tab is reclaimed before any adjustment happens.
+  assert.match(mainSource, /const AUTO_LADDER = \[0, 960, 1280, 1920, Number\.POSITIVE_INFINITY\] as const/);
+  // The two thresholds must differ, or every rung is both too slow and fast
+  // enough and the ladder oscillates forever.
+  assert.match(mainSource, /const AUTO_TARGET_FPS = 12;/);
+  assert.match(mainSource, /const AUTO_HEADROOM_FPS = 20;/);
+  assert.match(mainSource, /let autoRung = 1;/, 'start one rung above the analysis frame');
+  assert.match(mainSource, /function updateAutoDetail\(processingFps: number, now: number\)/);
+});
+
+test('auto needs a run of agreeing measurements, and more to climb than to fall', () => {
+  const fn = mainSource.slice(
+    mainSource.indexOf('function updateAutoDetail'),
+    mainSource.indexOf('/** Target width for the live processed picture')
+  );
+  assert.match(fn, /now - autoLastCheck < 1000/, 'it rate-limits itself');
+  assert.match(fn, /autoVotes <= -AUTO_VOTES/);
+  assert.match(fn, /autoVotes >= AUTO_VOTES \* 2/, 'climbing needs more agreement than backing off');
+  // A move must invalidate the cached buffers or the next frame draws at the
+  // old size into a canvas sized for the new one.
+  assert.match(fn, /lensDisplay = null/);
+});
+
+test('the settled rung is remembered so a device learns this once', () => {
+  assert.match(mainSource, /const AUTO_SETTLE_KEY = 'vss\.detail\.auto\.v1'/);
+  assert.match(mainSource, /function loadAutoRung/);
+  assert.match(mainSource, /function saveAutoRung/);
+  assert.match(mainSource, /loadAutoRung\(\);/);
 });
 
 test('a corrected default reaches installs that never had an opinion', () => {
@@ -51,7 +85,22 @@ test('the saved frame is never cropped to the view', () => {
     mainSource.indexOf('function finishStill'),
     mainSource.indexOf('function saveCanvas')
   );
-  assert.match(still, /output\.width = frame\.width/);
-  assert.match(still, /output\.height = frame\.height/);
+  assert.match(still, /source\.width = frame\.width/);
+  assert.match(still, /source\.height = frame\.height/);
   assert.doesNotMatch(still, /dataset\.fit/, 'the display setting must not reach the file');
+});
+
+test('a saved-shape crop is taken after the mode renders, never before', () => {
+  // Cropping first would change what the edge and relief filters see at the
+  // new border, so the same scene would render differently depending on a
+  // setting about the file's shape.
+  const still = mainSource.slice(
+    mainSource.indexOf('function finishStill'),
+    mainSource.indexOf('function saveCanvas')
+  );
+  const rendered = still.indexOf('renderStill(visionMode');
+  const cropped = still.indexOf('cropToAspect(');
+  assert.ok(rendered >= 0 && cropped > rendered, 'render at full frame, then crop');
+  // And the cost of the crop is stated in the confirmation.
+  assert.match(still, /% of the \$\{frame\.width\}×\$\{frame\.height\} frame/);
 });

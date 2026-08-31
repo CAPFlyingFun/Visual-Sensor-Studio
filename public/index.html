@@ -111,6 +111,7 @@
           <div class="night-grid lens-detail-row" id="displayDetailRow" hidden>
             <label>Live detail
               <select id="lensDetail">
+                <option value="auto">Auto — settles by measuring</option>
                 <option value="analysis">Analysis — fastest</option>
                 <option value="540">540p</option>
                 <option value="720">720p</option>
@@ -752,7 +753,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.25.2</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.26.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">
@@ -825,12 +826,24 @@
             <option value="10000">Maximum this camera has</option>
           </select>
           <span class="helper">
-            The number names the SHORT side, and the request follows the phone's
-            orientation — a phone held upright gets 1080&times;1920, not 1920&times;1080.
+            The number names the SHORT side. The request carries no orientation and no
+            square: it asks for the shape this camera advertises, so the sensor decides
+            which way up.
             This is a VIDEO STREAM, and it is the ceiling for everything here including
             saved frames. It is not the sensor's still resolution: a 36MP or 48MP shot comes
             from a capture API only an installed app can use, so a frame saved here will not
             match the Camera app however high this is set. Higher costs frame rate.
+          </span>
+        </label>
+        <label>Saved Shape
+          <select id="saveAspect">
+            <option value="sensor">As captured — the whole sensor frame</option>
+            <option value="wide">Widescreen — 16:9, or 9:16 held upright</option>
+          </select>
+          <span class="helper">
+            A camera cannot change its aspect ratio, so widescreen is a CROP of what it
+            captured — sides in portrait, top and bottom in landscape. It can only ever
+            give up field of view, never gain it.
           </span>
         </label>
         <label>Camera Frame Rate
