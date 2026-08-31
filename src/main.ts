@@ -166,7 +166,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.24.2';
+const APP_VERSION = '0.24.3';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -921,13 +921,42 @@ async function startCamera(): Promise<void> {
 }
 
 /** Ask the engine for the configured rate and report what it negotiated. */
+/**
+ * Apply the chosen frame rate, and say plainly if it cost resolution.
+ *
+ * A camera has a set of modes, and frame rate and resolution are not
+ * independent within them: asking a twelve-megapixel track for 60 fps makes
+ * WebKit re-select a mode that can sustain 60, which at that size it cannot.
+ * The stream then collapses to something much smaller half a second after it
+ * opened, with nothing said about why.
+ *
+ * `auto` no longer re-constrains a live track at all, so this only bites when
+ * a rate was explicitly chosen — and then the cost is reported rather than
+ * absorbed, because it is a real trade and the user is the one who should be
+ * deciding it.
+ */
 async function applyCameraFrameRate(): Promise<void> {
   const requested = settings.cameraFrameRate === 'auto' ? 'auto' : Number(settings.cameraFrameRate);
+  const before = camera.diagnostics;
+  const wasShort = Math.min(before.videoWidth, before.videoHeight);
   try {
     await camera.setFrameRate(requested);
   } catch {
     // A refused rate leaves the previous one in force; the camera keeps running.
+    return;
   }
+  if (requested === 'auto' || !wasShort) return;
+
+  // The track needs a moment to re-select before the new size is readable.
+  window.setTimeout(() => {
+    const after = camera.diagnostics;
+    const nowShort = Math.min(after.videoWidth, after.videoHeight);
+    if (!nowShort || nowShort >= wasShort * 0.95) return;
+    setText('cameraMessage', `Asking for ${requested} FPS moved the camera to a mode it can sustain:`
+      + ` ${before.videoWidth}×${before.videoHeight} became ${after.videoWidth}×${after.videoHeight}.`
+      + ' Frame rate and resolution share the same set of sensor modes — set the frame rate back to'
+      + ' Auto Max to keep the larger picture.');
+  }, 600);
 }
 
 /**

@@ -72,6 +72,14 @@
    */
   const AUTO_FRAME_RATE_FALLBACK = 60;
   /**
+   * Whether an explicit frame-rate constraint is currently on the live track.
+   *
+   * Returning to Auto has to release it, and releasing is only correct if
+   * something was applied — otherwise "Auto" would clear the constraints the
+   * stream was opened with for no reason.
+   */
+  let explicitRateApplied = false;
+  /**
    * Floor for the DIGITAL zoom fallback.
    *
    * Digital zoom is a centre crop, and there is no cropping outward: below 1x
@@ -1321,9 +1329,45 @@
         return { applied: false, reason: 'no live track', reported: negotiatedFrameRate };
       }
 
+      // AUTO DOES NOT RE-CONSTRAIN A LIVE TRACK, and this is the whole fix for
+      // a resolution that collapsed half a second after the camera opened.
+      //
+      // Frame rate and resolution are not independent: a camera has a set of
+      // modes, and asking for 60 fps on a track that opened at 3024x4032 makes
+      // WebKit re-select a mode that can actually sustain 60 — which at twelve
+      // megapixels it cannot, so it drops to a much smaller one. The opening
+      // request already asked for a rate, so applying it again here buys
+      // nothing and silently spends the resolution to pay for it.
+      //
+      // An explicitly chosen rate still applies: that is the user asking for
+      // the trade with their eyes open. Auto means "whatever this camera is
+      // comfortable with", which is exactly what it already negotiated.
+      if (requestedFrameRate === 'auto') {
+        if (!explicitRateApplied) {
+          readFrameRateCapability();
+          return { applied: true, reason: 'auto keeps the negotiated mode', reported: negotiatedFrameRate };
+        }
+        // An explicit rate WAS applied earlier — by the benchmark, or by the
+        // user before switching back to Auto — so going back to auto has to
+        // RELEASE that constraint rather than do nothing. An empty set clears
+        // the track's requirements; the settings it currently holds stay, but
+        // it is free to re-select. Without this the benchmark would restore
+        // "auto" and leave the last rate it tried in force.
+        try {
+          await track.applyConstraints({});
+          explicitRateApplied = false;
+          readFrameRateCapability();
+          return { applied: true, reason: 'released the rate constraint', reported: negotiatedFrameRate };
+        } catch (error) {
+          readFrameRateCapability();
+          return { applied: false, reason: errorName(error) || 'refused', reported: negotiatedFrameRate };
+        }
+      }
+
       const constraint = frameRateConstraint(requestedFrameRate);
       try {
         await track.applyConstraints(constraint ? { frameRate: constraint } : {});
+        explicitRateApplied = Boolean(constraint);
         readFrameRateCapability();
         return { applied: true, reported: negotiatedFrameRate };
       } catch (error) {

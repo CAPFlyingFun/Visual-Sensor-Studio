@@ -149,6 +149,28 @@ Speeds are in **analysis-frame pixels per second** and stay that way.
 Converting to m/s or mph needs distance to the subject and the lens's angular
 scale, neither of which this app has.
 
+## Frame rate and resolution share one set of modes
+
+A camera does not have independent frame-rate and resolution dials. It has a
+set of sensor modes, and asking for a rate one of them cannot sustain makes
+WebKit re-select a different mode — usually a much smaller one.
+
+That produced a stream which opened at 3024×4032 and collapsed about half a
+second later: the app applied "Auto Max" after the stream was already live,
+which asked a twelve-megapixel track for 60 fps and got a mode that could
+actually do 60.
+
+**Auto no longer re-constrains a live track.** The opening request already
+asked for a rate, so applying it again bought nothing and silently spent the
+resolution to pay for it. Auto means "whatever this camera is comfortable
+with", which is what it already negotiated. Returning to Auto after an
+explicit rate *does* release the constraint, so the frame-rate benchmark can
+still restore what was there before.
+
+An explicitly chosen rate still applies — that is the user asking for the
+trade with their eyes open — and the cost is now measured and reported rather
+than absorbed: the stream size is read before and after, and a drop is named.
+
 ## Installed app vs browser
 
 The same URL can behave differently installed to the home screen than opened in
