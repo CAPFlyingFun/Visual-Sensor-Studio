@@ -63,6 +63,24 @@ export const MIN_CONTRAST = 12;
 /** Fewer rows than this and one bad row sets the slope. */
 export const MIN_ROWS = 24;
 
+/**
+ * How far row positions may scatter about the fitted line, in pixels.
+ *
+ * THE GATE THAT SEPARATES AN EDGE FROM TEXTURE, and the one that was missing.
+ * Grass, gravel and brickwork have strong gradients everywhere, so a "steepest
+ * column" exists in every row and a line can always be fitted through them —
+ * it just does not describe anything. Measured on pure random texture, that
+ * spurious line reported a 2.5 degree edge, cleared every other guard, and the
+ * merge report claimed 14.97x the detail of a plain upscale on a scene with no
+ * edge in it at all.
+ *
+ * Scatter tells them apart with enormous margin: a real edge holds 0.29 px at
+ * no noise and 0.52 px at sigma 8, while texture scatters about 70 px. Two
+ * pixels sits between them by two orders of magnitude, so this rejects texture
+ * without ever being close to rejecting a usable edge.
+ */
+export const MAX_ROW_SCATTER = 2;
+
 function fail(reason: string, partial: Partial<MtfResult> = {}): MtfResult {
   return {
     mtf50: null, samples: 0, edgeAngleDegrees: null, contrast: 0, reason, ...partial
@@ -191,6 +209,22 @@ export function measureSlantedEdge(plane: Plane): MtfResult {
   }
   const coarseLine = fitLine(coarse);
   if (!coarseLine) return fail('The edge positions do not vary.', { contrast });
+
+  // Do these positions actually lie on a line? See MAX_ROW_SCATTER — without
+  // this, any textured scene yields a confident measurement of nothing.
+  let scatter = 0;
+  for (const c of coarse) {
+    scatter += (c.at - (coarseLine.meanAt + coarseLine.slope * (c.row - coarseLine.meanRow))) ** 2;
+  }
+  scatter = Math.sqrt(scatter / coarse.length);
+  if (scatter > MAX_ROW_SCATTER) {
+    return fail(
+      `The strongest transitions wander ${scatter.toFixed(0)} px about a line, so this `
+      + 'is texture rather than an edge. Aim at something with one straight '
+      + 'boundary across it — a door frame, a book, a sign — tilted a few degrees.',
+      { contrast, samples: coarse.length }
+    );
+  }
 
   // Refined pass: centroid in a narrow window centred on the coarse line, and
   // rows whose refinement runs away from it are dropped rather than fitted.

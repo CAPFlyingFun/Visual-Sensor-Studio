@@ -126,3 +126,32 @@ test('contrast is a percentile range, not the extremes of the sample', () => {
   // A real edge still reads its full step, since half its pixels sit each side.
   assert.ok(mtf.measureSlantedEdge(edge(160, 5, 1.0)).contrast > 150);
 });
+
+test('THE GATE THAT WAS MISSING: texture is not mistaken for an edge', () => {
+  // Grass, gravel and brickwork have strong gradients everywhere, so a
+  // "steepest column" exists in every row and a line can always be fitted
+  // through them — it just describes nothing. Measured before this gate: pure
+  // random texture produced a confident 2.5 degree edge, cleared every other
+  // guard, and the merge report claimed 14.97x the detail of a plain upscale
+  // on a scene with no edge in it at all. That is the worst failure available
+  // to this feature: a large fake number, on the kind of scene people actually
+  // photograph.
+  let a = 5;
+  const rnd = () => { a = (a * 1664525 + 1013904223) >>> 0; return a / 4294967296; };
+  const texture = sr.createPlane(256, 256);
+  for (let i = 0; i < texture.data.length; i++) texture.data[i] = 60 + rnd() * 120;
+
+  for (const plane of [texture, sr.blurPlane(texture, 1.5)]) {
+    const result = mtf.measureSlantedEdge(plane);
+    assert.equal(result.mtf50, null, 'texture must not yield a resolution figure');
+    assert.match(result.reason, /texture rather than an edge/);
+    assert.match(result.reason, /door frame, a book, a sign/);
+  }
+
+  // And the gate must not be anywhere near rejecting a real edge: measured
+  // scatter is 0.29 px clean and 0.52 px at sigma 8, against 70 px for texture.
+  for (const noise of [0, 4, 8]) {
+    assert.ok(mtf.measureSlantedEdge(edge(256, 5, 1.0, noise, 3)).mtf50 !== null,
+      `a real edge at noise ${noise} was rejected by the scatter gate`);
+  }
+});
