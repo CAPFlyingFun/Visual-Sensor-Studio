@@ -12,6 +12,31 @@ import { GpsController } from './sensors/gps.js';
 import { zoomPresetStops } from './sensors/zoom.js';
 import { clamp, median } from './core/math.js';
 import type { GpsSample, MotionSample, SensorSnapshot, VisionMetrics, VisionMode } from './core/types.js';
+
+/**
+ * How large the live lens picture is drawn.
+ *
+ * Every other mode paints the analysis frame, which is a few hundred pixels
+ * wide — cheap, and fine for a mask or a vector field. A lens is a PICTURE,
+ * and at 256 across it looks like a picture of blocks.
+ *
+ * Full resolution is not free, and the numbers are not close. Measured over
+ * 12 frames per size, per-frame cost for the lens render alone:
+ *
+ *            luma lens   edge lens   speed lens
+ *   256 px      1.4 ms      3.3 ms       2.4 ms
+ *   540p       16.5 ms     42.9 ms      27.7 ms
+ *   720p       26.8 ms     72.2 ms      45.2 ms
+ *   1080p      59.3 ms    161.5 ms     101.7 ms
+ *
+ * That is before the camera, the difference, the metrics and getting the
+ * pixels onto the canvas, so 1080p is a single-figure frame rate for anything but the
+ * cheapest lens. It is offered because a still, careful observation may well
+ * be worth six frames a second — but it is not the default, and the panel
+ * reports the cost measured on THIS device rather than asking anyone to
+ * trust the table above.
+ */
+export type LensDetail = 'analysis' | '540' | '720' | 'full';
 import {
   CHANNELS,
   buildRampLut,
@@ -132,7 +157,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.21.1';
+const APP_VERSION = '0.22.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -148,6 +173,7 @@ interface AppSettings {
   cameraPreference: CameraPreference;
   qualityPreference: QualityPreference;
   visionRatePreference: VisionRatePreference;
+  lensDetail: LensDetail;
   gpsAccuracyPreference: GpsAccuracyPreference;
   cameraFrameRate: CameraFrameRatePreference;
   captureResolution: CaptureResolution;
@@ -186,6 +212,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   // Adaptive is the default: it idles lower than Balanced on a still scene and
   // climbs far above it when something actually moves, which is the whole point.
   visionRatePreference: 'adaptive',
+  lensDetail: '540',
   gpsAccuracyPreference: 'high',
   cameraFrameRate: 'auto',
   captureResolution: '1080',
@@ -270,6 +297,9 @@ function loadSettings(): AppSettings {
       cameraPreference: ['auto', 'environment', 'user'].includes(String(parsed.cameraPreference))
         ? parsed.cameraPreference as CameraPreference
         : DEFAULT_SETTINGS.cameraPreference,
+      lensDetail: ['analysis', '540', '720', 'full'].includes(String(parsed.lensDetail))
+        ? parsed.lensDetail as LensDetail
+        : DEFAULT_SETTINGS.lensDetail,
       qualityPreference: ['low', 'normal', 'high'].includes(String(parsed.qualityPreference))
         ? parsed.qualityPreference as QualityPreference
         : DEFAULT_SETTINGS.qualityPreference,
@@ -1198,6 +1228,19 @@ function renderLensReadouts(): void {
   setText('lensCoverage', activeLens
     ? `${(latestLensCoverage * 100).toFixed(0)}% measured`
     : 'no lens');
+
+  // The cost measured HERE, not a number from a table written on a laptop.
+  // Raising the detail is a real trade and the size of it depends on the
+  // device, the lens and the camera, so the panel reports what it is costing
+  // rather than asking anyone to take a claim on trust.
+  const canvas = visionCanvas;
+  const size = canvas.width && !canvas.hidden ? `${canvas.width}×${canvas.height}` : '—';
+  setText('lensCostValue', lensRenderMs > 0
+    ? `${size} · ${lensRenderMs.toFixed(0)} ms/frame`
+    : size);
+  setText('lensDetailNote', settings.lensDetail === 'analysis'
+    ? 'The measurement frame. Cheapest, and blocky when enlarged.'
+    : 'A sharper picture of the same measurement — detail does not improve the reading.');
 }
 
 function renderMotionReadouts(): void {
@@ -2206,8 +2249,8 @@ function renderLensStops(): void {
 
 /* --- The live preview tile ---------------------------------------- */
 
-const PREVIEW_WIDTH = 120;
-const PREVIEW_HEIGHT = 68;
+const PREVIEW_WIDTH = 240;
+const PREVIEW_HEIGHT = 135;
 const PREVIEW_FPS = 20;
 
 let lensPreview: LensPreview | null = null;
@@ -2382,6 +2425,9 @@ function addLens(lens: CustomLens, message: string): void {
 function wireLensEditor(): void {
   populateChannelSelect(byId<HTMLSelectElement>('lensBrightnessChannel'), true);
   renderRampPresets();
+  const detail = document.getElementById('lensDetail') as HTMLSelectElement | null;
+  if (detail) detail.value = settings.lensDetail;
+  else bootProblems.push('#lensDetail is missing, so the live detail cannot be chosen');
 
   // Open the first time, closed once it has been read. A permanent
   // explanation becomes furniture; one that never appears leaves the first
@@ -2614,13 +2660,29 @@ function resizeVisionCanvas(width: number, height: number): void {
   if (visionCanvas.height !== height) visionCanvas.height = height;
 }
 
-function putBuffer(buffers: VisionBuffers, rgba: Uint8ClampedArray): void {
-  resizeVisionCanvas(buffers.width, buffers.height);
-  buffers.imageData.data.set(rgba);
-  visionContext.putImageData(buffers.imageData, 0, 0);
+/**
+ * The one place the overlay canvas is drawn and revealed.
+ *
+ * It is opaque and sits on top of the video, so showing it before anything is
+ * drawn covers a working preview with a black rectangle. Every painter goes
+ * through here so there is exactly one line that can reveal it.
+ */
+function paintVisionCanvas(
+  width: number,
+  height: number,
+  imageData: ImageData,
+  rgba: Uint8ClampedArray
+): void {
+  resizeVisionCanvas(width, height);
+  imageData.data.set(rgba);
+  visionContext.putImageData(imageData, 0, 0);
   // Only now is it safe to show: the canvas holds a real frame.
   overlayPainted = true;
   if (visionCanvas.hidden) visionCanvas.hidden = false;
+}
+
+function putBuffer(buffers: VisionBuffers, rgba: Uint8ClampedArray): void {
+  paintVisionCanvas(buffers.width, buffers.height, buffers.imageData, rgba);
 }
 
 function drawFlowOverlay(buffers: VisionBuffers, field: FlowField): void {
@@ -2815,6 +2877,105 @@ function buildLensSources(buffers: VisionBuffers, lens: CustomLens): ChannelSour
   }
 
   return sources;
+}
+
+/** Target width for the live lens picture, never above what the camera gives. */
+function lensDisplayWidth(): number {
+  const source = camera.diagnostics.videoWidth;
+  const analysis = visionBuffers?.width ?? analysisWidth();
+  if (!source) return analysis;
+  const wanted = settings.lensDetail === 'full' ? source
+    : settings.lensDetail === '720' ? 1280
+    : settings.lensDetail === '540' ? 960
+    : analysis;
+  // Asking for more pixels than the sensor delivered buys nothing but cost.
+  return Math.max(analysis, Math.min(source, wanted));
+}
+
+/** Buffers for the enlarged lens picture, kept across frames. */
+let lensDisplay: {
+  width: number;
+  height: number;
+  gray: Uint8ClampedArray;
+  rgba: Uint8ClampedArray;
+  imageData: ImageData;
+} | null = null;
+
+/** Rolling cost of the lens render, so the panel can report what it costs HERE. */
+let lensRenderMs = 0;
+
+function ensureLensDisplay(width: number, height: number) {
+  if (lensDisplay && lensDisplay.width === width && lensDisplay.height === height) return lensDisplay;
+  lensDisplay = {
+    width,
+    height,
+    gray: new Uint8ClampedArray(width * height),
+    rgba: new Uint8ClampedArray(width * height * 4),
+    imageData: new ImageData(width, height)
+  };
+  return lensDisplay;
+}
+
+/**
+ * Paint the live lens, at the analysis size or larger.
+ *
+ * Above the analysis size this is the same code the saved still uses: the
+ * spatial channels are recomputed at the display size from a second, larger
+ * capture, and only the accumulated temporal fields are enlarged. The
+ * MEASUREMENT is unchanged either way — it is still made on the analysis
+ * frame — so raising the detail buys a sharper picture and not a better
+ * reading, and the panel says so.
+ */
+function renderLensFrame(buffers: VisionBuffers, lens: CustomLens): void {
+  const started = performance.now();
+  const target = lensDisplayWidth();
+
+  if (target <= buffers.width) {
+    const report = renderLens(
+      lens,
+      buildLensSources(buffers, lens),
+      buffers.gray,
+      buffers.width,
+      buffers.height,
+      buffers.rgba,
+      lensLut(lens)
+    );
+    latestLensCoverage = report.coverage;
+    putBuffer(buffers, buffers.rgba);
+    lensRenderMs += (performance.now() - started - lensRenderMs) * 0.2;
+    return;
+  }
+
+  const frame = grabFullFrame(target);
+  if (!frame) {
+    // No larger frame this time; the analysis-size picture is still a picture.
+    const report = renderLens(
+      lens, buildLensSources(buffers, lens), buffers.gray,
+      buffers.width, buffers.height, buffers.rgba, lensLut(lens)
+    );
+    latestLensCoverage = report.coverage;
+    putBuffer(buffers, buffers.rgba);
+    return;
+  }
+
+  const display = ensureLensDisplay(frame.width, frame.height);
+  rgbaToGray(frame.data, display.gray);
+  const report = renderLens(
+    lens,
+    buildStillLensSources(lens, display.gray, display.width, display.height, null),
+    display.gray,
+    display.width,
+    display.height,
+    display.rgba,
+    lensLut(lens)
+  );
+  latestLensCoverage = report.coverage;
+
+  paintVisionCanvas(display.width, display.height, display.imageData, display.rgba);
+
+  // Exponentially smoothed, so the readout is the steady cost rather than
+  // whichever frame happened to be sampled.
+  lensRenderMs += (performance.now() - started - lensRenderMs) * 0.2;
 }
 
 function processVisionFrame(timestamp: number): boolean {
@@ -3023,19 +3184,7 @@ function processVisionFrame(timestamp: number): boolean {
       renderNightFrame(buffers, frame.data);
       break;
     case 'lens':
-      if (activeLens) {
-        const report = renderLens(
-          activeLens,
-          buildLensSources(buffers, activeLens),
-          buffers.gray,
-          buffers.width,
-          buffers.height,
-          buffers.rgba,
-          lensLut(activeLens)
-        );
-        latestLensCoverage = report.coverage;
-        putBuffer(buffers, buffers.rgba);
-      }
+      if (activeLens) renderLensFrame(buffers, activeLens);
       break;
     default:
       break;
@@ -4412,7 +4561,15 @@ function measureEffectiveDetail(): string {
 }
 
 /** Grab the live video at native resolution, honouring any digital crop. */
-function grabFullFrame(): ImageData | null {
+/**
+ * Draw the video into an ImageData at a chosen width, or at its own.
+ *
+ * Deliberately NOT `cameraSource.captureFrame`, which clamps to 960 px. That
+ * clamp is right for the analysis pipeline it was written for — a per-frame
+ * budget, not a picture — but it is the reason a live lens asked to render at
+ * 720p or full resolution came back at 960 either way.
+ */
+function grabFullFrame(targetWidth?: number): ImageData | null {
   const sourceWidth = video.videoWidth;
   const sourceHeight = video.videoHeight;
   if (!sourceWidth || !sourceHeight) return null;
@@ -4424,8 +4581,11 @@ function grabFullFrame(): ImageData | null {
   const cropHeight = sourceHeight / crop;
   const cropX = (sourceWidth - cropWidth) / 2;
   const cropY = (sourceHeight - cropHeight) / 2;
-  const width = Math.round(cropWidth);
-  const height = Math.round(cropHeight);
+  const wanted = targetWidth && targetWidth > 0
+    ? Math.min(Math.round(cropWidth), Math.round(targetWidth))
+    : Math.round(cropWidth);
+  const width = Math.max(32, wanted);
+  const height = Math.max(24, Math.round((cropHeight / cropWidth) * width));
 
   stillCanvas ??= document.createElement('canvas');
   stillContext ??= stillCanvas.getContext('2d', { willReadFrequently: true });
@@ -4491,7 +4651,13 @@ function buildStillLensSources(
 
   if (analysis) {
     const live = buildLensSources(analysis, lens);
-    for (const id of ['speed', 'age', 'novelty'] as const) {
+    // Change is enlarged only when there was no second full frame to difference
+    // — that is the live path, where grabbing two full frames per displayed
+    // frame would cost more than the whole lens render.
+    const enlarge = needed.has('change') && !previous
+      ? (['change', 'speed', 'age', 'novelty'] as const)
+      : (['speed', 'age', 'novelty'] as const);
+    for (const id of enlarge) {
       const channel = live[id];
       if (needed.has(id) && channel) {
         sources[id] = upscaleChannel(channel, analysis.width, analysis.height, width, height);
@@ -5718,6 +5884,16 @@ on('cameraFrameRate', 'change', () => {
 });
 on('cameraPreference', 'change', handleCameraPreferenceChange);
 on('qualityPreference', 'change', handleQualityChange);
+on('lensDetail', 'change', (event) => {
+  settings.lensDetail = (event.target as HTMLSelectElement).value as LensDetail;
+  saveSettings();
+  // The canvas geometry changes with the setting, so whatever is on it now is
+  // the wrong size until the next frame paints.
+  lensDisplay = null;
+  lensRenderMs = 0;
+  overlayPainted = false;
+  visionCanvas.hidden = true;
+});
 on('visionRatePreference', 'change', handleVisionRateChange);
 on('gpsAccuracyPreference', 'change', handleGpsAccuracyChange);
 

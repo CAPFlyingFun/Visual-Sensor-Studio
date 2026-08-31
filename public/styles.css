@@ -1182,16 +1182,13 @@ button.ghost.danger {
 }
 .lens-preview canvas {
   width: 100%;
-  max-width: 320px;
-  aspect-ratio: 240 / 135;
+  max-width: 420px;
+  aspect-ratio: 16 / 9;
   height: auto;
   display: block;
   border-radius: 10px;
   border: 1px solid #2b3a4a;
   background: #000;
-  /* The scene is generated small on purpose; keep the pixels honest rather
-     than letting the browser invent smooth edges that are not in the data. */
-  image-rendering: pixelated;
 }
 .lens-preview figcaption {
   color: #7d94a8;
@@ -1293,4 +1290,12 @@ button.ghost.danger {
   gap: 5px;
   color: #9fb2c3;
   font-size: 12px;
+}
+
+.lens-detail-row {
+  margin: 8px 0 4px;
+}
+.lens-detail-row .helper {
+  font-size: 11px;
+  margin: 2px 0 0;
 }

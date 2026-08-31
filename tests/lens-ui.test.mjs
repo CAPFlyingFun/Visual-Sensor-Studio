@@ -192,6 +192,53 @@ test('the explanation appears once and then gets out of the way', () => {
   assert.match(mainSource, /intro\.open = localStorage\.getItem\(LENS_INTRO_KEY\) !== 'read'/);
 });
 
+test('the live picture can be drawn larger than the analysis frame', () => {
+  assert.match(htmlSource, /id="lensDetail"/);
+  assert.match(mainSource, /export type LensDetail = 'analysis' \| '540' \| '720' \| 'full'/);
+  assert.match(mainSource, /function lensDisplayWidth\(\)/);
+  assert.match(mainSource, /function renderLensFrame\(/);
+  // Never more pixels than the sensor actually delivered.
+  assert.match(mainSource, /Math\.max\(analysis, Math\.min\(source, wanted\)\)/);
+});
+
+test('the enlarged live path does not go through the 960px capture clamp', () => {
+  // cameraSource.captureFrame clamps to 960 for the analysis pipeline it was
+  // written for, which silently made 720p and Full both come back at 960.
+  const fn = mainSource.slice(
+    mainSource.indexOf('function renderLensFrame'),
+    mainSource.indexOf('function processVisionFrame')
+  );
+  assert.match(fn, /grabFullFrame\(target\)/);
+  assert.doesNotMatch(fn, /cameraSource\.captureFrame/);
+  assert.match(mainSource, /function grabFullFrame\(targetWidth\?: number\)/);
+});
+
+test('the panel reports the cost measured on this device', () => {
+  // The trade is real and its size depends on the phone, the lens and the
+  // camera, so the number shown is measured here rather than asserted from a
+  // table written on a laptop.
+  assert.match(mainSource, /lensRenderMs \+= \(performance\.now\(\) - started - lensRenderMs\) \* 0\.2/);
+  assert.match(mainSource, /ms\/frame/);
+  assert.match(htmlSource, /id="lensCostValue"/);
+  // And it must not imply a sharper picture is a better measurement.
+  assert.match(mainSource, /detail does not improve the reading/);
+});
+
+test('the detail setting survives a reload', () => {
+  assert.match(mainSource, /lensDetail: LensDetail;/);
+  assert.match(mainSource, /\['analysis', '540', '720', 'full'\]\.includes\(String\(parsed\.lensDetail\)\)/);
+  assert.match(mainSource, /detail\.value = settings\.lensDetail/);
+});
+
+test('only one line in the app may reveal the overlay canvas', () => {
+  // Two painters now draw it, and a second reveal site is how a black
+  // rectangle ends up covering a working preview.
+  const reveals = [...mainSource.matchAll(/visionCanvas\.hidden = false/g)];
+  assert.equal(reveals.length, 1, 'only paintVisionCanvas may reveal the overlay');
+  assert.match(mainSource, /function paintVisionCanvas\(/);
+  assert.match(mainSource, /paintVisionCanvas\(display\.width, display\.height/);
+});
+
 test('the editor has styles rather than inheriting a broken layout', () => {
   for (const selector of ['.lens-chip', '.lens-stop', '.lens-swatch', '.lens-actions',
     '.lens-channel', '.lens-preset', '.lens-preview canvas', '.lens-step']) {

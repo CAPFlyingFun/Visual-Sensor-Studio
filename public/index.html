@@ -159,6 +159,19 @@
               measurement; it cannot add one. Saved lenses stay on this device.
             </p>
             <div class="lens-chips" id="lensChips"></div>
+            <div class="night-grid lens-detail-row">
+              <label>Live detail
+                <select id="lensDetail">
+                  <option value="analysis">Analysis — fastest</option>
+                  <option value="540">540p</option>
+                  <option value="720">720p</option>
+                  <option value="full">Full — sensor resolution</option>
+                </select>
+              </label>
+              <label>Costs here <span class="value" id="lensCostValue">—</span>
+                <span class="helper" id="lensDetailNote"></span>
+              </label>
+            </div>
             <div class="lens-actions">
               <button class="ghost" type="button" id="lensNewButton">+ New lens</button>
               <button class="ghost" type="button" id="lensEditButton">Edit</button>
@@ -179,7 +192,7 @@
               </details>
 
               <figure class="lens-preview">
-                <canvas id="lensPreviewCanvas" width="240" height="135"></canvas>
+                <canvas id="lensPreviewCanvas" width="480" height="270"></canvas>
                 <figcaption id="lensPreviewCaption"></figcaption>
               </figure>
 
@@ -720,7 +733,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.21.1</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.22.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">

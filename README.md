@@ -193,6 +193,33 @@ block the local gradient varies, and where it is weak the ratio inflates, so
 it reads high rather than recovering the quoted number. What survives — and
 what setting a range actually needs — is the ordering.
 
+### Live detail, and what it costs
+
+The live lens picture is drawn at the analysis frame's size by default, which
+is a few hundred pixels across — cheap, and blocky when stretched to fill a
+phone. **Live detail** raises it, using the same technique as a saved still:
+the spatial channels are recomputed at the display size and only the temporal
+ones are enlarged.
+
+It is not free, and the numbers are not close. Per-frame cost for the lens
+render alone, measured over 12 frames per size:
+
+|         | luma lens | edge lens | speed lens |
+|---------|-----------|-----------|------------|
+| 256 px  |    1.4 ms |    3.3 ms |     2.4 ms |
+| 540p    |   16.5 ms |   42.9 ms |    27.7 ms |
+| 720p    |   26.8 ms |   72.2 ms |    45.2 ms |
+| 1080p   |   59.3 ms |  161.5 ms |   101.7 ms |
+
+That is before the camera, the frame difference and the metrics, so full
+resolution is a single-figure frame rate for anything but the cheapest lens.
+It is offered anyway — a still, careful observation may well be worth six
+frames a second — but the panel reports the cost measured on the device in
+front of you rather than asking anyone to trust the table.
+
+Raising the detail does **not** improve the reading. The measurement is still
+made on the analysis frame; what changes is how sharply it is drawn.
+
 ### Saved stills
 
 A lens still is rendered at the frame's FULL resolution. Four of the seven
