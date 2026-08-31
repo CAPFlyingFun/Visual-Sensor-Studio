@@ -733,7 +733,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.22.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.22.1</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">
@@ -804,6 +804,12 @@
             <option value="1440">1440p</option>
             <option value="2160">2160p · highest detail</option>
           </select>
+          <span class="helper">
+            This is a VIDEO STREAM, and it is the ceiling for everything here including
+            saved frames. It is not the sensor's still resolution: a 36MP or 48MP shot comes
+            from a capture API only an installed app can use, so a frame saved here will not
+            match the Camera app however high this is set. Higher costs frame rate.
+          </span>
         </label>
         <label>Camera Frame Rate
           <select id="cameraFrameRate">

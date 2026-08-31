@@ -182,6 +182,47 @@ test('a missing element cannot silently kill the rest of the boot wiring', () =>
   assert.match(mainSource, /bootProblems\.length/);
 });
 
+test('the wanted resolution reaches getUserMedia, not just applyConstraints', () => {
+  // The setting said 1080p and the very first getUserMedia asked for 720:
+  // the height was applied afterwards through applyConstraints, and WebKit
+  // will negotiate a live track DOWN but routinely ignores a request to raise
+  // it. So every session ran at 720 and every saved frame was a 720p frame.
+  assert.match(adapterSource, /setPreferredCaptureHeight\(height: number\): number/);
+  assert.match(cameraSource, /setPreferredCaptureHeight\(height\)/);
+  const start = mainSource.slice(mainSource.indexOf('async function startCamera'));
+  const preferred = start.indexOf('camera.setPreferredCaptureHeight');
+  const opened = start.indexOf('await camera.start(');
+  assert.ok(preferred > 0, 'the height must be asked for before the stream opens');
+  assert.ok(preferred < opened, 'it must come before camera.start');
+  // And it must stay synchronous: an await before getUserMedia loses the
+  // tap's transient activation and WebKit stops showing the prompt.
+  assert.doesNotMatch(
+    start.slice(preferred, opened),
+    /await/,
+    'nothing may be awaited between setting the height and opening the stream'
+  );
+});
+
+test('the camera reports the ceiling it advertises, not only what it gave', () => {
+  // "This camera cannot do more" and "we did not ask for more" look identical
+  // from a negotiated size alone, and the second one was the actual bug.
+  assert.match(cameraSource, /resolutionCapability/);
+  assert.match(cameraSource, /capabilityWidth: resolutionCapability/);
+  assert.match(adapterSource, /capabilityWidth: number;/);
+  assert.match(mainSource, /advertises up to \$\{diagnostics\.capabilityWidth\}/);
+  // Absent capability reporting must read as unknown rather than as zero.
+  assert.match(mainSource, /does not expose the camera/);
+});
+
+test('the resolution control does not imply it can match the Camera app', () => {
+  // getUserMedia yields a video stream. The sensor's 36MP or 48MP still comes
+  // from a capture path no web page can reach, and a control that looked like
+  // it could would be promising something impossible.
+  const help = htmlSource.slice(htmlSource.indexOf('id="captureResolution"'));
+  assert.match(help, /VIDEO STREAM/);
+  assert.match(help, /will not\s*\n?\s*match the Camera app/);
+});
+
 test('camera attempts are logged across reloads, including calls that never settle', () => {
   // In-memory state is wiped by any reload, so diagnostics read after a
   // restart show "idle" regardless of what failed beforehand. The log has to

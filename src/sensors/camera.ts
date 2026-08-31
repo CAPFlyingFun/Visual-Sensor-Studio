@@ -51,6 +51,9 @@ export interface CameraAttempt {
   firstFrameVia: string;
   trackState: string;
   trackMuted: boolean;
+  /** Largest stream size the track advertises, 0 when WebKit does not expose it. */
+  capabilityWidth: number;
+  capabilityHeight: number;
   videoWidth: number;
   videoHeight: number;
 }
@@ -117,6 +120,9 @@ export interface CameraDiagnostics {
   trackMuted: boolean;
   trackEnabled: boolean;
   trackLabel: string;
+  /** Largest stream size the track advertises, 0 when WebKit does not expose it. */
+  capabilityWidth: number;
+  capabilityHeight: number;
   settingsWidth: number;
   settingsHeight: number;
   settingsFrameRate: number;
@@ -156,6 +162,7 @@ interface CameraEngine {
   subscribe(listener: (status: CameraStatus) => void): () => void;
   clearAttempts(): void;
   permissionState(): Promise<string>;
+  setPreferredCaptureHeight(height: number): number;
   setCaptureHeight(height: number): Promise<{ applied: boolean; reason?: string }>;
   selectDevice(deviceId: string | null): Promise<CameraFacing>;
   readonly selectedDeviceId: string | null;
@@ -286,6 +293,11 @@ export class CameraController {
   }
 
   /** Request a capture resolution by target height. The result must be read back. */
+  /** Ask for a capture height before the stream opens. Synchronous by design. */
+  setPreferredCaptureHeight(height: number): number {
+    return engine().setPreferredCaptureHeight(height);
+  }
+
   async setCaptureHeight(height: number): Promise<{ applied: boolean; reason?: string }> {
     return engine().setCaptureHeight(height);
   }

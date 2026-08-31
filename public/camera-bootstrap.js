@@ -136,6 +136,8 @@
   let strictFacing = false;
   let negotiatedFrameRate = 0;
   let frameRateCapability = null;
+  /** Largest video-stream size the track advertises, or null when not exposed. */
+  let resolutionCapability = null;
   let deliveryHandle = 0;
   let deliveryListener = null;
   // Counters maintained by whichever delivery loop is running, so anything
@@ -722,6 +724,7 @@
 
   function readFrameRateCapability() {
     frameRateCapability = null;
+    resolutionCapability = null;
     negotiatedFrameRate = 0;
 
     const track = videoTrack;
@@ -730,6 +733,15 @@
     if (typeof track.getCapabilities === 'function') {
       try {
         const capabilities = track.getCapabilities();
+        // What this camera says it can deliver AS A VIDEO STREAM. Worth
+        // reporting beside the negotiated size, because the difference between
+        // "this camera cannot do more" and "we did not ask for more" is
+        // invisible otherwise — and the second one was a real bug here.
+        const w = capabilities && capabilities.width;
+        const h = capabilities && capabilities.height;
+        if (w && h && Number.isFinite(Number(w.max)) && Number.isFinite(Number(h.max))) {
+          resolutionCapability = { width: Number(w.max), height: Number(h.max) };
+        }
         const range = capabilities && capabilities.frameRate;
         if (range && typeof range === 'object') {
           const min = Number(range.min);
@@ -1236,6 +1248,26 @@
       return requestedDeviceId;
     },
 
+    /**
+     * Record the wanted capture height WITHOUT touching a live track.
+     *
+     * This exists to be called before `start()`. A resolution asked for after
+     * the stream is open goes through `applyConstraints`, and WebKit will
+     * happily negotiate a live track DOWN but routinely ignores a request to
+     * raise it — the format is already chosen. So a stream opened at the 720
+     * default stayed at 720 for the session no matter what the setting said,
+     * and the only reliable place to ask for more is the getUserMedia call
+     * itself.
+     *
+     * Synchronous on purpose: the start path must not await anything before
+     * getUserMedia or the tap's transient activation is gone and WebKit stops
+     * showing the permission prompt.
+     */
+    setPreferredCaptureHeight(height) {
+      requestedHeight = Number(height) || 720;
+      return requestedHeight;
+    },
+
     async setCaptureHeight(height) {
       requestedHeight = Number(height) || 720;
       const track = videoTrack;
@@ -1533,6 +1565,8 @@
         trackMuted: track ? Boolean(track.muted) : false,
         trackEnabled: track ? Boolean(track.enabled) : false,
         trackLabel: track && track.label ? track.label : '',
+        capabilityWidth: resolutionCapability ? resolutionCapability.width : 0,
+        capabilityHeight: resolutionCapability ? resolutionCapability.height : 0,
         settingsWidth: Number(settings.width) || 0,
         settingsHeight: Number(settings.height) || 0,
         settingsFrameRate: Number(settings.frameRate) || 0,

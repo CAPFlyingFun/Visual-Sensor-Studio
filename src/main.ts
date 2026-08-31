@@ -157,7 +157,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.22.0';
+const APP_VERSION = '0.22.1';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -880,8 +880,16 @@ async function startCamera(): Promise<void> {
   resetVisionState();
 
   try {
-    // Nothing is awaited before this call, so the tap's transient activation
-    // is still live when WebKit decides whether to show a permission prompt.
+    // The resolution has to be asked for BEFORE getUserMedia. Setting it
+    // afterwards goes through applyConstraints, which WebKit will negotiate a
+    // live track down with but routinely ignores when asked to raise — so a
+    // stream opened at the 720 default stayed there for the whole session
+    // however high the setting was, and every saved frame was a 720p frame.
+    //
+    // Synchronous, and deliberately not awaited: nothing may be awaited before
+    // camera.start() or the tap's transient activation is gone when WebKit
+    // decides whether to show the permission prompt.
+    camera.setPreferredCaptureHeight(Number(settings.captureResolution));
     await camera.start(preferredCameraFacing());
     await applyCaptureResolution();
     await applyCameraFrameRate();
@@ -920,9 +928,20 @@ async function applyCaptureResolution(): Promise<void> {
     const diagnostics = camera.diagnostics;
     const info = camera.frameRateInfo;
     if (!diagnostics.videoWidth) return;
+    const asked = Number(settings.captureResolution);
+    const short = Math.min(diagnostics.videoWidth, diagnostics.videoHeight);
+    // What was asked for, beside what arrived, beside what the camera says it
+    // could do. The difference between "this camera cannot" and "we did not
+    // ask" is invisible without all three — and the second was a real bug.
+    const ceiling = diagnostics.capabilityWidth && diagnostics.capabilityHeight
+      ? ` This camera advertises up to ${diagnostics.capabilityWidth}×${diagnostics.capabilityHeight} as a video stream.`
+      : ' This browser does not expose the camera\'s maximum stream size.';
+    const shortfall = short < asked * 0.95
+      ? ` It would not give ${asked}p here; restart the camera to renegotiate.`
+      : '';
     setText('cameraMessage', `Camera negotiated ${diagnostics.videoWidth}×${diagnostics.videoHeight}`
       + `${info.reported ? ` at ${info.reported} FPS` : ''}. Higher resolutions usually cost frame rate —`
-      + ' the Camera Performance panel shows what is actually delivered.');
+      + ` the Camera Performance panel shows what is actually delivered.${ceiling}${shortfall}`);
     void refreshSettingsDiagnostics();
   }, 700);
 }
@@ -5873,6 +5892,9 @@ on('nightGamma', 'input', (event) => {
 });
 on('captureResolution', 'change', () => {
   saveSettingFromControls();
+  // Raising it needs a fresh getUserMedia, so record the wish first: if the
+  // live track refuses, the next camera start will honour it.
+  camera.setPreferredCaptureHeight(Number(settings.captureResolution));
   void applyCaptureResolution();
 });
 on('cameraFrameRate', 'change', () => {

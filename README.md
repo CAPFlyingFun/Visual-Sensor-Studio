@@ -149,6 +149,31 @@ Speeds are in **analysis-frame pixels per second** and stay that way.
 Converting to m/s or mph needs distance to the subject and the lens's angular
 scale, neither of which this app has.
 
+## What the camera can and cannot give a web page
+
+`getUserMedia` delivers a **video stream**, and that stream is the ceiling for
+everything in this app — the live view, every filter, and every saved frame.
+It is not the sensor's still resolution. A 36MP or 48MP iPhone photo comes
+from a still-capture path only an installed app can use; Safari does not
+implement `ImageCapture.takePhoto()` either, so there is no web route to it.
+
+A saved frame here will therefore never match the Camera app, however high
+the capture resolution is set. The gap is roughly:
+
+- a 36MP still is 4536×8064
+- a maxed-out video stream is 3840×2160 at best, where the device offers it,
+  and commonly 1920×1080
+
+That is four to eighteen times fewer pixels, before considering that the
+native photo also gets multi-frame HDR, noise reduction and sharpening that
+no browser API exposes. This is a platform limit, not a tuning problem, and
+the app should not pretend otherwise.
+
+What the app CAN do is ask for the most the stream will give and report what
+it actually got. The Camera Resolution control does that, and the message
+beside it names three separate things: what was asked for, what was
+negotiated, and what the camera advertises it could deliver.
+
 ## Custom Lenses
 
 A **lens** is a false-colour mapping you design: pick one of the per-pixel
