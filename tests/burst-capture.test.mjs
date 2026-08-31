@@ -281,16 +281,18 @@ test('the burst tab can start its own sensors and hand back a shareable log', ()
 test('every log line carries the version and the numbers that decide the verdict', () => {
   const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
   const line = main.slice(main.indexOf('function burstLogLine'), main.indexOf('async function copyBurstLog'));
-  for (const field of ['frames', 'distinct', 'measurable', 'travel', 'raw', 'selected', 'gyro']) {
+  // 'gyro' is now built from a reason object rather than a bare field name.
+  for (const field of ['frames', 'distinct', 'measurable', 'travel', 'raw', 'selected']) {
     assert.ok(line.includes(`${field} `), `the log line omits ${field}`);
   }
+  assert.match(line, /`gyro \$\{/, 'the log line omits gyro');
   // Without the build, a pasted reading cannot be tied to the code that
   // produced it — and two readings in this project have already turned out to
   // be measuring a defect rather than the phone.
   assert.match(line, /v\$\{APP_VERSION\}/);
   // Distinct especially: a burst of 32 samples of 8 frames looks exactly like
   // a steady hand from the offsets alone.
-  assert.match(main, /appendBurstLog\(burstLogLine\(verdict, distinct, gyroTravel\)\)/);
+  assert.match(main, /appendBurstLog\(burstLogLine\(verdict, distinct, renderBurstAgreement\(/);
 });
 
 test('the burst tab shows the camera, and marks the region it actually measures', () => {
@@ -372,4 +374,48 @@ test('stillness is never claimed from measurements that were refused', () => {
   const verdict = bc.judgeBurst(blind, 8);
   assert.match(verdict.reason, /texture/i);
   assert.doesNotMatch(verdict.reason, /tripod/i);
+});
+
+test('score comparability: every offset in a window samples the same region', () => {
+  // Scores are only comparable when every offset averages over the same pixels.
+  // A fixed margin under a wider search meant edge offsets averaged over fewer,
+  // so `worst` was set by whichever overlapped least and the confidence built
+  // from it became noise — Joshua saw `measurable` swing between 2 and 15 of 32
+  // on bursts with the SAME travel, on the same patch of grass.
+  const source = readFileSync(new URL('../src/vision/burst-capture.ts', import.meta.url), 'utf8');
+  assert.match(source, /const coarseMargin = coarseRadius \+ 2;/);
+  assert.match(source, /const fineMargin = Math\.abs\(seedX\) > Math\.abs\(seedY\)/);
+  // And no call may fall back to a fixed margin that ignores the search radius.
+  assert.doesNotMatch(source, /searchWindow\([^)]*, margin\)/);
+
+  // Behaviourally: confidence must stay in a tight band across a burst on one
+  // scene, or the measurable count is a coin flip rather than a measurement.
+  const reference = cropAt(0, 0);
+  const confidences = [];
+  let x = 0;
+  let y = 0;
+  let a = 977;
+  const rnd = () => { a = (a * 1664525 + 1013904223) >>> 0; return a / 4294967296; };
+  for (let i = 1; i < 24; i++) {
+    x += (rnd() - 0.5) * 1.4;
+    y += (rnd() - 0.5) * 1.4;
+    confidences.push(bc.estimateShift(reference, sr.noisyPlane(cropAt(-x, -y), 2, i * 13)).confidence);
+  }
+  const lowest = Math.min(...confidences);
+  const highest = Math.max(...confidences);
+  assert.ok(lowest > bc.MIN_CONFIDENCE,
+    `every frame of a textured burst should be measurable; lowest was ${lowest.toFixed(2)}`);
+  assert.ok(highest - lowest < 0.25,
+    `confidence spread ${(highest - lowest).toFixed(2)} is too wide to threshold on`);
+});
+
+test('the log says WHY the gyroscope contributed nothing', () => {
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  // Thirty rows of Joshua's log read "gyro n/a" and none said why, so the
+  // record could not answer whether the sensors had been used at all. The panel
+  // knew; the log — the thing he actually sends — did not.
+  for (const reason of ['no-fov', 'motion-off', 'no-cam-size']) {
+    assert.ok(main.includes(`'${reason}'`), `the log cannot report ${reason}`);
+  }
+  assert.match(main, /gyro\.travel === null \? gyro\.reason/);
 });

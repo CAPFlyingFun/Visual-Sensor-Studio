@@ -122,6 +122,8 @@ function searchWindow(
   let worst = 0;
   for (let dy = centreY - radius; dy <= centreY + radius; dy++) {
     for (let dx = centreX - radius; dx <= centreX + radius; dx++) {
+      // Every offset in this window samples the SAME region — see the margin
+      // the caller passes, which covers the whole search.
       const score = windowSad(reference, frame, dx, dy, margin);
       if (score < best) { best = score; bestX = dx; bestY = dy; }
       if (score > worst) worst = score;
@@ -158,8 +160,7 @@ export function estimateShift(
   frame: Plane,
   maxShift = 24
 ): ShiftEstimate {
-  const margin = 4;
-  if (reference.width <= margin * 2 + 4 || reference.height <= margin * 2 + 4) {
+  if (reference.width <= maxShift * 2 + 8 || reference.height <= maxShift * 2 + 8) {
     return { shiftX: 0, shiftY: 0, confidence: 0 };
   }
 
@@ -170,8 +171,22 @@ export function estimateShift(
   let seedX = 0;
   let seedY = 0;
   let coarseOnEdge = false;
-  if (smallReference.width > margin * 2 + coarseRadius * 2) {
-    const coarse = searchWindow(smallReference, smallFrame, 0, 0, coarseRadius, margin);
+  // THE MARGIN MUST COVER THE WHOLE SEARCH, at every level.
+  //
+  // Scores are only comparable when every offset averages over the same
+  // pixels. Insetting by the search radius guarantees that; the skip inside
+  // windowSad then never fires in normal use and stays as a guard.
+  //
+  // The previous version used a fixed margin of 4 while searching a radius of
+  // 12, so offsets near the edge of the window averaged over fewer pixels than
+  // those near the middle. `worst` — the largest score in the window — was
+  // then set by whichever offset happened to overlap least, and the confidence
+  // built from it (1 - best/worst) became noise. On Joshua's phone that showed
+  // as `measurable` swinging between 2 and 15 of 32 on bursts with the SAME
+  // travel, pointed at the same patch of grass.
+  const coarseMargin = coarseRadius + 2;
+  if (smallReference.width > coarseMargin * 2 + 4) {
+    const coarse = searchWindow(smallReference, smallFrame, 0, 0, coarseRadius, coarseMargin);
     seedX = coarse.x * 2;
     seedY = coarse.y * 2;
     // Only the COARSE edge means the motion left the range entirely. The fine
@@ -179,13 +194,18 @@ export function estimateShift(
     coarseOnEdge = coarse.onEdge;
   }
 
-  const fine = searchWindow(reference, frame, seedX, seedY, 2, margin);
+  // The fine window sits on the seed, so its margin has to cover the seed's
+  // distance from centre as well as its own radius and the parabolic step.
+  const fineMargin = Math.abs(seedX) > Math.abs(seedY)
+    ? Math.abs(seedX) + 4
+    : Math.abs(seedY) + 4;
+  const fine = searchWindow(reference, frame, seedX, seedY, 2, fineMargin);
   if (!Number.isFinite(fine.best)) return { shiftX: 0, shiftY: 0, confidence: 0 };
 
-  const left = windowSad(reference, frame, fine.x - 1, fine.y, margin);
-  const right = windowSad(reference, frame, fine.x + 1, fine.y, margin);
-  const up = windowSad(reference, frame, fine.x, fine.y - 1, margin);
-  const down = windowSad(reference, frame, fine.x, fine.y + 1, margin);
+  const left = windowSad(reference, frame, fine.x - 1, fine.y, fineMargin);
+  const right = windowSad(reference, frame, fine.x + 1, fine.y, fineMargin);
+  const up = windowSad(reference, frame, fine.x, fine.y - 1, fineMargin);
+  const down = windowSad(reference, frame, fine.x, fine.y + 1, fineMargin);
 
   // Depth of the minimum against the spread of the surface. A flat wall gives
   // a shallow basin and a meaningless argmin; this is what says so.

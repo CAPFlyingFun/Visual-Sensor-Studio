@@ -184,7 +184,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.32.3';
+const APP_VERSION = '0.32.4';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -7470,8 +7470,7 @@ async function runBurstProbe(): Promise<void> {
 
     const verdict = judgeBurst(shifts, KEEP_FRAMES);
     renderBurstVerdict(verdict, shifts);
-    const gyroTravel = renderBurstAgreement(shifts, gyro);
-    appendBurstLog(burstLogLine(verdict, distinct, gyroTravel));
+    appendBurstLog(burstLogLine(verdict, distinct, renderBurstAgreement(shifts, gyro)));
   } finally {
     burstRunning = false;
     byId<HTMLButtonElement>('burstCaptureButton').disabled = false;
@@ -7571,7 +7570,7 @@ function drawBurstScatter(shifts: ShiftEstimate[], selected: number[]): void {
 function renderBurstAgreement(
   shifts: ShiftEstimate[],
   gyro: Array<{ x: number; y: number }>
-): number | null {
+): { travel: number | null; reason: string } {
   const focal = focalLengthPixels(video.videoWidth, settings.motionFovDegrees);
   const imageTravel = shifts.reduce(
     (worst, s) => Math.max(worst, Math.hypot(s.shiftX, s.shiftY)), 0);
@@ -7584,12 +7583,17 @@ function renderBurstAgreement(
     // a gyro figure on two runs and n/a on every run after, with no obvious
     // change in between — which is unanswerable while the message is the same
     // either way.
-    setText('burstAgreement', !(settings.motionFovDegrees > 0)
-      ? 'needs a field of view'
+    const reason = !(settings.motionFovDegrees > 0)
+      ? 'no-fov'
       : !motion.active
+        ? 'motion-off'
+        : 'no-cam-size';
+    setText('burstAgreement', reason === 'no-fov'
+      ? 'needs a field of view'
+      : reason === 'motion-off'
         ? 'motion sensors stopped'
         : 'camera size unknown');
-    return null;
+    return { travel: null, reason };
   }
   const gyroTravel = gyro.reduce((worst, g) => Math.max(worst,
     Math.hypot(rotationToPixels(g.x, focal), rotationToPixels(g.y, focal))), 0);
@@ -7597,11 +7601,11 @@ function renderBurstAgreement(
 
   if (imageTravel < 0.05 && gyroTravel < 0.05) {
     setText('burstAgreement', 'both still');
-    return gyroTravel;
+    return { travel: gyroTravel, reason: 'still' };
   }
   const ratio = gyroTravel > 0 ? imageTravel / gyroTravel : 0;
   setText('burstAgreement', ratio > 0 ? `${ratio.toFixed(2)}× image/gyro` : '—');
-  return gyroTravel;
+  return { travel: gyroTravel, reason: 'ok' };
 }
 
 /* --- Burst tab: self-contained setup and a shareable log -----------------
@@ -7688,10 +7692,13 @@ function appendBurstLog(line: string): void {
 function burstLogLine(
   verdict: ReturnType<typeof judgeBurst>,
   distinct: number,
-  gyroTravel: number | null
+  gyro: { travel: number | null; reason: string }
 ): string {
   const pct = (value: number) => `${(value * 100).toFixed(0)}%`;
-  const gyro = gyroTravel === null ? 'n/a' : `${gyroTravel.toFixed(1)}px`;
+  // THE REASON, NOT JUST "n/a". Thirty rows of Joshua's log read n/a and none
+  // of them said why, so the log — which is the thing he actually sends —
+  // could not answer whether the sensors had been used at all. The panel knew;
+  // the record did not.
   return [
     `frames ${String(verdict.frames).padStart(2)}`,
     `distinct ${String(distinct).padStart(2)}`,
@@ -7699,7 +7706,7 @@ function burstLogLine(
     `travel ${verdict.travelPixels.toFixed(1).padStart(5)}px`,
     `raw ${pct(verdict.rawSpread).padStart(4)}`,
     `selected ${pct(verdict.selectedSpread).padStart(4)}`,
-    `gyro ${gyro.padStart(7)}`,
+    `gyro ${(gyro.travel === null ? gyro.reason : `${gyro.travel.toFixed(1)}px`).padStart(12)}`,
     verdict.worthMerging ? 'WORTH' : 'no',
     `v${APP_VERSION}`
   ].join(' · ');
