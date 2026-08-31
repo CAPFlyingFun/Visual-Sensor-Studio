@@ -172,6 +172,27 @@ every lens built on it a false claim.
 A lens only pays for the channels it binds. One reading edges never starts the
 speed field, the trail buffer or the background model.
 
+### Designing one
+
+The editor carries a **live preview running a synthetic test scene**, because
+designing a motion lens while pointing a phone at a still room shows nothing:
+every palette looks identical and no control appears to do anything.
+
+The scene has stated properties — three bars travelling at 0.05, 0.15 and 0.30
+frame widths per second, a sharp checkerboard that never moves, a smooth
+gradient, and a block that enters and leaves so the background model has
+something to notice. A test asserts the bars really travel at those rates, by
+tracking their brightness centroid through the rendered frames.
+
+The synthetic frames go through the **same modules the camera uses** — the
+real `MotionSpeedField`, the real `sobelEdges`. A preview that synthesised its
+own channels would be a drawing of a lens rather than a test of one.
+
+Note that the per-pixel speed estimate is *biased*: inside a textured moving
+block the local gradient varies, and where it is weak the ratio inflates, so
+it reads high rather than recovering the quoted number. What survives — and
+what setting a range actually needs — is the ordering.
+
 ### Where lenses live
 
 - **Local** — saved in this browser, on this device, offline, unlimited. A

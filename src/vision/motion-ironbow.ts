@@ -237,6 +237,19 @@ export class MotionSpeedField {
     return this.lastReport;
   }
 
+  /**
+   * Speed in FRAME WIDTHS PER SECOND, unnormalised.
+   *
+   * `speed` is this divided by a running auto-scale, which is right for the
+   * built-in Ironbow rendering — it keeps a slow scene readable — but wrong
+   * for anything that has to mean the same thing twice. A custom lens is
+   * saved and shared, so a range set today has to describe the same motion
+   * tomorrow, and a ratio against a scale that moves with the scene does not.
+   */
+  get rawSpeed(): Float32Array {
+    return this.raw;
+  }
+
   reset(): void {
     this.autoScale = MIN_AUTO_SCALE;
     this.lastReport = EMPTY_REPORT;

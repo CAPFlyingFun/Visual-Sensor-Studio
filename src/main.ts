@@ -35,6 +35,12 @@ import {
   shareLink
 } from './vision/lens-store.js';
 import {
+  LensPreview,
+  RAMP_PRESETS,
+  TEST_BAR_SPEEDS,
+  previewStep
+} from './vision/lens-preview.js';
+import {
   absoluteDifference,
   differenceToRgba,
   dimGrayToRgba,
@@ -125,7 +131,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.20.0';
+const APP_VERSION = '0.21.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -1961,6 +1967,7 @@ function updateVisionMode(mode: VisionMode): void {
   setLayerPanel(mode);
   byId('lensPanel').hidden = mode !== 'lens';
   if (mode === 'lens') renderLensChips();
+  else stopLensPreview();
   setText('visionModeLabel', `${MODE_LABELS[mode]} • ${settings.visionRatePreference}`);
 }
 
@@ -1969,6 +1976,7 @@ function updateVisionMode(mode: VisionMode): void {
  * ------------------------------------------------------------------ */
 
 const LENS_SELECTION_KEY = 'vss.lens.active';
+const LENS_INTRO_KEY = 'vss.lens.intro';
 
 /**
  * Range controls work in the channel's own units, so the slider bounds have to
@@ -2080,6 +2088,73 @@ function populateChannelSelect(select: HTMLSelectElement, includeNone: boolean):
   }
 }
 
+/**
+ * The colour channel is a row of buttons rather than a dropdown.
+ *
+ * It is the one choice that decides what the lens is about, and a dropdown
+ * hides every option but the chosen one — so the list of things this app can
+ * actually measure, which is the interesting part, was invisible until you
+ * opened it.
+ */
+function renderChannelButtons(): void {
+  const container = byId('lensColorChannels');
+  container.textContent = '';
+  for (const channel of CHANNELS) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'lens-channel';
+    button.dataset.channel = channel.id;
+    button.setAttribute('role', 'radio');
+    const selected = editingLens?.color.channel === channel.id;
+    button.setAttribute('aria-checked', selected ? 'true' : 'false');
+    button.classList.toggle('active', selected);
+    const name = document.createElement('strong');
+    name.textContent = channel.label;
+    const unit = document.createElement('span');
+    unit.textContent = channel.unit;
+    button.append(name, unit);
+    button.addEventListener('click', () => {
+      if (!editingLens) return;
+      const info = channelInfo(channel.id);
+      // The old range was in the old channel's units and would mean nothing
+      // here, so switching resets to this channel's own sensible span.
+      editingLens.color = {
+        channel: channel.id,
+        low: info.low,
+        high: info.high,
+        gamma: editingLens.color.gamma
+      };
+      fillLensEditor();
+    });
+    container.append(button);
+  }
+}
+
+/** One-tap starting ramps, each of which stays fully editable afterwards. */
+function renderRampPresets(): void {
+  const container = byId('lensPresets');
+  container.textContent = '';
+  for (const preset of RAMP_PRESETS) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'lens-preset';
+    button.title = preset.name;
+    const ramp = document.createElement('span');
+    ramp.className = 'ramp';
+    ramp.style.background = rampToCss(preset.stops);
+    const label = document.createElement('span');
+    label.textContent = preset.name;
+    button.append(ramp, label);
+    button.addEventListener('click', () => {
+      if (!editingLens) return;
+      editingLens.stops = preset.stops.map((stop) => ({ ...stop }));
+      applyEditedLens();
+      renderLensStops();
+    });
+    container.append(button);
+  }
+}
+
 function renderLensStops(): void {
   const container = byId('lensStops');
   container.textContent = '';
@@ -2128,6 +2203,82 @@ function renderLensStops(): void {
   });
 }
 
+/* --- The live preview tile ---------------------------------------- */
+
+const PREVIEW_WIDTH = 120;
+const PREVIEW_HEIGHT = 68;
+const PREVIEW_FPS = 20;
+
+let lensPreview: LensPreview | null = null;
+let lensPreviewContext: CanvasRenderingContext2D | null = null;
+let lensPreviewScratch: HTMLCanvasElement | null = null;
+let lensPreviewScratchContext: CanvasRenderingContext2D | null = null;
+let lensPreviewImage: ImageData | null = null;
+let lensPreviewFrame = 0;
+let lensPreviewLast = 0;
+
+/**
+ * Run the test scene while the editor is open, and only then.
+ *
+ * A preview that kept ticking behind a closed panel would burn a phone's
+ * battery running a full vision pipeline nobody is looking at, so the loop
+ * stops the moment the editor is hidden and restarts when it opens.
+ */
+function startLensPreview(): void {
+  if (lensPreviewFrame) return;
+  const canvas = document.getElementById('lensPreviewCanvas') as HTMLCanvasElement | null;
+  if (!canvas) {
+    bootProblems.push('#lensPreviewCanvas is missing, so the lens preview does nothing');
+    return;
+  }
+  lensPreviewContext = canvas.getContext('2d');
+  if (!lensPreviewContext) return;
+  // The scene is computed small and drawn large: the channels it feeds are
+  // per-pixel estimates, and computing them at display size would cost more
+  // than the camera pipeline itself for a thumbnail nobody measures from.
+  //
+  // The enlargement goes through a SEPARATE scratch canvas rather than
+  // scaling the visible one from itself — a canvas used as its own drawImage
+  // source while being written is a read of a surface mid-write, and the
+  // artefacts it produces look exactly like a lens bug.
+  lensPreviewContext.imageSmoothingEnabled = false;
+  lensPreviewScratch ??= document.createElement('canvas');
+  lensPreviewScratch.width = PREVIEW_WIDTH;
+  lensPreviewScratch.height = PREVIEW_HEIGHT;
+  lensPreviewScratchContext = lensPreviewScratch.getContext('2d');
+  if (!lensPreviewScratchContext) return;
+  lensPreview ??= new LensPreview(PREVIEW_WIDTH, PREVIEW_HEIGHT);
+  lensPreview.reset();
+  lensPreviewImage = lensPreviewScratchContext.createImageData(PREVIEW_WIDTH, PREVIEW_HEIGHT);
+  lensPreviewLast = 0;
+
+  const tick = (now: number) => {
+    lensPreviewFrame = requestAnimationFrame(tick);
+    if (!lensPreview || !lensPreviewContext || !lensPreviewScratchContext) return;
+    if (!lensPreviewImage || !activeLens) return;
+    // A hidden panel or a backgrounded tab is work with no viewer.
+    if (byId('lensPanel').hidden || byId('lensEditor').hidden || document.hidden) return;
+    if (lensPreviewLast && now - lensPreviewLast < 1000 / PREVIEW_FPS) return;
+    const dt = lensPreviewLast ? (now - lensPreviewLast) / 1000 : 1 / PREVIEW_FPS;
+    lensPreviewLast = now;
+    const rgba = lensPreview.step(activeLens, previewStep(dt));
+    lensPreviewImage.data.set(rgba);
+    lensPreviewScratchContext.putImageData(lensPreviewImage, 0, 0);
+    lensPreviewContext.drawImage(
+      lensPreviewScratch as HTMLCanvasElement,
+      0, 0, PREVIEW_WIDTH, PREVIEW_HEIGHT,
+      0, 0, lensPreviewContext.canvas.width, lensPreviewContext.canvas.height
+    );
+  };
+  lensPreviewFrame = requestAnimationFrame(tick);
+}
+
+function stopLensPreview(): void {
+  if (!lensPreviewFrame) return;
+  cancelAnimationFrame(lensPreviewFrame);
+  lensPreviewFrame = 0;
+}
+
 /** Push the edited document into the live renderer, without saving it. */
 function applyEditedLens(): void {
   if (!editingLens) return;
@@ -2156,8 +2307,7 @@ function fillLensEditor(): void {
   const lens = editingLens;
   byId<HTMLInputElement>('lensName').value = lens.name;
 
-  const colorSelect = byId<HTMLSelectElement>('lensColorChannel');
-  colorSelect.value = lens.color.channel;
+  renderChannelButtons();
   setText('lensChannelMeaning', channelInfo(lens.color.channel).meaning);
 
   const low = byId<HTMLInputElement>('lensLow');
@@ -2212,6 +2362,12 @@ function openLensEditor(lens: CustomLens): void {
   byId('lensImport').hidden = true;
   setLensStatus('');
   fillLensEditor();
+  startLensPreview();
+}
+
+function closeLensEditor(): void {
+  byId('lensEditor').hidden = true;
+  stopLensPreview();
 }
 
 function addLens(lens: CustomLens, message: string): void {
@@ -2223,8 +2379,34 @@ function addLens(lens: CustomLens, message: string): void {
 }
 
 function wireLensEditor(): void {
-  populateChannelSelect(byId<HTMLSelectElement>('lensColorChannel'), false);
   populateChannelSelect(byId<HTMLSelectElement>('lensBrightnessChannel'), true);
+  renderRampPresets();
+
+  // Open the first time, closed once it has been read. A permanent
+  // explanation becomes furniture; one that never appears leaves the first
+  // lens as guesswork.
+  const intro = byId<HTMLDetailsElement>('lensIntro');
+  try {
+    intro.open = localStorage.getItem(LENS_INTRO_KEY) !== 'read';
+  } catch {
+    intro.open = true;
+  }
+  on('lensIntro', 'toggle', () => {
+    if (intro.open) return;
+    try {
+      localStorage.setItem(LENS_INTRO_KEY, 'read');
+    } catch {
+      // Not remembering it is a small cost; failing to open is not.
+    }
+  });
+  // A statement about the SCENE, which is exactly true and tested. It does
+  // not promise the estimator will read those numbers back: a per-pixel
+  // normal-flow estimate is biased high inside a textured block, and it is the
+  // ORDER that survives, which is what designing a range needs.
+  setText('lensPreviewCaption',
+    `Test pattern. The three bars travel at ${TEST_BAR_SPEEDS.join(', ')} frame widths per`
+    + ' second, slowest at the top. The checkerboard is sharp but still, and the block at the'
+    + ' bottom comes and goes so the background model has something to notice.');
 
   on('lensNewButton', 'click', () => {
     const lens = defaultLens();
@@ -2246,16 +2428,6 @@ function wireLensEditor(): void {
   on('lensName', 'input', (event) => {
     if (!editingLens) return;
     editingLens.name = (event.target as HTMLInputElement).value;
-  });
-
-  on('lensColorChannel', 'change', (event) => {
-    if (!editingLens) return;
-    const channel = (event.target as HTMLSelectElement).value as ChannelId;
-    const info = channelInfo(channel);
-    // The old range was in the old channel's units and would be meaningless
-    // here, so a channel change resets to that channel's own sensible span.
-    editingLens.color = { channel, low: info.low, high: info.high, gamma: editingLens.color.gamma };
-    fillLensEditor();
   });
 
   const bindRange = (id: string, apply: (value: number) => void) => {
@@ -2310,7 +2482,7 @@ function wireLensEditor(): void {
   on('lensDeleteButton', 'click', () => {
     if (!editingLens) return;
     savedLenses = removeLens(localStorage, savedLenses, editingLens.id);
-    byId('lensEditor').hidden = true;
+    closeLensEditor();
     const next = allLenses()[0];
     if (next) useLens(next.lens);
     else activeLens = null;
@@ -2347,7 +2519,7 @@ function wireLensEditor(): void {
 
   on('lensImportButton', 'click', () => {
     byId('lensImport').hidden = false;
-    byId('lensEditor').hidden = true;
+    closeLensEditor();
     setText('lensImportStatus', '');
   });
 
@@ -2609,7 +2781,7 @@ function buildLensSources(buffers: VisionBuffers, lens: CustomLens): ChannelSour
     };
   }
 
-  if (needed.has('speed') && speedField.speed.length === pixels) {
+  if (needed.has('speed') && speedField.rawSpeed.length === pixels) {
     if (!lensValidScratch || lensValidScratch.length !== pixels) {
       lensValidScratch = new Uint8Array(pixels);
     }
@@ -2617,7 +2789,9 @@ function buildLensSources(buffers: VisionBuffers, lens: CustomLens): ChannelSour
     // STILL is a real measurement of zero; UNRESOLVED is the aperture problem
     // and must not be painted.
     for (let i = 0; i < pixels; i++) lensValidScratch[i] = state[i] === UNRESOLVED ? 0 : 1;
-    sources.speed = { values: speedField.speed, valid: lensValidScratch };
+    // Widths per second, not the auto-scaled 0..1 the Ironbow rendering
+    // uses: a saved lens has to mean the same thing in the next session.
+    sources.speed = { values: speedField.rawSpeed, valid: lensValidScratch };
   }
 
   if (needed.has('age')) {

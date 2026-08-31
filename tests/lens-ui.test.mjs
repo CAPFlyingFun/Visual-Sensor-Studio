@@ -124,8 +124,49 @@ test('the panel explains what a lens can and cannot do', () => {
   assert.match(importBlock, /Nothing is uploaded/i);
 });
 
+test('the preview module is cached so the editor works offline', () => {
+  assert.match(swSource, /'\.\/app\/vision\/lens-preview\.js'/);
+});
+
+test('the editor leads with the choice, not with a dropdown', () => {
+  // The colour channel decides what the lens is ABOUT, and a dropdown hides
+  // every option but the chosen one — so the list of things this app can
+  // measure, which is the interesting part, was invisible until it opened.
+  assert.match(htmlSource, /id="lensColorChannels"/);
+  assert.doesNotMatch(htmlSource, /id="lensColorChannel"[^s]/);
+  assert.match(mainSource, /function renderChannelButtons/);
+  assert.match(mainSource, /function renderRampPresets/);
+});
+
+test('the preview stops when nobody is looking at it', () => {
+  // A full vision pipeline running behind a closed panel is a battery cost
+  // with no viewer.
+  assert.match(mainSource, /function stopLensPreview/);
+  assert.match(mainSource, /byId\('lensPanel'\)\.hidden \|\| byId\('lensEditor'\)\.hidden \|\| document\.hidden/);
+  assert.match(mainSource, /else stopLensPreview\(\);/);
+});
+
+test('the preview scales through a scratch canvas, not from itself', () => {
+  // Using a canvas as its own drawImage source while writing to it reads a
+  // surface mid-write, and the artefacts look exactly like a lens bug.
+  const loop = mainSource.slice(
+    mainSource.indexOf('function startLensPreview'),
+    mainSource.indexOf('function stopLensPreview')
+  );
+  assert.match(loop, /lensPreviewScratchContext\.putImageData/);
+  assert.match(loop, /drawImage\(\s*lensPreviewScratch/);
+  assert.doesNotMatch(loop, /drawImage\(\s*lensPreviewContext\.canvas/);
+});
+
+test('the explanation appears once and then gets out of the way', () => {
+  assert.match(htmlSource, /id="lensIntro"/);
+  assert.match(mainSource, /LENS_INTRO_KEY/);
+  assert.match(mainSource, /intro\.open = localStorage\.getItem\(LENS_INTRO_KEY\) !== 'read'/);
+});
+
 test('the editor has styles rather than inheriting a broken layout', () => {
-  for (const selector of ['.lens-chip', '.lens-stop', '.lens-swatch', '.lens-actions']) {
+  for (const selector of ['.lens-chip', '.lens-stop', '.lens-swatch', '.lens-actions',
+    '.lens-channel', '.lens-preset', '.lens-preview canvas', '.lens-step']) {
     assert.ok(cssSource.includes(selector), `${selector} needs styling`);
   }
 });

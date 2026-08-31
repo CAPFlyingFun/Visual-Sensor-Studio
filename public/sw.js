@@ -1,4 +1,4 @@
-const CACHE = 'visual-sensor-studio-v0.20.0';
+const CACHE = 'visual-sensor-studio-v0.21.0';
 const APP_SHELL = [
   './',
   './index.html',
@@ -32,6 +32,7 @@ const APP_SHELL = [
   './app/vision/parallax.js',
   './app/vision/lens.js',
   './app/vision/lens-store.js',
+  './app/vision/lens-preview.js',
   './app/visualization/scene.js'
 ];
 

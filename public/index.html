@@ -165,61 +165,95 @@
               <button class="ghost" type="button" id="lensImportButton">Load…</button>
             </div>
             <div id="lensEditor" hidden>
-              <div class="lens-swatch" id="lensSwatch" aria-hidden="true"></div>
-              <div class="night-grid">
-                <label>Name
-                  <input type="text" id="lensName" maxlength="40" autocomplete="off" />
-                </label>
-                <label>Colour from
-                  <select id="lensColorChannel"></select>
-                </label>
+              <details class="lens-intro" id="lensIntro">
+                <summary>How a lens works</summary>
+                <ol>
+                  <li><strong>A field</strong> — one number the app measures at every pixel,
+                    like how fast that part of the image is moving.</li>
+                  <li><strong>A ramp</strong> — the colours that number maps to, low to high.</li>
+                  <li><strong>Optionally a second field</strong> driving the brightness, so one
+                    picture can carry two measurements at once.</li>
+                </ol>
+                <p>A lens recolours a measurement. It cannot create one, and where nothing was
+                  measured it paints nothing rather than guessing.</p>
+              </details>
+
+              <figure class="lens-preview">
+                <canvas id="lensPreviewCanvas" width="240" height="135"></canvas>
+                <figcaption id="lensPreviewCaption"></figcaption>
+              </figure>
+
+              <div class="lens-step">
+                <h4><span class="lens-step-number">1</span> What should the colour show?</h4>
+                <div class="lens-channels" id="lensColorChannels" role="radiogroup"
+                  aria-label="Field the colour comes from"></div>
+                <p class="helper" id="lensChannelMeaning"></p>
               </div>
-              <p class="helper" id="lensChannelMeaning"></p>
-              <div class="night-grid">
-                <label>Low <span class="value" id="lensLowValue"></span>
-                  <input type="range" id="lensLow" min="0" max="1" step="0.001" />
-                </label>
-                <label>High <span class="value" id="lensHighValue"></span>
-                  <input type="range" id="lensHigh" min="0" max="1" step="0.001" />
-                </label>
-                <label>Curve <span class="value" id="lensGammaValue"></span>
-                  <input type="range" id="lensGamma" min="0.2" max="3" step="0.05" />
-                </label>
+
+              <div class="lens-step">
+                <h4><span class="lens-step-number">2</span> Pick the colours</h4>
+                <div class="lens-presets" id="lensPresets"></div>
+                <div class="lens-swatch" id="lensSwatch" aria-hidden="true"></div>
+                <div class="lens-stops" id="lensStops"></div>
+                <button class="ghost" type="button" id="lensAddStop">+ Colour stop</button>
               </div>
-              <div class="lens-stops" id="lensStops"></div>
-              <button class="ghost" type="button" id="lensAddStop">+ Colour stop</button>
-              <div class="night-grid">
-                <label>Brightness from
-                  <select id="lensBrightnessChannel"></select>
-                </label>
-                <label>Behind the colour
-                  <select id="lensBase">
-                    <option value="black">Black</option>
-                    <option value="grey">Dark grey</option>
-                    <option value="scene">The camera picture</option>
-                  </select>
-                </label>
-                <label>Picture through <span class="value" id="lensBlendValue"></span>
-                  <input type="range" id="lensBlend" min="0" max="1" step="0.01" />
-                </label>
-              </div>
-              <div id="lensBrightnessRange" hidden>
+
+              <details class="lens-step lens-advanced">
+                <summary><span class="lens-step-number">3</span> Fine tune</summary>
+                <p class="helper">
+                  The range decides which measured values fill the ramp. Anything below the low
+                  end takes the first colour, anything above the high end takes the last.
+                </p>
                 <div class="night-grid">
-                  <label>Bright at <span class="value" id="lensBrightHighValue"></span>
-                    <input type="range" id="lensBrightHigh" min="0" max="1" step="0.001" />
+                  <label>Low end <span class="value" id="lensLowValue"></span>
+                    <input type="range" id="lensLow" min="0" max="1" step="0.001" />
                   </label>
-                  <label>Dark at <span class="value" id="lensBrightLowValue"></span>
-                    <input type="range" id="lensBrightLow" min="0" max="1" step="0.001" />
+                  <label>High end <span class="value" id="lensHighValue"></span>
+                    <input type="range" id="lensHigh" min="0" max="1" step="0.001" />
+                  </label>
+                  <label>Curve <span class="value" id="lensGammaValue"></span>
+                    <input type="range" id="lensGamma" min="0.2" max="3" step="0.05" />
                   </label>
                 </div>
+                <div class="night-grid">
+                  <label>Brightness from
+                    <select id="lensBrightnessChannel"></select>
+                  </label>
+                  <label>Behind the colour
+                    <select id="lensBase">
+                      <option value="black">Black</option>
+                      <option value="grey">Dark grey</option>
+                      <option value="scene">The camera picture</option>
+                    </select>
+                  </label>
+                  <label>Picture through <span class="value" id="lensBlendValue"></span>
+                    <input type="range" id="lensBlend" min="0" max="1" step="0.01" />
+                  </label>
+                </div>
+                <div id="lensBrightnessRange" hidden>
+                  <div class="night-grid">
+                    <label>Bright at <span class="value" id="lensBrightHighValue"></span>
+                      <input type="range" id="lensBrightHigh" min="0" max="1" step="0.001" />
+                    </label>
+                    <label>Dark at <span class="value" id="lensBrightLowValue"></span>
+                      <input type="range" id="lensBrightLow" min="0" max="1" step="0.001" />
+                    </label>
+                  </div>
+                </div>
+              </details>
+
+              <div class="lens-step">
+                <label class="lens-name-field">Name
+                  <input type="text" id="lensName" maxlength="40" autocomplete="off" />
+                </label>
+                <div class="lens-actions">
+                  <button class="primary" type="button" id="lensSaveButton">Save</button>
+                  <button class="ghost" type="button" id="lensShareButton">Copy share link</button>
+                  <button class="ghost" type="button" id="lensExportButton">Export file</button>
+                  <button class="ghost danger" type="button" id="lensDeleteButton">Delete</button>
+                </div>
+                <p class="helper" id="lensStatus" role="status"></p>
               </div>
-              <div class="lens-actions">
-                <button class="primary" type="button" id="lensSaveButton">Save</button>
-                <button class="ghost" type="button" id="lensShareButton">Copy share link</button>
-                <button class="ghost" type="button" id="lensExportButton">Export file</button>
-                <button class="ghost danger" type="button" id="lensDeleteButton">Delete</button>
-              </div>
-              <p class="helper" id="lensStatus" role="status"></p>
             </div>
             <div id="lensImport" hidden>
               <p class="helper">
@@ -686,7 +720,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.20.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.21.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">
