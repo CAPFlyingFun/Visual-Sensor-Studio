@@ -754,11 +754,12 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.28.5</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.28.6</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">
     <div class="viewer-stage" id="viewerStage">
+      <video id="viewerVideo" autoplay muted playsinline hidden></video>
       <canvas id="viewerCanvas"></canvas>
       <p class="viewer-hint" id="viewerHint">Pinch to zoom · filter previews are upscaled from the analysis frame, saved stills are full resolution</p>
     </div>

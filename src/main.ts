@@ -174,7 +174,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.28.5';
+const APP_VERSION = '0.28.6';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -5144,23 +5144,97 @@ let hintTimer = 0;
  * costs one canvas blit per analysed frame and cannot change what the
  * instruments read.
  */
+/**
+ * Show the camera itself full screen in RGB, exactly as the panel does.
+ *
+ * Joshua: "RGB small size has no lag, full screen yes." The panel hides the
+ * vision canvas in RGB and lets the <video> element show through, so the
+ * BROWSER composites it at the camera's own rate and none of our code runs per
+ * frame. Full screen had no video element, so the same mode was blitted here
+ * instead and inherited our loop's rate — about eight frames a second on his
+ * device. The mode did not get slower full screen; it stopped being free.
+ *
+ * A filter has no equivalent: its picture only exists because we computed it,
+ * so it must go through the canvas. This is why no filter can ever feel like
+ * RGB in the panel, and why RGB in the panel is the one unfair baseline.
+ *
+ * Returns true when the video is carrying the picture and the canvas can stay
+ * idle. Falls back to painting if the element is not delivering frames, so a
+ * browser that dislikes two elements on one MediaStream degrades to the old
+ * behaviour rather than to a black screen.
+ */
+function presentViewerVideo(): boolean {
+  const viewerVideo = byId<HTMLVideoElement>('viewerVideo');
+  const canvas = byId<HTMLCanvasElement>('viewerCanvas');
+  const wanted = viewerOpen && visionCanvas.hidden;
+
+  if (!wanted) {
+    if (!viewerVideo.hidden) {
+      viewerVideo.hidden = true;
+      viewerVideo.srcObject = null;
+    }
+    canvas.hidden = false;
+    return false;
+  }
+
+  if (viewerVideo.srcObject !== video.srcObject) {
+    viewerVideo.srcObject = video.srcObject;
+    // Autoplay is declared, but a stream attached after the element existed
+    // needs the nudge, and a rejected promise here is not an error worth
+    // surfacing — the fallback below covers it.
+    void viewerVideo.play().catch(() => {});
+  }
+  // Only hand the stage over once frames are actually arriving.
+  const live = viewerVideo.videoWidth > 0 && viewerVideo.readyState >= 2;
+  viewerVideo.hidden = !live;
+  canvas.hidden = live;
+  return live;
+}
+
 function paintViewer(): void {
   if (!viewerOpen) return;
+  // The video is carrying it; painting would be the same picture, computed.
+  if (presentViewerVideo()) {
+    renderViewerBadges();
+    return;
+  }
   const target = byId<HTMLCanvasElement>('viewerCanvas');
   viewerContext ??= target.getContext('2d');
   if (!viewerContext) return;
 
   const source: CanvasImageSource = visionCanvas.hidden ? video : visionCanvas;
-  const width = visionCanvas.hidden ? video.videoWidth : visionCanvas.width;
-  const height = visionCanvas.hidden ? video.videoHeight : visionCanvas.height;
-  if (!width || !height) return;
+  const sourceWidth = visionCanvas.hidden ? video.videoWidth : visionCanvas.width;
+  const sourceHeight = visionCanvas.hidden ? video.videoHeight : visionCanvas.height;
+  if (!sourceWidth || !sourceHeight) return;
 
-  if (target.width !== width || target.height !== height) {
-    target.width = width;
-    target.height = height;
-  }
+  // THE SAME SCREEN BOUND THE PANEL OBEYS.
+  //
+  // Joshua: "RGB small size has no lag, full screen yes." In the panel RGB
+  // does no per-frame pixel work at all — the video element goes straight to
+  // the compositor. Full screen went through here instead and sized this
+  // canvas to the SOURCE, so a 3024x4032 capture meant a 48MB backing store
+  // and a twelve-megapixel copy every frame to fill a 430x932pt window.
+  //
+  // A filter arrives here already bounded, so its size passes through and only
+  // the untouched RGB path changes.
+  const sourceShort = Math.min(sourceWidth, sourceHeight);
+  const capped = budgetedShortSide(
+    sourceShort,
+    Math.max(sourceWidth, sourceHeight) / sourceShort,
+    logicalScreenPixels()
+  );
+  const scale = sourceShort > 0 ? capped / sourceShort : 1;
+  const width = Math.max(1, Math.round(sourceWidth * scale));
+  const height = Math.max(1, Math.round(sourceHeight * scale));
+
+  if (target.width !== width) target.width = width;
+  if (target.height !== height) target.height = height;
   viewerContext.drawImage(source, 0, 0, width, height);
+  renderViewerBadges();
+}
 
+/** The chip above the picture, drawn whichever element is carrying it. */
+function renderViewerBadges(): void {
   const rates = frameRateMeter.report;
   // The negotiated stream size and the build both belong here, not buried in
   // Settings. The same app in an installed PWA and in Safari can negotiate
@@ -5230,6 +5304,12 @@ function setViewerOpen(open: boolean): void {
   viewerOpen = open;
   byId('cameraViewer').hidden = !open;
   document.body.style.overflow = open ? 'hidden' : '';
+
+  // Release the stream from the viewer's video on the way out. paintViewer
+  // returns early once the viewer is closed, so its own cleanup never runs,
+  // and a second element left holding the MediaStream is a decoder still
+  // being fed for a picture nobody can see.
+  if (!open) presentViewerVideo();
 
   if (!open) return;
   buildViewerControls();
@@ -5590,8 +5670,15 @@ function grabFullFrame(targetWidth?: number): ImageData | null {
   stillContext ??= stillCanvas.getContext('2d', { willReadFrequently: true });
   if (!stillContext) return null;
 
-  stillCanvas.width = width;
-  stillCanvas.height = height;
+  // ONLY WHEN IT CHANGES. Assigning to canvas.width or canvas.height resets
+  // the backing store and clears the bitmap even when the value is unchanged —
+  // that is what the spec says the setter does, not an optimisation browsers
+  // are free to skip. This ran unguarded on every frame, so every filter frame
+  // reallocated and cleared its capture canvas before drawing into it, in the
+  // small panel exactly as much as in full screen. paintVisionCanvas has
+  // always guarded the same assignment; this path did not.
+  if (stillCanvas.width !== width) stillCanvas.width = width;
+  if (stillCanvas.height !== height) stillCanvas.height = height;
   stillContext.drawImage(video, cropX, cropY, cropWidth, cropHeight, 0, 0, width, height);
   return stillContext.getImageData(0, 0, width, height);
 }

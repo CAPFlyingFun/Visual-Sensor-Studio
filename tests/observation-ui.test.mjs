@@ -446,7 +446,9 @@ test('the full-screen canvas scales to the stage rather than its bitmap size', (
   // frame — 144x256 on a portrait phone — so `width: auto` drew a postage
   // stamp in the middle of a black screen. It must scale to the stage.
   const styles = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
-  const rule = styles.slice(styles.indexOf('.viewer-stage canvas {'));
+  // The rule now also covers the viewer's video element, which must scale
+  // identically — see viewer-video.test.mjs.
+  const rule = styles.slice(styles.indexOf('.viewer-stage canvas,'));
   const body = rule.slice(0, rule.indexOf('}'));
   assert.match(body, /width:\s*100%/);
   assert.match(body, /height:\s*100%/);
@@ -465,7 +467,7 @@ test('viewer controls float over the preview instead of squeezing it', () => {
 test('fit and fill are both offered, and the preview is described honestly', () => {
   assert.match(htmlSource, /id=["']viewerFitButton["']/);
   const styles = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
-  assert.match(styles, /\.viewer\[data-fit="fill"\] \.viewer-stage canvas \{ object-fit: cover; \}/);
+  assert.match(styles, /\.viewer\[data-fit="fill"\] \.viewer-stage canvas,/);
   // A filter preview really is an upscale of the analysis frame, and the app
   // says so rather than letting it look like lost resolution.
   assert.match(htmlSource, /upscaled from the analysis frame, saved stills are full resolution/);

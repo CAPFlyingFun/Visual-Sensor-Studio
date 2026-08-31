@@ -625,12 +625,14 @@ footer strong { color: #9fb2c3; }
  * so `width: auto` drew a postage stamp in the middle of a black screen.
  * object-fit does the letterboxing once the box is full size.
  */
-.viewer-stage canvas {
+.viewer-stage canvas,
+.viewer-stage video {
   width: 100%;
   height: 100%;
   object-fit: contain;
 }
-.viewer[data-fit="fill"] .viewer-stage canvas { object-fit: cover; }
+.viewer[data-fit="fill"] .viewer-stage canvas,
+.viewer[data-fit="fill"] .viewer-stage video { object-fit: cover; }
 .viewer-hint {
   position: absolute;
   z-index: 4;
