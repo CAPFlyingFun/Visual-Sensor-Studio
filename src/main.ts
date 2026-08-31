@@ -186,7 +186,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.36.0';
+const APP_VERSION = '0.36.1';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -7922,7 +7922,9 @@ async function runBurstMerge(): Promise<void> {
 
 function renderMergeReport(report: MergeReport): void {
   byId('burstCompareFigure').hidden = false;
-  paintPlane(byId<HTMLCanvasElement>('burstCompare'), comparisonStrip(report));
+  const canvas = byId<HTMLCanvasElement>('burstCompare');
+  paintPlane(canvas, comparisonStrip(report));
+  labelPanels(canvas, report);
 
   const mtf = (value: number | null) => value === null ? '—' : value.toFixed(3);
   // Named in the order they appear, so the caption is a legend rather than a
@@ -7936,6 +7938,40 @@ function renderMergeReport(report: MergeReport): void {
 
   setText('burstMergeVerdict', report.verdict);
   appendBurstLog(mergeLogLine(report));
+}
+
+/**
+ * Name each panel on the picture itself.
+ *
+ * The strip is wider than the screen and scrolls, so a caption listing four
+ * names in order stops matching what is visible as soon as it is scrolled. A
+ * label on each panel travels with it.
+ */
+function labelPanels(canvas: HTMLCanvasElement, report: MergeReport): void {
+  const context = canvas.getContext('2d');
+  if (!context) return;
+  const panels = [
+    ['upscaled', report.controlMtf.mtf50],
+    ['sharpened 1 frame', report.deconvolvedMtf.mtf50],
+    ['merged', report.splatMtf.mtf50],
+    ['merged + back-projected', report.refinedMtf.mtf50]
+  ] as const;
+  const width = report.control.width;
+  const gap = 4;
+
+  context.font = '600 15px ui-monospace, Menlo, monospace';
+  context.textBaseline = 'top';
+  panels.forEach(([name, mtf50], index) => {
+    const x = index * (width + gap) + 8;
+    const text = mtf50 === null ? name : `${name}  ${mtf50.toFixed(3)}`;
+    const metrics = context.measureText(text);
+    // A plate behind it, because the label sits over whatever the camera saw
+    // and white on white is not a label.
+    context.fillStyle = 'rgba(2, 8, 14, 0.72)';
+    context.fillRect(x - 4, 4, metrics.width + 10, 22);
+    context.fillStyle = index === 0 ? 'rgba(220, 235, 255, 0.95)' : 'rgba(255, 196, 84, 0.95)';
+    context.fillText(text, x, 7);
+  });
 }
 
 function mergeLogLine(report: MergeReport): string {

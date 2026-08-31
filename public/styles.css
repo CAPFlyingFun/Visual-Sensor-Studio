@@ -1433,14 +1433,30 @@ button.ghost.danger {
 .burst-caps .cap-no { opacity: .5; }
 .burst-caps .cap-no .cap-range::before { content: 'not exposed by this browser'; }
 
-/* The comparison strip is four panels wide, so it scrolls rather than shrinking
-   every panel to the point where the difference being judged is invisible. */
+/*
+ * The comparison strip is four panels wide and must be shown AT ITS OWN SIZE.
+ *
+ * The `.burst-figure canvas` rule above was written for the square scatter plot
+ * and captured this canvas too: width 100% plus aspect-ratio 1/1 squeezed a
+ * 2060x512 strip into a square box at about 860px, scaling it down by 2.4x and
+ * letterboxing it in black. That destroyed exactly the fine differences the
+ * strip exists to show — the four panels looked identical because they had been
+ * shrunk past the point where they could differ.
+ *
+ * So: natural size, no aspect ratio, and the figure scrolls instead.
+ */
 #burstCompareFigure { overflow-x: auto; }
+#burstCompareFigure canvas,
 #burstCompare {
   display: block;
+  width: auto;
+  max-width: none;
+  min-width: 0;
   height: auto;
-  min-width: 100%;
+  aspect-ratio: auto;
   border-radius: 8px;
   background: #04080d;
+  /* Nearest-neighbour, so what is on screen is what the merge produced rather
+     than the browser's own resampling of it. */
   image-rendering: pixelated;
 }

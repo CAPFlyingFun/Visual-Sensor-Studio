@@ -153,3 +153,34 @@ test('the tab merges the frames it just measured, not a fresh burst', () => {
   assert.match(main, /setText\('burstProgress', label\)/);
   assert.match(main, /requestAnimationFrame\(resolve\)/);
 });
+
+test('the comparison strip is shown at its own size, not squeezed into a square', () => {
+  // The `.burst-figure canvas` rule was written for the square scatter plot and
+  // captured this canvas too: width 100% plus aspect-ratio 1/1 put a 2060x512
+  // strip into a square box at about 860px, scaling it down 2.4x and
+  // letterboxing it. That destroyed exactly the fine differences the strip
+  // exists to show — on the device the four panels looked identical because
+  // they had been shrunk past the point where they could differ.
+  const css = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const rule = css.slice(css.indexOf('#burstCompareFigure canvas,'));
+  assert.match(rule, /width: auto;/);
+  assert.match(rule, /aspect-ratio: auto;/);
+  assert.match(rule, /max-width: none;/);
+  // And the figure has to scroll, or natural size just overflows the page.
+  assert.match(css, /#burstCompareFigure \{ overflow-x: auto; \}/);
+  // Nearest-neighbour, so what is judged is the merge rather than the
+  // browser's resampling of it.
+  assert.match(rule, /image-rendering: pixelated;/);
+});
+
+test('each panel is named on the picture, not only in a caption', () => {
+  // The strip is wider than the screen and scrolls, so a caption listing four
+  // names in order stops describing what is visible as soon as it moves.
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const fn = main.slice(main.indexOf('function labelPanels'), main.indexOf('function mergeLogLine'));
+  for (const name of ['upscaled', 'sharpened 1 frame', 'merged', 'merged + back-projected']) {
+    assert.ok(fn.includes(name), `the strip does not label "${name}"`);
+  }
+  // A plate behind the text: it sits over whatever the camera saw.
+  assert.match(fn, /context\.fillRect\(x - 4, 4,/);
+});
