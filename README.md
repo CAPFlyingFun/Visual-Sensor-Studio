@@ -429,6 +429,23 @@ the camera, so measuring on demand reported a 0×0 box and "no picture on
 screen". The readout says whether the figure is live or the last one seen, and
 where.
 
+It also reports **throughput** — megapixels a second, measured in the mode
+that is running — and projects what each tier would cost from it. The work is
+per-pixel, so one measured rate predicts them all. On an iPhone 15 Plus with a
+custom lens the panel measured 0.72 MP in 55 ms, which is 13.1 MP/s, and that
+one number predicts:
+
+| short side | picture | fps |
+|-----------|---------|-----|
+| 540 | 540×720 = 0.39 MP | 34 |
+| 720 | 720×960 = 0.69 MP | 19 |
+| 1080 | 1080×1440 = 1.56 MP | 8 |
+| 1290 (all the screen shows) | 1290×1720 = 2.22 MP | 6 |
+
+The 6 fps at the bottom is the full-screen figure that was actually observed,
+predicted from a panel measurement — so the model holds. A test asserts that
+prediction.
+
 **Overdraw means opposite things in the two cases.** In RGB the browser hands
 the video to the compositor and the GPU scales it for nothing, so a large
 number there costs nothing. A canvas render is CPU work per pixel, and the

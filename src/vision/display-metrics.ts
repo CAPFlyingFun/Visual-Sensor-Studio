@@ -113,3 +113,58 @@ export function measureDisplay(inputs: DisplayInputs): DisplayReport {
 export function megapixels(pixels: number): string {
   return `${(pixels / 1e6).toFixed(2)} MP`;
 }
+
+
+/* ------------------------------------------------------------------ *
+ * Turning a measurement into a choice
+ * ------------------------------------------------------------------ */
+
+export interface TierProjection {
+  /** Short side in pixels, or 0 for the analysis frame. */
+  shortSide: number;
+  label: string;
+  pixels: number;
+  /** Frames a second this device should manage, from its measured rate. */
+  fps: number;
+}
+
+/**
+ * How fast this device draws, in megapixels per second.
+ *
+ * One number that predicts every tier, because the work is per-pixel: a
+ * device that renders 0.72 MP in 55 ms will render 2.22 MP in about 170. It
+ * is the difference between "try it and see" and knowing before you look.
+ */
+export function throughputMegapixelsPerSecond(renderPixels: number, msPerFrame: number): number {
+  if (!(renderPixels > 0) || !(msPerFrame > 0)) return 0;
+  return (renderPixels / 1e6) / (msPerFrame / 1000);
+}
+
+/**
+ * What each tier would cost, at this device's measured rate.
+ *
+ * The aspect matters: a short side means a different pixel count in a 3:4
+ * frame than in a 16:9 one, and it is the pixel count that costs.
+ */
+export function projectTiers(
+  tiers: readonly { shortSide: number; label: string }[],
+  sourceAspect: number,
+  throughput: number,
+  ceilingShortSide: number
+): TierProjection[] {
+  const aspect = sourceAspect > 0 ? sourceAspect : 1;
+  const longOverShort = aspect > 1 ? aspect : 1 / aspect;
+  return tiers
+    // A tier above what the screen can show is not a choice, it is the same
+    // picture with a different name.
+    .filter((tier) => tier.shortSide === 0 || tier.shortSide <= ceilingShortSide)
+    .map((tier) => {
+      const pixels = tier.shortSide * tier.shortSide * longOverShort;
+      return {
+        shortSide: tier.shortSide,
+        label: tier.label,
+        pixels,
+        fps: throughput > 0 && pixels > 0 ? (throughput * 1e6) / pixels : 0
+      };
+    });
+}

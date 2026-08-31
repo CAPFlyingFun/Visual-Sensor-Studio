@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { measureDisplay, megapixels } from '../.test-build/vision/display-metrics.js';
+import {
+  measureDisplay,
+  megapixels,
+  projectTiers,
+  throughputMegapixelsPerSecond
+} from '../.test-build/vision/display-metrics.js';
 
 /** iPhone 15 Plus, full screen portrait, 4:3 stream, object-fit contain. */
 const iphonePortrait = {
@@ -148,4 +153,46 @@ test('overdraw distinguishes GPU scaling from CPU work', () => {
   // nothing, while a canvas render is per-pixel CPU and IS the frame rate.
   assert.match(main, /scaled by the GPU, so free/);
   assert.match(main, /CPU work per pixel/);
+});
+
+test('throughput is one number that predicts every tier', () => {
+  // Measured on a phone: a lens drew 734x979 in 55 ms.
+  const tp = throughputMegapixelsPerSecond(734 * 979, 55);
+  assert.ok(Math.abs(tp - 13.1) < 0.3, `got ${tp.toFixed(1)} MP/s`);
+  // And it should then predict the full-screen figure that was observed.
+  const fullScreenPixels = 1290 * 1720;
+  const fps = (tp * 1e6) / fullScreenPixels;
+  assert.ok(fps > 4 && fps < 8, `predicted ${fps.toFixed(1)} fps, observed 7-8`);
+});
+
+test('a tier above what the screen shows is not offered as a choice', () => {
+  const tiers = [
+    { shortSide: 540, label: '540' },
+    { shortSide: 720, label: '720' },
+    { shortSide: 1080, label: '1080' },
+    { shortSide: 2160, label: '2160' }
+  ];
+  const rows = projectTiers(tiers, 3024 / 4032, 13.1, 1290);
+  assert.equal(rows.length, 3, 'the 2160 tier is the same picture with another name');
+  assert.ok(rows.every((r) => r.shortSide <= 1290));
+});
+
+test('the projection matches the arithmetic done by hand', () => {
+  const rows = projectTiers([{ shortSide: 720, label: '720' }], 3024 / 4032, 13.1, 4032);
+  // 720 short side in a 3:4 frame is 720x960 = 0.69 MP -> about 19 fps.
+  assert.ok(Math.abs(rows[0].pixels - 691200) < 2000, `pixels ${rows[0].pixels}`);
+  assert.ok(Math.abs(rows[0].fps - 18.9) < 1, `fps ${rows[0].fps.toFixed(1)}`);
+});
+
+test('aspect changes the cost of the same short side', () => {
+  const wide = projectTiers([{ shortSide: 720, label: 'x' }], 16 / 9, 13.1, 4032)[0];
+  const tall = projectTiers([{ shortSide: 720, label: 'x' }], 3 / 4, 13.1, 4032)[0];
+  assert.ok(wide.pixels > tall.pixels, 'a 16:9 frame is wider for the same short side');
+});
+
+test('no measurement yields no projection rather than a made-up one', () => {
+  assert.equal(throughputMegapixelsPerSecond(0, 55), 0);
+  assert.equal(throughputMegapixelsPerSecond(1000, 0), 0);
+  const rows = projectTiers([{ shortSide: 720, label: 'x' }], 0.75, 0, 4032);
+  assert.equal(rows[0].fps, 0);
 });

@@ -11,7 +11,12 @@ import { MotionController } from './sensors/motion.js';
 import { GpsController } from './sensors/gps.js';
 import { zoomPresetStops } from './sensors/zoom.js';
 import { clamp, median } from './core/math.js';
-import { measureDisplay, megapixels } from './vision/display-metrics.js';
+import {
+  measureDisplay,
+  megapixels,
+  projectTiers,
+  throughputMegapixelsPerSecond
+} from './vision/display-metrics.js';
 import { aspectRatioFor, cropToAspect, retainedFraction, type SaveAspect } from './vision/aspect.js';
 import type { GpsSample, MotionSample, SensorSnapshot, VisionMetrics, VisionMode } from './core/types.js';
 
@@ -168,7 +173,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.27.2';
+const APP_VERSION = '0.28.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -5429,6 +5434,37 @@ function reportDisplayMetrics(): void {
     ? `RGB — the video element itself, ${diagnostics.videoWidth}×${diagnostics.videoHeight}`
     : `${visionCanvas.width}×${visionCanvas.height} · ${megapixels(report.renderPixels)}`);
   setText('dispWhen', taken);
+
+  // What this device actually manages, and therefore what each tier would
+  // cost on it. The work is per-pixel, so one measured rate predicts them all
+  // — which is the difference between "try it and see" and knowing first.
+  const throughput = throughputMegapixelsPerSecond(report.renderPixels, lensRenderMs);
+  setText('dispThroughput', throughput > 0
+    ? `${throughput.toFixed(1)} MP/s in this mode`
+    : 'run a filter mode to measure');
+
+  const sourceAspect = diagnostics.videoHeight > 0
+    ? diagnostics.videoWidth / diagnostics.videoHeight
+    : 0;
+  const ceiling = Math.min(report.contentDevice.width, report.contentDevice.height) || 0;
+  const rows = throughput > 0 && sourceAspect > 0 && ceiling > 0
+    ? projectTiers(
+        [
+          { shortSide: 540, label: '540' },
+          { shortSide: 720, label: '720' },
+          { shortSide: 1080, label: '1080' },
+          { shortSide: ceiling, label: 'Full' }
+        ],
+        sourceAspect,
+        throughput,
+        ceiling
+      )
+    : [];
+  setText('dispProjection', rows.length
+    ? `At this rate, here: ${rows
+        .map((row) => `${row.label} ≈ ${row.fps.toFixed(0)} fps`)
+        .join(' · ')}. Pick the largest that still moves.`
+    : '');
   // Overdraw costs very different things depending on who does the scaling.
   // In RGB the browser hands the video straight to the compositor and the GPU
   // scales it for nothing, so a large number there is not a problem. A canvas
