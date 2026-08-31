@@ -112,6 +112,22 @@ export class FusionScene {
   /** A constructed scene is by definition available; the fallback is not. */
   readonly available = true;
 
+  /**
+   * Stop rendering while the viewport is on a tab nobody is looking at.
+   *
+   * A WebGL context survives being hidden, unlike a video element, so there is
+   * nothing to protect here — this is purely about not drawing sixty frames a
+   * second of something off screen.
+   */
+  setVisible(visible: boolean): void {
+    if (visible) {
+      if (!this.animationFrame) this.animate();
+      return;
+    }
+    cancelAnimationFrame(this.animationFrame);
+    this.animationFrame = 0;
+  }
+
   setQuality(quality: SceneQuality): void {
     const deviceRatio = window.devicePixelRatio || 1;
     const ratio = quality === 'low' ? 1 : quality === 'high' ? Math.min(deviceRatio, 2.5) : Math.min(deviceRatio, 2);

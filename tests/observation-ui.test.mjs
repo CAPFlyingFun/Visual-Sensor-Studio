@@ -1067,3 +1067,60 @@ test('three.js loads only when a model is actually loaded', () => {
   // panel should pay for.
   assert.match(mainSource, /await import\('\.\/rig\/puppet\.js'\)/);
 });
+
+test('every section is a tab, and every tab has a panel', () => {
+  for (const key of ['camera', 'motion', 'world', 'rig', 'data']) {
+    assert.match(htmlSource, new RegExp(`data-tab="${key}"`), `missing the ${key} tab`);
+    assert.match(htmlSource, new RegExp(`id="tab-${key}"`), `missing the ${key} panel`);
+    assert.match(htmlSource, new RegExp(`aria-controls="tab-${key}"`), `${key} is not wired for a11y`);
+  }
+  assert.match(htmlSource, /role="tablist"/);
+  assert.match(mainSource, /const TABS = \['camera', 'motion', 'world', 'rig', 'data'\] as const/);
+});
+
+test('the camera panel is never given display:none', () => {
+  // display:none on a <video> can stop WebKit decoding frames and the camera
+  // then never recovers — the exact failure this app already fixed once in the
+  // vision overlay. Hidden tabs go off-screen instead.
+  assert.match(cssSource, /\.tab-panel\[hidden\] \{\s*\n\s*display: block;/);
+  assert.match(cssSource, /left: -200vw/);
+  assert.match(cssSource, /can stop WebKit decoding frames/);
+});
+
+test('the 3D viewport is moved between tabs rather than duplicated', () => {
+  // One canvas, two tabs that want it. A second WebGL context for the same
+  // scene would be waste and would not share its state anyway.
+  assert.match(htmlSource, /id="sceneHost"/);
+  assert.equal((htmlSource.match(/id="fusionScene"/g) ?? []).length, 1);
+  assert.equal((htmlSource.match(/data-scene-slot/g) ?? []).length, 2);
+  assert.match(mainSource, /if \(slot && host\.parentElement !== slot\) slot\.appendChild\(host\)/);
+});
+
+test('work stops for panels nobody is looking at', () => {
+  // Analysis is the most expensive thing the app does, and a hidden WebGL
+  // canvas still draws sixty frames a second unless told not to.
+  assert.match(mainSource, /if \(!cameraTabVisible\(\)\) return;/);
+  assert.match(mainSource, /fusion\.setVisible\(!!slot\)/);
+  const scene = readFileSync(new URL('../src/visualization/scene.ts', import.meta.url), 'utf8');
+  assert.match(scene, /setVisible\(visible: boolean\): void/);
+  assert.match(scene, /cancelAnimationFrame\(this\.animationFrame\);\s*\n\s*this\.animationFrame = 0;/);
+});
+
+test('the camera stream is left running when its tab is hidden', () => {
+  // Only the analysis pauses, so coming back to the tab is instant rather than
+  // a fresh getUserMedia and another permission gamble.
+  assert.match(mainSource, /The STREAM stays live so returning to the tab is instant/);
+  const analyse = mainSource.slice(mainSource.indexOf('function analyseDeliveredFrame'));
+  assert.doesNotMatch(analyse.slice(0, 600), /camera\.stop|camera\.suspend/);
+});
+
+test('the chosen tab survives a reload', () => {
+  assert.match(mainSource, /TAB_KEY = 'visual-sensor-active-tab-v1'/);
+  assert.match(mainSource, /localStorage\.setItem\(TAB_KEY, key\)/);
+  assert.match(mainSource, /isTabKey\(stored\) \? stored : 'camera'/);
+});
+
+test('tabs are reachable from the keyboard', () => {
+  assert.match(mainSource, /key !== 'ArrowLeft' && key !== 'ArrowRight'/);
+  assert.match(mainSource, /button\.tabIndex = tab === key \? 0 : -1/);
+});

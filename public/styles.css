@@ -991,3 +991,66 @@ footer strong { color: #9fb2c3; }
 }
 .rig-panel { padding: 15px; }
 @media (max-width: 720px) { .rig-panel { padding: 12px; } }
+
+/* ---- Tabs -------------------------------------------------------------
+   Everything used to share one long scroll, so reaching the terrain map meant
+   passing the whole camera lab. Each section is now a tab, and the 3D viewport
+   moves into whichever tab wants it rather than being duplicated. */
+.tabbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 4px;
+  padding: 6px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(8, 15, 24, 0.94);
+  backdrop-filter: blur(10px);
+  overflow-x: auto;
+}
+.tab {
+  min-height: 44px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: none;
+  color: #9fb2c3;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.tab[aria-selected="true"] {
+  background: rgba(96, 208, 255, 0.14);
+  border-color: var(--cyan);
+  color: #eaf3ff;
+}
+.tab:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+
+/*
+   Inactive tabs are moved OFF-SCREEN rather than given display:none.
+   display:none on a <video> can stop WebKit decoding frames, and the camera
+   then never recovers — the same failure this app spent a long time fixing in
+   the vision overlay. Off-screen keeps the element rendered and the stream
+   alive, at the cost of some layout work that a handful of panels can afford.
+*/
+.tab-panel[hidden] {
+  display: block;
+  position: absolute;
+  left: -200vw;
+  top: 0;
+  width: 100vw;
+  pointer-events: none;
+}
+.primary-grid.single { grid-template-columns: 1fr; }
+.scene-host { margin-top: 14px; }
+.scene-slot:empty { display: none; }
+@media (max-width: 720px) {
+  .tabbar { padding: 5px; gap: 3px; }
+  .tab { font-size: 0.72rem; padding: 0 6px; }
+}

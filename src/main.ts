@@ -100,7 +100,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.16.0';
+const APP_VERSION = '0.17.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -331,6 +331,7 @@ interface FusionBridge {
   clearTerrain(): void;
   setRig(root: unknown, radius: number): void;
   clearRig(): void;
+  setVisible(visible: boolean): void;
   resetView(): void;
   /**
    * False when the 3D module could not load — a blocked CDN, an old WebGL
@@ -349,6 +350,7 @@ const fallbackFusion: FusionBridge = {
   clearTerrain: () => undefined,
   setRig: (_root, _radius) => undefined,
   clearRig: () => undefined,
+  setVisible: (_visible) => undefined,
   resetView: () => undefined,
   available: false
 };
@@ -2267,6 +2269,10 @@ function shouldAnalyse(now: number): boolean {
 
 function analyseDeliveredFrame(now: number, source: 'delivery' | 'fallback'): void {
   if (!camera.active || processingVision) return;
+  // Analysis is the most expensive thing here, and running it while the camera
+  // panel is parked off-screen burns battery computing pixels nobody can see.
+  // The STREAM stays live so returning to the tab is instant.
+  if (!cameraTabVisible()) return;
   if (!shouldAnalyse(now)) {
     frameRateMeter.recordSkipped();
     return;
@@ -4425,6 +4431,8 @@ on('terrainExaggeration', 'input', (event) => {
 on('terrainExaggeration', 'change', () => pushTerrainToScene());
 on('terrain3dButton', 'click', () => {
   pushTerrainToScene();
+  // The viewport is already in this tab, so this only needs to bring it into
+  // view rather than move anywhere.
   byId('fusionScene').scrollIntoView({ behavior: 'smooth', block: 'center' });
 });
 on('terrainClear3dButton', 'click', () => {
@@ -4702,12 +4710,105 @@ if (bootUrl.searchParams.has('refresh') && typeof history.replaceState === 'func
   }
 }
 
+/**
+ * Tabs.
+ *
+ * Everything shared one long scroll, so reaching the terrain map meant passing
+ * the entire camera lab on the way. Each section is a tab now.
+ *
+ * Two things this has to get right. The 3D viewport is ONE canvas and two tabs
+ * want it, so it is moved into whichever is active rather than duplicated — a
+ * second WebGL context for the same scene would be a waste and would not share
+ * its state anyway. And the camera panel is never given display:none: that can
+ * stop WebKit decoding frames, and the camera then never recovers, which is the
+ * exact failure this app already spent a long time fixing in the overlay.
+ */
+const TAB_KEY = 'visual-sensor-active-tab-v1';
+const TABS = ['camera', 'motion', 'world', 'rig', 'data'] as const;
+type TabKey = (typeof TABS)[number];
+let activeTab: TabKey = 'camera';
+
+function isTabKey(value: string | null): value is TabKey {
+  return !!value && (TABS as readonly string[]).includes(value);
+}
+
+function setActiveTab(key: TabKey, remember = true): void {
+  activeTab = key;
+  for (const tab of TABS) {
+    const panel = document.getElementById(`tab-${tab}`);
+    const button = document.getElementById(`tabbtn-${tab}`);
+    if (panel) panel.hidden = tab !== key;
+    if (button) {
+      button.setAttribute('aria-selected', String(tab === key));
+      button.tabIndex = tab === key ? 0 : -1;
+    }
+  }
+
+  // Move the 3D viewport to the active tab, or park it where it cannot be seen
+  // but keeps its context alive.
+  const host = byId('sceneHost');
+  const slot = document.querySelector<HTMLElement>(`#tab-${key} [data-scene-slot]`);
+  if (slot && host.parentElement !== slot) slot.appendChild(host);
+  host.hidden = !slot;
+  fusion.setVisible(!!slot);
+
+  if (remember) {
+    try {
+      localStorage.setItem(TAB_KEY, key);
+    } catch {
+      // Private browsing: the tab simply does not persist.
+    }
+  }
+  // The viewport's size changes when it moves between tabs of different widths.
+  window.dispatchEvent(new Event('resize'));
+}
+
+/**
+ * Is the camera's own tab on screen?
+ *
+ * Vision analysis is the most expensive thing the app does, and running it
+ * against a panel parked off-screen burns battery to compute pixels nobody can
+ * see. The stream stays live so returning is instant; only the analysis pauses.
+ */
+function cameraTabVisible(): boolean {
+  return activeTab === 'camera' || viewerOpen;
+}
+
+function installTabs(): void {
+  const bar = document.querySelector('.tabbar');
+  if (!bar) return;
+  for (const button of bar.querySelectorAll<HTMLButtonElement>('[data-tab]')) {
+    button.addEventListener('click', () => {
+      const key = button.dataset.tab;
+      if (isTabKey(key ?? null)) setActiveTab(key as TabKey);
+    });
+  }
+  bar.addEventListener('keydown', (event) => {
+    const key = (event as KeyboardEvent).key;
+    if (key !== 'ArrowLeft' && key !== 'ArrowRight') return;
+    event.preventDefault();
+    const index = TABS.indexOf(activeTab);
+    const next = TABS[(index + (key === 'ArrowRight' ? 1 : TABS.length - 1)) % TABS.length];
+    setActiveTab(next);
+    document.getElementById(`tabbtn-${next}`)?.focus();
+  });
+
+  let stored: string | null = null;
+  try {
+    stored = localStorage.getItem(TAB_KEY);
+  } catch {
+    stored = null;
+  }
+  setActiveTab(isTabKey(stored) ? stored : 'camera', false);
+}
+
 setText('secureContextValue', window.isSecureContext ? 'Secure ✓' : 'Needs HTTPS');
 setChip('pwaChip', 'good', isStandalone() ? 'PWA installed' : browserCameraMode ? 'Browser camera mode' : 'PWA ready');
 syncSettingsControls();
 updateVisionMode('camera');
 installPinchZoom();
 installTerrainGestures();
+installTabs();
 installViewerGestures();
 camera.subscribe(applyCameraStatus);
 renderMetrics();

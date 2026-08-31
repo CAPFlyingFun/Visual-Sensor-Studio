@@ -43,7 +43,16 @@
     </header>
 
     <main>
-      <section class="primary-grid">
+      <nav class="tabbar" role="tablist" aria-label="Sections">
+        <button class="tab" type="button" role="tab" id="tabbtn-camera" data-tab="camera" aria-controls="tab-camera" aria-selected="false" title="Live vision">Camera</button>
+        <button class="tab" type="button" role="tab" id="tabbtn-motion" data-tab="motion" aria-controls="tab-motion" aria-selected="false" title="Orientation and steadiness">Motion</button>
+        <button class="tab" type="button" role="tab" id="tabbtn-world" data-tab="world" aria-controls="tab-world" aria-selected="false" title="Position, terrain and the 3D view">World</button>
+        <button class="tab" type="button" role="tab" id="tabbtn-rig" data-tab="rig" aria-controls="tab-rig" aria-selected="false" title="Puppet a rigged model">Rig</button>
+        <button class="tab" type="button" role="tab" id="tabbtn-data" data-tab="data" aria-controls="tab-data" aria-selected="false" title="Depth scan and export">Data</button>
+      </nav>
+
+      <section class="tab-panel" id="tab-camera" role="tabpanel" aria-labelledby="tabbtn-camera" hidden>
+        <div class="primary-grid single">
         <article class="panel vision-panel">
           <div class="panel-heading">
             <div>
@@ -289,24 +298,11 @@
           <p class="helper" id="cameraMessage">Tap Enable Camera for live video. Pinch the preview or use the zoom slider once the camera is live.</p>
           <p class="stage-trace" id="cameraStage" hidden>stage: idle</p>
         </article>
-
-        <article class="panel scene-panel">
-          <div class="panel-heading">
-            <div><p class="section-kicker">3D FUSION</p><h2>Sensor Space</h2></div>
-            <button class="icon-button" id="resetViewButton" type="button" title="Reset 3D view" disabled>Reset view</button>
-          </div>
-          <div id="fusionScene" class="fusion-scene" aria-label="Interactive 3D sensor visualization">Loading interactive 3D sensor view…</div>
-          <div class="scene-legend">
-            <span><i class="legend-swatch phone"></i> phone orientation</span>
-            <span><i class="legend-swatch accel"></i> acceleration</span>
-            <span><i class="legend-swatch gps"></i> GPS trail</span>
-            <span><i class="legend-swatch terrain"></i> terrain (load below)</span>
-          </div>
-          <p class="helper" id="sceneMessage">The 3D viewer loads independently. Camera, motion, GPS and parallax controls remain usable even if the 3D module cannot load.</p>
-        </article>
+        </div>
       </section>
 
-      <section class="single-panel">
+      <section class="tab-panel" id="tab-motion" role="tabpanel" aria-labelledby="tabbtn-motion" hidden>
+        <div class="single-panel">
         <article class="panel compact-panel">
           <div class="panel-heading"><div><p class="section-kicker">DEVICE MOTION</p><h2>Orientation + IMU</h2></div></div>
           <button class="primary-button full" id="motionButton" type="button">Enable Motion Sensors</button>
@@ -319,9 +315,10 @@
           <div class="wide-readout"><span>Rotation αβγ</span><strong id="rotationValue">—</strong></div>
           <p class="helper" id="motionMessage">On iPhone, motion uses a special explicit permission request, so a tap can trigger its prompt directly.</p>
         </article>
-
+        </div>
       </section>
 
+      <section class="tab-panel" id="tab-world" role="tabpanel" aria-labelledby="tabbtn-world" hidden>
       <section class="panel terrain-panel">
         <div class="panel-heading">
           <div><p class="section-kicker">POSITION &amp; TERRAIN</p><h2>Where you are</h2></div>
@@ -413,7 +410,10 @@
           good for a hillside, not for a kerb.
         </p>
       </section>
+        <div class="scene-slot" data-scene-slot></div>
+      </section>
 
+      <section class="tab-panel" id="tab-rig" role="tabpanel" aria-labelledby="tabbtn-rig" hidden>
       <section class="panel rig-panel" id="rigPanel">
         <div class="panel-heading">
           <div><p class="section-kicker">RIG PUPPET</p><h2>Animate a model by hand</h2></div>
@@ -503,7 +503,10 @@
           <button class="secondary-button" id="rigClearTakesButton" type="button">Clear All Takes</button>
         </div>
       </section>
+        <div class="scene-slot" data-scene-slot></div>
+      </section>
 
+      <section class="tab-panel" id="tab-data" role="tabpanel" aria-labelledby="tabbtn-data" hidden>
       <section class="panel parallax-panel">
         <div class="panel-heading">
           <div><p class="section-kicker">EXPERIMENTAL DEPTH</p><h2>Two-Frame Parallax Scan</h2></div>
@@ -523,7 +526,6 @@
         </div>
         <p class="helper" id="parallaxMessage">Enable the live camera first. Textured scenes work better than blank walls, glass, or shiny surfaces.</p>
       </section>
-
       <section class="panel export-panel">
         <div>
           <p class="section-kicker">DATA SNAPSHOT</p><h2>Take the numbers with you</h2>
@@ -534,9 +536,27 @@
           <button class="primary-button" id="downloadButton" type="button">Export Sensor JSON</button>
         </div>
       </section>
+      </section>
     </main>
 
-    <footer><strong>Visual Sensor Studio v0.16.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <div id="sceneHost" class="scene-host" hidden>
+        <article class="panel scene-panel">
+          <div class="panel-heading">
+            <div><p class="section-kicker">3D FUSION</p><h2>Sensor Space</h2></div>
+            <button class="icon-button" id="resetViewButton" type="button" title="Reset 3D view" disabled>Reset view</button>
+          </div>
+          <div id="fusionScene" class="fusion-scene" aria-label="Interactive 3D sensor visualization">Loading interactive 3D sensor view…</div>
+          <div class="scene-legend">
+            <span><i class="legend-swatch phone"></i> phone orientation</span>
+            <span><i class="legend-swatch accel"></i> acceleration</span>
+            <span><i class="legend-swatch gps"></i> GPS trail</span>
+            <span><i class="legend-swatch terrain"></i> terrain (load below)</span>
+          </div>
+          <p class="helper" id="sceneMessage">The 3D viewer loads independently. Camera, motion, GPS and parallax controls remain usable even if the 3D module cannot load.</p>
+        </article>
+    </div>
+
+    <footer><strong>Visual Sensor Studio v0.17.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">
