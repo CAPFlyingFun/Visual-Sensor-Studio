@@ -19,6 +19,11 @@ import {
   throughputMegapixelsPerSecond
 } from './vision/display-metrics.js';
 import { aspectRatioFor, cropToAspect, retainedFraction, type SaveAspect } from './vision/aspect.js';
+import { createPlane, type Plane } from './vision/super-resolution.js';
+import {
+  CAPTURE_CANDIDATES, KEEP_FRAMES, MIN_CONFIDENCE, SPREAD_FLOOR,
+  estimateShift, judgeBurst, rotationToPixels, type ShiftEstimate
+} from './vision/burst-capture.js';
 import {
   SAVE_FORMATS, clampQuality, describeBytes, fileName, formatInfo,
   resolveFormat, supportedFormats, DEFAULT_QUALITY, type SaveFormat
@@ -178,7 +183,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.29.0';
+const APP_VERSION = '0.30.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -6862,6 +6867,7 @@ on('zoomSlider', 'input', (event) => {
   void requestZoom(Number((event.target as HTMLInputElement).value));
 });
 on('captureStillButton', 'click', () => void captureStill());
+on('burstCaptureButton', 'click', () => void runBurstProbe());
 on('expandViewButton', 'click', () => setViewerOpen(true));
 on('viewerCloseButton', 'click', () => setViewerOpen(false));
 on('viewerFitButton', 'click', () => {
@@ -7164,7 +7170,7 @@ if (bootUrl.searchParams.has('refresh') && typeof history.replaceState === 'func
  * exact failure this app already spent a long time fixing in the overlay.
  */
 const TAB_KEY = 'visual-sensor-active-tab-v1';
-const TABS = ['camera', 'motion', 'world', 'rig', 'data'] as const;
+const TABS = ['camera', 'motion', 'world', 'rig', 'data', 'burst'] as const;
 type TabKey = (typeof TABS)[number];
 let activeTab: TabKey = 'camera';
 
@@ -7324,4 +7330,221 @@ if ('serviceWorker' in navigator) {
       setText('settingsWorkerState', 'Registration failed');
     });
   });
+}
+
+/* --- Burst detail probe -------------------------------------------------
+ *
+ * Joshua: "Before assuming hand movements won't work on devices... test out
+ * the theory... could add a new tab in our app so you don't have to make a
+ * new file with motion and camera being prompted first."
+ *
+ * Phase 0 established on synthetic data that merging recovers real resolution
+ * only when the frames' sub-pixel offsets are spread across the grid, and that
+ * random offsets underperform a plain upscale. What it could NOT establish is
+ * whether a particular hand holding a particular phone produces usable spread.
+ * That is an empirical question, and this is the instrument for it.
+ *
+ * It merges nothing and produces no picture. It reports whether producing one
+ * would be worth the work — including when the answer is no.
+ */
+
+/**
+ * Offsets must be measured in the pixels we would MERGE in.
+ *
+ * A shift of 0.3 preview pixels is 3.8 pixels at full resolution, and its
+ * fractional part — the only part that carries new information — is unrelated.
+ * So the probe samples a small window at 1:1 from the centre of the full
+ * frame rather than a scaled-down whole frame: true full-resolution units, at
+ * the cost of reading a few hundred pixels a side.
+ */
+const BURST_WINDOW = 256;
+let burstCanvas: HTMLCanvasElement | null = null;
+let burstContext: CanvasRenderingContext2D | null = null;
+
+function sampleBurstWindow(): Plane | null {
+  const width = video.videoWidth;
+  const height = video.videoHeight;
+  if (!width || !height) return null;
+  const size = Math.min(BURST_WINDOW, width, height);
+
+  burstCanvas ??= document.createElement('canvas');
+  burstContext ??= burstCanvas.getContext('2d', { willReadFrequently: true });
+  if (!burstContext) return null;
+  if (burstCanvas.width !== size) burstCanvas.width = size;
+  if (burstCanvas.height !== size) burstCanvas.height = size;
+
+  // 1:1 from the centre. No scaling, so a pixel here is a sensor pixel there.
+  burstContext.drawImage(
+    video,
+    Math.round((width - size) / 2), Math.round((height - size) / 2), size, size,
+    0, 0, size, size
+  );
+  const image = burstContext.getImageData(0, 0, size, size);
+  const plane = createPlane(size, size);
+  for (let i = 0, p = 0; i < image.data.length; i += 4, p++) {
+    plane.data[p] = 0.299 * image.data[i] + 0.587 * image.data[i + 1] + 0.114 * image.data[i + 2];
+  }
+  return plane;
+}
+
+let burstRunning = false;
+
+async function runBurstProbe(): Promise<void> {
+  if (burstRunning) return;
+  if (!camera.active) {
+    setText('burstReason', 'Enable the camera on the Camera tab first.');
+    return;
+  }
+  burstRunning = true;
+  const button = byId<HTMLButtonElement>('burstCaptureButton');
+  button.disabled = true;
+
+  try {
+    const planes: Plane[] = [];
+    // Gyro rotation accumulated between frames, in radians, so the sensor
+    // prediction can be checked against what the image actually did.
+    const gyro: Array<{ x: number; y: number }> = [];
+    let rotX = 0;
+    let rotY = 0;
+    let lastAt = performance.now();
+
+    for (let i = 0; i < CAPTURE_CANDIDATES; i++) {
+      const plane = sampleBurstWindow();
+      if (!plane) break;
+      planes.push(plane);
+      gyro.push({ x: rotX, y: rotY });
+      setText('burstProgress', `Capturing ${i + 1} of ${CAPTURE_CANDIDATES}…`);
+
+      // Yield so the camera can deliver a genuinely new frame; capturing
+      // faster than delivery just records the same one repeatedly, and
+      // repeated frames carry no new offset at all.
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      await new Promise((resolve) => setTimeout(resolve, 40));
+
+      const now = performance.now();
+      const dt = Math.min(0.5, (now - lastAt) / 1000);
+      lastAt = now;
+      if (latestMotion) {
+        // rotationRate is degrees per second. Rotation about Y moves the image
+        // horizontally, about X vertically.
+        rotX += (latestMotion.rotationRate.gamma * Math.PI / 180) * dt;
+        rotY += (latestMotion.rotationRate.beta * Math.PI / 180) * dt;
+      }
+    }
+    setText('burstProgress', '');
+
+    if (planes.length < 2) {
+      setText('burstVerdict', 'Could not capture.');
+      setText('burstReason', 'No frames arrived from the camera.');
+      return;
+    }
+
+    const reference = planes[0];
+    const shifts: ShiftEstimate[] = planes.map((plane, index) =>
+      index === 0
+        ? { shiftX: 0, shiftY: 0, confidence: 1 }
+        : estimateShift(reference, plane, 8)
+    );
+
+    const verdict = judgeBurst(shifts, KEEP_FRAMES);
+    renderBurstVerdict(verdict, shifts);
+    renderBurstAgreement(shifts, gyro);
+  } finally {
+    burstRunning = false;
+    byId<HTMLButtonElement>('burstCaptureButton').disabled = false;
+  }
+}
+
+function renderBurstVerdict(
+  verdict: ReturnType<typeof judgeBurst>,
+  shifts: ShiftEstimate[]
+): void {
+  setText('burstFrames', String(verdict.frames));
+  setText('burstConfident', `${verdict.confident}/${verdict.frames}`);
+  setText('burstTravel', `${verdict.travelPixels.toFixed(1)} px`);
+  setText('burstSpread', `${(verdict.selectedSpread * 100).toFixed(0)}%`);
+  setText('burstVerdict', verdict.worthMerging
+    ? 'This burst would carry more detail.'
+    : 'This burst would not help.');
+  // The threshold is stated alongside the reading, so a refusal is a number
+  // the reader can act on rather than a verdict they have to trust.
+  setText('burstReason', `${verdict.reason} `
+    + `(Selecting the best ${KEEP_FRAMES} of ${verdict.frames} reached `
+    + `${(verdict.selectedSpread * 100).toFixed(0)}% against `
+    + `${(verdict.rawSpread * 100).toFixed(0)}% for the raw burst; `
+    + `${(SPREAD_FLOOR * 100).toFixed(0)}% is where merging starts to pay.)`);
+  drawBurstScatter(shifts, verdict.selected);
+}
+
+/** Plot where each frame landed inside one pixel. */
+function drawBurstScatter(shifts: ShiftEstimate[], selected: number[]): void {
+  const canvas = document.getElementById('burstScatter') as HTMLCanvasElement | null;
+  const context = canvas?.getContext('2d');
+  if (!canvas || !context) return;
+  const size = canvas.width;
+  const keep = new Set(selected);
+  context.clearRect(0, 0, size, size);
+
+  context.strokeStyle = 'rgba(120, 190, 255, 0.18)';
+  context.lineWidth = 1;
+  for (let i = 1; i < 4; i++) {
+    const at = (size * i) / 4;
+    context.beginPath();
+    context.moveTo(at, 0); context.lineTo(at, size);
+    context.moveTo(0, at); context.lineTo(size, at);
+    context.stroke();
+  }
+
+  shifts.forEach((shift, index) => {
+    if (index !== 0 && shift.confidence < MIN_CONFIDENCE) return;
+    const fx = shift.shiftX - Math.floor(shift.shiftX);
+    const fy = shift.shiftY - Math.floor(shift.shiftY);
+    const x = fx * size;
+    const y = fy * size;
+    const kept = keep.has(index);
+    context.beginPath();
+    context.arc(x, y, kept ? 7 : 4, 0, Math.PI * 2);
+    if (kept) {
+      context.fillStyle = 'rgba(255, 196, 84, 0.9)';
+      context.fill();
+    } else {
+      context.strokeStyle = 'rgba(150, 200, 245, 0.55)';
+      context.lineWidth = 1.5;
+      context.stroke();
+    }
+  });
+}
+
+/**
+ * Does the gyroscope agree with what the picture actually did?
+ *
+ * This is the question behind driving capture from the motion sensors at all.
+ * Where the two agree the sensors could time the shutter; where they disagree
+ * they would be steering by a number that does not describe the image — and
+ * on a tripod both should read zero, which is its own useful answer.
+ */
+function renderBurstAgreement(
+  shifts: ShiftEstimate[],
+  gyro: Array<{ x: number; y: number }>
+): void {
+  const focal = focalLengthPixels(video.videoWidth, settings.motionFovDegrees);
+  const imageTravel = shifts.reduce(
+    (worst, s) => Math.max(worst, Math.hypot(s.shiftX, s.shiftY)), 0);
+  setText('burstImageMove', `${imageTravel.toFixed(1)} px`);
+
+  if (!focal || gyro.length === 0) {
+    setText('burstGyroMove', '—');
+    setText('burstAgreement', 'needs a field of view');
+    return;
+  }
+  const gyroTravel = gyro.reduce((worst, g) => Math.max(worst,
+    Math.hypot(rotationToPixels(g.x, focal), rotationToPixels(g.y, focal))), 0);
+  setText('burstGyroMove', `${gyroTravel.toFixed(1)} px`);
+
+  if (imageTravel < 0.05 && gyroTravel < 0.05) {
+    setText('burstAgreement', 'both still');
+    return;
+  }
+  const ratio = gyroTravel > 0 ? imageTravel / gyroTravel : 0;
+  setText('burstAgreement', ratio > 0 ? `${ratio.toFixed(2)}× image/gyro` : '—');
 }

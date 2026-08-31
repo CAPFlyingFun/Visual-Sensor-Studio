@@ -1321,3 +1321,29 @@ button.ghost.danger {
 #lensShareSummary {
   color: #9fd8ff;
 }
+
+/* --- Burst detail probe ------------------------------------------------- */
+.burst-layout {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: 1fr;
+  align-items: start;
+}
+@media (min-width: 620px) {
+  .burst-layout { grid-template-columns: minmax(0, 320px) minmax(0, 1fr); }
+}
+.burst-figure { margin: 0; display: flex; flex-direction: column; gap: .5rem; }
+/*
+ * The scatter is a UNIT SQUARE, so it must stay square at every width or the
+ * offsets it plots are distorted and a burst reads as more spread in one axis
+ * than it is.
+ */
+.burst-figure canvas {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  height: auto;
+  border-radius: 10px;
+  background: rgba(4, 12, 20, .55);
+  border: 1px solid rgba(120, 190, 255, .18);
+}
+.burst-side { display: flex; flex-direction: column; gap: .6rem; }

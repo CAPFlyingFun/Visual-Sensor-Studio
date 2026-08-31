@@ -70,6 +70,7 @@
         <button class="tab" type="button" role="tab" id="tabbtn-world" data-tab="world" aria-controls="tab-world" aria-selected="false" title="Position, terrain and the 3D view">World</button>
         <button class="tab" type="button" role="tab" id="tabbtn-rig" data-tab="rig" aria-controls="tab-rig" aria-selected="false" title="Puppet a rigged model">Rig</button>
         <button class="tab" type="button" role="tab" id="tabbtn-data" data-tab="data" aria-controls="tab-data" aria-selected="false" title="Depth scan and export">Data</button>
+        <button class="tab" type="button" role="tab" id="tabbtn-burst" data-tab="burst" aria-controls="tab-burst" aria-selected="false" title="Measure whether a burst carries extra detail">Burst</button>
       </nav>
 
       <section class="tab-panel" id="tab-camera" role="tabpanel" aria-labelledby="tabbtn-camera" hidden>
@@ -704,6 +705,62 @@
         <div class="scene-slot" data-scene-slot></div>
       </section>
 
+      <section class="tab-panel" id="tab-burst" role="tabpanel" aria-labelledby="tabbtn-burst" hidden>
+      <section class="panel">
+        <div class="panel-heading">
+          <div><p class="section-kicker">MULTI-FRAME</p><h2>Burst Detail Probe</h2></div>
+          <span class="small-badge warning">Measures only — merges nothing</span>
+        </div>
+        <p class="lead-copy">
+          Hold the phone as you normally would and press Capture. This records a burst, measures
+          where your hand actually put each frame to a fraction of a pixel, and reports whether
+          those frames between them carry more detail than any one of them does.
+          It does not produce a picture. It answers whether producing one is worth doing.
+        </p>
+
+        <div class="metric-strip">
+          <div class="metric"><span>Frames</span><strong id="burstFrames">&mdash;</strong></div>
+          <div class="metric"><span>Measurable</span><strong id="burstConfident">&mdash;</strong></div>
+          <div class="metric"><span>Travel</span><strong id="burstTravel">&mdash;</strong></div>
+          <div class="metric"><span>Grid coverage</span><strong id="burstSpread">&mdash;</strong></div>
+        </div>
+
+        <div class="burst-layout">
+          <figure class="burst-figure">
+            <canvas id="burstScatter" width="320" height="320" aria-label="Sub-pixel offsets of each captured frame"></canvas>
+            <figcaption>
+              Where each frame landed inside one pixel. Filled marks are the frames that would be
+              kept; hollow ones duplicate an offset already held. Detail is recovered by
+              <em>covering</em> this square &mdash; frames stacked in one spot are copies of the
+              same measurement.
+            </figcaption>
+          </figure>
+          <div class="burst-side">
+            <p class="value" id="burstVerdict">Not captured yet.</p>
+            <p class="helper" id="burstReason">
+              Point at something with texture &mdash; ground, foliage, brickwork. A blank wall has
+              nothing to measure movement against.
+            </p>
+            <div class="button-row">
+              <button class="primary-button" id="burstCaptureButton" type="button">Capture Burst</button>
+            </div>
+            <p class="helper" id="burstProgress" aria-live="polite"></p>
+          </div>
+        </div>
+
+        <p class="helper">
+          Both sources are shown because they are checked against each other: the gyroscope
+          predicts where the frame should have moved, and the image says where it did. Where they
+          agree, motion sensors alone could drive the capture. Where they disagree, they could not.
+        </p>
+        <div class="metric-strip">
+          <div class="metric"><span>From the image</span><strong id="burstImageMove">&mdash;</strong></div>
+          <div class="metric"><span>From the gyroscope</span><strong id="burstGyroMove">&mdash;</strong></div>
+          <div class="metric"><span>Agreement</span><strong id="burstAgreement">&mdash;</strong></div>
+        </div>
+      </section>
+      </section>
+
       <section class="tab-panel" id="tab-data" role="tabpanel" aria-labelledby="tabbtn-data" hidden>
       <section class="panel parallax-panel">
         <div class="panel-heading">
@@ -754,7 +811,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.29.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.30.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">

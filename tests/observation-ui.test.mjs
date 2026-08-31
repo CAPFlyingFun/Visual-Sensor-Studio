@@ -1077,13 +1077,13 @@ test('three.js loads only when a model is actually loaded', () => {
 });
 
 test('every section is a tab, and every tab has a panel', () => {
-  for (const key of ['camera', 'motion', 'world', 'rig', 'data']) {
+  for (const key of ['camera', 'motion', 'world', 'rig', 'data', 'burst']) {
     assert.match(htmlSource, new RegExp(`data-tab="${key}"`), `missing the ${key} tab`);
     assert.match(htmlSource, new RegExp(`id="tab-${key}"`), `missing the ${key} panel`);
     assert.match(htmlSource, new RegExp(`aria-controls="tab-${key}"`), `${key} is not wired for a11y`);
   }
   assert.match(htmlSource, /role="tablist"/);
-  assert.match(mainSource, /const TABS = \['camera', 'motion', 'world', 'rig', 'data'\] as const/);
+  assert.match(mainSource, /const TABS = \['camera', 'motion', 'world', 'rig', 'data', 'burst'\] as const/);
 });
 
 test('the camera panel is never given display:none', () => {
