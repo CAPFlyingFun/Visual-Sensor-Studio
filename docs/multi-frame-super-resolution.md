@@ -1,6 +1,8 @@
 # Multi-frame super-resolution — specification
 
-Status: **proposed, not built.** Written to be argued with before any code exists.
+Status: **Phase 0 complete. Gate passed, conditionally.** See "Phase 0 results"
+at the foot of this document — it corrects three claims made above, which are
+left in place so the corrections have something to point at.
 
 ## The question this answers
 
@@ -209,3 +211,83 @@ the ground-truth harness and the bicubic control.
 
 It touches no existing behaviour, needs no device time, and answers the one
 question everything else depends on.
+
+
+---
+
+# Phase 0 results
+
+Built as `src/vision/super-resolution.ts` and `tests/super-resolution.test.mjs`.
+No camera, no interface. Scores are high-frequency PSNR against ground truth,
+relative to bicubic upscaling of a single frame.
+
+## The gate: passed, with a condition that changes the feature
+
+Merging recovers **genuine resolution** — but only when the frames' sub-pixel
+offsets are actively spread. Measured with noise off, so denoising cannot
+flatter the result:
+
+| Burst | Gain over bicubic |
+|---|---|
+| Clustered offsets (very steady hand) | **−11.9 dB** |
+| Random hand tremor | **−1.9 dB** |
+| Evenly spread offsets | **+5.7 dB** |
+
+**Ordinary tremor is not enough.** A random handheld burst scores *below*
+simply upscaling one frame. Joshua's proposal to trigger capture from the
+motion sensors is therefore not a refinement — it is the mechanism that makes
+the feature work at all, and Phase 1 is now about the trigger rather than
+about alignment alone.
+
+## Four corrections to the spec above
+
+1. **"Naive shift-and-add is fine as a starting point."** It is not, and then
+   it is. Splatting lost to bicubic on a zone plate at every setting tried;
+   on 1/f noise and on a real photograph it *wins*. The estimator's ranking
+   depends on the scene, so Phase 0 deliberately does not name a winner.
+   Splat-then-back-project was best on the photograph (+2.9 dB), splat alone
+   on 1/f noise (+3.0 dB).
+2. **Back-projection is semi-convergent.** It improves for two to four
+   iterations and then diverges — 12 iterations scored −18 dB. Early stopping
+   is the regularisation, not a shortcut past it.
+3. **"Alignment needs 0.1 px."** Correct after all. An intermediate
+   measurement suggested 0.2 px was plenty and that the spec was too strict;
+   that was a zone-plate artifact. On realistic content, 0.1 px costs 6% of
+   the gain, 0.4 px costs nearly all of it, and 0.8 px is worse than not
+   merging.
+4. **Motion blur is second-order.** Four scene pixels of smear costs about
+   a quarter of the gain and mild smear costs nothing — it slightly
+   regularises the inversion. A stillness gate is worth having but is not
+   what decides the feature.
+
+## Two methodological findings worth more than the numbers
+
+**The test scene decided the answer twice.** A zone plate produced two
+confident, wrong conclusions — that splatting always loses, and that most of
+the gain is single-frame deconvolution rather than multi-frame. Both reversed
+on 1/f noise and on a real photograph. Any future measurement here uses at
+least two scene types, one of them real.
+
+**The high-frequency score cannot separate denoising from resolution.** It was
+added precisely to do that, and it does the opposite: a pure denoise scores
++12.5 dB on it against +8.4 dB on overall PSNR. Merging eight frames denoises
+by roughly 9 dB, so a burst can post a healthy number while resolving nothing.
+Every resolution claim here is therefore measured with noise off — and the
+on-device measurement **must** be a slanted-edge MTF, because on a real capture
+there is no noise-free control to fall back on.
+
+## Revised next step
+
+Phase 1 is no longer "alignment on real bursts". It is:
+
+1. **Confirm the frames are distinct.** `frame-rate.ts` already counts unique
+   versus repeated frames; if iOS re-delivers a decoded frame, there are no new
+   offsets and nothing downstream matters.
+2. **Build the diversity gate** — accumulate gyro rotation, convert to image
+   displacement through `focalLengthPixels`, and keep a frame only when its
+   *fractional* offset is far from every offset already held. `offsetSpread`
+   is the target function.
+3. **Then** alignment, to 0.1 px, as originally specified.
+
+The gate for Phase 1 is a measured `offsetSpread` above about 0.6 on a real
+handheld burst. Below that, Phase 0 says the merge will not pay for itself.
