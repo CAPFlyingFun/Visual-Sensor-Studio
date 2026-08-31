@@ -19,7 +19,7 @@
  */
 
 import type { Plane } from './super-resolution.js';
-import { samplePlane, offsetSpread } from './super-resolution.js';
+import { createPlane, samplePlane, offsetSpread } from './super-resolution.js';
 
 export interface ShiftEstimate {
   /** Displacement of this frame relative to the reference, in frame pixels. */
@@ -71,78 +71,115 @@ function parabolicPeak(left: number, middle: number, right: number): number {
   return Math.abs(offset) <= 1 ? offset : 0;
 }
 
+/** Halve a plane by 2x2 averaging, for the search pyramid. */
+function halve(plane: Plane): Plane {
+  const width = plane.width >> 1;
+  const height = plane.height >> 1;
+  const out = createPlane(width, height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const a = plane.data[(y * 2) * plane.width + x * 2];
+      const b = plane.data[(y * 2) * plane.width + x * 2 + 1];
+      const c = plane.data[(y * 2 + 1) * plane.width + x * 2];
+      const d = plane.data[(y * 2 + 1) * plane.width + x * 2 + 1];
+      out.data[y * width + x] = (a + b + c + d) / 4;
+    }
+  }
+  return out;
+}
+
+/** Best integer offset within a window, plus the surface's depth and extent. */
+function searchWindow(
+  reference: Plane,
+  frame: Plane,
+  centreX: number,
+  centreY: number,
+  radius: number,
+  margin: number
+): { x: number; y: number; best: number; worst: number; onEdge: boolean } {
+  let bestX = centreX;
+  let bestY = centreY;
+  let best = Number.POSITIVE_INFINITY;
+  let worst = 0;
+  for (let dy = centreY - radius; dy <= centreY + radius; dy++) {
+    for (let dx = centreX - radius; dx <= centreX + radius; dx++) {
+      const score = windowSad(reference, frame, dx, dy, margin);
+      if (score < best) { best = score; bestX = dx; bestY = dy; }
+      if (score > worst) worst = score;
+    }
+  }
+  return {
+    x: bestX, y: bestY, best, worst,
+    onEdge: Math.abs(bestX - centreX) === radius || Math.abs(bestY - centreY) === radius
+  };
+}
+
 /**
  * Sub-pixel displacement of `frame` relative to `reference`.
  *
- * Integer search, then a parabolic fit on the error surface either side of the
- * minimum. Phase 0 measured the precision this has to reach: at 0.1 px the
- * merge keeps most of its gain, at 0.4 px it keeps almost none, and at 0.8 px
- * merging is worse than not merging. So an estimate that cannot be trusted to
- * roughly a tenth of a pixel is worse than no estimate, which is what
- * `confidence` is for.
+ * COARSE TO FINE, because a single flat search cannot be both wide and cheap.
+ * Cost grows with the square of the radius, so the first version used a fixed
+ * plus-or-minus eight pixels — and on Joshua's phone the burst travelled 8.5
+ * to 11.7 pixels, putting most frames outside it. They were then correctly
+ * refused (a match on the window edge is not a match) and the probe reported
+ * only two to twenty-seven of thirty-two frames as measurable, discarding most
+ * of the burst for no reason but the size of the window.
+ *
+ * A two-level pyramid buys four times the range for less work than the flat
+ * search it replaces: a wide search on a half-size image, then a short refine
+ * at full size, then the parabolic fit that sets the final precision.
+ *
+ * Phase 0 measured the precision this has to reach: at 0.1 px the merge keeps
+ * most of its gain, at 0.4 px almost none, at 0.8 px merging is worse than not
+ * merging. An estimate that cannot be trusted to a tenth of a pixel is worse
+ * than no estimate, which is what `confidence` is for.
  */
 export function estimateShift(
   reference: Plane,
   frame: Plane,
-  maxShift = 6
+  maxShift = 24
 ): ShiftEstimate {
-  const margin = Math.ceil(maxShift) + 2;
-  if (reference.width <= margin * 2 || reference.height <= margin * 2) {
+  const margin = 4;
+  if (reference.width <= margin * 2 + 4 || reference.height <= margin * 2 + 4) {
     return { shiftX: 0, shiftY: 0, confidence: 0 };
   }
 
-  let bestX = 0;
-  let bestY = 0;
-  let best = Number.POSITIVE_INFINITY;
-  let worst = 0;
-  for (let dy = -maxShift; dy <= maxShift; dy++) {
-    for (let dx = -maxShift; dx <= maxShift; dx++) {
-      const score = windowSad(reference, frame, dx, dy, margin);
-      if (score < best) {
-        best = score;
-        bestX = dx;
-        bestY = dy;
-      }
-      if (score > worst) worst = score;
-    }
+  // Coarse pass at half size, where one pixel of search covers two of frame.
+  const coarseRadius = Math.max(1, Math.ceil(maxShift / 2));
+  const smallReference = halve(reference);
+  const smallFrame = halve(frame);
+  let seedX = 0;
+  let seedY = 0;
+  let coarseOnEdge = false;
+  if (smallReference.width > margin * 2 + coarseRadius * 2) {
+    const coarse = searchWindow(smallReference, smallFrame, 0, 0, coarseRadius, margin);
+    seedX = coarse.x * 2;
+    seedY = coarse.y * 2;
+    // Only the COARSE edge means the motion left the range entirely. The fine
+    // pass sits on a seed, so its own edge is ordinary.
+    coarseOnEdge = coarse.onEdge;
   }
-  if (!Number.isFinite(best)) return { shiftX: 0, shiftY: 0, confidence: 0 };
 
-  const left = windowSad(reference, frame, bestX - 1, bestY, margin);
-  const right = windowSad(reference, frame, bestX + 1, bestY, margin);
-  const up = windowSad(reference, frame, bestX, bestY - 1, margin);
-  const down = windowSad(reference, frame, bestX, bestY + 1, margin);
+  const fine = searchWindow(reference, frame, seedX, seedY, 2, margin);
+  if (!Number.isFinite(fine.best)) return { shiftX: 0, shiftY: 0, confidence: 0 };
+
+  const left = windowSad(reference, frame, fine.x - 1, fine.y, margin);
+  const right = windowSad(reference, frame, fine.x + 1, fine.y, margin);
+  const up = windowSad(reference, frame, fine.x, fine.y - 1, margin);
+  const down = windowSad(reference, frame, fine.x, fine.y + 1, margin);
 
   // Depth of the minimum against the spread of the surface. A flat wall gives
   // a shallow basin and a meaningless argmin; this is what says so.
-  const basin = worst > 0 ? Math.min(1, Math.max(0, 1 - best / worst)) : 0;
+  const basin = fine.worst > 0 ? Math.min(1, Math.max(0, 1 - fine.best / fine.worst)) : 0;
 
-  // A MINIMUM ON THE EDGE OF THE SEARCH IS NOT A MINIMUM.
-  //
-  // When the frame moved further than the window covers, the best score inside
-  // it sits at the boundary and the real match is somewhere outside. The
-  // estimate is then not "large", it is WRONG — and it is wrong in the
-  // direction that looks like a small, well-behaved shift, so nothing
-  // downstream can tell. Joshua found this from the other end: waving the
-  // phone about scored WORSE than holding it still, partly because motion
-  // beyond the window was being scored as a steady hand.
-  //
-  // Refusing to answer is the honest result. The caller already knows what to
-  // do with a low-confidence estimate.
-  const onBoundary = Math.abs(bestX) === maxShift || Math.abs(bestY) === maxShift;
-  const confidence = onBoundary ? 0 : basin;
-
+  // A MATCH ON THE EDGE OF THE COARSE SEARCH IS NOT A MATCH. The frame moved
+  // further than the range covers and the real match is outside it, so the
+  // estimate is not "large" — it is wrong in the direction that looks like a
+  // small, well-behaved shift, and nothing downstream could tell.
   return {
-    // NOT negated. windowSad compares reference(x, y) against
-    // frame(x + sx, y + sy), which agree when sx equals the frame's own
-    // displacement — so the offset that wins the search IS the shift. An
-    // earlier version negated it on the reasoning that the search "moves the
-    // frame back", and every estimate came out with the right magnitude and
-    // the wrong sign, which a merge would have turned into a burst that
-    // scattered every sample to the opposite side of where it belonged.
-    shiftX: bestX + parabolicPeak(left, best, right),
-    shiftY: bestY + parabolicPeak(up, best, down),
-    confidence
+    shiftX: fine.x + parabolicPeak(left, fine.best, right),
+    shiftY: fine.y + parabolicPeak(up, fine.best, down),
+    confidence: coarseOnEdge ? 0 : basin
   };
 }
 
@@ -301,7 +338,13 @@ export function judgeBurst(
     0
   );
   const selected = selectDiverseSubset(shifts, keep, minConfidence);
-  const rawSpread = offsetSpread(shifts);
+  // LIKE FOR LIKE. `rawSpread` is the spread of the first `keep` frames — what
+  // taking the burst as it came would have given — NOT of all of them. More
+  // points always cover more grid, so comparing thirty-two against a selected
+  // eight makes selection look actively harmful, which is how it read in
+  // Joshua's log: raw 68% against selected 59% on a burst selection had in
+  // fact improved.
+  const rawSpread = offsetSpread(shifts.slice(0, keep));
   const selectedSpread = offsetSpread(selected.map((i) => shifts[i]));
   const stationary = travelPixels < STATIONARY_PIXELS;
 
@@ -314,6 +357,12 @@ export function judgeBurst(
       + 'viewpoint to merge, so a single frame is the honest answer.';
   } else if (confident < 2) {
     reason = 'Too little texture to measure movement. Point at something with detail.';
+  } else if (confident < keep) {
+    // Distinguished from a low spread because the fix is different: this is
+    // about what the box is pointed at, not about how the phone was held.
+    reason = `Only ${confident} of ${frames} frames had enough texture to measure, `
+      + `fewer than the ${keep} a merge needs. Fill the box with detail — `
+      + 'gravel, foliage, brickwork, fabric.';
   } else if (selectedSpread < SPREAD_FLOOR) {
     reason = `Offsets cover ${(selectedSpread * 100).toFixed(0)}% of the sub-pixel grid, `
       + `below the ${(SPREAD_FLOOR * 100).toFixed(0)}% where merging starts to pay. `

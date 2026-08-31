@@ -187,6 +187,23 @@ test('rotation converts to pixels through the focal length, and refuses without 
   assert.equal(bc.rotationToPixels(0.001, 0), 0);
 });
 
+test('the search covers the motion a real hand actually produces', () => {
+  // Joshua's bursts travelled 8.5 to 11.7 px while the window was plus-or-minus
+  // eight, so most frames fell outside it and were refused — correctly, but the
+  // probe then reported as few as 2 of 32 frames measurable and threw the burst
+  // away for no reason but the size of the window. A two-level pyramid buys
+  // four times the range for less work than the flat search it replaced.
+  let worst = 0;
+  for (const [dx, dy] of [[0.1, 0.1], [2.3, 1.1], [8.5, 3.2], [-11.7, 6.4], [17.0, -9.8]]) {
+    const moved = sr.noisyPlane(sr.shiftPlane(scene, dx, dy), 2, 11);
+    const got = bc.estimateShift(scene, moved);
+    assert.ok(got.confidence > bc.MIN_CONFIDENCE,
+      `a ${Math.hypot(dx, dy).toFixed(1)} px shift should be measurable`);
+    worst = Math.max(worst, Math.hypot(got.shiftX - dx, got.shiftY - dy));
+  }
+  assert.ok(worst <= 0.1, `worst error ${worst.toFixed(3)} px exceeds the 0.1 px budget`);
+});
+
 test('a match on the edge of the search window is refused, not reported as small', () => {
   // When the frame moved further than the window covers, the best score inside
   // it sits at the boundary and the true match is outside. The estimate is not
@@ -195,12 +212,12 @@ test('a match on the edge of the search window is refused, not reported as small
   //
   // Found from the device: waving the phone scored worse than holding it
   // still, partly because motion past the window read as a steady hand.
-  const farMoved = sr.shiftPlane(scene, 14, 0);
-  const beyond = bc.estimateShift(scene, farMoved, 6);
-  assert.equal(beyond.confidence, 0, 'a shift outside the window must not be trusted');
+  const farMoved = sr.shiftPlane(scene, 40, 0);
+  const beyond = bc.estimateShift(scene, farMoved);
+  assert.equal(beyond.confidence, 0, 'a shift outside the range must not be trusted');
 
   // And a shift comfortably inside it still is.
-  const within = bc.estimateShift(scene, sr.shiftPlane(scene, 2.25, -1.5), 6);
+  const within = bc.estimateShift(scene, sr.shiftPlane(scene, 2.25, -1.5));
   assert.ok(within.confidence > 0.5);
   assert.ok(Math.hypot(within.shiftX - 2.25, within.shiftY + 1.5) < 0.1);
 });
@@ -266,4 +283,39 @@ test('the burst tab shows the camera, and marks the region it actually measures'
   // narrower instruction than "point at texture" and was invisible before.
   assert.match(html, /class="burst-target"/);
   assert.match(html, /Only what is inside the box is measured/);
+});
+
+test('the reported raw spread is a like-for-like comparison', () => {
+  // Joshua's log read "raw 68% · selected 59%", which says selection made the
+  // burst worse. It had not: raw was the spread of all thirty-two offsets and
+  // selected of eight, and more points always cover more grid. The comparison
+  // that means anything is the first eight against the selected eight — what
+  // taking the burst as it came would have given, against what choosing gives.
+  const shifts = Array.from({ length: 32 }, (_, i) => ({
+    // First eight deliberately clustered, later ones spread: selection should
+    // reach past the clump and the report should show that it did.
+    shiftX: i < 8 ? i * 0.01 : (i % 4) * 0.25 + i,
+    shiftY: i < 8 ? i * 0.01 : ((i >> 2) % 4) * 0.25 + i,
+    confidence: 0.8
+  }));
+  const verdict = bc.judgeBurst(shifts, 8);
+  assert.ok(verdict.selectedSpread > verdict.rawSpread,
+    `selection should beat the first eight: raw ${verdict.rawSpread.toFixed(2)}, `
+    + `selected ${verdict.selectedSpread.toFixed(2)}`);
+  // And rawSpread must be the first eight, not all thirty-two.
+  assert.ok(Math.abs(verdict.rawSpread - sr.offsetSpread(shifts.slice(0, 8))) < 1e-9);
+});
+
+test('too few measurable frames is reported as texture, not as a bad hold', () => {
+  // Joshua's log showed measurable counts of 2, 8, 11, 17 and 27 out of 32.
+  // Most of that was the search window, now widened — but what remains is a
+  // texture problem, and it needs a different instruction from a low spread:
+  // aim somewhere else, rather than hold differently.
+  const sparse = Array.from({ length: 32 }, (_, i) => ({
+    shiftX: i * 0.3, shiftY: i * 0.2, confidence: i < 4 ? 0.8 : 0.01
+  }));
+  const verdict = bc.judgeBurst(sparse, 8);
+  assert.equal(verdict.worthMerging, false);
+  assert.match(verdict.reason, /had enough texture to measure/);
+  assert.match(verdict.reason, /gravel, foliage, brickwork/);
 });
