@@ -787,6 +787,16 @@
           <div class="metric"><span>Agreement</span><strong id="burstAgreement">&mdash;</strong></div>
         </div>
 
+        <div class="panel-heading" style="margin-top:.6rem">
+          <div><p class="section-kicker">CAMERA CONTROLS</p></div>
+          <button class="secondary-button" id="burstReadCaps" type="button">Read Capabilities</button>
+        </div>
+        <p class="helper" id="burstCapsSummary">
+          Not read yet. This asks the camera what it will let the browser set &mdash; the answer
+          decides whether real exposure bracketing is possible, or only tone mapping.
+        </p>
+        <div class="burst-caps" id="burstCapsList"></div>
+
         <label class="burst-log-label">Run log
           <textarea id="burstLog" rows="10" readonly
                     placeholder="Each capture appends a line here. Copy it and send it over."></textarea>
@@ -849,7 +859,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.31.1</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.32.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">

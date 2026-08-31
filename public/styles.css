@@ -1412,3 +1412,23 @@ button.ghost.danger {
   border-radius: 6px;
   box-shadow: 0 0 0 100vmax rgba(2, 8, 14, .45);
 }
+
+.burst-caps {
+  display: grid;
+  gap: .25rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .74rem;
+}
+.burst-caps div {
+  display: flex;
+  gap: .5rem;
+  align-items: baseline;
+  padding: .25rem .45rem;
+  border-radius: 5px;
+  background: rgba(10, 22, 34, .55);
+}
+.burst-caps .cap-name { min-width: 10.5rem; color: rgba(226, 240, 255, .9); }
+.burst-caps .cap-range { color: rgba(160, 200, 240, .8); }
+/* Unsupported must not read as merely empty — it is the finding, not a gap. */
+.burst-caps .cap-no { opacity: .5; }
+.burst-caps .cap-no .cap-range::before { content: 'not supported'; }

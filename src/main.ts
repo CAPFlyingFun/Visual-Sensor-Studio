@@ -20,6 +20,7 @@ import {
 } from './vision/display-metrics.js';
 import { aspectRatioFor, cropToAspect, retainedFraction, type SaveAspect } from './vision/aspect.js';
 import { createPlane, type Plane } from './vision/super-resolution.js';
+import { readCapabilities, capabilityLogLine } from './vision/camera-capabilities.js';
 import {
   CAPTURE_CANDIDATES, KEEP_FRAMES, MIN_CONFIDENCE, SPREAD_FLOOR,
   estimateShift, judgeBurst, rotationToPixels, type ShiftEstimate
@@ -183,7 +184,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.31.1';
+const APP_VERSION = '0.32.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -7728,6 +7729,56 @@ on('burstFov', 'change', (event) => {
   if (twin) twin.value = settings.motionFovDegrees > 0 ? String(settings.motionFovDegrees) : '';
   syncBurstReadiness();
 });
+/**
+ * Ask the live track what it will let us set, and show the answer verbatim.
+ *
+ * The track comes straight off the stream rather than through the camera
+ * engine, because the engine's job is to negotiate a working stream and this
+ * is a question about the one it already negotiated.
+ */
+function readCameraCapabilities(): void {
+  const stream = video.srcObject as MediaStream | null;
+  const track = stream?.getVideoTracks?.()[0] ?? null;
+  if (!track) {
+    setText('burstCapsSummary', 'Start the camera first — there is no track to ask.');
+    return;
+  }
+
+  // Both calls are optional in the standard and absent in some WebKit builds.
+  // An absent method is a real answer, not an error to swallow silently.
+  const caps = typeof track.getCapabilities === 'function'
+    ? track.getCapabilities() as Record<string, unknown>
+    : null;
+  const live = typeof track.getSettings === 'function'
+    ? track.getSettings() as Record<string, unknown>
+    : null;
+
+  const report = readCapabilities(caps, live);
+  setText('burstCapsSummary', report.summary);
+
+  const list = byId('burstCapsList');
+  list.innerHTML = '';
+  for (const control of report.controls) {
+    const row = document.createElement('div');
+    if (!control.supported) row.className = 'cap-no';
+    const name = document.createElement('span');
+    name.className = 'cap-name';
+    name.textContent = control.name;
+    const range = document.createElement('span');
+    range.className = 'cap-range';
+    // Left empty when unsupported: the stylesheet writes "not supported" there,
+    // so an absent control cannot be mistaken for one with an empty range.
+    range.textContent = control.supported
+      ? [control.range, control.current && `now ${control.current}`].filter(Boolean).join('  ')
+      : '';
+    row.append(name, range);
+    list.appendChild(row);
+  }
+
+  appendBurstLog(capabilityLogLine(report));
+}
+
+on('burstReadCaps', 'click', readCameraCapabilities);
 on('burstCopyLog', 'click', () => void copyBurstLog());
 on('burstClearLog', 'click', () => {
   const log = document.getElementById('burstLog') as HTMLTextAreaElement | null;
