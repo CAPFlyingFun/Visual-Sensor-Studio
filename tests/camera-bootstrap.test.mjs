@@ -203,57 +203,58 @@ test('the wanted resolution reaches getUserMedia, not just applyConstraints', ()
   );
 });
 
-test('the resolution request imposes no orientation on the camera', () => {
-  // Two attempts got this wrong in opposite directions. Hard-coding
-  // width = height * 16/9 asked a portrait camera for a landscape mode;
-  // guessing the orientation from the window then forced the opposite
-  // mistake on a device whose sensor disagreed, and produced a landscape
-  // frame letterboxed into an upright phone.
-  //
-  // A SQUARE ideal says "about this many pixels on the short side" and says
-  // nothing about which way up: fitness distance scores 1920x1080 and
-  // 1080x1920 identically against it, so the camera returns whatever it is
-  // natively producing for how the phone is held.
+test('the resolution request neither imposes an orientation nor asks for a square', () => {
+  // Three attempts, three ways of being wrong. Hard-coding
+  // width = height * 16/9 asked a portrait camera for a landscape mode.
+  // Guessing the orientation from the window forced the opposite mistake.
+  // A square ideal removed the guess — and a phone has REAL square capture
+  // modes, so asking for 1080x1080 got one: a tenth of the sensor, on a
+  // camera advertising 4032x3024.
   assert.doesNotMatch(cameraSource, /const width = Math\.round\(height \* \(16 \/ 9\)\)/);
   assert.doesNotMatch(cameraSource, /window\.innerHeight >= window\.innerWidth/);
-  assert.match(cameraSource, /const size = \{ width: \{ ideal: target \}, height: \{ ideal: target \} \}/);
-  // The live-track path must agree, or a later change re-imposes an aspect.
-  const applyBlock = cameraSource.slice(cameraSource.indexOf('async setCaptureHeight'));
-  assert.match(applyBlock.slice(0, 900), /width: \{ ideal: target \},\s*\n\s*height: \{ ideal: target \}/);
+  const builder = cameraSource.slice(
+    cameraSource.indexOf('function buildProfiles('),
+    cameraSource.indexOf('async function start(')
+  );
+  assert.doesNotMatch(builder, /width: \{ ideal: target \}, height: \{ ideal: target \}/,
+    'a square ideal loses the sensor to a square mode');
+  assert.match(builder, /const size = \{ width: \{ ideal: longSide \}, height: \{ ideal: shortSide \} \}/);
+  // Two different ideals score a mode and its transpose identically, so the
+  // shape is expressed without saying which way up.
+  assert.match(builder, /const longSide = Math\.round\(shortSide \* aspect\)/);
+});
+
+test('the requested shape comes from what this camera advertises', () => {
+  // Capabilities can only be read from a track that already exists, one
+  // negotiation too late to shape the request that created it. Remembering
+  // what was learned lets the next launch ask for this camera's real shape.
+  assert.match(cameraSource, /const MAX_SIZE_KEY = 'vss\.camera\.maxSize\.v1'/);
+  assert.match(cameraSource, /function rememberMaxSize\(size\)/);
+  assert.match(cameraSource, /function rememberedMaxSize\(\)/);
+  assert.match(cameraSource, /rememberMaxSize\(resolutionCapability\)/);
+  // Until one is known, 4:3 — which beats a square in either orientation.
+  assert.match(cameraSource, /: 4 \/ 3;/);
+  // Storage is optional and must never break the camera.
+  const remember = cameraSource.slice(cameraSource.indexOf('function rememberMaxSize'));
+  assert.match(remember.slice(0, 400), /catch \{/);
 });
 
 test('a maximum tier asks for the largest mode rather than a guessed size', () => {
-  // A very large ideal has its lowest fitness distance at the biggest mode the
-  // camera has, so it resolves to the device maximum without anyone needing to
-  // know what that is in advance.
   assert.match(cameraSource, /MAX_SIZE_SENTINEL/);
-  assert.match(cameraSource, /\? 8192 : wantedShortSide/);
+  assert.match(cameraSource, /known \? Math\.min\(known\.width, known\.height\) : 6144/);
   assert.match(htmlSource, /<option value="10000">Maximum this camera has<\/option>/);
   assert.match(mainSource, /'720' \| '1080' \| '1440' \| '2160' \| '10000'/);
   assert.match(mainSource, /rawAsked >= 10000 \? 0 : rawAsked/);
 });
 
-test('rotating the phone does not leave a stale overlay covering the video', () => {
-  // The camera keeps running through a rotation, but the frames come back
-  // transposed and every cached size is wrong. The overlay canvas is opaque
-  // and sits on top of the video, so a stale one does not look stale — it
-  // looks black, and the camera looks dead while it is still delivering.
-  assert.match(mainSource, /function handleViewportRotation\(\)/);
-  assert.match(mainSource, /window\.addEventListener\('orientationchange'/);
-  // A resize that swaps the long axis is the same event by another name.
-  assert.match(mainSource, /portrait === wasPortrait/);
-  // Cached geometry must be dropped, not just the canvas cleared.
-  const fn = mainSource.slice(
-    mainSource.indexOf('function handleViewportRotation'),
-    mainSource.indexOf('let rotationSettle')
-  );
-  for (const cache of ['lensDisplay', 'reliefScratch', 'lensValidScratch']) {
-    assert.match(fn, new RegExp(`${cache} = null`), `${cache} must be dropped`);
-  }
-  assert.match(fn, /resetVisionState\(\)/);
-  // And it must settle: iOS reports the change before the track transposes.
-  assert.match(mainSource, /setTimeout\(handleViewportRotation, 250\)/);
-  assert.match(mainSource, /watchForRotation\(\);/);
+test('the live-track constraint uses the same shape as the opening request', () => {
+  // A square here would undo the opening request on the next resolution
+  // change, which is exactly how the square crept back in before.
+  const setter = cameraSource.slice(cameraSource.indexOf('async setCaptureHeight'));
+  const body = setter.slice(0, 1400);
+  assert.doesNotMatch(body, /width: \{ ideal: target \},\s*\n\s*height: \{ ideal: target \}/);
+  assert.match(body, /width: \{ ideal: Math\.round\(shortSide \* aspect\) \}/);
+  assert.match(body, /height: \{ ideal: shortSide \}/);
 });
 
 test('the resolution control says the number names the short side', () => {

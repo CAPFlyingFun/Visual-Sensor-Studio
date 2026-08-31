@@ -219,12 +219,19 @@ portrait camera for a landscape mode; guessing the orientation from the window
 then forced the opposite mistake on a device whose sensor disagreed, and
 produced a landscape frame letterboxed into an upright phone.
 
-The request is now a SQUARE ideal. Fitness distance for `ideal` is
-`|actual - ideal| / max(actual, ideal)` summed over the axes, so against an
-ideal of 1080×1080 the modes 1920×1080 and 1080×1920 score identically: the
-constraint says "about 1080 on the short side" and says nothing about which
-way up. The camera returns whatever it is natively producing for the way the
-phone is being held, which is the only party that actually knows.
+A square ideal was the second wrong answer. It did remove the orientation
+guess — against `1080×1080` the modes `1920×1080` and `1080×1920` score
+identically — but a phone has **real square capture modes**, so asking for
+1080×1080 got exactly that: a 1080×1080 mode, a tenth of the sensor, on a
+camera advertising 4032×3024.
+
+The request now uses the shape this camera SAYS it has. `getCapabilities()`
+is read once a track exists and the advertised maximum is remembered across
+launches, so the first run asks for a 4:3 target — which beats a square in
+either orientation — and every run after that asks for the device's own
+maximum, scaled to the chosen tier. Two different ideals still score a mode
+and its transpose identically, so the shape is expressed without saying which
+way up.
 
 There is also a **Maximum this camera has** tier. It asks for a very large
 ideal on both axes, whose lowest fitness distance lands on the biggest mode

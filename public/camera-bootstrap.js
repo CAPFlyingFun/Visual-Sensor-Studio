@@ -79,6 +79,40 @@
    * stream was opened with for no reason.
    */
   let explicitRateApplied = false;
+
+  /**
+   * The camera's advertised maximum, remembered between launches.
+   *
+   * Capabilities can only be read from a track that already exists, which is
+   * one negotiation too late to influence the request that created it. Storing
+   * what was learned means the next launch can ask for this camera's real
+   * shape and size instead of a generic guess — and a generic guess is what
+   * put a phone advertising 4032x3024 onto a 1080x1080 square mode.
+   */
+  const MAX_SIZE_KEY = 'vss.camera.maxSize.v1';
+
+  function rememberMaxSize(size) {
+    if (!size || !(size.width > 0) || !(size.height > 0)) return;
+    try {
+      localStorage.setItem(MAX_SIZE_KEY, JSON.stringify({ width: size.width, height: size.height }));
+    } catch {
+      // Storage is optional; the generic fallback still works.
+    }
+  }
+
+  function rememberedMaxSize() {
+    try {
+      const raw = localStorage.getItem(MAX_SIZE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      const width = Number(parsed && parsed.width);
+      const height = Number(parsed && parsed.height);
+      if (!(width > 0) || !(height > 0)) return null;
+      return { width, height };
+    } catch {
+      return null;
+    }
+  }
   /**
    * Floor for the DIGITAL zoom fallback.
    *
@@ -710,26 +744,39 @@
     // `ideal` for resolution throughout, so a size the device cannot provide is
     // negotiated down rather than failing the request outright.
     //
-    // THE REQUEST DOES NOT IMPOSE AN ORIENTATION, and both previous attempts
-    // did. Hard-coding width = height * 16/9 asked a portrait camera for a
-    // landscape mode; guessing the orientation from the window then forced
-    // the OPPOSITE mistake on a device whose sensor disagreed, and the result
-    // was a landscape frame letterboxed into an upright phone.
+    // THE REQUEST MUST NOT IMPOSE AN ORIENTATION, AND MUST NOT ASK FOR A
+    // SQUARE. Three attempts, three different ways of getting this wrong.
     //
-    // A SQUARE ideal removes the guess. Fitness distance for `ideal` is
-    // |actual - ideal| / max(actual, ideal) summed over the axes, so against
-    // an ideal of 1080x1080 the modes 1920x1080 and 1080x1920 score
-    // identically — the constraint says "about 1080 on the short side" and
-    // says nothing about which way up. The camera then returns whatever it is
-    // natively producing for the way the phone is being held, which is the
-    // only party here that actually knows.
+    // Hard-coding width = height * 16/9 asked a portrait camera for a
+    // landscape mode. Guessing the orientation from the window forced the
+    // opposite mistake on a device whose sensor disagreed. Then a SQUARE ideal
+    // removed the orientation guess — and a phone turns out to have real
+    // square capture modes, so asking for 1080x1080 got exactly that: a
+    // 1080x1080 mode, a tenth of the sensor, on a camera advertising
+    // 4032x3024.
     //
-    // The tier still names the SHORT side, and MAX_SIZE_SENTINEL asks for a
-    // very large square, whose lowest distance is the biggest mode the camera
-    // has — again without anyone needing to know what that is in advance.
+    // The reliable answer is not to guess a shape at all but to ask for the
+    // shape this camera SAYS it has. `resolutionCapability` is read from
+    // getCapabilities() once a track exists and remembered across launches, so
+    // the first run asks for a wide 4:3 target — which beats a square on
+    // fitness distance in either orientation — and every run after that asks
+    // for the device's own advertised maximum, scaled to the chosen tier.
     const wantedShortSide = Number(requestedHeight) || 720;
-    const target = wantedShortSide >= MAX_SIZE_SENTINEL ? 8192 : wantedShortSide;
-    const size = { width: { ideal: target }, height: { ideal: target } };
+    const known = rememberedMaxSize();
+    // Native aspect from the advertised maximum, or 4:3 until one is known.
+    // 4:3 matters: against a square ideal a square mode wins outright, and
+    // against a 4:3 ideal it loses in both orientations.
+    const aspect = known && known.width > 0 && known.height > 0
+      ? Math.max(known.width, known.height) / Math.min(known.width, known.height)
+      : 4 / 3;
+    const shortSide = wantedShortSide >= MAX_SIZE_SENTINEL
+      ? (known ? Math.min(known.width, known.height) : 6144)
+      : wantedShortSide;
+    const longSide = Math.round(shortSide * aspect);
+    // Both axes are given, neither says which way up: the larger number goes
+    // on the axis the camera is already using, because a mode matching in one
+    // orientation scores the same as its transpose against these two ideals.
+    const size = { width: { ideal: longSide }, height: { ideal: shortSide } };
     const device = requestedDeviceId ? { deviceId: { exact: requestedDeviceId } } : {};
 
     const profiles = [];
@@ -774,6 +821,7 @@
         const h = capabilities && capabilities.height;
         if (w && h && Number.isFinite(Number(w.max)) && Number.isFinite(Number(h.max))) {
           resolutionCapability = { width: Number(w.max), height: Number(h.max) };
+          rememberMaxSize(resolutionCapability);
         }
         const range = capabilities && capabilities.frameRate;
         if (range && typeof range === 'object') {
@@ -1308,12 +1356,18 @@
         return { applied: false, reason: 'no live track' };
       }
       try {
-        // Square, for the same reason as the opening request: the camera
-        // decides the orientation, not us.
-        const target = requestedHeight >= MAX_SIZE_SENTINEL ? 8192 : requestedHeight;
+        // The same shape as the opening request. A square here would undo it:
+        // a phone has real square modes, and asking for one gets one.
+        const known = rememberedMaxSize();
+        const aspect = known && known.width > 0 && known.height > 0
+          ? Math.max(known.width, known.height) / Math.min(known.width, known.height)
+          : 4 / 3;
+        const shortSide = requestedHeight >= MAX_SIZE_SENTINEL
+          ? (known ? Math.min(known.width, known.height) : 6144)
+          : requestedHeight;
         await track.applyConstraints({
-          width: { ideal: target },
-          height: { ideal: target }
+          width: { ideal: Math.round(shortSide * aspect) },
+          height: { ideal: shortSide }
         });
         readFrameRateCapability();
         return { applied: true };

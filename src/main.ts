@@ -166,7 +166,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.25.0';
+const APP_VERSION = '0.25.1';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -190,6 +190,18 @@ interface AppSettings {
   qualityPreference: QualityPreference;
   visionRatePreference: VisionRatePreference;
   lensDetail: LensDetail;
+  /**
+   * Whether the live detail was actually PICKED, rather than left at whatever
+   * the app defaulted to.
+   *
+   * Without this a default can never be corrected: the first version of this
+   * setting shipped capped at 540p — a guess made from a benchmark run in a
+   * slow container rather than measured on a phone — and every install that
+   * never touched the control had that guess frozen into its stored settings.
+   * Tracking the difference lets a default improve for everyone who never
+   * expressed a preference, while a deliberate choice is never overridden.
+   */
+  lensDetailChosen: boolean;
   gpsAccuracyPreference: GpsAccuracyPreference;
   cameraFrameRate: CameraFrameRatePreference;
   captureResolution: CaptureResolution;
@@ -228,7 +240,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   // Adaptive is the default: it idles lower than Balanced on a still scene and
   // climbs far above it when something actually moves, which is the whole point.
   visionRatePreference: 'adaptive',
-  lensDetail: '540',
+  lensDetail: 'full',
+  lensDetailChosen: false,
   gpsAccuracyPreference: 'high',
   cameraFrameRate: 'auto',
   captureResolution: '1080',
@@ -313,9 +326,14 @@ function loadSettings(): AppSettings {
       cameraPreference: ['auto', 'environment', 'user'].includes(String(parsed.cameraPreference))
         ? parsed.cameraPreference as CameraPreference
         : DEFAULT_SETTINGS.cameraPreference,
-      lensDetail: ['analysis', '540', '720', 'full'].includes(String(parsed.lensDetail))
+      // A stored value only wins if it was chosen; otherwise it tracks the
+      // current default, so a default corrected later actually reaches the
+      // installs that never had an opinion.
+      lensDetail: parsed.lensDetailChosen === true
+        && ['analysis', '540', '720', 'full'].includes(String(parsed.lensDetail))
         ? parsed.lensDetail as LensDetail
         : DEFAULT_SETTINGS.lensDetail,
+      lensDetailChosen: parsed.lensDetailChosen === true,
       qualityPreference: ['low', 'normal', 'high'].includes(String(parsed.qualityPreference))
         ? parsed.qualityPreference as QualityPreference
         : DEFAULT_SETTINGS.qualityPreference,
@@ -2077,6 +2095,7 @@ function updateVisionMode(mode: VisionMode): void {
   byId('displayDetailRow').hidden = mode === 'camera';
   setText('lensDetailNote', DISPLAY_SCALABLE_MODES.has(mode)
     ? 'This mode reads the current frame, so a larger picture is genuinely more detail.'
+      + ' Full matches the camera; drop it only if the frame rate beside it says you should.'
     : 'This mode builds up over frames on the analysis picture, so it stays that size —'
       + ' drawing it larger would enlarge a small measurement, not improve it.');
   if (mode === 'lens') renderLensChips();
@@ -6385,6 +6404,8 @@ on('cameraPreference', 'change', handleCameraPreferenceChange);
 on('qualityPreference', 'change', handleQualityChange);
 on('lensDetail', 'change', (event) => {
   settings.lensDetail = (event.target as HTMLSelectElement).value as LensDetail;
+  // From here on this install has an opinion, and no future default overrides it.
+  settings.lensDetailChosen = true;
   saveSettings();
   // The canvas geometry changes with the setting, so whatever is on it now is
   // the wrong size until the next frame paints.

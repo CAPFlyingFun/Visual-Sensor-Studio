@@ -434,8 +434,8 @@ test('capture resolution is selectable and the frame-rate trade is reported', ()
   const body = setter.slice(0, setter.indexOf('\n    },'));
   // The target derives from requestedHeight, and is applied square so the
   // camera keeps the orientation it is natively producing.
-  assert.match(body, /requestedHeight >= MAX_SIZE_SENTINEL \? 8192 : requestedHeight/);
-  assert.match(body, /height: \{ ideal: target \}/);
+  assert.match(body, /requestedHeight >= MAX_SIZE_SENTINEL/);
+  assert.match(body, /height: \{ ideal: shortSide \}/);
   assert.doesNotMatch(body, /exact:/);
   assert.doesNotMatch(body, /getUserMedia/);
   assert.match(mainSource, /Higher resolutions usually cost frame rate/);
