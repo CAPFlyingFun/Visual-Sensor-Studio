@@ -219,6 +219,26 @@ deliberately does not use `capture` — the native photo fallback was removed on
 purpose and a test keeps it out — so the flow is: take the picture with the
 Camera app, then load it here.
 
+### More pixels is not always more picture
+
+**Compare Resolutions** applies each capture tier in turn and measures the real
+detail at each, because asking a camera for more pixels does not always get
+more information. A phone's video pipeline has a set of sensor readout modes,
+and a size that is not one of them can be synthesised by scaling a smaller one
+up — reporting a bigger number, carrying no more detail, and costing more of
+every frame to move around.
+
+The comparable number across tiers is **real detail on the short side**, not
+the reported size. If a bigger tier does not give more real pixels, the extra
+ones are interpolation, and the honest choice is the smallest tier that reaches
+the maximum rather than the highest one available.
+
+The ladder only steps DOWN: `applyConstraints` narrows a live track reliably
+and routinely refuses to widen one, so descending is the only order that gives
+trustworthy readings without restarting the camera between rungs. It waits for
+each renegotiation before reading — measuring immediately reports the previous
+mode under the new tier's name — and puts the original setting back when done.
+
 ### Effective detail is a bound, not always a number
 
 **Measure Effective Detail** takes a native-pixel crop from the centre of the

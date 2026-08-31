@@ -165,7 +165,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.23.4';
+const APP_VERSION = '0.24.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -4710,6 +4710,98 @@ const DETAIL_SAMPLE = 512;
 let detailCanvas: HTMLCanvasElement | null = null;
 let detailContext: CanvasRenderingContext2D | null = null;
 
+interface DetailReading {
+  sourceWidth: number;
+  sourceHeight: number;
+  /** Energy surviving one halve-and-restore, 0..1. Lower means real detail. */
+  ratio: number;
+  /** Real detail as a fraction of the reported size, or null when unjudgeable. */
+  scale: number | null;
+  pegged: boolean;
+  flat: boolean;
+}
+
+function readEffectiveDetail(): DetailReading | null {
+  const sourceWidth = video.videoWidth;
+  const sourceHeight = video.videoHeight;
+  if (!sourceWidth || !sourceHeight) return null;
+  const size = Math.min(DETAIL_SAMPLE, sourceWidth, sourceHeight);
+  detailCanvas ??= document.createElement('canvas');
+  detailContext ??= detailCanvas.getContext('2d', { willReadFrequently: true });
+  if (!detailContext) return null;
+  detailCanvas.width = size;
+  detailCanvas.height = size;
+  detailContext.drawImage(
+    video,
+    Math.floor((sourceWidth - size) / 2),
+    Math.floor((sourceHeight - size) / 2),
+    size, size, 0, 0, size, size
+  );
+  const gray = rgbaToGray(detailContext.getImageData(0, 0, size, size).data);
+  const report = estimateEffectiveResolution(gray, size, size);
+  return {
+    sourceWidth,
+    sourceHeight,
+    ratio: report.detailRatio,
+    scale: report.detailRatio >= 1 ? null : report.effectiveScale,
+    pegged: report.pegged,
+    flat: report.detailRatio >= 1
+  };
+}
+
+/**
+ * Which capture tier actually delivers the most REAL detail.
+ *
+ * Asking a camera for more pixels does not always get more information. A
+ * phone's video pipeline has a set of sensor readout modes, and a size that is
+ * not one of them can be synthesised by scaling a smaller one up — which
+ * reports a bigger number and carries no more detail, while costing more of
+ * every frame to move around. Whether that is happening is not a thing to
+ * reason about; it is a thing to measure on the device in hand.
+ *
+ * The ladder only steps DOWN. `applyConstraints` will narrow a live track
+ * reliably and routinely refuses to widen one, so starting high and descending
+ * is the only order that produces trustworthy readings without restarting the
+ * camera between every rung.
+ */
+async function compareCaptureResolutions(): Promise<void> {
+  const tiers = [10000, 2160, 1440, 1080, 720];
+  const original = Number(settings.captureResolution);
+  const rows: string[] = [];
+  const started = tiers.filter((tier) => tier <= original || tier === 10000);
+
+  setText('benchEffective', 'comparing…');
+  for (const tier of started) {
+    setText('benchmarkStatus', `Trying ${tier === 10000 ? 'maximum' : `${tier}p`}…`);
+    await camera.setCaptureHeight(tier);
+    // The track needs a moment to renegotiate and the element to catch up.
+    await new Promise((resolve) => window.setTimeout(resolve, 1100));
+    const reading = readEffectiveDetail();
+    if (!reading) continue;
+    const label = tier === 10000 ? 'max' : `${tier}p`;
+    const size = `${reading.sourceWidth}×${reading.sourceHeight}`;
+    if (reading.flat) {
+      rows.push(`${label}: ${size} · too flat to judge`);
+      continue;
+    }
+    const factor = reading.scale ? Math.round(1 / reading.scale) : 1;
+    const real = reading.scale
+      ? Math.round(Math.min(reading.sourceWidth, reading.sourceHeight) * reading.scale)
+      : Math.min(reading.sourceWidth, reading.sourceHeight);
+    // The comparable number across tiers is REAL detail on the short side, not
+    // the reported size — that is the whole point of the exercise.
+    rows.push(`${label}: ${size} · ${reading.pegged ? '≤' : '≈'}${real}px real`
+      + ` (${factor}× ${factor > 1 ? 'coarser' : 'sharp'}, ratio ${reading.ratio.toFixed(2)})`);
+  }
+
+  await camera.setCaptureHeight(original);
+  setText('benchEffective', rows.length ? rows.join('  |  ') : 'no readings');
+  setText('benchmarkStatus', 'Real detail on the short side is the comparable number, not the reported size.'
+    + ' If a bigger tier does not give more real pixels, the extra ones are interpolation:'
+    + ' pick the smallest tier that reaches the maximum, since it costs less of every frame.'
+    + ' Restored your original setting. Point at something textured — a blank wall has nothing to measure.');
+}
+
 function measureEffectiveDetail(): string {
   const sourceWidth = video.videoWidth;
   const sourceHeight = video.videoHeight;
@@ -5885,6 +5977,9 @@ on('focusDistance', 'input', (event) => {
   void camera.applyCameraSetting('focusDistance', Number((event.target as HTMLInputElement).value));
 });
 on('runBenchmarkButton', 'click', () => void runBenchmark());
+on('compareResolutionsButton', 'click', () => {
+  void compareCaptureResolutions();
+});
 on('measureDetailButton', 'click', () => {
   setText('benchEffective', 'measuring…');
   // A frame later, so the placeholder actually paints before the readback.
