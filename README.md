@@ -168,13 +168,18 @@ That is four to eighteen times fewer pixels, before considering that the
 native photo also gets multi-frame HDR, noise reduction and sharpening that
 no browser API exposes.
 
-The stream request also has to match the phone's ORIENTATION. A phone held
-upright hands back portrait frames — 1080×1920, not 1920×1080 — and asking a
-portrait camera for a landscape mode gets whatever poor fit the browser
-settles on. `ideal` constraints never fail, so there is no error to notice:
-just a smaller picture than the camera could have given. The capture tier
-therefore names the SHORT side, and the request is built in the device's
-current orientation.
+The stream request **imposes no orientation**, and two earlier attempts got
+this wrong in opposite directions. Hard-coding `width = height * 16/9` asked a
+portrait camera for a landscape mode; guessing the orientation from the window
+then forced the opposite mistake on a device whose sensor disagreed, and
+produced a landscape frame letterboxed into an upright phone.
+
+The request is now a SQUARE ideal. Fitness distance for `ideal` is
+`|actual - ideal| / max(actual, ideal)` summed over the axes, so against an
+ideal of 1080×1080 the modes 1920×1080 and 1080×1920 score identically: the
+constraint says "about 1080 on the short side" and says nothing about which
+way up. The camera returns whatever it is natively producing for the way the
+phone is being held, which is the only party that actually knows.
 
 There is also a **Maximum this camera has** tier. It asks for a very large
 ideal on both axes, whose lowest fitness distance lands on the biggest mode

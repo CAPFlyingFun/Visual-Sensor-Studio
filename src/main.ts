@@ -165,7 +165,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.23.2';
+const APP_VERSION = '0.23.3';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -3527,6 +3527,52 @@ function resetVisionState(): void {
   renderMetrics();
 }
 
+/**
+ * Rotating the phone invalidates every cached frame size.
+ *
+ * The camera keeps running — the track is fine and iOS does not drop it — but
+ * the frames come back transposed, and everything sized from the old geometry
+ * is now wrong: the analysis buffers, the enlarged lens buffers, and the
+ * overlay canvas itself. The canvas is opaque and sits on top of the video, so
+ * a stale one does not look stale. It looks BLACK, and the camera looks dead
+ * when it is actually still delivering.
+ *
+ * Nothing here restarts the camera. It drops the cached geometry and hides the
+ * overlay, which uncovers the live video immediately and lets the next frame
+ * rebuild everything at the new size.
+ */
+function handleViewportRotation(): void {
+  lensDisplay = null;
+  reliefScratch = null;
+  lensValidScratch = null;
+  lensRenderMs = 0;
+  resetVisionState();
+}
+
+let rotationSettle = 0;
+
+function watchForRotation(): void {
+  const onChange = () => {
+    // iOS reports the change before the video track has transposed, so a
+    // rebuild on the event itself measures the OLD geometry and has to be
+    // thrown away again. A short settle costs one frame of live video and
+    // saves rebuilding twice.
+    window.clearTimeout(rotationSettle);
+    rotationSettle = window.setTimeout(handleViewportRotation, 250);
+  };
+  window.addEventListener('orientationchange', onChange);
+  // Not every device fires orientationchange, and a resize that swaps the
+  // long axis is the same event by another name.
+  let wasPortrait = window.innerHeight >= window.innerWidth;
+  window.addEventListener('resize', () => {
+    const portrait = window.innerHeight >= window.innerWidth;
+    if (portrait === wasPortrait) return;
+    wasPortrait = portrait;
+    onChange();
+  });
+  screen.orientation?.addEventListener?.('change', onChange);
+}
+
 function captureParallaxReference(): void {
   try {
     const frame = camera.captureFrame(160);
@@ -6157,6 +6203,7 @@ updateVisionMode('camera');
 // Lenses load after the mode is set, so a shared link can switch the mode to
 // its own lens without that being overwritten a line later.
 void initialiseLenses();
+watchForRotation();
 installPinchZoom();
 installTerrainGestures();
 installTabs();

@@ -702,32 +702,26 @@
     // `ideal` for resolution throughout, so a size the device cannot provide is
     // negotiated down rather than failing the request outright.
     //
-    // THE REQUEST HAS TO MATCH THE DEVICE'S ORIENTATION. A phone held upright
-    // hands back portrait frames — 1080x1920, not 1920x1080 — and this used to
-    // hard-code width = height * 16/9, so it asked a portrait camera for a
-    // landscape mode and took whatever poor fit came back. `ideal` never
-    // fails, so there was no error to notice: just a smaller picture than the
-    // camera could have given, for the whole session.
+    // THE REQUEST DOES NOT IMPOSE AN ORIENTATION, and both previous attempts
+    // did. Hard-coding width = height * 16/9 asked a portrait camera for a
+    // landscape mode; guessing the orientation from the window then forced
+    // the OPPOSITE mistake on a device whose sensor disagreed, and the result
+    // was a landscape frame letterboxed into an upright phone.
     //
-    // "1080p" names the SHORT side, which is what the tier means in both
-    // orientations. `maxSize` is the special case: a very large ideal on both
-    // axes has its lowest fitness distance at the biggest mode the camera has,
-    // so it resolves to the device's maximum without anyone having to know
-    // what that is in advance.
+    // A SQUARE ideal removes the guess. Fitness distance for `ideal` is
+    // |actual - ideal| / max(actual, ideal) summed over the axes, so against
+    // an ideal of 1080x1080 the modes 1920x1080 and 1080x1920 score
+    // identically — the constraint says "about 1080 on the short side" and
+    // says nothing about which way up. The camera then returns whatever it is
+    // natively producing for the way the phone is being held, which is the
+    // only party here that actually knows.
+    //
+    // The tier still names the SHORT side, and MAX_SIZE_SENTINEL asks for a
+    // very large square, whose lowest distance is the biggest mode the camera
+    // has — again without anyone needing to know what that is in advance.
     const wantedShortSide = Number(requestedHeight) || 720;
-    const portrait = typeof window !== 'undefined'
-      && typeof window.innerHeight === 'number'
-      && window.innerHeight >= window.innerWidth;
-    let size;
-    if (wantedShortSide >= MAX_SIZE_SENTINEL) {
-      size = { width: { ideal: 8192 }, height: { ideal: 8192 } };
-    } else {
-      const shortSide = wantedShortSide;
-      const longSide = Math.round(shortSide * (16 / 9));
-      size = portrait
-        ? { width: { ideal: shortSide }, height: { ideal: longSide } }
-        : { width: { ideal: longSide }, height: { ideal: shortSide } };
-    }
+    const target = wantedShortSide >= MAX_SIZE_SENTINEL ? 8192 : wantedShortSide;
+    const size = { width: { ideal: target }, height: { ideal: target } };
     const device = requestedDeviceId ? { deviceId: { exact: requestedDeviceId } } : {};
 
     const profiles = [];
@@ -1306,17 +1300,13 @@
         return { applied: false, reason: 'no live track' };
       }
       try {
-        const portrait = typeof window !== 'undefined'
-          && typeof window.innerHeight === 'number'
-          && window.innerHeight >= window.innerWidth;
-        const longSide = Math.round(requestedHeight * (16 / 9));
-        await track.applyConstraints(
-          requestedHeight >= MAX_SIZE_SENTINEL
-            ? { width: { ideal: 8192 }, height: { ideal: 8192 } }
-            : portrait
-              ? { width: { ideal: requestedHeight }, height: { ideal: longSide } }
-              : { width: { ideal: longSide }, height: { ideal: requestedHeight } }
-        );
+        // Square, for the same reason as the opening request: the camera
+        // decides the orientation, not us.
+        const target = requestedHeight >= MAX_SIZE_SENTINEL ? 8192 : requestedHeight;
+        await track.applyConstraints({
+          width: { ideal: target },
+          height: { ideal: target }
+        });
         readFrameRateCapability();
         return { applied: true };
       } catch (error) {
