@@ -11,6 +11,7 @@ import { MotionController } from './sensors/motion.js';
 import { GpsController } from './sensors/gps.js';
 import { zoomPresetStops } from './sensors/zoom.js';
 import { clamp, median } from './core/math.js';
+import { measureDisplay, megapixels } from './vision/display-metrics.js';
 import { aspectRatioFor, cropToAspect, retainedFraction, type SaveAspect } from './vision/aspect.js';
 import type { GpsSample, MotionSample, SensorSnapshot, VisionMetrics, VisionMode } from './core/types.js';
 
@@ -167,7 +168,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.27.0';
+const APP_VERSION = '0.27.1';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -5141,11 +5142,17 @@ function paintViewer(): void {
   // the two took digging through two menus on two containers to find out.
   // One glance should answer it.
   const diagnostics = camera.diagnostics;
+  // Two sizes, both labelled. This chip previously showed the camera SOURCE
+  // with no label, and it was read as the render size — so a screen bound
+  // doing its job looked like one that had stopped working.
   const stream = diagnostics.videoWidth
-    ? ` · ${diagnostics.videoWidth}×${diagnostics.videoHeight}`
+    ? ` · cam ${diagnostics.videoWidth}×${diagnostics.videoHeight}`
+    : '';
+  const drawn = !visionCanvas.hidden && visionCanvas.width
+    ? ` · draw ${visionCanvas.width}×${visionCanvas.height}`
     : '';
   setText('viewerStats', `${rates.deliveredFps.toFixed(0)} fps in · ${rates.processingFps.toFixed(0)} fps analysed`
-    + ` · ${zoomState.value.toFixed(1)}×${stream} · v${APP_VERSION}${isStandalone() ? ' PWA' : ''}`);
+    + ` · ${zoomState.value.toFixed(1)}×${stream}${drawn} · v${APP_VERSION}${isStandalone() ? ' PWA' : ''}`);
   setText('viewerMode', MODE_LABELS[visionMode].split(' • ')[0]);
 }
 
@@ -5337,6 +5344,50 @@ async function compareCaptureResolutions(): Promise<void> {
     + ' If a bigger tier does not give more real pixels, the extra ones are interpolation:'
     + ' pick the smallest tier that reaches the maximum, since it costs less of every frame.'
     + ' Restored your original setting. Point at something textured — a blank wall has nothing to measure.');
+}
+
+/**
+ * Report the three sizes that all get called "resolution".
+ *
+ * Built because guessing which one was which cost several rounds of changes:
+ * the viewer chip showed the camera SOURCE while being read as the render
+ * size, so a working screen bound looked like a broken one.
+ */
+function reportDisplayMetrics(): void {
+  const rect = visionCanvas.getBoundingClientRect();
+  const diagnostics = camera.diagnostics;
+  const report = measureDisplay({
+    screenWidth: window.screen?.width ?? window.innerWidth,
+    screenHeight: window.screen?.height ?? window.innerHeight,
+    devicePixelRatio: window.devicePixelRatio || 1,
+    boxWidth: rect.width,
+    boxHeight: rect.height,
+    sourceWidth: diagnostics.videoWidth,
+    sourceHeight: diagnostics.videoHeight,
+    renderWidth: visionCanvas.width,
+    renderHeight: visionCanvas.height,
+    fill: document.getElementById('cameraViewer')?.dataset.fit === 'fill'
+  });
+
+  setText('dispScreen', `${report.screenDevice.width}×${report.screenDevice.height} px`);
+  setText('dispRatio', `${(window.devicePixelRatio || 1).toFixed(2)}× · `
+    + `${Math.round(rect.width)}×${Math.round(rect.height)} pt box`);
+  setText('dispBox', `${report.boxDevice.width}×${report.boxDevice.height} px`);
+  setText('dispContent', report.contentPixels
+    ? `${report.contentDevice.width}×${report.contentDevice.height} · ${megapixels(report.contentPixels)}`
+    : 'no picture on screen');
+  setText('dispSource', diagnostics.videoWidth
+    ? `${diagnostics.videoWidth}×${diagnostics.videoHeight} · ${megapixels(report.sourcePixels)}`
+    : 'no camera');
+  setText('dispRender', visionCanvas.hidden
+    ? 'RGB — the video element, not a canvas'
+    : `${visionCanvas.width}×${visionCanvas.height} · ${megapixels(report.renderPixels)}`);
+  setText('dispOverdraw', report.overdraw
+    ? `${report.overdraw.toFixed(2)}× ${report.overdraw > 1.2 ? 'more than can be seen' : 'of what is shown'}`
+    : '—');
+  setText('dispSourceOver', report.sourceOverdraw
+    ? `${report.sourceOverdraw.toFixed(1)}× the displayable pixels`
+    : '—');
 }
 
 function measureEffectiveDetail(): string {
@@ -6551,6 +6602,7 @@ on('runBenchmarkButton', 'click', () => void runBenchmark());
 on('compareResolutionsButton', 'click', () => {
   void compareCaptureResolutions();
 });
+on('measureDisplayButton', 'click', reportDisplayMetrics);
 on('measureDetailButton', 'click', () => {
   setText('benchEffective', 'measuring…');
   // A frame later, so the placeholder actually paints before the readback.

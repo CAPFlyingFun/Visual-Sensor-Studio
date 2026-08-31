@@ -401,6 +401,32 @@ does not hold costs a visible stutter, a step down that was not needed costs
 only detail nobody had yet. The settled rung is remembered, so a device learns
 this once.
 
+### Three sizes are all called "resolution"
+
+**Settings → Display vs Camera** reports them separately, because conflating
+them is what several rounds of guessing here actually came down to:
+
+| | what it is | example |
+|---|---|---|
+| SOURCE | what the camera stream delivers | 3024×4032 |
+| CONTENT | real pixels the picture occupies on this screen | 1290×1720 |
+| RENDER | what the app chose to draw | 734×979 |
+
+A phone reports its screen in CSS **points**, not pixels — 430×932 points at a
+ratio of 3 is 1290×2796 real ones — and the canvas does not fill the screen
+anyway: it is fitted into a box with `contain` or `cover`, so the content box
+is smaller again and which axis limits it depends on both the fit and the
+aspect ratio. **Overdraw** above 1.0 means pixels are being drawn that cannot
+be seen.
+
+The arithmetic is a pure function with no DOM access, checked against a device
+whose dimensions are known, so the numbers can be verified rather than
+trusted.
+
+The viewer chip now labels its sizes too (`cam` and `draw`). It previously
+showed the camera source unlabelled, which was read as the render size — so a
+working screen bound looked like a broken one.
+
 ### The screen is a hard bound
 
 The small panel preview looked sharper than the same mode full screen, while

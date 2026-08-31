@@ -754,7 +754,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.27.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.27.1</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">
@@ -889,6 +889,26 @@
           <div class="readout"><span>Capture failures</span><strong id="benchCaptureFailures">—</strong></div>
           <div class="readout"><span>Frame identity</span><strong id="benchIdentity">—</strong></div>
           <div class="readout"><span>Effective detail</span><strong id="benchEffective">—</strong></div>
+        </div>
+        <h3>Display vs Camera</h3>
+        <p class="helper">
+          Three sizes get called &ldquo;resolution&rdquo; and they are not the same. SOURCE is what
+          the camera sends. CONTENT is how many real pixels the picture actually occupies on this
+          screen, after the browser has fitted it into its box. RENDER is what the app chose to draw.
+          Overdraw above 1.0 means pixels are being drawn that cannot be seen.
+        </p>
+        <div class="readout-grid">
+          <div class="readout"><span>Screen</span><strong id="dispScreen">&mdash;</strong></div>
+          <div class="readout"><span>Pixel ratio</span><strong id="dispRatio">&mdash;</strong></div>
+          <div class="readout"><span>Canvas box</span><strong id="dispBox">&mdash;</strong></div>
+          <div class="readout"><span>Content shown</span><strong id="dispContent">&mdash;</strong></div>
+          <div class="readout"><span>Camera source</span><strong id="dispSource">&mdash;</strong></div>
+          <div class="readout"><span>App renders</span><strong id="dispRender">&mdash;</strong></div>
+          <div class="readout"><span>Overdraw</span><strong id="dispOverdraw">&mdash;</strong></div>
+          <div class="readout"><span>Source would be</span><strong id="dispSourceOver">&mdash;</strong></div>
+        </div>
+        <div class="settings-actions">
+          <button class="secondary-button" id="measureDisplayButton" type="button">Measure Display</button>
         </div>
         <p class="helper" id="benchmarkStatus">The benchmark applies each rate to the live track and counts presented frames. It never calls getUserMedia, so it cannot re-prompt for permission or drop the preview. Effective detail samples a centre crop at 1:1 pixel scale and reports whether those pixels carry real information or interpolation — a track can report 4K truthfully while a scaler stretches a smaller sensor mode to fill it. Point the camera at something textured; a blank wall has no detail to measure.</p>
         <div class="settings-actions">
