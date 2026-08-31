@@ -22,6 +22,7 @@ import { aspectRatioFor, cropToAspect, retainedFraction, type SaveAspect } from 
 import { createPlane, type Plane } from './vision/super-resolution.js';
 import { readCapabilities, capabilityLogLine } from './vision/camera-capabilities.js';
 import { fitFocalLength, type FocalSample } from './vision/focal-fit.js';
+import { mergeAndCompare, comparisonStrip, type MergeReport } from './vision/burst-merge.js';
 import {
   CAPTURE_CANDIDATES, KEEP_FRAMES, MIN_CONFIDENCE, SPREAD_FLOOR,
   estimateShift, judgeBurst, rotationToPixels, type ShiftEstimate
@@ -185,7 +186,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.35.0';
+const APP_VERSION = '0.36.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -7496,6 +7497,11 @@ async function runBurstProbe(): Promise<void> {
     // of view to report — Joshua's capability readout returned seven controls
     // and none of them was one — but the burst already contains both halves of
     // the relation that defines it, so it can be solved for rather than typed.
+    // Kept so Merge runs on the frames that were just measured, rather than
+    // capturing a second burst that the verdict on screen would not describe.
+    lastBurst = { planes, shifts };
+    byId<HTMLButtonElement>('burstMergeButton').disabled = verdict.confident < 2;
+
     const calibration = calibrateFromBurst(shifts, gyro);
     appendBurstLog(burstLogLine(verdict, distinct, renderBurstAgreement(shifts, gyro), calibration));
   } finally {
@@ -7857,6 +7863,101 @@ function readCameraCapabilities(): void {
 
   appendBurstLog(capabilityLogLine(report));
 }
+
+/* --- Phase 2: merge the frames that were just measured ------------------ */
+
+let lastBurst: { planes: Plane[]; shifts: ShiftEstimate[] } | null = null;
+let merging = false;
+
+/** Paint a single-channel plane into a canvas, scaled to fit its box. */
+function paintPlane(canvas: HTMLCanvasElement, plane: Plane): void {
+  const context = canvas.getContext('2d');
+  if (!context) return;
+  if (canvas.width !== plane.width) canvas.width = plane.width;
+  if (canvas.height !== plane.height) canvas.height = plane.height;
+  const image = context.createImageData(plane.width, plane.height);
+  for (let i = 0, p = 0; p < plane.data.length; p++, i += 4) {
+    const value = Math.max(0, Math.min(255, plane.data[p]));
+    image.data[i] = value;
+    image.data[i + 1] = value;
+    image.data[i + 2] = value;
+    image.data[i + 3] = 255;
+  }
+  context.putImageData(image, 0, 0);
+}
+
+async function runBurstMerge(): Promise<void> {
+  if (merging || !lastBurst) return;
+  merging = true;
+  const button = byId<HTMLButtonElement>('burstMergeButton');
+  button.disabled = true;
+  setText('burstProgress', 'Merging…');
+  // Yield once so the label paints before the arithmetic blocks the thread.
+  // This runs for seconds and a frozen button with no explanation reads as a
+  // crash rather than as work.
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  try {
+    const candidates = lastBurst.planes.map((plane, index) => ({
+      plane, shift: lastBurst!.shifts[index]
+    }));
+    const report = await mergeAndCompare(candidates, KEEP_FRAMES, async (label) => {
+      setText('burstProgress', label);
+      // Two frames of breathing room: one to paint the label, one to let the
+      // browser decide the page is alive before the next block of arithmetic.
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    if (!report) {
+      setText('burstMergeVerdict', 'No usable frames in that burst.');
+      return;
+    }
+    renderMergeReport(report);
+  } finally {
+    merging = false;
+    setText('burstProgress', '');
+    button.disabled = false;
+  }
+}
+
+function renderMergeReport(report: MergeReport): void {
+  byId('burstCompareFigure').hidden = false;
+  paintPlane(byId<HTMLCanvasElement>('burstCompare'), comparisonStrip(report));
+
+  const mtf = (value: number | null) => value === null ? '—' : value.toFixed(3);
+  // Named in the order they appear, so the caption is a legend rather than a
+  // summary — the panels are unlabelled pixels otherwise.
+  setText('burstCompareCaption',
+    `Left to right: upscaled (${mtf(report.controlMtf.mtf50)}), `
+    + `sharpened one frame (${mtf(report.deconvolvedMtf.mtf50)}), `
+    + `merged (${mtf(report.splatMtf.mtf50)}), `
+    + `merged and back-projected (${mtf(report.refinedMtf.mtf50)}) — MTF50 in cycles/px, `
+    + `higher is sharper, Nyquist is 0.500.`);
+
+  setText('burstMergeVerdict', report.verdict);
+  appendBurstLog(mergeLogLine(report));
+}
+
+function mergeLogLine(report: MergeReport): string {
+  const mtf = (value: number | null) => value === null ? '  n/a' : value.toFixed(3);
+  return [
+    `MERGE frames ${String(report.framesUsed).padStart(2)}`,
+    `ctrl ${mtf(report.controlMtf.mtf50)}`,
+    `sharp1 ${mtf(report.deconvolvedMtf.mtf50)}`,
+    `splat ${mtf(report.splatMtf.mtf50)}`,
+    `bp ${mtf(report.refinedMtf.mtf50)}`,
+    `psf ${report.psfSigma.toFixed(2)}`,
+    `best ${report.best}`,
+    // Both ratios, because one of them is the whole question: how much of the
+    // gain over an upscale actually needed more than a single frame.
+    `x${report.gain === null ? 'n/a' : report.gain.toFixed(2)}`,
+    `multi x${report.multiFrameGain === null ? 'n/a' : report.multiFrameGain.toFixed(2)}`,
+    report.beyondSingleFrame ? 'BEYOND-1F' : 'within-1f',
+    `v${APP_VERSION}`
+  ].join(' · ');
+}
+
+on('burstMergeButton', 'click', () => void runBurstMerge());
 
 on('burstReadCaps', 'click', readCameraCapabilities);
 on('burstCopyLog', 'click', () => void copyBurstLog());

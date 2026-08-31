@@ -1432,3 +1432,15 @@ button.ghost.danger {
 /* Unsupported must not read as merely empty — it is the finding, not a gap. */
 .burst-caps .cap-no { opacity: .5; }
 .burst-caps .cap-no .cap-range::before { content: 'not exposed by this browser'; }
+
+/* The comparison strip is four panels wide, so it scrolls rather than shrinking
+   every panel to the point where the difference being judged is invisible. */
+#burstCompareFigure { overflow-x: auto; }
+#burstCompare {
+  display: block;
+  height: auto;
+  min-width: 100%;
+  border-radius: 8px;
+  background: #04080d;
+  image-rendering: pixelated;
+}

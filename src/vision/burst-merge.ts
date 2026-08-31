@@ -93,10 +93,21 @@ function sigmaFromMtf50(mtf50: number): number {
  * `candidates` should already be the frames worth using; this selects the
  * best-spread subset from them and merges those.
  */
-export function mergeAndCompare(
+/**
+ * Called between stages so a caller can yield the thread.
+ *
+ * The whole merge takes about two seconds on a desktop and three to five times
+ * that on a phone. Run as one synchronous block it freezes the interface for
+ * ten seconds with no sign of life, which reads as a crash rather than as work
+ * — so the stages are separated and the caller decides what to do between them.
+ */
+export type StageHook = (label: string) => Promise<void> | void;
+
+export async function mergeAndCompare(
   candidates: ReadonlyArray<Candidate>,
-  keep: number
-): MergeReport | null {
+  keep: number,
+  onStage: StageHook = () => {}
+): Promise<MergeReport | null> {
   const usable = candidates.filter((c, index) =>
     index === 0 || c.shift.confidence >= MIN_CONFIDENCE);
   if (usable.length === 0) return null;
@@ -142,9 +153,12 @@ export function mergeAndCompare(
     ? Math.min(3, Math.max(0.4, sigmaFromMtf50(controlMtf.mtf50)))
     : FALLBACK_PSF_SIGMA;
 
+  await onStage(`Merging ${frames.length} frames…`);
   const splat = mergeBurst(frames, {
     scale: MERGE_SCALE, robustness: 0, noiseSigma: 1
   });
+
+  await onStage('Back-projecting…');
   const refined = refineBurst(frames, {
     scale: MERGE_SCALE,
     binFactor: MERGE_SCALE,
@@ -176,11 +190,13 @@ export function mergeAndCompare(
    * achieves needed only one frame, and only the margin above it is worth
    * capturing a burst for.
    */
+  await onStage('Sharpening one frame, for the control…');
   const deconvolved = refineBurst([reference], {
     scale: MERGE_SCALE, binFactor: MERGE_SCALE, psfSigma,
     iterations: 3, gain: 0.4, correctionSigma: 0.5
   });
 
+  await onStage('Measuring…');
   const splatMtf = measureSlantedEdge(splat);
   const refinedMtf = measureSlantedEdge(refined);
   const deconvolvedMtf = measureSlantedEdge(deconvolved);

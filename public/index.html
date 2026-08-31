@@ -776,6 +776,7 @@
             </p>
             <div class="button-row">
               <button class="primary-button" id="burstCaptureButton" type="button">Capture Burst</button>
+              <button class="secondary-button" id="burstMergeButton" type="button" disabled>Merge Frames</button>
             </div>
             <p class="helper" id="burstProgress" aria-live="polite"></p>
           </div>
@@ -791,6 +792,19 @@
           <div class="metric"><span>From the gyroscope</span><strong id="burstGyroMove">&mdash;</strong></div>
           <div class="metric"><span>Agreement</span><strong id="burstAgreement">&mdash;</strong></div>
         </div>
+
+        <figure class="burst-figure" id="burstCompareFigure" hidden>
+          <canvas id="burstCompare" aria-label="Upscaled, sharpened and merged versions side by side"></canvas>
+          <figcaption id="burstCompareCaption"></figcaption>
+        </figure>
+        <p class="helper" id="burstMergeVerdict"></p>
+        <p class="helper">
+          A number only appears when the box contains <strong>one straight edge tilted a few
+          degrees</strong> &mdash; a door frame, a book, a sign. Grass and brickwork give you the
+          pictures to compare by eye but nothing to measure, and the report says so rather than
+          inventing a figure. Brightness only: colour would come from the reference frame and is
+          not part of what is being compared.
+        </p>
 
         <div class="panel-heading" style="margin-top:.6rem">
           <div><p class="section-kicker">CAMERA CONTROLS</p></div>
@@ -866,7 +880,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.35.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.36.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">
