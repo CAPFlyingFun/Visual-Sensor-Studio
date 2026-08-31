@@ -270,22 +270,95 @@ export function pickBest(report: MergeReport): Plane {
   return report.control;
 }
 
-/** Side-by-side strip: control, splat, refined, at their common size. */
+/** Which output a panel of the comparison figure carries. */
+export type PanelKey = 'control' | 'deconvolved' | 'splat' | 'refined';
+
+export interface PanelPlacement {
+  key: PanelKey;
+  plane: Plane;
+  x: number;
+  y: number;
+}
+
+export interface ComparisonLayout {
+  width: number;
+  height: number;
+  columns: number;
+  rows: number;
+  gap: number;
+  panels: PanelPlacement[];
+}
+
+/** Gutter between panels, in output pixels. */
+const PANEL_GAP = 4;
+
+/**
+ * WHERE THE PANELS GO — and why they are not in a row.
+ *
+ * Joshua, on the first build that showed this: "It showed it but zoomed way in
+ * on the main model and then when I tried zooming out, I lost everything. It
+ * needs to be clamped to screen size."
+ *
+ * Four 512-pixel panels side by side are 2060 pixels wide. No phone has a
+ * viewport that wide, so the figure either overflowed the document — which is
+ * what happened, and mobile Safari rescaled the whole app around it — or it had
+ * to be scaled down by nearly five, which destroys the fine differences the
+ * figure exists to show.
+ *
+ * A 2x2 grid is 1028 pixels wide instead, and that is the number that matters:
+ * a 430pt screen at three device pixels to the point is 1290 device pixels
+ * across, so the whole figure fits AT ONE OUTPUT PIXEL PER DEVICE PIXEL with
+ * room to spare. Nothing is resampled and nothing overflows. Rows over columns
+ * is not a taste decision here — it is the only arrangement that fits.
+ *
+ * Reading order is still the argument the figure makes: upscale and sharpened
+ * single frame on the top row, the two merges beneath them, so each merge sits
+ * directly under the control it has to beat.
+ */
+export function comparisonLayout(report: MergeReport): ComparisonLayout {
+  const entries: Array<[PanelKey, Plane | null]> = [
+    ['control', report.control],
+    ['deconvolved', report.deconvolved],
+    ['splat', report.splat],
+    ['refined', report.refined]
+  ];
+  const present = entries.filter((e): e is [PanelKey, Plane] => e[1] !== null);
+  const cellWidth = present[0][1].width;
+  const cellHeight = present[0][1].height;
+  const columns = Math.min(2, present.length);
+  const rows = Math.ceil(present.length / columns);
+
+  const panels = present.map(([key, plane], index) => ({
+    key,
+    plane,
+    x: (index % columns) * (cellWidth + PANEL_GAP),
+    y: Math.floor(index / columns) * (cellHeight + PANEL_GAP)
+  }));
+
+  return {
+    width: cellWidth * columns + PANEL_GAP * (columns - 1),
+    height: cellHeight * rows + PANEL_GAP * (rows - 1),
+    columns,
+    rows,
+    gap: PANEL_GAP,
+    panels
+  };
+}
+
+/** Every version in one picture, each at its own full size. */
 export function comparisonStrip(report: MergeReport): Plane {
-  const panels = [report.control, report.deconvolved, report.splat, report.refined]
-    .filter((p): p is Plane => p !== null);
-  const { width, height } = panels[0];
-  const gap = 4;
-  const strip = createPlane(width * panels.length + gap * (panels.length - 1), height);
+  const layout = comparisonLayout(report);
+  const figure = createPlane(layout.width, layout.height);
   // Mid-grey gutters, so the joins read as separators rather than as content.
-  strip.data.fill(90);
-  panels.forEach((panel, index) => {
-    const offsetX = index * (width + gap);
+  figure.data.fill(90);
+  for (const panel of layout.panels) {
+    const { width, height } = panel.plane;
     for (let y = 0; y < height; y++) {
+      const target = (panel.y + y) * figure.width + panel.x;
       for (let x = 0; x < width; x++) {
-        strip.data[y * strip.width + offsetX + x] = panel.data[y * width + x];
+        figure.data[target + x] = panel.plane.data[y * width + x];
       }
     }
-  });
-  return strip;
+  }
+  return figure;
 }

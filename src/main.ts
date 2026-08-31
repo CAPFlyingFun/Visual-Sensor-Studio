@@ -22,7 +22,9 @@ import { aspectRatioFor, cropToAspect, retainedFraction, type SaveAspect } from 
 import { createPlane, type Plane } from './vision/super-resolution.js';
 import { readCapabilities, capabilityLogLine } from './vision/camera-capabilities.js';
 import { fitFocalLength, type FocalSample } from './vision/focal-fit.js';
-import { mergeAndCompare, comparisonStrip, type MergeReport } from './vision/burst-merge.js';
+import {
+  mergeAndCompare, comparisonStrip, comparisonLayout, type MergeReport, type PanelKey
+} from './vision/burst-merge.js';
 import {
   CAPTURE_CANDIDATES, KEEP_FRAMES, MIN_CONFIDENCE, SPREAD_FLOOR,
   estimateShift, judgeBurst, rotationToPixels, type ShiftEstimate
@@ -186,7 +188,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.36.1';
+const APP_VERSION = '0.36.2';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -7746,12 +7748,20 @@ function calibrateFromBurst(
 
   if (fit.fovDegrees === null) return 'unfit';
   if (!(settings.motionFovDegrees > 0)) {
-    settings.motionFovDegrees = fit.fovDegrees;
+    // ROUNDED BEFORE IT IS STORED, not just before it is displayed.
+    //
+    // Storing the raw fit and rounding only in the box put 126.641734 in a
+    // field with step="1" — a value the browser flags as invalid and no one
+    // would type. The precision was false anyway: the fit's own quality figure
+    // is a percentage, so a sixth decimal place of a degree is noise dressed as
+    // a measurement.
+    settings.motionFovDegrees = Math.round(fit.fovDegrees * 10) / 10;
     saveSettings();
+    const shown = settings.motionFovDegrees.toFixed(1);
     const box = document.getElementById('burstFov') as HTMLInputElement | null;
-    if (box && document.activeElement !== box) box.value = fit.fovDegrees.toFixed(0);
+    if (box && document.activeElement !== box) box.value = shown;
     const twin = document.getElementById('motionFov') as HTMLInputElement | null;
-    if (twin) twin.value = fit.fovDegrees.toFixed(0);
+    if (twin) twin.value = shown;
     syncBurstReadiness();
   }
   return `${fit.fovDegrees.toFixed(1)}deg@${(fit.quality * 100).toFixed(0)}%`;
@@ -7925,53 +7935,76 @@ function renderMergeReport(report: MergeReport): void {
   const canvas = byId<HTMLCanvasElement>('burstCompare');
   paintPlane(canvas, comparisonStrip(report));
   labelPanels(canvas, report);
+  fitToScreen(canvas);
 
   const mtf = (value: number | null) => value === null ? '—' : value.toFixed(3);
   // Named in the order they appear, so the caption is a legend rather than a
   // summary — the panels are unlabelled pixels otherwise.
   setText('burstCompareCaption',
-    `Left to right: upscaled (${mtf(report.controlMtf.mtf50)}), `
-    + `sharpened one frame (${mtf(report.deconvolvedMtf.mtf50)}), `
-    + `merged (${mtf(report.splatMtf.mtf50)}), `
-    + `merged and back-projected (${mtf(report.refinedMtf.mtf50)}) — MTF50 in cycles/px, `
-    + `higher is sharper, Nyquist is 0.500.`);
+    `Top row: upscaled (${mtf(report.controlMtf.mtf50)}) and `
+    + `sharpened one frame (${mtf(report.deconvolvedMtf.mtf50)}). `
+    + `Bottom row: merged (${mtf(report.splatMtf.mtf50)}) and `
+    + `merged and back-projected (${mtf(report.refinedMtf.mtf50)}) — each merge sits under `
+    + `the control it has to beat. MTF50 in cycles/px, higher is sharper, Nyquist is 0.500.`);
 
   setText('burstMergeVerdict', report.verdict);
   appendBurstLog(mergeLogLine(report));
 }
 
 /**
+ * Show the figure at ONE OUTPUT PIXEL PER DEVICE PIXEL, and never wider.
+ *
+ * A canvas with no CSS width is laid out at one backing-store pixel per CSS
+ * pixel, which on a three-times display magnifies it threefold — that is what
+ * "zoomed way in" was. Dividing by the pixel ratio undoes exactly that
+ * magnification and nothing else: no browser resampling, no detail lost, the
+ * merge shown as the sensor's pixels.
+ *
+ * The stylesheet's `max-width: 100%` is the clamp underneath it, so a narrower
+ * screen or a bigger window scales the figure down to fit instead of widening
+ * the document. Both together are the rule: as large as it honestly is, and
+ * never larger than the screen.
+ */
+function fitToScreen(canvas: HTMLCanvasElement): void {
+  const ratio = Math.max(1, window.devicePixelRatio || 1);
+  canvas.style.width = `${Math.round(canvas.width / ratio)}px`;
+}
+
+/**
  * Name each panel on the picture itself.
  *
- * The strip is wider than the screen and scrolls, so a caption listing four
- * names in order stops matching what is visible as soon as it is scrolled. A
- * label on each panel travels with it.
+ * A caption listing four names in reading order is one mis-read away from
+ * crediting the merge with the control's result, and the panels are
+ * indistinguishable grey squares without it. A label drawn into the picture
+ * cannot come apart from the panel it names.
  */
 function labelPanels(canvas: HTMLCanvasElement, report: MergeReport): void {
   const context = canvas.getContext('2d');
   if (!context) return;
-  const panels = [
-    ['upscaled', report.controlMtf.mtf50],
-    ['sharpened 1 frame', report.deconvolvedMtf.mtf50],
-    ['merged', report.splatMtf.mtf50],
-    ['merged + back-projected', report.refinedMtf.mtf50]
-  ] as const;
-  const width = report.control.width;
-  const gap = 4;
+  const named: Record<PanelKey, [string, number | null]> = {
+    control: ['upscaled', report.controlMtf.mtf50],
+    deconvolved: ['sharpened 1 frame', report.deconvolvedMtf.mtf50],
+    splat: ['merged', report.splatMtf.mtf50],
+    refined: ['merged + back-projected', report.refinedMtf.mtf50]
+  };
 
   context.font = '600 15px ui-monospace, Menlo, monospace';
   context.textBaseline = 'top';
-  panels.forEach(([name, mtf50], index) => {
-    const x = index * (width + gap) + 8;
+  for (const panel of comparisonLayout(report).panels) {
+    const [name, mtf50] = named[panel.key];
     const text = mtf50 === null ? name : `${name}  ${mtf50.toFixed(3)}`;
     const metrics = context.measureText(text);
+    const x = panel.x + 8;
+    const y = panel.y + 7;
     // A plate behind it, because the label sits over whatever the camera saw
     // and white on white is not a label.
     context.fillStyle = 'rgba(2, 8, 14, 0.72)';
-    context.fillRect(x - 4, 4, metrics.width + 10, 22);
-    context.fillStyle = index === 0 ? 'rgba(220, 235, 255, 0.95)' : 'rgba(255, 196, 84, 0.95)';
-    context.fillText(text, x, 7);
-  });
+    context.fillRect(x - 4, y - 3, metrics.width + 10, 22);
+    context.fillStyle = panel.key === 'control'
+      ? 'rgba(220, 235, 255, 0.95)'
+      : 'rgba(255, 196, 84, 0.95)';
+    context.fillText(text, x, y);
+  }
 }
 
 function mergeLogLine(report: MergeReport): string {

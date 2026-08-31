@@ -1434,23 +1434,35 @@ button.ghost.danger {
 .burst-caps .cap-no .cap-range::before { content: 'not exposed by this browser'; }
 
 /*
- * The comparison strip is four panels wide and must be shown AT ITS OWN SIZE.
+ * THE COMPARISON FIGURE MUST NEVER BE WIDER THAN THE SCREEN.
  *
- * The `.burst-figure canvas` rule above was written for the square scatter plot
- * and captured this canvas too: width 100% plus aspect-ratio 1/1 squeezed a
- * 2060x512 strip into a square box at about 860px, scaling it down by 2.4x and
- * letterboxing it in black. That destroyed exactly the fine differences the
- * strip exists to show — the four panels looked identical because they had been
- * shrunk past the point where they could differ.
+ * Two failures got here, in opposite directions, and this rule has to survive
+ * both:
  *
- * So: natural size, no aspect ratio, and the figure scrolls instead.
+ *   1. `.burst-figure canvas` above (width 100%, aspect-ratio 1/1) was written
+ *      for the square scatter plot and captured this canvas too, squeezing the
+ *      figure into a square and scaling it down by 2.4x. The four panels then
+ *      looked identical because they had been shrunk past the point where they
+ *      could differ.
+ *   2. Undoing that with `width: auto; max-width: none` let a 2060px canvas set
+ *      the document's width. Mobile Safari rescaled the entire app around it —
+ *      Joshua: "zoomed way in... when I tried zooming out, I lost everything."
+ *
+ * So: no forced aspect ratio (fixes 1), and a hard ceiling of the container
+ * (fixes 2). The panels are laid out 2x2 rather than in a row so that ceiling
+ * is not reached on a phone — see comparisonLayout in burst-merge.ts — and
+ * main.ts sets the width in CSS pixels to exactly one output pixel per device
+ * pixel. max-width is the floor under all of it: whatever those compute to, the
+ * figure stops at the width of the page.
  */
-#burstCompareFigure { overflow-x: auto; }
+#burstCompareFigure { max-width: 100%; min-width: 0; overflow-x: auto; }
 #burstCompareFigure canvas,
 #burstCompare {
   display: block;
+  /* auto, not the 100% inherited from `.burst-figure canvas` above: main.ts
+     sets the exact width inline and an inherited 100% would fight it. */
   width: auto;
-  max-width: none;
+  max-width: 100%;
   min-width: 0;
   height: auto;
   aspect-ratio: auto;

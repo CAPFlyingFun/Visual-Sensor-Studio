@@ -118,11 +118,52 @@ test('the blur inverted is derived from the picture, not assumed', async () => {
     `a blurrier capture should infer a larger sigma: ${report.psfSigma.toFixed(2)} vs ${sharper.psfSigma.toFixed(2)}`);
 });
 
-test('the comparison strip carries every version at the same size', async () => {
+test('the comparison figure carries every version at full size', async () => {
   const report = await bm.mergeAndCompare(capture(scene, SPREAD), 8);
-  const strip = bm.comparisonStrip(report);
-  assert.equal(strip.height, report.control.height);
-  assert.ok(strip.width >= report.control.width * 4, 'all four panels should be present');
+  const layout = bm.comparisonLayout(report);
+  const figure = bm.comparisonStrip(report);
+
+  assert.equal(layout.panels.length, 4, 'all four versions should be present');
+  assert.equal(figure.width, layout.width);
+  assert.equal(figure.height, layout.height);
+  // Full size, not fitted: shrinking the panels to make them fit is the one
+  // thing that would destroy the differences the figure exists to show.
+  for (const panel of layout.panels) {
+    assert.equal(panel.plane.width, report.control.width);
+    assert.equal(panel.plane.height, report.control.height);
+  }
+  // Every panel lands inside the figure, and no two overlap.
+  const seen = new Set();
+  for (const panel of layout.panels) {
+    assert.ok(panel.x + panel.plane.width <= figure.width);
+    assert.ok(panel.y + panel.plane.height <= figure.height);
+    assert.ok(!seen.has(`${panel.x},${panel.y}`), 'panels must not be stacked');
+    seen.add(`${panel.x},${panel.y}`);
+  }
+});
+
+test('the figure fits a phone screen at one output pixel per device pixel', async () => {
+  // The regression this guards: four 512px panels in a row are 2060px wide,
+  // which set the DOCUMENT's width on Joshua's phone and made mobile Safari
+  // rescale the whole app. A 430pt screen at 3x is 1290 device pixels across,
+  // so the figure has to come in under that with no scaling applied.
+  const report = await bm.mergeAndCompare(capture(scene, SPREAD), 8);
+  const layout = bm.comparisonLayout(report);
+  assert.ok(layout.columns <= 2, `${layout.columns} columns is wider than a phone`);
+  assert.ok(layout.width <= 1290,
+    `${layout.width} output pixels will not fit 1290 device pixels`);
+});
+
+test('the panel labels cannot come apart from the panels', async () => {
+  // main.ts draws each name at the layout's own coordinates rather than
+  // re-deriving them, so a change to the arrangement moves the labels with it.
+  const report = await bm.mergeAndCompare(capture(scene, SPREAD), 8);
+  const keys = bm.comparisonLayout(report).panels.map((p) => p.key);
+  assert.deepEqual(keys, ['control', 'deconvolved', 'splat', 'refined']);
+
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  assert.match(main, /comparisonLayout\(report\)\.panels/,
+    'labelPanels should place labels from the shared layout');
 });
 
 import { readFileSync } from 'node:fs';
@@ -154,33 +195,45 @@ test('the tab merges the frames it just measured, not a fresh burst', () => {
   assert.match(main, /requestAnimationFrame\(resolve\)/);
 });
 
-test('the comparison strip is shown at its own size, not squeezed into a square', () => {
-  // The `.burst-figure canvas` rule was written for the square scatter plot and
-  // captured this canvas too: width 100% plus aspect-ratio 1/1 put a 2060x512
-  // strip into a square box at about 860px, scaling it down 2.4x and
-  // letterboxing it. That destroyed exactly the fine differences the strip
-  // exists to show — on the device the four panels looked identical because
-  // they had been shrunk past the point where they could differ.
+test('the comparison figure can never be wider than the screen', () => {
+  // Two regressions, in opposite directions, and the rule has to survive both:
+  //
+  //   1. `.burst-figure canvas` (width 100%, aspect-ratio 1/1) was written for
+  //      the square scatter and captured this canvas too, squeezing the figure
+  //      into a square and scaling it down 2.4x — which destroyed exactly the
+  //      fine differences it exists to show.
+  //   2. Undoing that with `max-width: none` let a 2060px canvas set the
+  //      DOCUMENT's width, and mobile Safari rescaled the whole app around it.
   const css = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
   const rule = css.slice(css.indexOf('#burstCompareFigure canvas,'));
-  assert.match(rule, /width: auto;/);
-  assert.match(rule, /aspect-ratio: auto;/);
-  assert.match(rule, /max-width: none;/);
-  // And the figure has to scroll, or natural size just overflows the page.
-  assert.match(css, /#burstCompareFigure \{ overflow-x: auto; \}/);
+  assert.match(rule, /aspect-ratio: auto;/);      // not squeezed
+  assert.match(rule, /max-width: 100%;/);         // and not wider than the page
+  assert.ok(!/max-width: none/.test(rule), 'max-width: none is what broke the layout');
+  assert.match(css, /#burstCompareFigure \{ max-width: 100%;/);
   // Nearest-neighbour, so what is judged is the merge rather than the
   // browser's resampling of it.
   assert.match(rule, /image-rendering: pixelated;/);
 });
 
+test('the figure is shown at one output pixel per device pixel', () => {
+  // A canvas with no CSS width is laid out one backing-store pixel to one CSS
+  // pixel, which on a 3x display magnifies it threefold — that is what "zoomed
+  // way in" was. Dividing by the pixel ratio undoes that and nothing else.
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const fn = main.slice(main.indexOf('function fitToScreen'));
+  assert.match(fn, /devicePixelRatio/);
+  assert.match(fn, /canvas\.width \/ ratio/);
+  assert.match(main, /fitToScreen\(canvas\)/, 'the merge report should call it');
+});
+
 test('each panel is named on the picture, not only in a caption', () => {
-  // The strip is wider than the screen and scrolls, so a caption listing four
-  // names in order stops describing what is visible as soon as it moves.
+  // Four grey squares are indistinguishable, and a caption in reading order is
+  // one mis-read away from crediting the merge with the control's result.
   const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
   const fn = main.slice(main.indexOf('function labelPanels'), main.indexOf('function mergeLogLine'));
   for (const name of ['upscaled', 'sharpened 1 frame', 'merged', 'merged + back-projected']) {
-    assert.ok(fn.includes(name), `the strip does not label "${name}"`);
+    assert.ok(fn.includes(name), `the figure does not label "${name}"`);
   }
   // A plate behind the text: it sits over whatever the camera saw.
-  assert.match(fn, /context\.fillRect\(x - 4, 4,/);
+  assert.match(fn, /context\.fillRect\(x - 4, y - 3,/);
 });
