@@ -341,3 +341,67 @@ Merge on a 1024x1024 crop, behind a dev route, measured with a slanted-edge MTF
 against the bicubic control. The estimator is still unsettled from Phase 0
 (splat alone won on 1/f noise, splat-then-back-project on a real photograph), so
 Phase 2 chooses between them on real captures rather than assuming.
+
+
+---
+
+# Phase 1 closed — measured on the device, v0.32.4
+
+Eighteen consecutive bursts, iPhone 15 Plus, grass and brickwork:
+
+| | value |
+|---|---|
+| travel | 6.6–9.1 px (mean 7.7) |
+| measurable | 7–32 of 32 (mean 20) |
+| selected spread | 45–71% (mean 59%) |
+| **cleared the 55% floor** | **12 of 18 — 67%** |
+
+A handheld burst on this device carries more detail than any single frame in
+it about two times in three. That is the real number, and it is the one to
+design against.
+
+## Three defects the device found that no synthetic test would have
+
+Each was mine, each made the phone look like the problem, and each was
+invisible from here:
+
+1. **The capture loop outran frame delivery.** Polling on
+   `requestAnimationFrame` plus 40 ms is faster than a twelve-megapixel stream
+   arrives, so much of the burst was the same image twice. Repeated frames
+   measure a shift of exactly zero, so the probe reported a steady hand when
+   the truth was a fast loop. Reading: 39–48%.
+2. **The search window was smaller than the motion.** A fixed ±8 px against
+   8.5–11.7 px of travel meant most frames fell outside and were refused —
+   correctly, but for a reason that was the instrument's, not the hand's.
+3. **Scores were not comparable across the window.** Skipping out-of-frame
+   samples (the fix for 2) made different offsets average over different pixel
+   counts, so `worst` was set by whichever overlapped least and the confidence
+   built from it became noise. `measurable` swung 2 to 15 on identical bursts.
+
+And one methodological failure worth more than the three: **the synthetic range
+test hid defect 2 for a full cycle** because `shiftPlane` clamps its borders
+just as `samplePlane` does, so reference and frame shared identical smeared
+edges and matched each other perfectly at every offset. The harness now crops
+two windows from a larger scene, so content entering the frame is real.
+
+## The design consequence: capture until it clears
+
+At 67% per burst, retrying is worth more than any tuning:
+
+| attempts | success |
+|---|---|
+| 1 | 67% |
+| 2 | 89% |
+| 3 | **96%** |
+| 4 | 99% |
+
+Three bursts is about nine seconds and takes the feature from two-in-three to
+essentially always. The alternative — raising the floor's tolerance — would be
+shipping merges Phase 0 says do not pay.
+
+## Not yet used: the phone's sensors
+
+Every burst so far was measured from the image alone; the gyroscope column read
+`no-fov` throughout. The sensor comparison remains unmeasured, and with it the
+question of whether motion could time the shutter rather than merely describe
+it afterwards.
