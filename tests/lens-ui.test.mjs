@@ -198,13 +198,11 @@ test('the live picture can be drawn larger than the analysis frame', () => {
   assert.match(mainSource, /function lensDisplayWidth\(\)/);
   assert.match(mainSource, /function renderLensFrame\(/);
   // Never more pixels than the sensor actually delivered.
-  assert.match(mainSource, /Math\.max\(analysis, widthForShortSide\(shape, short\)\)/);
+  assert.match(mainSource, /Math\.max\(analysis, widthForShortSide\(short\)\)/);
   // Every tier names a SHORT SIDE. Naming a width made one setting mean two
   // different pictures: 1280 gave a landscape frame 1280x960 and a portrait
   // one 1280x1707, which is 1.78x the pixels for the same choice.
-  // The conversion now lives in frame-shape.ts with the rest of the frame's
-  // geometry, so it cannot disagree with the short side it converts from.
-  assert.match(mainSource, /widthForShortSide, type FrameShape \} from '\.\/vision\/frame-shape\.js'/);
+  assert.match(mainSource, /function widthForShortSide\(shortSide: number\)/);
   assert.match(mainSource, /const wantedShort = auto \? \(AUTO_LADDER\[autoRung\] \|\| 0\)/);
 });
 

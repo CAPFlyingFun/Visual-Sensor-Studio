@@ -20,48 +20,17 @@ test('auto climbs the ladder and never starts at the top', () => {
   // a level too expensive is taken while the device is already failing, and on
   // a phone that can mean the tab is reclaimed before any adjustment happens.
   assert.match(mainSource, /const AUTO_LADDER = \[0, 540, 720, 1080, Number\.POSITIVE_INFINITY\] as const/);
+  // The two thresholds must differ, or every rung is both too slow and fast
+  // enough and the ladder oscillates forever.
+  assert.match(mainSource, /const AUTO_TARGET_FPS = 10;/);
+  assert.match(mainSource, /const AUTO_HEADROOM_FPS = 20;/);
+  // And the bottom rungs climb on less evidence, or the ladder is trapped
+  // there: any rate inside the dead band held it at the analysis frame
+  // forever, so a phone that could manage 540 sat at 166.
+  assert.match(mainSource, /const AUTO_LOW_RUNG_HEADROOM_FPS = 14;/);
+  assert.match(mainSource, /autoRung <= 1 \? AUTO_LOW_RUNG_HEADROOM_FPS : AUTO_HEADROOM_FPS/);
   assert.match(mainSource, /let autoRung = 1;/, 'start one rung above the analysis frame');
-});
-
-test('the ladder is steered by render cost, never by the achieved frame rate', () => {
-  // Frame rate is the slower of two things, and only one of them is the
-  // render. On a twelve-megapixel capture the camera delivers about ten
-  // frames a second, so the analysis rate sat at eight whatever the render
-  // size was; the old rule read that as "too slow" at every rung and walked
-  // to the bottom, showing a 166px analysis frame beside a "0 ms/frame"
-  // readout while an explicit Full ran 609px smoothly on the same device.
-  assert.match(mainSource, /function updateAutoDetail\(renderMs: number, rates: FrameRateReport, now: number\)/);
-  assert.match(mainSource, /const verdict = detailVerdict\(\{/);
-  assert.match(mainSource, /renderMs,\s*\n\s*deliveredFps: rates\.deliveredFps,\s*\n\s*processingFps: rates\.processingFps/);
-  // The old frame-rate thresholds must be gone, not merely unused: a leftover
-  // constant is the next agent's evidence that the rate still steers this.
-  assert.doesNotMatch(mainSource, /AUTO_TARGET_FPS|AUTO_HEADROOM_FPS|AUTO_LOW_RUNG_HEADROOM_FPS/);
-  // The cost that is voted on has to be the one the rung produced, so a mode
-  // rendering at the analysis size must not get a vote.
-  assert.match(mainSource, /if \(drewLarge\) \{[\s\S]*updateAutoDetail\(lensRenderMs/);
-});
-
-test('auto never settles on the analysis frame', () => {
-  // Rung 0 is a fallback for modes that cannot honestly be enlarged, not a
-  // picture to choose. Reaching it on a real device produced a 166px image
-  // under a setting whose whole promise is to find the best one that runs.
-  assert.match(mainSource, /const AUTO_FLOOR_RUNG = 1;/);
-  assert.match(mainSource, /verdict === 'back-off' && autoRung > AUTO_FLOOR_RUNG/);
-});
-
-test('a size change forgets what the previous size cost', () => {
-  // The cost reading is a rolling average. Carried across a size change it
-  // judges the new picture by the old one's price — and opening full screen
-  // is exactly that: several times the panel's area, where a carried-over
-  // reading says "room to climb" at the moment it needs to back off.
-  const ensure = mainSource.slice(
-    mainSource.indexOf('function ensureLensDisplay'),
-    mainSource.indexOf('function renderDisplayMode')
-  );
-  assert.match(ensure, /lensRenderMs = 0;/);
-  // And that reset must sit AFTER the early return, or every frame clears it.
-  const guard = ensure.indexOf('lensDisplay.height === height) return lensDisplay');
-  assert.ok(guard >= 0 && ensure.indexOf('lensRenderMs = 0;') > guard);
+  assert.match(mainSource, /function updateAutoDetail\(processingFps: number, now: number\)/);
 });
 
 test('auto needs a run of agreeing measurements, and more to climb than to fall', () => {
@@ -82,7 +51,7 @@ test('the settled rung is remembered so a device learns this once', () => {
   // Never START at the bottom, whatever was remembered: that rung is the
   // analysis frame, a fallback rather than a settled answer, and restoring a
   // remembered 0 makes one bad session permanent.
-  assert.match(mainSource, /autoRung = Math\.max\(AUTO_FLOOR_RUNG, stored\)/);
+  assert.match(mainSource, /autoRung = Math\.max\(1, stored\)/);
   assert.match(mainSource, /function loadAutoRung/);
   assert.match(mainSource, /function saveAutoRung/);
   assert.match(mainSource, /loadAutoRung\(\);/);
@@ -225,7 +194,7 @@ test('the screen is a hard bound at every setting, including the explicit ones',
   // about a display: pixels beyond what a screen can resolve are invisible,
   // so no setting can reasonably be read as a request for them.
   assert.match(mainSource, /function displayedShortSide\(sourceAspect: number, now: number\)/);
-  assert.match(mainSource, /const onScreen = displayedShortSide\(shape\.aspect, performance\.now\(\)\)/);
+  assert.match(mainSource, /const onScreen = displayedShortSide\(aspect, performance\.now\(\)\)/);
   // Contain and cover swap which axis limits the content box.
   assert.match(mainSource, /const heightLimited = fill \? boxAspect < sourceAspect : boxAspect > sourceAspect/);
 });

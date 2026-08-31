@@ -247,7 +247,7 @@ test('the analysis frame is bounded by a pixel budget, not a width', () => {
   // 256x455, three times the pixels a landscape frame costs, for no extra
   // information — on the orientation the device is most often in.
   assert.match(mainSource, /function analysisBudget\(\)/);
-  assert.match(mainSource, /Math\.sqrt\(budget \* shape\.aspect\)/);
+  assert.match(mainSource, /Math\.sqrt\(budget \* aspect\)/);
   assert.match(mainSource, /256 \* 144/);
 });
 
