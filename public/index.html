@@ -176,6 +176,7 @@
               <button class="ghost" type="button" id="lensNewButton">+ New lens</button>
               <button class="ghost" type="button" id="lensEditButton">Edit</button>
               <button class="ghost" type="button" id="lensImportButton">Load…</button>
+              <button class="ghost" type="button" id="lensPhotoButton">Apply to a photo…</button>
             </div>
             <div id="lensEditor" hidden>
               <details class="lens-intro" id="lensIntro">
@@ -268,6 +269,8 @@
                 <p class="helper" id="lensStatus" role="status"></p>
               </div>
             </div>
+            <p class="helper" id="lensPhotoStatus" role="status"></p>
+            <input type="file" id="lensPhotoFile" accept="image/*" hidden />
             <div id="lensImport" hidden>
               <p class="helper">
                 Paste a share link or code from someone else, or open an exported file.
@@ -733,7 +736,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.22.1</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.23.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">

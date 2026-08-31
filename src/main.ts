@@ -67,6 +67,14 @@ import {
   previewStep
 } from './vision/lens-preview.js';
 import {
+  DEFAULT_MAX_PIXELS,
+  describeMissing,
+  fitWithin,
+  looksBlank,
+  renderPhotoLens,
+  type DecodedPhoto
+} from './vision/photo-lens.js';
+import {
   absoluteDifference,
   differenceToRgba,
   dimGrayToRgba,
@@ -157,7 +165,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.22.1';
+const APP_VERSION = '0.23.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -2441,6 +2449,89 @@ function addLens(lens: CustomLens, message: string): void {
   setLensStatus(result.saved ? message : (result.error ?? 'Could not save.'));
 }
 
+/**
+ * Decode a photograph as large as this device will actually manage.
+ *
+ * Starts at the file's own size and steps down. The step-down is not a guess
+ * at a limit: iOS Safari refuses to back a canvas beyond a device-dependent
+ * area and returns a BLANK one rather than throwing, so the only reliable
+ * test is to draw it and look. A blank result at 36 megapixels is a browser
+ * limit; the same code at 9 megapixels usually is not.
+ */
+async function decodePhoto(file: File): Promise<DecodedPhoto | null> {
+  const bitmap = await createImageBitmap(file).catch(() => null);
+  if (!bitmap) return null;
+  const sourceWidth = bitmap.width;
+  const sourceHeight = bitmap.height;
+
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) {
+    bitmap.close?.();
+    return null;
+  }
+
+  let budget = Math.min(sourceWidth * sourceHeight, DEFAULT_MAX_PIXELS);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const fit = fitWithin(sourceWidth, sourceHeight, budget);
+    try {
+      canvas.width = fit.width;
+      canvas.height = fit.height;
+      context.clearRect(0, 0, fit.width, fit.height);
+      context.drawImage(bitmap, 0, 0, fit.width, fit.height);
+      const data = context.getImageData(0, 0, fit.width, fit.height);
+      if (!looksBlank(data.data, fit.width * fit.height)) {
+        bitmap.close?.();
+        return {
+          data,
+          sourceWidth,
+          sourceHeight,
+          reduced: fit.width !== sourceWidth || fit.height !== sourceHeight
+        };
+      }
+    } catch {
+      // Out of memory or an over-large canvas. Both mean: try smaller.
+    }
+    budget = Math.floor(budget / 2);
+    if (budget < 250_000) break;
+  }
+
+  bitmap.close?.();
+  return null;
+}
+
+async function applyLensToPhoto(file: File): Promise<void> {
+  const lens = activeLens;
+  if (!lens) {
+    setText('lensPhotoStatus', 'Choose a lens first.');
+    return;
+  }
+  setText('lensPhotoStatus', 'Reading the photo…');
+  const photo = await decodePhoto(file);
+  if (!photo) {
+    setText('lensPhotoStatus', 'This device could not decode that image, even reduced.');
+    return;
+  }
+
+  const { rgba, report } = renderPhotoLens(lens, photo);
+  const output = document.createElement('canvas');
+  output.width = report.width;
+  output.height = report.height;
+  const context = output.getContext('2d');
+  if (!context) return;
+  const image = new ImageData(report.width, report.height);
+  image.data.set(rgba);
+  context.putImageData(image, 0, 0);
+  saveCanvas(output, `${report.width}×${report.height}`);
+
+  const megapixels = (report.width * report.height) / 1e6;
+  const shrunk = report.reduced
+    ? ` Reduced from ${report.sourceWidth}×${report.sourceHeight} — this browser would not hold a canvas that large.`
+    : '';
+  setText('lensPhotoStatus',
+    `Rendered ${report.width}×${report.height} (${megapixels.toFixed(1)} MP).${shrunk} ${describeMissing(report.missing)}`.trim());
+}
+
 function wireLensEditor(): void {
   populateChannelSelect(byId<HTMLSelectElement>('lensBrightnessChannel'), true);
   renderRampPresets();
@@ -2581,6 +2672,18 @@ function wireLensEditor(): void {
     anchor.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     setLensStatus('Exported.');
+  });
+
+  on('lensPhotoButton', 'click', () => {
+    setText('lensPhotoStatus', '');
+    byId<HTMLInputElement>('lensPhotoFile').click();
+  });
+
+  on('lensPhotoFile', 'change', (event) => {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (file) void applyLensToPhoto(file);
+    input.value = '';
   });
 
   on('lensImportButton', 'click', () => {

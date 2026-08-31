@@ -157,8 +157,8 @@ It is not the sensor's still resolution. A 36MP or 48MP iPhone photo comes
 from a still-capture path only an installed app can use; Safari does not
 implement `ImageCapture.takePhoto()` either, so there is no web route to it.
 
-A saved frame here will therefore never match the Camera app, however high
-the capture resolution is set. The gap is roughly:
+A frame saved from the LIVE camera will therefore never match the Camera app,
+however high the capture resolution is set. The gap is roughly:
 
 - a 36MP still is 4536×8064
 - a maxed-out video stream is 3840×2160 at best, where the device offers it,
@@ -166,13 +166,40 @@ the capture resolution is set. The gap is roughly:
 
 That is four to eighteen times fewer pixels, before considering that the
 native photo also gets multi-frame HDR, noise reduction and sharpening that
-no browser API exposes. This is a platform limit, not a tuning problem, and
-the app should not pretend otherwise.
+no browser API exposes.
 
-What the app CAN do is ask for the most the stream will give and report what
-it actually got. The Camera Resolution control does that, and the message
-beside it names three separate things: what was asked for, what was
+What the app CAN do about the stream is ask for the most it will give and
+report what it actually got. The Camera Resolution control does that, and the
+message beside it names three separate things: what was asked for, what was
 negotiated, and what the camera advertises it could deliver.
+
+### Full-resolution stills DO have a route
+
+The live stream is capped; a photograph is not. **Apply to a photo…** in the
+lens panel takes a picture the Camera app already shot and runs the lens over
+it at the photograph's own size — tens of megapixels rather than two. That is
+the highest-detail lens image this app can produce, and it does not come from
+its own camera.
+
+Two honest limits come with it:
+
+- **Four of the seven channels cannot exist.** Image speed, change, time since
+  motion and departure from the background all need a sequence, and one
+  photograph has none. A lens bound to one renders empty and the app says
+  why rather than leaving it to look like a bug.
+- **The browser may not hold a canvas that large.** iOS Safari refuses an
+  over-large canvas by returning a BLANK one rather than throwing, so the
+  decoder starts at the file's own size, draws, checks whether anything
+  actually landed, and halves until it does — reporting any reduction it had
+  to make. The check is on ALPHA, not colour: an undrawn canvas is
+  transparent, while a night photograph is opaque black, and judging by colour
+  would throw away exactly the dark frames this app exists to look at.
+
+For reference, `<input type="file" accept="image/*" capture>` would invoke the
+system camera app directly instead of using an existing photo. This app
+deliberately does not use `capture` — the native photo fallback was removed on
+purpose and a test keeps it out — so the flow is: take the picture with the
+Camera app, then load it here.
 
 ## Custom Lenses
 

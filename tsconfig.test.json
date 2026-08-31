@@ -18,6 +18,7 @@
     "src/sensors/stability.ts",
     "src/vision/lens.ts",
     "src/vision/lens-preview.ts",
+    "src/vision/photo-lens.ts",
     "src/vision/lens-store.ts",
     "src/vision/parallax.ts",
     "src/vision/frame-processing.ts",
