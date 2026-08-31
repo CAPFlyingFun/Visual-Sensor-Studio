@@ -21,6 +21,7 @@ import {
 import { aspectRatioFor, cropToAspect, retainedFraction, type SaveAspect } from './vision/aspect.js';
 import { createPlane, type Plane } from './vision/super-resolution.js';
 import { readCapabilities, capabilityLogLine } from './vision/camera-capabilities.js';
+import { fitFocalLength, type FocalSample } from './vision/focal-fit.js';
 import {
   CAPTURE_CANDIDATES, KEEP_FRAMES, MIN_CONFIDENCE, SPREAD_FLOOR,
   estimateShift, judgeBurst, rotationToPixels, type ShiftEstimate
@@ -184,7 +185,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.32.4';
+const APP_VERSION = '0.33.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -7470,7 +7471,12 @@ async function runBurstProbe(): Promise<void> {
 
     const verdict = judgeBurst(shifts, KEEP_FRAMES);
     renderBurstVerdict(verdict, shifts);
-    appendBurstLog(burstLogLine(verdict, distinct, renderBurstAgreement(shifts, gyro)));
+    // Measure the lens before comparing against it. The browser has no field
+    // of view to report — Joshua's capability readout returned seven controls
+    // and none of them was one — but the burst already contains both halves of
+    // the relation that defines it, so it can be solved for rather than typed.
+    const calibration = calibrateFromBurst(shifts, gyro);
+    appendBurstLog(burstLogLine(verdict, distinct, renderBurstAgreement(shifts, gyro), calibration));
   } finally {
     burstRunning = false;
     byId<HTMLButtonElement>('burstCaptureButton').disabled = false;
@@ -7689,10 +7695,46 @@ function appendBurstLog(line: string): void {
   log.scrollTop = log.scrollHeight;
 }
 
+/**
+ * Solve for the focal length from this burst, and adopt it if nothing was set.
+ *
+ * Adopted only when the box is empty: a typed value is a deliberate choice and
+ * a measurement should not overwrite one. Same rule the live-detail setting
+ * follows.
+ */
+function calibrateFromBurst(
+  shifts: ShiftEstimate[],
+  gyro: Array<{ x: number; y: number }>
+): string {
+  const samples: FocalSample[] = [];
+  for (let i = 0; i < shifts.length && i < gyro.length; i++) {
+    if (shifts[i].confidence < MIN_CONFIDENCE) continue;
+    samples.push({
+      imagePixels: Math.hypot(shifts[i].shiftX, shifts[i].shiftY),
+      rotationRadians: Math.hypot(gyro[i].x, gyro[i].y)
+    });
+  }
+  const fit = fitFocalLength(samples, video.videoWidth);
+  setText('burstFovMeasured', fit.reason);
+
+  if (fit.fovDegrees === null) return 'unfit';
+  if (!(settings.motionFovDegrees > 0)) {
+    settings.motionFovDegrees = fit.fovDegrees;
+    saveSettings();
+    const box = document.getElementById('burstFov') as HTMLInputElement | null;
+    if (box && document.activeElement !== box) box.value = fit.fovDegrees.toFixed(0);
+    const twin = document.getElementById('motionFov') as HTMLInputElement | null;
+    if (twin) twin.value = fit.fovDegrees.toFixed(0);
+    syncBurstReadiness();
+  }
+  return `${fit.fovDegrees.toFixed(1)}deg@${(fit.quality * 100).toFixed(0)}%`;
+}
+
 function burstLogLine(
   verdict: ReturnType<typeof judgeBurst>,
   distinct: number,
-  gyro: { travel: number | null; reason: string }
+  gyro: { travel: number | null; reason: string },
+  calibration: string
 ): string {
   const pct = (value: number) => `${(value * 100).toFixed(0)}%`;
   // THE REASON, NOT JUST "n/a". Thirty rows of Joshua's log read n/a and none
@@ -7707,6 +7749,7 @@ function burstLogLine(
     `raw ${pct(verdict.rawSpread).padStart(4)}`,
     `selected ${pct(verdict.selectedSpread).padStart(4)}`,
     `gyro ${(gyro.travel === null ? gyro.reason : `${gyro.travel.toFixed(1)}px`).padStart(12)}`,
+    `lens ${calibration.padStart(14)}`,
     verdict.worthMerging ? 'WORTH' : 'no',
     `v${APP_VERSION}`
   ].join(' · ');

@@ -35,6 +35,7 @@
     "src/vision/super-resolution.ts",
     "src/vision/burst-capture.ts",
     "src/vision/camera-capabilities.ts",
+    "src/vision/focal-fit.ts",
     "src/vision/motion-ironbow.ts",
     "src/vision/observation.ts",
     "src/sensors/autostart.ts",

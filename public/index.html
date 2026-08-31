@@ -740,10 +740,15 @@
           <button class="secondary-button" id="burstEnableCamera" type="button">Enable Camera</button>
           <button class="secondary-button" id="burstEnableMotion" type="button">Enable Motion</button>
           <label class="burst-fov">Lens FOV
-            <input id="burstFov" type="number" min="0" max="180" step="1" placeholder="degrees" />
+            <input id="burstFov" type="number" min="0" max="180" step="1" placeholder="measured" />
           </label>
         </div>
         <p class="helper" id="burstReadiness">Camera and motion can both be started from here.</p>
+        <p class="helper" id="burstFovMeasured">
+          The field of view is measured from the burst, not looked up &mdash; no browser reports
+          it. Turning the phone a little while capturing is what makes it measurable. Type a
+          value only to override.
+        </p>
 
         <div class="metric-strip">
           <div class="metric"><span>Frames</span><strong id="burstFrames">&mdash;</strong></div>
@@ -861,7 +866,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.32.4</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.33.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">

@@ -293,6 +293,7 @@ test('every log line carries the version and the numbers that decide the verdict
   // Distinct especially: a burst of 32 samples of 8 frames looks exactly like
   // a steady hand from the offsets alone.
   assert.match(main, /appendBurstLog\(burstLogLine\(verdict, distinct, renderBurstAgreement\(/);
+  assert.match(main, /`lens \$\{calibration/, 'the log omits the measured lens');
 });
 
 test('the burst tab shows the camera, and marks the region it actually measures', () => {
