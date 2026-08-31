@@ -185,7 +185,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.33.0';
+const APP_VERSION = '0.33.1';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -2018,8 +2018,35 @@ async function enableMotion(): Promise<void> {
   }
 }
 
+/**
+ * Rotation integrated CONTINUOUSLY, at the sensor's own rate.
+ *
+ * The burst probe first integrated this itself, reading `latestMotion` once
+ * per captured frame — about ten times a second. Hand tremor is 8 to 12 Hz, so
+ * that samples a signal at roughly its own frequency and aliases nearly all of
+ * it away: the accumulated rotation came out about a third of the truth, the
+ * lens fit reported 126 degrees for a 70 degree camera, and most bursts could
+ * not be fitted at all.
+ *
+ * Integrating here instead, on every sample the IMU delivers, is the only
+ * place the full signal exists. The burst then reads the running total rather
+ * than re-deriving it from snapshots.
+ */
+const rotationTotal = { x: 0, y: 0 };
+let lastRotationAt = 0;
+
 function onMotionSample(sample: MotionSample): void {
   latestMotion = sample;
+
+  const now = sample.timestamp;
+  if (lastRotationAt > 0) {
+    // Clamped: a gap means the app was backgrounded or the sensor stalled, and
+    // multiplying a stale rate across it invents a rotation that never happened.
+    const dt = Math.min(0.1, Math.max(0, (now - lastRotationAt) / 1000));
+    rotationTotal.x += (sample.rotationRate.gamma * Math.PI / 180) * dt;
+    rotationTotal.y += (sample.rotationRate.beta * Math.PI / 180) * dt;
+  }
+  lastRotationAt = now;
   // The IMU is already running, so stacking stability is measured rather than
   // assumed. A multi-second exposure is only meaningful if the camera held still.
   const report = stability.update({
@@ -7414,16 +7441,20 @@ async function runBurstProbe(): Promise<void> {
     const planes: Plane[] = [];
     // Gyro rotation accumulated between frames, in radians, so the sensor
     // prediction can be checked against what the image actually did.
+    // Snapshots of the CONTINUOUS accumulator, taken as each frame is grabbed.
+    // Integrating here instead would sample tremor at the capture rate and
+    // alias away most of it — see rotationTotal.
     const gyro: Array<{ x: number; y: number }> = [];
-    let rotX = 0;
-    let rotY = 0;
-    let lastAt = performance.now();
+    const rotationAtStart = { x: rotationTotal.x, y: rotationTotal.y };
 
     for (let i = 0; i < CAPTURE_CANDIDATES; i++) {
       const plane = sampleBurstWindow();
       if (!plane) break;
       planes.push(plane);
-      gyro.push({ x: rotX, y: rotY });
+      gyro.push({
+        x: rotationTotal.x - rotationAtStart.x,
+        y: rotationTotal.y - rotationAtStart.y
+      });
       setText('burstProgress', `Capturing ${i + 1} of ${CAPTURE_CANDIDATES}…`);
 
       // WAIT FOR A GENUINELY NEW FRAME, via requestVideoFrameCallback.
@@ -7437,16 +7468,6 @@ async function runBurstProbe(): Promise<void> {
       // a fast loop. Joshua's 39-48% readings were taken with that bug in
       // place and cannot be trusted.
       await nextFrame();
-
-      const now = performance.now();
-      const dt = Math.min(0.5, (now - lastAt) / 1000);
-      lastAt = now;
-      if (latestMotion) {
-        // rotationRate is degrees per second. Rotation about Y moves the image
-        // horizontally, about X vertically.
-        rotX += (latestMotion.rotationRate.gamma * Math.PI / 180) * dt;
-        rotY += (latestMotion.rotationRate.beta * Math.PI / 180) * dt;
-      }
     }
     setText('burstProgress', '');
 

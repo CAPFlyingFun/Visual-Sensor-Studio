@@ -113,3 +113,31 @@ test('the burst measures the lens and only adopts it when nothing was typed', ()
   assert.match(html, /id="burstFov"[^>]*placeholder="measured"/);
   assert.match(html, /measured from the burst, not looked up/);
 });
+
+test('rotation is integrated at the sensor rate, not at the capture rate', () => {
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+
+  // THE BUG THIS RECORDS. The burst first integrated rotation itself, reading
+  // latestMotion once per captured frame — about ten times a second. Hand
+  // tremor is 8 to 12 Hz, so that samples a signal at roughly its own
+  // frequency and aliases nearly all of it away. Measured consequence on
+  // Joshua's phone: gyro travel 2.1-2.3 px against 7-9.5 px of image travel,
+  // a lens fit of 126 degrees for a 70 degree camera, and "unfit" on four
+  // bursts out of five.
+  //
+  // onMotionSample is the only place the full signal exists.
+  const handler = main.slice(main.indexOf('function onMotionSample'),
+    main.indexOf('function onMotionSample') + 1200);
+  assert.match(handler, /rotationTotal\.x \+=/);
+  assert.match(handler, /rotationTotal\.y \+=/);
+  // A gap means the app was backgrounded; multiplying a stale rate across it
+  // invents a rotation that never happened.
+  assert.match(handler, /Math\.min\(0\.1,/);
+
+  // And the burst must SNAPSHOT that total rather than re-derive it.
+  const probe = main.slice(main.indexOf('async function runBurstProbe'),
+    main.indexOf('function countDistinctFrames'));
+  assert.match(probe, /rotationTotal\.x - rotationAtStart\.x/);
+  assert.doesNotMatch(probe, /rotationRate\.(gamma|beta)/,
+    'the burst must not integrate rotation itself');
+});
