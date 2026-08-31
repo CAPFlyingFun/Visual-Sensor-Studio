@@ -119,3 +119,33 @@ test('the viewer chip labels which size is which', () => {
   assert.match(main, /` · cam \$\{diagnostics\.videoWidth\}×\$\{diagnostics\.videoHeight\}`/);
   assert.match(main, /` · draw \$\{visionCanvas\.width\}×\$\{visionCanvas\.height\}`/);
 });
+
+test('the tool survives being asked from a panel that hides the view', () => {
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  // The first reading came back "0x0 pt box · no picture on screen", because
+  // the button lives in Settings and opening Settings covers the camera. The
+  // one moment a person can ask is the one moment the answer is not visible.
+  assert.match(main, /let lastStageBox/);
+  assert.match(main, /function sampleStageBox\(now: number\)/);
+  assert.match(main, /if \(rect\.width < 1 \|\| rect\.height < 1\) return;/);
+  assert.match(main, /last seen in the \$\{lastStageBox\.where\}/);
+  // Sampled from the render loop, which only runs while a view is up.
+  assert.match(main, /sampleStageBox\(displayStarted\)/);
+});
+
+test('RGB is measured on the video, not on a hidden canvas', () => {
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  // In RGB there is no canvas: the video element IS the picture, so measuring
+  // the canvas reports the size of something not being shown.
+  assert.match(main, /function presentingElement\(\): HTMLElement/);
+  assert.match(main, /return visionCanvas\.hidden \? video : visionCanvas;/);
+  assert.match(main, /renderWidth: visionCanvas\.hidden \? diagnostics\.videoWidth/);
+});
+
+test('overdraw distinguishes GPU scaling from CPU work', () => {
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  // The same ratio means opposite things: the compositor scales a video for
+  // nothing, while a canvas render is per-pixel CPU and IS the frame rate.
+  assert.match(main, /scaled by the GPU, so free/);
+  assert.match(main, /CPU work per pixel/);
+});

@@ -168,7 +168,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.27.1';
+const APP_VERSION = '0.27.2';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -3744,6 +3744,8 @@ function processVisionFrame(timestamp: number): boolean {
   // to the analysis-size path below rather than being enlarged and passed off
   // as something larger.
   const displayStarted = performance.now();
+  // Sampled here because this runs only while a view is actually on screen.
+  sampleStageBox(displayStarted);
   const drewLarge = renderDisplayMode(visionMode, buffers);
   if (drewLarge) lensRenderMs += (performance.now() - displayStarted - lensRenderMs) * 0.2;
   // Measured on the mode actually running, so the ladder settles differently
@@ -5347,6 +5349,43 @@ async function compareCaptureResolutions(): Promise<void> {
 }
 
 /**
+ * The last geometry seen while a camera view was actually on screen.
+ *
+ * Measuring on demand does not work here, and the first reading proved it:
+ * the button lives in Settings, opening Settings covers the camera stage, and
+ * the tool dutifully reported a 0x0 box and "no picture on screen". The one
+ * moment a person can ask the question is the one moment the answer is not
+ * visible.
+ *
+ * So the geometry is sampled while the view IS up, and the readout reports
+ * the last good sample along with where it was taken.
+ */
+let lastStageBox: { width: number; height: number; where: string; at: number } | null = null;
+
+/**
+ * Which element is actually presenting the picture right now.
+ *
+ * In RGB there is no canvas at all — the video element is the picture — so
+ * measuring the canvas would report the size of something not being shown.
+ */
+function presentingElement(): HTMLElement {
+  return visionCanvas.hidden ? video : visionCanvas;
+}
+
+function sampleStageBox(now: number): void {
+  if (lastStageBox && now - lastStageBox.at < 400) return;
+  const rect = presentingElement().getBoundingClientRect();
+  if (rect.width < 1 || rect.height < 1) return;
+  const viewerOpen = !byId('cameraViewer').hidden;
+  lastStageBox = {
+    width: rect.width,
+    height: rect.height,
+    where: viewerOpen ? 'full screen' : 'panel',
+    at: now
+  };
+}
+
+/**
  * Report the three sizes that all get called "resolution".
  *
  * Built because guessing which one was which cost several rounds of changes:
@@ -5354,7 +5393,14 @@ async function compareCaptureResolutions(): Promise<void> {
  * size, so a working screen bound looked like a broken one.
  */
 function reportDisplayMetrics(): void {
-  const rect = visionCanvas.getBoundingClientRect();
+  // Prefer a live box; fall back to the last one seen while the view was up.
+  sampleStageBox(performance.now());
+  const live = presentingElement().getBoundingClientRect();
+  const usable = live.width >= 1 && live.height >= 1;
+  const rect = usable
+    ? { width: live.width, height: live.height }
+    : { width: lastStageBox?.width ?? 0, height: lastStageBox?.height ?? 0 };
+  const taken = usable ? 'now' : (lastStageBox ? `last seen in the ${lastStageBox.where}` : 'never seen');
   const diagnostics = camera.diagnostics;
   const report = measureDisplay({
     screenWidth: window.screen?.width ?? window.innerWidth,
@@ -5364,8 +5410,8 @@ function reportDisplayMetrics(): void {
     boxHeight: rect.height,
     sourceWidth: diagnostics.videoWidth,
     sourceHeight: diagnostics.videoHeight,
-    renderWidth: visionCanvas.width,
-    renderHeight: visionCanvas.height,
+    renderWidth: visionCanvas.hidden ? diagnostics.videoWidth : visionCanvas.width,
+    renderHeight: visionCanvas.hidden ? diagnostics.videoHeight : visionCanvas.height,
     fill: document.getElementById('cameraViewer')?.dataset.fit === 'fill'
   });
 
@@ -5380,10 +5426,18 @@ function reportDisplayMetrics(): void {
     ? `${diagnostics.videoWidth}×${diagnostics.videoHeight} · ${megapixels(report.sourcePixels)}`
     : 'no camera');
   setText('dispRender', visionCanvas.hidden
-    ? 'RGB — the video element, not a canvas'
+    ? `RGB — the video element itself, ${diagnostics.videoWidth}×${diagnostics.videoHeight}`
     : `${visionCanvas.width}×${visionCanvas.height} · ${megapixels(report.renderPixels)}`);
+  setText('dispWhen', taken);
+  // Overdraw costs very different things depending on who does the scaling.
+  // In RGB the browser hands the video straight to the compositor and the GPU
+  // scales it for nothing, so a large number there is not a problem. A canvas
+  // render is CPU work per pixel, and the same number is the frame rate.
+  const free = visionCanvas.hidden;
   setText('dispOverdraw', report.overdraw
-    ? `${report.overdraw.toFixed(2)}× ${report.overdraw > 1.2 ? 'more than can be seen' : 'of what is shown'}`
+    ? `${report.overdraw.toFixed(2)}× ${report.overdraw > 1.2
+        ? (free ? 'more than shown — but scaled by the GPU, so free' : 'more than can be seen — CPU work per pixel')
+        : 'of what is shown'}`
     : '—');
   setText('dispSourceOver', report.sourceOverdraw
     ? `${report.sourceOverdraw.toFixed(1)}× the displayable pixels`

@@ -423,6 +423,17 @@ The arithmetic is a pure function with no DOM access, checked against a device
 whose dimensions are known, so the numbers can be verified rather than
 trusted.
 
+The geometry is sampled while a view is actually on screen, not when the
+button is pressed — the button lives in Settings, and opening Settings covers
+the camera, so measuring on demand reported a 0×0 box and "no picture on
+screen". The readout says whether the figure is live or the last one seen, and
+where.
+
+**Overdraw means opposite things in the two cases.** In RGB the browser hands
+the video to the compositor and the GPU scales it for nothing, so a large
+number there costs nothing. A canvas render is CPU work per pixel, and the
+same number is the frame rate.
+
 The viewer chip now labels its sizes too (`cam` and `draw`). It previously
 showed the camera source unlabelled, which was read as the render size — so a
 working screen bound looked like a broken one.
