@@ -174,6 +174,43 @@ export interface CustomLens {
 export const MAX_STOPS = 8;
 export const MIN_STOPS = 2;
 
+/**
+ * A lens in plain words.
+ *
+ * A share code is opaque by design — it is a packed document — so a shared
+ * lens arrives as a wall of base64 that says nothing about what it does. This
+ * is the human half of the same message: which measured field drives the
+ * colour, over what range, and what if anything drives the brightness. It is
+ * what makes a lens something a person can discuss rather than only install.
+ */
+export function describeLens(lens: CustomLens): string {
+  const colour = channelInfo(lens.color.channel);
+  const unit = colour.unit === '0–255' ? '' : ` ${colour.unit}`;
+  const inverted = lens.color.high < lens.color.low;
+  const lo = Math.min(lens.color.low, lens.color.high);
+  const hi = Math.max(lens.color.low, lens.color.high);
+  const digits = hi <= 20 ? 3 : 0;
+  const parts = [
+    `Colour from ${colour.label.toLowerCase()},`
+    + ` ${lo.toFixed(digits)}–${hi.toFixed(digits)}${unit}${inverted ? ' (inverted)' : ''}`
+    + `${lens.color.gamma === 1 ? '' : `, curve ${lens.color.gamma}`}`
+  ];
+  if (lens.brightness) {
+    const b = channelInfo(lens.brightness.channel);
+    const bUnit = b.unit === '0–255' ? '' : ` ${b.unit}`;
+    const bInverted = lens.brightness.high < lens.brightness.low;
+    const bLo = Math.min(lens.brightness.low, lens.brightness.high);
+    const bHi = Math.max(lens.brightness.low, lens.brightness.high);
+    const bDigits = bHi <= 20 ? 3 : 0;
+    parts.push(`brightness from ${b.label.toLowerCase()},`
+      + ` ${bLo.toFixed(bDigits)}–${bHi.toFixed(bDigits)}${bUnit}${bInverted ? ' (inverted)' : ''}`);
+  }
+  parts.push(`${lens.stops.length} colour stops`);
+  if (lens.sceneBlend > 0) parts.push(`${Math.round(lens.sceneBlend * 100)}% picture showing through`);
+  parts.push(`over ${lens.base === 'scene' ? 'the camera picture' : lens.base}`);
+  return parts.join(' · ');
+}
+
 /* ------------------------------------------------------------------ *
  * Colour
  * ------------------------------------------------------------------ */

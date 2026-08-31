@@ -1299,3 +1299,23 @@ button.ghost.danger {
   font-size: 11px;
   margin: 2px 0 0;
 }
+
+#lensShareText {
+  width: 100%;
+  box-sizing: border-box;
+  background: #0e151d;
+  border: 1px solid #2b3a4a;
+  border-radius: 8px;
+  color: #cfe0ef;
+  padding: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  /* Selectable and scrollable rather than clipped: on iOS a clipboard write
+     is refused often enough that hand-copying has to actually work. */
+  -webkit-user-select: text;
+  user-select: text;
+  word-break: break-all;
+}
+#lensShareSummary {
+  color: #9fd8ff;
+}

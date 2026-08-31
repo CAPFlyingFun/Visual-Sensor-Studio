@@ -41,6 +41,7 @@ import {
   CHANNELS,
   buildRampLut,
   channelInfo,
+  describeLens,
   rampToCss,
   renderLens,
   upscaleChannel,
@@ -165,7 +166,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.24.0';
+const APP_VERSION = '0.24.1';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -2542,6 +2543,32 @@ async function applyLensToPhoto(file: File): Promise<void> {
     `Rendered ${report.width}×${report.height} (${megapixels.toFixed(1)} MP).${shrunk} ${describeMissing(report.missing)}`.trim());
 }
 
+/**
+ * Show a lens as a link, a code, and a sentence.
+ *
+ * Sharing used to live only inside the editor, which meant sharing a lens
+ * required first pressing Edit on it — a step with no obvious connection to
+ * the thing being asked for.
+ *
+ * The code is put on screen as SELECTABLE TEXT and only then offered to the
+ * clipboard. On iOS a clipboard write from anything but a direct user gesture
+ * is refused often enough that treating it as the primary path loses the
+ * thing being shared; the visible box always works.
+ *
+ * The description matters as much as the code. A share code is opaque by
+ * design, so a lens arriving as a wall of base64 tells the person receiving it
+ * nothing about what it does — the sentence is what makes it discussable
+ * rather than merely installable.
+ */
+function showLensShare(lens: CustomLens): void {
+  const link = shareLink(sanitiseLens(lens), location.href);
+  byId('lensShareBox').hidden = false;
+  byId<HTMLTextAreaElement>('lensShareText').value = link;
+  setText('lensShareSummary', `${lens.name} — ${describeLens(lens)}`);
+  setText('lensShareStatus', '');
+  byId('lensShareBox').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
 function wireLensEditor(): void {
   populateChannelSelect(byId<HTMLSelectElement>('lensBrightnessChannel'), true);
   renderRampPresets();
@@ -2656,19 +2683,11 @@ function wireLensEditor(): void {
     renderLensChips();
   });
 
-  on('lensShareButton', 'click', async () => {
+  on('lensShareButton', 'click', () => {
     if (!editingLens) return;
-    const link = shareLink(sanitiseLens(editingLens), location.href);
-    try {
-      await navigator.clipboard.writeText(link);
-      setLensStatus('Link copied. Anyone who opens it gets this lens.');
-    } catch {
-      // Clipboard access is refused in plenty of ordinary situations, so the
-      // code is shown to be copied by hand rather than lost.
-      byId('lensImport').hidden = false;
-      byId<HTMLTextAreaElement>('lensImportText').value = link;
-      setLensStatus('Clipboard refused. The link is in the box below — copy it from there.');
-    }
+    // One share path, so the editor and the panel cannot drift apart.
+    showLensShare(editingLens);
+    setLensStatus('');
   });
 
   on('lensExportButton', 'click', () => {
@@ -2682,6 +2701,31 @@ function wireLensEditor(): void {
     anchor.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     setLensStatus('Exported.');
+  });
+
+  on('lensShareNowButton', 'click', () => {
+    const lens = editingLens ?? activeLens;
+    if (!lens) {
+      setText('lensShareStatus', 'Choose a lens first.');
+      return;
+    }
+    showLensShare(lens);
+  });
+
+  on('lensShareCopyButton', 'click', async () => {
+    const text = byId<HTMLTextAreaElement>('lensShareText').value;
+    try {
+      await navigator.clipboard.writeText(text);
+      setText('lensShareStatus', 'Copied.');
+    } catch {
+      // Expected often enough that it is not an error worth alarming about:
+      // the text is already on screen and selectable.
+      setText('lensShareStatus', 'This browser refused the clipboard — select the text above and copy it.');
+    }
+  });
+
+  on('lensShareCloseButton', 'click', () => {
+    byId('lensShareBox').hidden = true;
   });
 
   on('lensPhotoButton', 'click', () => {

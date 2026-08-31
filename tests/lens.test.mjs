@@ -7,6 +7,7 @@ import {
   channelInfo,
   parseHex,
   rampToCss,
+  describeLens,
   renderLens,
   toHex,
   upscaleChannel
@@ -437,6 +438,44 @@ test('deleting removes only the named lens', () => {
   const remaining = deleteLens(storage, lenses, lenses[0].id);
   assert.equal(remaining.length, 1);
   assert.equal(remaining[0].name, 'B');
+});
+
+test('a lens describes itself in plain words', () => {
+  const lens = baseLens({
+    name: 'Ember',
+    color: { channel: 'speed', low: 0.01, high: 0.35, gamma: 0.7 },
+    brightness: { channel: 'age', low: 5, high: 0, gamma: 1 },
+    sceneBlend: 0.12
+  });
+  const text = describeLens(lens);
+  assert.match(text, /Colour from image speed/i);
+  assert.match(text, /widths\/s/);
+  assert.match(text, /brightness from time since motion/i);
+  // A range written high-to-low is an inversion, and saying so matters:
+  // "5 to 0" read as a range would look like a typo rather than a choice.
+  assert.match(text, /inverted/);
+  assert.match(text, /12% picture showing through/);
+});
+
+test('a description states the curve only when it is not linear', () => {
+  const linear = describeLens(baseLens({ color: { channel: 'luma', low: 0, high: 255, gamma: 1 } }));
+  assert.doesNotMatch(linear, /curve/);
+  const bent = describeLens(baseLens({ color: { channel: 'luma', low: 0, high: 255, gamma: 2 } }));
+  assert.match(bent, /curve 2/);
+});
+
+test('a description never invents a second channel', () => {
+  const text = describeLens(baseLens({ color: { channel: 'edges', low: 0, high: 160, gamma: 1 } }));
+  assert.doesNotMatch(text, /brightness from/);
+});
+
+test('every shipped lens describes itself without throwing', () => {
+  const raw = JSON.parse(readFileSync(new URL('../public/lenses/index.json', import.meta.url), 'utf8'));
+  for (const entry of raw.lenses) {
+    const text = describeLens(sanitiseLens(entry));
+    assert.ok(text.length > 20, `${entry.name} needs a real description`);
+    assert.doesNotMatch(text, /undefined|NaN/);
+  }
 });
 
 /* ---------------------------------------------------------------- *

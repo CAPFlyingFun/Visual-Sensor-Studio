@@ -239,6 +239,48 @@ test('only one line in the app may reveal the overlay canvas', () => {
   assert.match(mainSource, /paintVisionCanvas\(display\.width, display\.height/);
 });
 
+test('a lens can be shared without opening the editor', () => {
+  // Sharing used to live only inside the editor, so sharing a lens required
+  // first pressing Edit on it — a step with no obvious connection to the
+  // thing being asked for.
+  assert.match(htmlSource, /id="lensShareNowButton"/);
+  assert.match(mainSource, /on\('lensShareNowButton', 'click'/);
+  assert.match(mainSource, /const lens = editingLens \?\? activeLens/);
+});
+
+test('the share code is on screen before it is offered to the clipboard', () => {
+  // On iOS a clipboard write from anything but a direct gesture is refused
+  // often enough that treating it as the primary path loses the thing being
+  // shared. The visible, selectable box always works.
+  const fn = mainSource.slice(
+    mainSource.indexOf('function showLensShare'),
+    mainSource.indexOf('function wireLensEditor')
+  );
+  assert.match(fn, /lensShareText'\)\.value = link/);
+  assert.doesNotMatch(fn, /clipboard/);
+  assert.match(htmlSource, /id="lensShareText"[\s\S]{0,80}readonly/);
+  assert.match(cssSource, /#lensShareText[\s\S]*?user-select: text/);
+  // A refused clipboard is a note, not an alarm.
+  assert.match(mainSource, /refused the clipboard — select the text above/);
+});
+
+test('a shared lens carries a sentence, not only a code', () => {
+  // A share code is opaque by design, so a lens arriving as a wall of base64
+  // says nothing about what it does.
+  assert.match(mainSource, /describeLens\(lens\)/);
+  assert.match(htmlSource, /id="lensShareSummary"/);
+});
+
+test('both share paths go through one function', () => {
+  // The editor button and the panel button must not drift apart.
+  assert.match(mainSource, /on\('lensShareButton', 'click', \(\) => \{[\s\S]{0,200}showLensShare\(editingLens\)/);
+});
+
+test('the share panel says nothing is uploaded', () => {
+  const box = htmlSource.slice(htmlSource.indexOf('id="lensShareBox"'));
+  assert.match(box.slice(0, 900), /Nothing is uploaded/);
+});
+
 test('the editor has styles rather than inheriting a broken layout', () => {
   for (const selector of ['.lens-chip', '.lens-stop', '.lens-swatch', '.lens-actions',
     '.lens-channel', '.lens-preset', '.lens-preview canvas', '.lens-step']) {

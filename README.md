@@ -346,7 +346,13 @@ was.
   slot limit; the real limit is the quota, and it is reported when it is
   actually reached.
 - **Shared** — a share code packs the whole lens into a link. There is no
-  server in this path: sending someone a lens is sending them text.
+  server in this path: sending someone a lens is sending them text. **Share
+  this lens…** works from the panel without opening the editor, puts the code
+  on screen as selectable text BEFORE offering the clipboard (iOS refuses a
+  clipboard write from anything but a direct gesture often enough that
+  treating it as the primary path loses the thing being shared), and prints a
+  plain-language description beside it — a share code is opaque, so a lens
+  arriving as a wall of base64 says nothing about what it does.
 - **Gallery** — the lenses in `public/lenses/index.json` ship with the site.
 
 There is deliberately no "publish to everyone" button. This is a static site

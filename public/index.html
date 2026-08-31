@@ -177,6 +177,7 @@
               <button class="ghost" type="button" id="lensEditButton">Edit</button>
               <button class="ghost" type="button" id="lensImportButton">Load…</button>
               <button class="ghost" type="button" id="lensPhotoButton">Apply to a photo…</button>
+              <button class="ghost" type="button" id="lensShareNowButton">Share this lens…</button>
             </div>
             <div id="lensEditor" hidden>
               <details class="lens-intro" id="lensIntro">
@@ -268,6 +269,20 @@
                 </div>
                 <p class="helper" id="lensStatus" role="status"></p>
               </div>
+            </div>
+            <div id="lensShareBox" hidden>
+              <p class="helper" id="lensShareSummary"></p>
+              <textarea id="lensShareText" rows="4" readonly
+                aria-label="Share code for this lens"></textarea>
+              <p class="helper">
+                Select the text above and copy it. Anyone who opens the link, or pastes the
+                code into Load…, gets this lens. Nothing is uploaded — a shared lens is just text.
+              </p>
+              <div class="lens-actions">
+                <button class="ghost" type="button" id="lensShareCopyButton">Copy</button>
+                <button class="ghost" type="button" id="lensShareCloseButton">Done</button>
+              </div>
+              <p class="helper" id="lensShareStatus" role="status"></p>
             </div>
             <p class="helper" id="lensPhotoStatus" role="status"></p>
             <input type="file" id="lensPhotoFile" accept="image/*" hidden />
@@ -736,7 +751,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.24.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.24.1</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">
