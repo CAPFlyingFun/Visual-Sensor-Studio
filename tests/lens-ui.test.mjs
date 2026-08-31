@@ -57,11 +57,39 @@ test('an unmeasurable channel is left out rather than zero-filled', () => {
   assert.match(builder, /state\[i\] === UNRESOLVED \? 0 : 1/);
 });
 
-test('the exported still is the picture that was on screen', () => {
+test('an exported lens still carries full-resolution detail', () => {
+  // A saved PNG was full SIZE but analysis-resolution CONTENT: the picture
+  // was rendered small and then repeated into blocks, so a brightness lens
+  // saved at max resolution came out visibly chunky.
   const still = mainSource.slice(mainSource.indexOf('function renderStill'));
   const lensCase = still.slice(still.indexOf("case 'lens'"), still.indexOf("case 'night'"));
-  assert.match(lensCase, /upscaleRgba\(/, 'render at analysis size, then enlarge');
-  assert.doesNotMatch(lensCase, /rgbaToGray\(frame\.data\)/);
+  assert.match(lensCase, /new Uint8ClampedArray\(width \* height \* 4\)/);
+  assert.match(lensCase, /buildStillLensSources\(/);
+  assert.doesNotMatch(lensCase, /upscaleRgba/, 'the block enlargement must be gone');
+  assert.doesNotMatch(mainSource, /function upscaleRgba/);
+});
+
+test('the still recomputes every channel it can at full size', () => {
+  const builder = mainSource.slice(
+    mainSource.indexOf('function buildStillLensSources'),
+    mainSource.indexOf('function renderStill')
+  );
+  // Four of the seven need no enlargement at all.
+  assert.match(builder, /sources\.luma = \{ values: gray \}/);
+  assert.match(builder, /sobelEdges\(gray, width, height\)/);
+  assert.match(builder, /reliefField\(gray, width, height/);
+  assert.match(builder, /absoluteDifference\(gray, rgbaToGray\(previous\.data\)\)/);
+  // Only the accumulated temporal ones are enlarged, and smoothly.
+  assert.match(builder, /\['speed', 'age', 'novelty'\] as const/);
+  assert.match(builder, /upscaleChannel\(channel, analysis\.width, analysis\.height, width, height\)/);
+});
+
+test('a lens bound to change captures the second frame it needs', () => {
+  // Without it the difference channel has nothing to compare against and the
+  // still comes out empty.
+  assert.match(mainSource, /const lensWantsChange = visionMode === 'lens'/);
+  assert.match(mainSource, /lensChannels\(activeLens\)\.has\('change'\)/);
+  assert.match(mainSource, /\|\| lensWantsChange\) \{/);
 });
 
 test('the editor is wired through the boot-safe helper', () => {

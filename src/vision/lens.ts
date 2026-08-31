@@ -282,6 +282,82 @@ export interface LensRenderReport {
  * lens bound to a field the current frame has not produced looks empty instead
  * of looking like a confident reading of nothing.
  */
+/**
+ * Enlarge a channel to a target geometry for a full-resolution still.
+ *
+ * Some fields can be recomputed at full size from the frame itself — luma,
+ * edges, relief, and a frame difference when two full frames were captured.
+ * The temporal estimates cannot: speed, age and novelty are accumulated on
+ * the analysis frame across time, and there is no full-resolution history to
+ * re-derive them from. Enlarging is the honest option for those, and bilinear
+ * enlarging is a far better one than repeating pixels — the measurement stays
+ * an analysis-resolution measurement either way, but the picture stops being
+ * a grid of blocks.
+ *
+ * THE VALID MASK IS ENLARGED CONSERVATIVELY. A target pixel counts as
+ * measured only when every source sample feeding it was measured; otherwise
+ * interpolating across the boundary between measured and unmeasured would
+ * invent a reading in a place that never had one.
+ */
+export function upscaleChannel(
+  channel: ChannelData,
+  sourceWidth: number,
+  sourceHeight: number,
+  targetWidth: number,
+  targetHeight: number
+): ChannelData {
+  const values = new Float32Array(targetWidth * targetHeight);
+  const valid = channel.valid ? new Uint8Array(targetWidth * targetHeight) : null;
+  if (sourceWidth < 1 || sourceHeight < 1) {
+    return { values, valid };
+  }
+
+  const scaleX = sourceWidth / targetWidth;
+  const scaleY = sourceHeight / targetHeight;
+
+  for (let y = 0; y < targetHeight; y++) {
+    // Half-pixel centring, clamped at both ends: an unclamped negative
+    // fraction extrapolates past the edge of the data instead of
+    // interpolating within it, which puts out-of-range values along every
+    // border.
+    const sy = clamp((y + 0.5) * scaleY - 0.5, 0, sourceHeight - 1);
+    const y0 = Math.floor(sy);
+    const y1 = Math.min(sourceHeight - 1, y0 + 1);
+    const fy = sy - y0;
+
+    for (let x = 0; x < targetWidth; x++) {
+      const sx = clamp((x + 0.5) * scaleX - 0.5, 0, sourceWidth - 1);
+      const x0 = Math.floor(sx);
+      const x1 = Math.min(sourceWidth - 1, x0 + 1);
+      const fx = sx - x0;
+
+      const iA = y0 * sourceWidth + x0;
+      const iB = y0 * sourceWidth + x1;
+      const iC = y1 * sourceWidth + x0;
+      const iD = y1 * sourceWidth + x1;
+      const target = y * targetWidth + x;
+
+      const a = channel.values[iA] ?? 0;
+      const b = channel.values[iB] ?? 0;
+      const c = channel.values[iC] ?? 0;
+      const d = channel.values[iD] ?? 0;
+      const top = a + (b - a) * fx;
+      const bottom = c + (d - c) * fx;
+      values[target] = top + (bottom - top) * fy;
+
+      if (valid && channel.valid) {
+        const all = (channel.valid[iA] ?? 0) !== 0
+          && (channel.valid[iB] ?? 0) !== 0
+          && (channel.valid[iC] ?? 0) !== 0
+          && (channel.valid[iD] ?? 0) !== 0;
+        valid[target] = all ? 1 : 0;
+      }
+    }
+  }
+
+  return { values, valid };
+}
+
 export function renderLens(
   lens: CustomLens,
   sources: ChannelSource,

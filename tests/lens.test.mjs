@@ -8,7 +8,8 @@ import {
   parseHex,
   rampToCss,
   renderLens,
-  toHex
+  toHex,
+  upscaleChannel
 } from '../.test-build/vision/lens.js';
 import {
   decodeLensShare,
@@ -214,6 +215,78 @@ test('every rendered pixel is opaque', () => {
   const out = new Uint8ClampedArray(4 * 4);
   renderLens(lens, { speed: { values, valid } }, gray, 2, 2, out);
   for (let i = 0; i < 4; i++) assert.equal(out[i * 4 + 3], 255);
+});
+
+/* ---------------------------------------------------------------- *
+ * Enlarging a channel for a full-resolution still
+ * ---------------------------------------------------------------- */
+
+test('enlarging a channel interpolates rather than repeating blocks', () => {
+  const source = { values: new Float32Array([0, 1]) };
+  const out = upscaleChannel(source, 2, 1, 8, 1);
+  // A repeated-pixel enlargement gives four 0s then four 1s. A real one
+  // climbs, which is the difference between a blocky still and a smooth one.
+  const distinct = new Set([...out.values].map((v) => v.toFixed(3)));
+  assert.ok(distinct.size > 2, `expected a gradient, got ${[...distinct].join(', ')}`);
+  for (let i = 1; i < out.values.length; i++) {
+    assert.ok(out.values[i] >= out.values[i - 1], 'the ramp must be monotonic');
+  }
+});
+
+test('enlarging never puts a value outside the source range', () => {
+  // Half-pixel centring puts the first sample below zero, and an unclamped
+  // negative fraction extrapolates past the data instead of interpolating
+  // within it — which is how borders acquire impossible readings.
+  const values = new Float32Array([2, 5, 9, 4, 7, 1]);
+  const out = upscaleChannel({ values }, 3, 2, 31, 17);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  for (const value of out.values) {
+    assert.ok(value >= min - 1e-6 && value <= max + 1e-6, `${value} escaped [${min}, ${max}]`);
+  }
+});
+
+test('an enlarged pixel is measured only if every sample feeding it was', () => {
+  // Interpolating across the boundary between measured and unmeasured would
+  // invent a reading in a place that never had one, and the palette would
+  // make it look as confident as any other.
+  const values = new Float32Array([1, 1, 1, 1]);
+  const valid = new Uint8Array([1, 0, 1, 1]);
+  const out = upscaleChannel({ values, valid }, 2, 2, 8, 8);
+  assert.ok(out.valid, 'the mask must survive enlargement');
+  // The one unmeasured corner has to contaminate everything it touches, so
+  // the enlarged mask can never claim more coverage than the source did.
+  const claimed = [...out.valid].filter((v) => v !== 0).length / out.valid.length;
+  const sourceClaimed = [...valid].filter((v) => v !== 0).length / valid.length;
+  assert.ok(claimed <= sourceClaimed + 1e-6,
+    `enlarging claimed ${claimed.toFixed(2)} from a source of ${sourceClaimed.toFixed(2)}`);
+});
+
+test('a channel with no mask stays maskless when enlarged', () => {
+  const out = upscaleChannel({ values: new Float32Array([1, 2, 3, 4]) }, 2, 2, 4, 4);
+  assert.equal(out.valid, null);
+});
+
+test('enlarging a degenerate field does not throw', () => {
+  for (const [sw, sh] of [[0, 0], [1, 1], [0, 4]]) {
+    assert.doesNotThrow(() => upscaleChannel({ values: new Float32Array(sw * sh) }, sw, sh, 4, 4));
+  }
+});
+
+test('an enlarged channel renders through a lens unchanged in character', () => {
+  // The end-to-end point: enlarging feeds the same renderLens, and an
+  // unmeasured region still refuses to take a colour on the way out.
+  const lens = baseLens({ base: 'grey' });
+  const values = new Float32Array([1, 1, 1, 1]);
+  const valid = new Uint8Array([1, 1, 0, 1]);
+  const big = upscaleChannel({ values, valid }, 2, 2, 6, 6);
+  const gray = new Uint8ClampedArray(36).fill(200);
+  const out = new Uint8ClampedArray(36 * 4);
+  const report = renderLens(lens, { speed: big }, gray, 6, 6, out);
+  assert.ok(report.coverage < 1, 'the unmeasured corner must survive to the picture');
+  let base = 0;
+  for (let i = 0; i < 36; i++) if (out[i * 4] === 28) base++;
+  assert.ok(base > 0, 'unmeasured pixels should be painted the base');
 });
 
 /* ---------------------------------------------------------------- *

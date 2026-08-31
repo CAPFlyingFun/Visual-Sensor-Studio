@@ -18,6 +18,7 @@ import {
   channelInfo,
   rampToCss,
   renderLens,
+  upscaleChannel,
   type ChannelId,
   type ChannelSource,
   type CustomLens
@@ -131,7 +132,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.21.0';
+const APP_VERSION = '0.21.1';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -4451,28 +4452,54 @@ function nextFrame(): Promise<void> {
 }
 
 /** Render one mode at full resolution into an RGBA buffer. */
-/** Nearest-neighbour enlargement, so an exported still is the picture that was on screen. */
-function upscaleRgba(
-  source: Uint8ClampedArray,
-  sourceWidth: number,
-  sourceHeight: number,
-  targetWidth: number,
-  targetHeight: number
-): Uint8ClampedArray {
-  const out = new Uint8ClampedArray(targetWidth * targetHeight * 4);
-  for (let y = 0; y < targetHeight; y++) {
-    const sy = Math.min(sourceHeight - 1, Math.floor((y * sourceHeight) / targetHeight));
-    for (let x = 0; x < targetWidth; x++) {
-      const sx = Math.min(sourceWidth - 1, Math.floor((x * sourceWidth) / targetWidth));
-      const from = (sy * sourceWidth + sx) * 4;
-      const to = (y * targetWidth + x) * 4;
-      out[to] = source[from];
-      out[to + 1] = source[from + 1];
-      out[to + 2] = source[from + 2];
-      out[to + 3] = 255;
+/**
+ * Channel data for a full-resolution still.
+ *
+ * Four of the seven channels are recomputed here at the frame's real size, so
+ * a saved lens picture carries the detail the sensor actually delivered. The
+ * three that cannot are accumulated across time on the analysis frame — there
+ * is no full-resolution history to re-derive them from — so they are enlarged
+ * from the live measurement instead, smoothly and with a conservative valid
+ * mask.
+ */
+function buildStillLensSources(
+  lens: CustomLens,
+  gray: Uint8ClampedArray,
+  width: number,
+  height: number,
+  previous: ImageData | null
+): ChannelSource {
+  const needed = lensChannels(lens);
+  const sources: ChannelSource = {};
+  const analysis = visionBuffers;
+
+  if (needed.has('luma')) sources.luma = { values: gray };
+
+  let edges: Uint8ClampedArray | null = null;
+  if (needed.has('edges') || needed.has('relief')) {
+    edges = sobelEdges(gray, width, height);
+    if (needed.has('edges')) sources.edges = { values: edges };
+    if (needed.has('relief')) {
+      sources.relief = { values: reliefField(gray, width, height, undefined, edges) };
     }
   }
-  return out;
+
+  if (needed.has('change') && previous) {
+    // A genuine full-resolution difference, from the second captured frame.
+    sources.change = { values: absoluteDifference(gray, rgbaToGray(previous.data)) };
+  }
+
+  if (analysis) {
+    const live = buildLensSources(analysis, lens);
+    for (const id of ['speed', 'age', 'novelty'] as const) {
+      const channel = live[id];
+      if (needed.has(id) && channel) {
+        sources[id] = upscaleChannel(channel, analysis.width, analysis.height, width, height);
+      }
+    }
+  }
+
+  return sources;
 }
 
 function renderStill(mode: VisionMode, frame: ImageData, previous: ImageData | null): Uint8ClampedArray {
@@ -4525,24 +4552,24 @@ function renderStill(mode: VisionMode, frame: ImageData, previous: ImageData | n
       return renderMotionIronbow(gray, scaled.speed, scaled.state, new Uint8ClampedArray(width * height * 4));
     }
     case 'lens': {
-      // Rendered at the ANALYSIS resolution and enlarged, for the same reason
-      // Speed is: the channels a lens reads are per-pixel estimates made on
-      // the analysis frame, and re-deriving them at full size would save a
-      // different picture from the one that was on screen. Mixing a full-size
-      // luma with an analysis-size speed field would also misalign them.
-      const analysis = visionBuffers;
-      if (!analysis || !activeLens) return frame.data;
-      const small = new Uint8ClampedArray(analysis.width * analysis.height * 4);
+      if (!activeLens) return frame.data;
+      // Rendered at FULL resolution. Most of what a lens reads can be
+      // recomputed from this frame at its real size — luma, edges, relief,
+      // and a frame difference when a second full frame was captured — so
+      // there is no reason for a saved still to carry analysis-resolution
+      // detail. Only the accumulated temporal estimates have to be enlarged,
+      // and those are enlarged smoothly rather than as blocks.
+      const out = new Uint8ClampedArray(width * height * 4);
       renderLens(
         activeLens,
-        buildLensSources(analysis, activeLens),
-        analysis.gray,
-        analysis.width,
-        analysis.height,
-        small,
+        buildStillLensSources(activeLens, gray, width, height, previous),
+        gray,
+        width,
+        height,
+        out,
         lensLut(activeLens)
       );
-      return upscaleRgba(small, analysis.width, analysis.height, width, height);
+      return out;
     }
     case 'night': {
       const rgba = Uint8ClampedArray.from(frame.data);
@@ -4612,7 +4639,11 @@ async function captureStill(): Promise<void> {
   let previous: ImageData | null = null;
   // Speed is absent on purpose: it reuses the live measurement rather than
   // re-deriving one, so a second frame would be grabbed and thrown away.
-  if (visionMode === 'motion' || visionMode === 'difference' || visionMode === 'flow') {
+  const lensWantsChange = visionMode === 'lens'
+    && !!activeLens
+    && lensChannels(activeLens).has('change');
+  if (visionMode === 'motion' || visionMode === 'difference' || visionMode === 'flow'
+    || lensWantsChange) {
     setText('cameraMessage', 'Capturing two frames for the motion comparison…');
     await nextFrame();
     previous = frame;

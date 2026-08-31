@@ -193,6 +193,17 @@ block the local gradient varies, and where it is weak the ratio inflates, so
 it reads high rather than recovering the quoted number. What survives — and
 what setting a range actually needs — is the ordering.
 
+### Saved stills
+
+A lens still is rendered at the frame's FULL resolution. Four of the seven
+channels are recomputed there at their real size — luma, edges, relief, and a
+frame difference taken from a second full capture. The three that accumulate
+across time (speed, time since motion, and departure from the background) are
+measured on the analysis frame and have no full-resolution history to be
+re-derived from, so they are enlarged — smoothly, and with a conservative
+valid mask, so a pixel counts as measured only when every sample feeding it
+was.
+
 ### Where lenses live
 
 - **Local** — saved in this browser, on this device, offline, unlimited. A
