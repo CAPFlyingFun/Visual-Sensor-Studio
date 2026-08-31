@@ -1,0 +1,90 @@
+{
+  "note": "Lenses that ship with Visual Sensor Studio. A lens is data: it recolours a field the app already measures, and it cannot add a measurement the app does not have. To add one, open a pull request against public/lenses/index.json.",
+  "lenses": [
+    {
+      "name": "Ember",
+      "author": "VSS",
+      "note": "Slow movement smoulders, fast movement flares.",
+      "color": { "channel": "speed", "low": 0.01, "high": 0.35, "gamma": 0.7 },
+      "stops": [
+        { "at": 0, "color": "#0b0524" },
+        { "at": 0.35, "color": "#7a1839" },
+        { "at": 0.7, "color": "#ff7a18" },
+        { "at": 1, "color": "#fff4cf" }
+      ],
+      "base": "black",
+      "sceneBlend": 0.12
+    },
+    {
+      "name": "Frost trails",
+      "author": "VSS",
+      "note": "Hue is how fast it moved, brightness is how long ago.",
+      "color": { "channel": "speed", "low": 0.01, "high": 0.3, "gamma": 0.8 },
+      "stops": [
+        { "at": 0, "color": "#0a2a4a" },
+        { "at": 0.5, "color": "#38c6ff" },
+        { "at": 1, "color": "#f2fbff" }
+      ],
+      "brightness": { "channel": "age", "low": 5, "high": 0, "gamma": 1.4 },
+      "base": "black",
+      "sceneBlend": 0.08
+    },
+    {
+      "name": "Contour",
+      "author": "VSS",
+      "note": "Banded shading, read like a map. Bands are equal steps of brightness, not equal steps of distance.",
+      "color": { "channel": "relief", "low": 40, "high": 220, "gamma": 1 },
+      "stops": [
+        { "at": 0, "color": "#04121c" },
+        { "at": 0.25, "color": "#04121c" },
+        { "at": 0.25, "color": "#0d5c52" },
+        { "at": 0.5, "color": "#0d5c52" },
+        { "at": 0.5, "color": "#8ec63f" },
+        { "at": 0.75, "color": "#8ec63f" },
+        { "at": 0.75, "color": "#f2e394" },
+        { "at": 1, "color": "#fff8e0" }
+      ],
+      "base": "black",
+      "sceneBlend": 0
+    },
+    {
+      "name": "Ghost",
+      "author": "VSS",
+      "note": "Only what is not normally in the scene. Leave the phone still for a few seconds first.",
+      "color": { "channel": "novelty", "low": 8, "high": 70, "gamma": 0.9 },
+      "stops": [
+        { "at": 0, "color": "#000000" },
+        { "at": 0.4, "color": "#5b1a8a" },
+        { "at": 1, "color": "#ff4fd8" }
+      ],
+      "base": "black",
+      "sceneBlend": 0.22
+    },
+    {
+      "name": "Ink",
+      "author": "VSS",
+      "note": "Edges as pen on paper.",
+      "color": { "channel": "edges", "low": 12, "high": 130, "gamma": 0.8 },
+      "stops": [
+        { "at": 0, "color": "#f4f1e8" },
+        { "at": 0.55, "color": "#8d8878" },
+        { "at": 1, "color": "#0d0c0a" }
+      ],
+      "base": "black",
+      "sceneBlend": 0
+    },
+    {
+      "name": "Sonar",
+      "author": "VSS",
+      "note": "Change as a green sweep over a dark scene.",
+      "color": { "channel": "change", "low": 4, "high": 55, "gamma": 0.75 },
+      "stops": [
+        { "at": 0, "color": "#020a06" },
+        { "at": 0.5, "color": "#1f9e5a" },
+        { "at": 1, "color": "#c8ffdd" }
+      ],
+      "base": "black",
+      "sceneBlend": 0.18
+    }
+  ]
+}

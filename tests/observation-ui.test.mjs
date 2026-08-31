@@ -603,7 +603,10 @@ test('a snapshot saves the numbers, not just the picture', () => {
 });
 
 test('freezing holds the trail without stopping the camera', () => {
-  assert.match(mainSource, /visionMode === 'motiontrails' && !trailFrozen/);
+  // Trails accumulate for the Trails mode and for any custom lens bound to
+  // age, and the freeze has to hold whichever of them asked for it — so this
+  // checks the guard, not one particular caller.
+  assert.match(mainSource, /visionMode === 'motiontrails' \|\| lensNeeds\('age'\)\) && !trailFrozen/);
   assert.match(mainSource, /function setTrailFrozen\(frozen: boolean\)/);
   assert.match(htmlSource, /id=["']motionFreezeButton["']/);
 });

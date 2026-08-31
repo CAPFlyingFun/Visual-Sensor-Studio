@@ -149,6 +149,47 @@ Speeds are in **analysis-frame pixels per second** and stay that way.
 Converting to m/s or mph needs distance to the subject and the lens's angular
 scale, neither of which this app has.
 
+## Custom Lenses
+
+A **lens** is a false-colour mapping you design: pick one of the per-pixel
+fields the app already measures, pick the colours it maps to, and optionally
+let a second field drive the brightness. It is exactly the pairing that the
+built-in modes hard-code — Ironbow is speed through a thermography ramp,
+Trails is speed through hue and age through brightness — pulled out into data.
+
+A lens is a small JSON document, so nothing in one can execute, and everything
+in one is validated and clamped before it reaches the renderer.
+
+The channels are: brightness, image speed, change, edge strength, relief, time
+since motion, and departure from the learned background.
+
+**There is no depth channel.** A browser on iOS gets camera frames and nothing
+else — no depth buffer, no disparity map, no LiDAR access, whatever the
+hardware behind the glass can do. `relief` is *shading* read as a surface: it
+looks three-dimensional and it is not a distance. Naming it depth would make
+every lens built on it a false claim.
+
+A lens only pays for the channels it binds. One reading edges never starts the
+speed field, the trail buffer or the background model.
+
+### Where lenses live
+
+- **Local** — saved in this browser, on this device, offline, unlimited. A
+  lens is a few hundred bytes against a multi-megabyte quota, so there is no
+  slot limit; the real limit is the quota, and it is reported when it is
+  actually reached.
+- **Shared** — a share code packs the whole lens into a link. There is no
+  server in this path: sending someone a lens is sending them text.
+- **Gallery** — the lenses in `public/lenses/index.json` ship with the site.
+
+There is deliberately no "publish to everyone" button. This is a static site
+on GitHub Pages, and a static site can be read by anyone and written by no
+one: pushing a file into the repository needs a token with write access, and a
+token shipped inside a public web app is a token handed to everybody who opens
+it. So the gallery is curated — a lens joins it through a pull request — and
+the share code is what lets one person hand a lens to another with no account,
+no server and no upload.
+
 ## Night / Low Light
 
 Computational low-light enhancement — **not** infrared. The camera does not

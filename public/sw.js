@@ -1,4 +1,4 @@
-const CACHE = 'visual-sensor-studio-v0.19.0';
+const CACHE = 'visual-sensor-studio-v0.20.0';
 const APP_SHELL = [
   './',
   './index.html',
@@ -6,6 +6,8 @@ const APP_SHELL = [
   './settings.css',
   './camera-bootstrap.js',
   './manifest.webmanifest',
+  // The shipped lens gallery, so custom lenses work offline too.
+  './lenses/index.json',
   './icons/icon.svg',
   './icons/icon-180.png',
   './icons/icon-192.png',
@@ -28,6 +30,8 @@ const APP_SHELL = [
   './app/vision/overlays.js',
   './app/sensors/stability.js',
   './app/vision/parallax.js',
+  './app/vision/lens.js',
+  './app/vision/lens-store.js',
   './app/visualization/scene.js'
 ];
 

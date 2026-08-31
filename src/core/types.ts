@@ -13,7 +13,8 @@ export type VisionMode =
   | 'background'
   | 'chrono'
   | 'slitscan'
-  | 'night';
+  | 'night'
+  | 'lens';
 
 export interface VisionMetrics {
   /** Mean scene luminance, 0..1. */

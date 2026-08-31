@@ -105,6 +105,7 @@
             <button class="segmented" type="button" data-vision-mode="chrono">Chrono</button>
             <button class="segmented" type="button" data-vision-mode="slitscan">Slit Scan</button>
             <button class="segmented" type="button" data-vision-mode="night">Night</button>
+            <button class="segmented" type="button" data-vision-mode="lens">Lens</button>
           </div>
 
           <div class="zoom-row" aria-label="Camera zoom">
@@ -148,6 +149,94 @@
             </div>
           </section>
 
+          <section class="night-panel" id="lensPanel" hidden aria-label="Custom lens">
+            <div class="night-heading">
+              <strong>Custom lens</strong>
+              <span class="small-badge" id="lensCoverage">—</span>
+            </div>
+            <p class="helper">
+              Pick a field the app measures, pick the colours it maps to. A lens recolours a
+              measurement; it cannot add one. Saved lenses stay on this device.
+            </p>
+            <div class="lens-chips" id="lensChips"></div>
+            <div class="lens-actions">
+              <button class="ghost" type="button" id="lensNewButton">+ New lens</button>
+              <button class="ghost" type="button" id="lensEditButton">Edit</button>
+              <button class="ghost" type="button" id="lensImportButton">Load…</button>
+            </div>
+            <div id="lensEditor" hidden>
+              <div class="lens-swatch" id="lensSwatch" aria-hidden="true"></div>
+              <div class="night-grid">
+                <label>Name
+                  <input type="text" id="lensName" maxlength="40" autocomplete="off" />
+                </label>
+                <label>Colour from
+                  <select id="lensColorChannel"></select>
+                </label>
+              </div>
+              <p class="helper" id="lensChannelMeaning"></p>
+              <div class="night-grid">
+                <label>Low <span class="value" id="lensLowValue"></span>
+                  <input type="range" id="lensLow" min="0" max="1" step="0.001" />
+                </label>
+                <label>High <span class="value" id="lensHighValue"></span>
+                  <input type="range" id="lensHigh" min="0" max="1" step="0.001" />
+                </label>
+                <label>Curve <span class="value" id="lensGammaValue"></span>
+                  <input type="range" id="lensGamma" min="0.2" max="3" step="0.05" />
+                </label>
+              </div>
+              <div class="lens-stops" id="lensStops"></div>
+              <button class="ghost" type="button" id="lensAddStop">+ Colour stop</button>
+              <div class="night-grid">
+                <label>Brightness from
+                  <select id="lensBrightnessChannel"></select>
+                </label>
+                <label>Behind the colour
+                  <select id="lensBase">
+                    <option value="black">Black</option>
+                    <option value="grey">Dark grey</option>
+                    <option value="scene">The camera picture</option>
+                  </select>
+                </label>
+                <label>Picture through <span class="value" id="lensBlendValue"></span>
+                  <input type="range" id="lensBlend" min="0" max="1" step="0.01" />
+                </label>
+              </div>
+              <div id="lensBrightnessRange" hidden>
+                <div class="night-grid">
+                  <label>Bright at <span class="value" id="lensBrightHighValue"></span>
+                    <input type="range" id="lensBrightHigh" min="0" max="1" step="0.001" />
+                  </label>
+                  <label>Dark at <span class="value" id="lensBrightLowValue"></span>
+                    <input type="range" id="lensBrightLow" min="0" max="1" step="0.001" />
+                  </label>
+                </div>
+              </div>
+              <div class="lens-actions">
+                <button class="primary" type="button" id="lensSaveButton">Save</button>
+                <button class="ghost" type="button" id="lensShareButton">Copy share link</button>
+                <button class="ghost" type="button" id="lensExportButton">Export file</button>
+                <button class="ghost danger" type="button" id="lensDeleteButton">Delete</button>
+              </div>
+              <p class="helper" id="lensStatus" role="status"></p>
+            </div>
+            <div id="lensImport" hidden>
+              <p class="helper">
+                Paste a share link or code from someone else, or open an exported file.
+                Nothing is uploaded and nothing is fetched from anyone — a shared lens is
+                just text that describes a mapping.
+              </p>
+              <textarea id="lensImportText" rows="3" placeholder="Paste a lens link or code"></textarea>
+              <div class="lens-actions">
+                <button class="primary" type="button" id="lensImportConfirm">Add lens</button>
+                <button class="ghost" type="button" id="lensImportFileButton">Open file…</button>
+                <button class="ghost" type="button" id="lensImportCancel">Cancel</button>
+              </div>
+              <input type="file" id="lensImportFile" accept="application/json,.json" hidden />
+              <p class="helper" id="lensImportStatus" role="status"></p>
+            </div>
+          </section>
           <section class="night-panel" id="motionPanel" hidden aria-label="Motion speed controls">
             <div class="night-heading">
               <strong id="motionPanelTitle">Motion Ironbow</strong>
@@ -597,7 +686,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.19.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.20.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">

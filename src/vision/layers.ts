@@ -151,12 +151,25 @@ export class BackgroundModel {
   private variance = new Uint8ClampedArray(0);
   /** Foreground mask, 0 or 255. */
   mask = new Uint8ClampedArray(0);
+  /**
+   * How far each pixel departs from the learned background, 0..255.
+   *
+   * The mask is this number after a threshold; a custom lens wants the number
+   * itself so it can choose its own. Meaningless until `warmedUp`, which is
+   * why that is exposed rather than left implicit.
+   */
+  deviation = new Uint8ClampedArray(0);
   private width = 0;
   private height = 0;
   private frames = 0;
 
   get framesLearned(): number {
     return this.frames;
+  }
+
+  /** True once there is enough history for `deviation` to mean anything. */
+  get warmedUp(): boolean {
+    return this.frames >= BACKGROUND_WARMUP;
   }
 
   reset(): void {
@@ -170,12 +183,13 @@ export class BackgroundModel {
     this.background = new Uint8ClampedArray(width * height);
     this.variance = new Uint8ClampedArray(width * height);
     this.mask = new Uint8ClampedArray(width * height);
+    this.deviation = new Uint8ClampedArray(width * height);
     this.frames = 0;
   }
 
   update(gray: ArrayLike<number>, width: number, height: number): BackgroundReport {
     this.ensure(width, height);
-    const { background, variance, mask } = this;
+    const { background, variance, mask, deviation } = this;
     const pixels = width * height;
 
     if (this.frames === 0) {
@@ -204,6 +218,7 @@ export class BackgroundModel {
       if (target > variance[i]) variance[i] = variance[i] + 1;
       else if (target < variance[i]) variance[i] = variance[i] - 1;
 
+      deviation[i] = delta;
       const threshold = Math.max(12, variance[i]);
       const isForeground = this.frames >= BACKGROUND_WARMUP && delta > threshold;
       mask[i] = isForeground ? 255 : 0;

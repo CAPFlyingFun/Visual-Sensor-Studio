@@ -1055,3 +1055,100 @@ footer strong { color: #9fb2c3; }
   .tab { font-size: 0.72rem; padding: 0 6px; }
 }
 .filter-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+
+/* ------------------------------------------------------------------ *
+ * Custom lens editor
+ * ------------------------------------------------------------------ */
+
+.lens-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+.lens-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px 5px 6px;
+  border-radius: 999px;
+  border: 1px solid #2b3a4a;
+  background: #131c26;
+  color: #cfe0ef;
+  font-size: 12px;
+  cursor: pointer;
+}
+.lens-chip.active {
+  border-color: #5ad1ff;
+  background: #16303f;
+  color: #eaf7ff;
+}
+/* The ramp itself is the label: a lens is recognised by its colours long
+   before its name is read. */
+.lens-chip .ramp {
+  width: 34px;
+  height: 14px;
+  border-radius: 7px;
+  border: 1px solid #00000055;
+  flex: none;
+}
+.lens-chip .origin {
+  font-size: 10px;
+  color: #7d94a8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.lens-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 4px;
+}
+.lens-swatch {
+  height: 26px;
+  border-radius: 8px;
+  border: 1px solid #2b3a4a;
+  margin: 4px 0 10px;
+}
+.lens-stops {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+}
+.lens-stop {
+  display: grid;
+  grid-template-columns: 40px 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+.lens-stop input[type='color'] {
+  width: 40px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid #2b3a4a;
+  border-radius: 6px;
+  background: none;
+}
+.lens-stop button {
+  border: none;
+  background: none;
+  color: #7d94a8;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 6px;
+}
+button.ghost.danger {
+  color: #ff8f8f;
+  border-color: #5a2b2b;
+}
+#lensImportText {
+  width: 100%;
+  box-sizing: border-box;
+  background: #0e151d;
+  border: 1px solid #2b3a4a;
+  border-radius: 8px;
+  color: #cfe0ef;
+  padding: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}

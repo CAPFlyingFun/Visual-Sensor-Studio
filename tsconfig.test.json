@@ -16,6 +16,8 @@
     "src/core/math.ts",
     "src/sensors/zoom.ts",
     "src/sensors/stability.ts",
+    "src/vision/lens.ts",
+    "src/vision/lens-store.ts",
     "src/vision/parallax.ts",
     "src/vision/frame-processing.ts",
     "src/vision/optical-flow.ts",

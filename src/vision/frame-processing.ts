@@ -53,9 +53,24 @@ export function grayToRgba(gray: ArrayLike<number>, alpha = 255): Uint8ClampedAr
   return rgba;
 }
 
-export function reliefFromGray(gray: Uint8ClampedArray, width: number, height: number): Uint8ClampedArray {
-  const edges = sobelEdges(gray, width, height);
-  const rgba = new Uint8ClampedArray(gray.length * 4);
+/**
+ * Relief as a single value per pixel, 0..255.
+ *
+ * This is the number `reliefFromGray` paints in grey, pulled out so a custom
+ * lens can colour the same field rather than re-deriving it slightly
+ * differently. It is CONTRAST-STRETCHED SHADING with an edge term — bright
+ * reads as near, dark reads as far, because that is how a lit surface usually
+ * behaves. It is not a distance and nothing here measures one.
+ */
+export function reliefField(
+  gray: Uint8ClampedArray,
+  width: number,
+  height: number,
+  out?: Uint8ClampedArray,
+  edgeField?: Uint8ClampedArray
+): Uint8ClampedArray {
+  const edges = edgeField ?? sobelEdges(gray, width, height);
+  const field = out && out.length === gray.length ? out : new Uint8ClampedArray(gray.length);
   let min = 255;
   let max = 0;
   for (const value of gray) {
@@ -63,15 +78,22 @@ export function reliefFromGray(gray: Uint8ClampedArray, width: number, height: n
     max = Math.max(max, value);
   }
   const range = Math.max(1, max - min);
-
   for (let i = 0; i < gray.length; i++) {
     const normalized = (gray[i] - min) / range;
     const localEdge = edges[i] / 255;
-    const value = clamp(Math.round(normalized * 215 + localEdge * 40), 0, 255);
+    field[i] = clamp(Math.round(normalized * 215 + localEdge * 40), 0, 255);
+  }
+  return field;
+}
+
+export function reliefFromGray(gray: Uint8ClampedArray, width: number, height: number): Uint8ClampedArray {
+  const field = reliefField(gray, width, height);
+  const rgba = new Uint8ClampedArray(gray.length * 4);
+  for (let i = 0; i < field.length; i++) {
     const p = i * 4;
-    rgba[p] = value;
-    rgba[p + 1] = value;
-    rgba[p + 2] = value;
+    rgba[p] = field[i];
+    rgba[p + 1] = field[i];
+    rgba[p + 2] = field[i];
     rgba[p + 3] = 255;
   }
   return rgba;

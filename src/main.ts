@@ -13,6 +13,28 @@ import { zoomPresetStops } from './sensors/zoom.js';
 import { clamp, median } from './core/math.js';
 import type { GpsSample, MotionSample, SensorSnapshot, VisionMetrics, VisionMode } from './core/types.js';
 import {
+  CHANNELS,
+  buildRampLut,
+  channelInfo,
+  rampToCss,
+  renderLens,
+  type ChannelId,
+  type ChannelSource,
+  type CustomLens
+} from './vision/lens.js';
+import {
+  deleteLens as removeLens,
+  encodeLensShare,
+  lensFromLocation,
+  loadGallery,
+  decodeLensShare,
+  loadLenses,
+  newLensId,
+  sanitiseLens,
+  saveLens as persistLens,
+  shareLink
+} from './vision/lens-store.js';
+import {
   absoluteDifference,
   differenceToRgba,
   dimGrayToRgba,
@@ -22,6 +44,7 @@ import {
   luminanceStats,
   motionMaskToRgba,
   motionScore,
+  reliefField,
   reliefFromGray,
   rgbaToGray,
   sobelEdges
@@ -60,6 +83,7 @@ import {
   renderMotionIronbow,
   upscaleSpeedField,
   ironbowColor,
+  UNRESOLVED,
   UNRESOLVED_COLOR,
   type MotionSpeedReport,
   type MotionTrailReport
@@ -101,7 +125,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.19.0';
+const APP_VERSION = '0.20.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -472,6 +496,49 @@ let stabilityCalibration: StabilityCalibration | null = null;
 let deviceSteady = true;
 let steadyExcursion = 0;
 let cancelArmedStart: (() => void) | null = null;
+
+/* ------------------------------------------------------------------ *
+ * Custom lenses
+ * ------------------------------------------------------------------ */
+
+/** Saved on this device. */
+let savedLenses: CustomLens[] = [];
+/** Shipped with the site, plus anything imported this session. */
+let galleryLenses: { lens: CustomLens; author?: string }[] = [];
+/** The lens the camera is currently painting through. */
+let activeLens: CustomLens | null = null;
+/** The lens open in the editor, which may be an unsaved edit of the active one. */
+let editingLens: CustomLens | null = null;
+/** Rebuilt only when the stops change, since it costs 256 interpolations. */
+let activeLensLut: Uint8ClampedArray | null = null;
+let activeLensStopsKey = '';
+/** Scratch for the relief channel, allocated once per geometry. */
+let reliefScratch: Uint8ClampedArray | null = null;
+/** Validity masks, allocated once per geometry rather than per frame. */
+let lensValidScratch: Uint8Array | null = null;
+let latestLensCoverage = 0;
+
+/** The channels a lens actually reads, so nothing else has to be computed. */
+function lensChannels(lens: CustomLens | null): Set<ChannelId> {
+  const needed = new Set<ChannelId>();
+  if (!lens) return needed;
+  needed.add(lens.color.channel);
+  if (lens.brightness) needed.add(lens.brightness.channel);
+  return needed;
+}
+
+function lensNeeds(channel: ChannelId): boolean {
+  return visionMode === 'lens' && lensChannels(activeLens).has(channel);
+}
+
+function lensLut(lens: CustomLens): Uint8ClampedArray {
+  const key = lens.stops.map((stop) => `${stop.at}:${stop.color}`).join('|');
+  if (key !== activeLensStopsKey || !activeLensLut) {
+    activeLensStopsKey = key;
+    activeLensLut = buildRampLut(lens.stops);
+  }
+  return activeLensLut;
+}
 
 let nightModeActive = false;
 let trackedObjects: readonly TrackedObject[] = [];
@@ -1108,6 +1175,22 @@ function saveSnapshot(): void {
   context.drawImage(source, 0, 0);
   drawObservationOverlay(output, snapshotOverlayLines(snapshot));
   saveCanvas(output, `${output.width}×${output.height} annotated observation`);
+}
+
+/**
+ * How much of the frame the lens actually had a reading for.
+ *
+ * Deliberately NOT part of `renderMotionReadouts`, which returns early while
+ * the motion panel is hidden — and in lens mode it always is, so a coverage
+ * figure put in there never updates. A lens over a still scene bound to a
+ * motion channel really is near zero, and saying so is the difference between
+ * "nothing is moving" and "this is broken".
+ */
+function renderLensReadouts(): void {
+  if (byId('lensPanel').hidden) return;
+  setText('lensCoverage', activeLens
+    ? `${(latestLensCoverage * 100).toFixed(0)}% measured`
+    : 'no lens');
 }
 
 function renderMotionReadouts(): void {
@@ -1834,7 +1917,8 @@ const MODE_LABELS: Record<VisionMode, string> = {
   background: 'Background subtraction • what is not normally here',
   chrono: 'Chronochrome • red oldest, blue newest, grey means still',
   slitscan: 'Slit scan • one column per frame, left to right is time',
-  night: 'Night • computational low-light, not infrared'
+  night: 'Night • computational low-light, not infrared',
+  lens: 'Custom lens • your own mapping'
 };
 
 function updateVisionMode(mode: VisionMode): void {
@@ -1875,7 +1959,481 @@ function updateVisionMode(mode: VisionMode): void {
   setNightMode(mode === 'night');
   setMotionPanel(mode === 'speed' || mode === 'motiontrails', mode);
   setLayerPanel(mode);
+  byId('lensPanel').hidden = mode !== 'lens';
+  if (mode === 'lens') renderLensChips();
   setText('visionModeLabel', `${MODE_LABELS[mode]} • ${settings.visionRatePreference}`);
+}
+
+/* ------------------------------------------------------------------ *
+ * Custom lens editor
+ * ------------------------------------------------------------------ */
+
+const LENS_SELECTION_KEY = 'vss.lens.active';
+
+/**
+ * Range controls work in the channel's own units, so the slider bounds have to
+ * follow the channel rather than being fixed. A speed slider running 0..255
+ * would spend its whole travel far above anything a hand-held camera produces.
+ */
+function channelSliderMax(id: ChannelId): number {
+  const info = channelInfo(id);
+  return Math.max(info.high, info.low) * 2;
+}
+
+function channelStep(id: ChannelId): number {
+  return channelSliderMax(id) > 20 ? 1 : 0.001;
+}
+
+function formatChannelValue(id: ChannelId, value: number): string {
+  const info = channelInfo(id);
+  const digits = channelSliderMax(id) > 20 ? 0 : 3;
+  return `${value.toFixed(digits)} ${info.unit === '0–255' ? '' : info.unit}`.trim();
+}
+
+function defaultLens(): CustomLens {
+  return sanitiseLens({
+    id: newLensId(),
+    name: 'My lens',
+    color: { channel: 'speed', low: 0.01, high: 0.35, gamma: 0.8 },
+    stops: [
+      { at: 0, color: '#001028' },
+      { at: 0.5, color: '#00b7ff' },
+      { at: 1, color: '#ffffff' }
+    ],
+    base: 'black',
+    sceneBlend: 0.1
+  });
+}
+
+/** Saved first, then the shipped gallery, skipping gallery copies already saved. */
+function allLenses(): { lens: CustomLens; origin: 'saved' | 'gallery'; author?: string }[] {
+  const savedNames = new Set(savedLenses.map((lens) => lens.name.toLowerCase()));
+  return [
+    ...savedLenses.map((lens) => ({ lens, origin: 'saved' as const })),
+    ...galleryLenses
+      .filter((entry) => !savedNames.has(entry.lens.name.toLowerCase()))
+      .map((entry) => ({ lens: entry.lens, origin: 'gallery' as const, author: entry.author }))
+  ];
+}
+
+function renderLensChips(): void {
+  const container = byId('lensChips');
+  container.textContent = '';
+  const entries = allLenses();
+  if (!entries.length) {
+    const empty = document.createElement('p');
+    empty.className = 'helper';
+    empty.textContent = 'No lenses yet. Start a new one.';
+    container.append(empty);
+    return;
+  }
+  for (const entry of entries) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'lens-chip';
+    chip.classList.toggle('active', activeLens?.id === entry.lens.id);
+    const ramp = document.createElement('span');
+    ramp.className = 'ramp';
+    ramp.style.background = rampToCss(entry.lens.stops);
+    const name = document.createElement('span');
+    name.textContent = entry.lens.name;
+    chip.append(ramp, name);
+    if (entry.origin === 'gallery') {
+      const origin = document.createElement('span');
+      origin.className = 'origin';
+      origin.textContent = entry.author ?? 'shipped';
+      chip.append(origin);
+    }
+    chip.addEventListener('click', () => {
+      useLens(entry.lens);
+      renderLensChips();
+    });
+    container.append(chip);
+  }
+}
+
+function useLens(lens: CustomLens): void {
+  activeLens = lens;
+  activeLensStopsKey = '';
+  editingLens = { ...lens, stops: lens.stops.map((stop) => ({ ...stop })) };
+  try {
+    localStorage.setItem(LENS_SELECTION_KEY, lens.id);
+  } catch {
+    // A lens that cannot be remembered still works for this session.
+  }
+  if (byId('lensEditor').hidden === false) fillLensEditor();
+}
+
+function populateChannelSelect(select: HTMLSelectElement, includeNone: boolean): void {
+  select.textContent = '';
+  if (includeNone) {
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = 'Nothing (flat)';
+    select.append(none);
+  }
+  for (const channel of CHANNELS) {
+    const option = document.createElement('option');
+    option.value = channel.id;
+    option.textContent = channel.label;
+    select.append(option);
+  }
+}
+
+function renderLensStops(): void {
+  const container = byId('lensStops');
+  container.textContent = '';
+  if (!editingLens) return;
+  const stopCount = editingLens.stops.length;
+  editingLens.stops.forEach((stop, index) => {
+    const row = document.createElement('div');
+    row.className = 'lens-stop';
+
+    const color = document.createElement('input');
+    color.type = 'color';
+    color.value = stop.color;
+    color.addEventListener('input', () => {
+      if (!editingLens) return;
+      editingLens.stops[index].color = color.value;
+      applyEditedLens();
+    });
+
+    const position = document.createElement('input');
+    position.type = 'range';
+    position.min = '0';
+    position.max = '1';
+    position.step = '0.01';
+    position.value = String(stop.at);
+    position.addEventListener('input', () => {
+      if (!editingLens) return;
+      editingLens.stops[index].at = Number(position.value);
+      applyEditedLens();
+    });
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = '×';
+    remove.setAttribute('aria-label', `Remove colour stop ${index + 1}`);
+    // Two stops is the minimum that still describes a ramp.
+    remove.disabled = stopCount <= 2;
+    remove.addEventListener('click', () => {
+      if (!editingLens || editingLens.stops.length <= 2) return;
+      editingLens.stops.splice(index, 1);
+      applyEditedLens();
+      renderLensStops();
+    });
+
+    row.append(color, position, remove);
+    container.append(row);
+  });
+}
+
+/** Push the edited document into the live renderer, without saving it. */
+function applyEditedLens(): void {
+  if (!editingLens) return;
+  activeLens = sanitiseLens(editingLens);
+  activeLensStopsKey = '';
+  byId('lensSwatch').style.background = rampToCss(editingLens.stops);
+  updateLensRangeLabels();
+}
+
+function updateLensRangeLabels(): void {
+  if (!editingLens) return;
+  const channel = editingLens.color.channel;
+  setText('lensLowValue', formatChannelValue(channel, editingLens.color.low));
+  setText('lensHighValue', formatChannelValue(channel, editingLens.color.high));
+  setText('lensGammaValue', editingLens.color.gamma.toFixed(2));
+  setText('lensBlendValue', `${Math.round(editingLens.sceneBlend * 100)}%`);
+  const brightness = editingLens.brightness;
+  if (brightness) {
+    setText('lensBrightHighValue', formatChannelValue(brightness.channel, brightness.high));
+    setText('lensBrightLowValue', formatChannelValue(brightness.channel, brightness.low));
+  }
+}
+
+function fillLensEditor(): void {
+  if (!editingLens) return;
+  const lens = editingLens;
+  byId<HTMLInputElement>('lensName').value = lens.name;
+
+  const colorSelect = byId<HTMLSelectElement>('lensColorChannel');
+  colorSelect.value = lens.color.channel;
+  setText('lensChannelMeaning', channelInfo(lens.color.channel).meaning);
+
+  const low = byId<HTMLInputElement>('lensLow');
+  const high = byId<HTMLInputElement>('lensHigh');
+  const max = channelSliderMax(lens.color.channel);
+  const step = channelStep(lens.color.channel);
+  for (const slider of [low, high]) {
+    slider.min = '0';
+    slider.max = String(max);
+    slider.step = String(step);
+  }
+  low.value = String(lens.color.low);
+  high.value = String(lens.color.high);
+  byId<HTMLInputElement>('lensGamma').value = String(lens.color.gamma);
+  byId<HTMLSelectElement>('lensBase').value = lens.base;
+  byId<HTMLInputElement>('lensBlend').value = String(lens.sceneBlend);
+
+  const brightnessSelect = byId<HTMLSelectElement>('lensBrightnessChannel');
+  brightnessSelect.value = lens.brightness?.channel ?? '';
+  byId('lensBrightnessRange').hidden = !lens.brightness;
+  if (lens.brightness) {
+    const bMax = channelSliderMax(lens.brightness.channel);
+    const bStep = channelStep(lens.brightness.channel);
+    const bLow = byId<HTMLInputElement>('lensBrightLow');
+    const bHigh = byId<HTMLInputElement>('lensBrightHigh');
+    for (const slider of [bLow, bHigh]) {
+      slider.min = '0';
+      slider.max = String(bMax);
+      slider.step = String(bStep);
+    }
+    bLow.value = String(lens.brightness.low);
+    bHigh.value = String(lens.brightness.high);
+  }
+
+  // A shipped lens is a starting point, not a file to overwrite: deleting one
+  // from the gallery would only remove it until the next reload.
+  const isSaved = savedLenses.some((item) => item.id === lens.id);
+  byId<HTMLButtonElement>('lensDeleteButton').disabled = !isSaved;
+  byId<HTMLButtonElement>('lensSaveButton').textContent = isSaved ? 'Save' : 'Save to this device';
+
+  renderLensStops();
+  applyEditedLens();
+}
+
+function setLensStatus(message: string): void {
+  setText('lensStatus', message);
+}
+
+function openLensEditor(lens: CustomLens): void {
+  editingLens = { ...lens, stops: lens.stops.map((stop) => ({ ...stop })) };
+  byId('lensEditor').hidden = false;
+  byId('lensImport').hidden = true;
+  setLensStatus('');
+  fillLensEditor();
+}
+
+function addLens(lens: CustomLens, message: string): void {
+  const result = persistLens(localStorage, savedLenses, lens);
+  savedLenses = result.lenses;
+  useLens(lens);
+  renderLensChips();
+  setLensStatus(result.saved ? message : (result.error ?? 'Could not save.'));
+}
+
+function wireLensEditor(): void {
+  populateChannelSelect(byId<HTMLSelectElement>('lensColorChannel'), false);
+  populateChannelSelect(byId<HTMLSelectElement>('lensBrightnessChannel'), true);
+
+  on('lensNewButton', 'click', () => {
+    const lens = defaultLens();
+    openLensEditor(lens);
+    activeLens = lens;
+    activeLensStopsKey = '';
+    setLensStatus('Unsaved. Adjust it, then save.');
+  });
+
+  on('lensEditButton', 'click', () => {
+    if (!activeLens) {
+      const first = allLenses()[0];
+      if (!first) return;
+      useLens(first.lens);
+    }
+    if (activeLens) openLensEditor(activeLens);
+  });
+
+  on('lensName', 'input', (event) => {
+    if (!editingLens) return;
+    editingLens.name = (event.target as HTMLInputElement).value;
+  });
+
+  on('lensColorChannel', 'change', (event) => {
+    if (!editingLens) return;
+    const channel = (event.target as HTMLSelectElement).value as ChannelId;
+    const info = channelInfo(channel);
+    // The old range was in the old channel's units and would be meaningless
+    // here, so a channel change resets to that channel's own sensible span.
+    editingLens.color = { channel, low: info.low, high: info.high, gamma: editingLens.color.gamma };
+    fillLensEditor();
+  });
+
+  const bindRange = (id: string, apply: (value: number) => void) => {
+    on(id, 'input', (event) => {
+      if (!editingLens) return;
+      apply(Number((event.target as HTMLInputElement).value));
+      applyEditedLens();
+    });
+  };
+  bindRange('lensLow', (value) => void (editingLens && (editingLens.color.low = value)));
+  bindRange('lensHigh', (value) => void (editingLens && (editingLens.color.high = value)));
+  bindRange('lensGamma', (value) => void (editingLens && (editingLens.color.gamma = value)));
+  bindRange('lensBlend', (value) => void (editingLens && (editingLens.sceneBlend = value)));
+  bindRange('lensBrightLow', (value) => {
+    if (editingLens?.brightness) editingLens.brightness.low = value;
+  });
+  bindRange('lensBrightHigh', (value) => {
+    if (editingLens?.brightness) editingLens.brightness.high = value;
+  });
+
+  on('lensBase', 'change', (event) => {
+    if (!editingLens) return;
+    editingLens.base = (event.target as HTMLSelectElement).value as CustomLens['base'];
+    applyEditedLens();
+  });
+
+  on('lensBrightnessChannel', 'change', (event) => {
+    if (!editingLens) return;
+    const value = (event.target as HTMLSelectElement).value;
+    if (!value) {
+      editingLens.brightness = undefined;
+    } else {
+      const info = channelInfo(value as ChannelId);
+      editingLens.brightness = { channel: info.id, low: info.low, high: info.high, gamma: 1 };
+    }
+    fillLensEditor();
+  });
+
+  on('lensAddStop', 'click', () => {
+    if (!editingLens || editingLens.stops.length >= 8) return;
+    const last = editingLens.stops[editingLens.stops.length - 1];
+    editingLens.stops.push({ at: Math.min(1, last.at + 0.1), color: last.color });
+    applyEditedLens();
+    renderLensStops();
+  });
+
+  on('lensSaveButton', 'click', () => {
+    if (!editingLens) return;
+    addLens(sanitiseLens(editingLens), 'Saved to this device.');
+  });
+
+  on('lensDeleteButton', 'click', () => {
+    if (!editingLens) return;
+    savedLenses = removeLens(localStorage, savedLenses, editingLens.id);
+    byId('lensEditor').hidden = true;
+    const next = allLenses()[0];
+    if (next) useLens(next.lens);
+    else activeLens = null;
+    renderLensChips();
+  });
+
+  on('lensShareButton', 'click', async () => {
+    if (!editingLens) return;
+    const link = shareLink(sanitiseLens(editingLens), location.href);
+    try {
+      await navigator.clipboard.writeText(link);
+      setLensStatus('Link copied. Anyone who opens it gets this lens.');
+    } catch {
+      // Clipboard access is refused in plenty of ordinary situations, so the
+      // code is shown to be copied by hand rather than lost.
+      byId('lensImport').hidden = false;
+      byId<HTMLTextAreaElement>('lensImportText').value = link;
+      setLensStatus('Clipboard refused. The link is in the box below — copy it from there.');
+    }
+  });
+
+  on('lensExportButton', 'click', () => {
+    if (!editingLens) return;
+    const lens = sanitiseLens(editingLens);
+    const blob = new Blob([JSON.stringify({ lenses: [lens] }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${lens.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase() || 'lens'}.lens.json`;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setLensStatus('Exported.');
+  });
+
+  on('lensImportButton', 'click', () => {
+    byId('lensImport').hidden = false;
+    byId('lensEditor').hidden = true;
+    setText('lensImportStatus', '');
+  });
+
+  on('lensImportCancel', 'click', () => {
+    byId('lensImport').hidden = true;
+  });
+
+  on('lensImportConfirm', 'click', () => {
+    const text = byId<HTMLTextAreaElement>('lensImportText').value;
+    const lens = decodeLensShare(text);
+    if (!lens) {
+      setText('lensImportStatus', 'That does not look like a lens link or code.');
+      return;
+    }
+    addLens(lens, '');
+    byId('lensImport').hidden = true;
+    openLensEditor(lens);
+    setLensStatus(`Added “${lens.name}”.`);
+  });
+
+  on('lensImportFileButton', 'click', () => {
+    byId<HTMLInputElement>('lensImportFile').click();
+  });
+
+  on('lensImportFile', 'change', async (event) => {
+    const file = (event.target as HTMLInputElement).files?.[0];
+    if (!file) return;
+    try {
+      const parsed: unknown = JSON.parse(await file.text());
+      const list = Array.isArray(parsed)
+        ? parsed
+        : (parsed as { lenses?: unknown })?.lenses ?? [parsed];
+      const lenses = (Array.isArray(list) ? list : [])
+        .map((item) => sanitiseLens({ ...(item as object), id: newLensId() }));
+      if (!lenses.length) {
+        setText('lensImportStatus', 'No lenses in that file.');
+        return;
+      }
+      for (const lens of lenses) {
+        const result = persistLens(localStorage, savedLenses, lens);
+        savedLenses = result.lenses;
+      }
+      useLens(lenses[0]);
+      renderLensChips();
+      byId('lensImport').hidden = true;
+      openLensEditor(lenses[0]);
+      setLensStatus(`Added ${lenses.length} lens${lenses.length === 1 ? '' : 'es'}.`);
+    } catch {
+      setText('lensImportStatus', 'That file could not be read as a lens.');
+    }
+    (event.target as HTMLInputElement).value = '';
+  });
+}
+
+async function initialiseLenses(): Promise<void> {
+  savedLenses = loadLenses(localStorage);
+  wireLensEditor();
+
+  // A lens in the address bar is someone handing you one. It is added but not
+  // silently activated over whatever is already selected without saying so.
+  const shared = lensFromLocation(location.hash, location.search);
+  if (shared) {
+    const result = persistLens(localStorage, savedLenses, shared);
+    savedLenses = result.lenses;
+    useLens(shared);
+    updateVisionMode('lens');
+    openLensEditor(shared);
+    setLensStatus(`Added “${shared.name}” from a shared link.`);
+    // Clear it so a reload does not add the same lens again.
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+
+  galleryLenses = await loadGallery((url) => fetch(url));
+
+  if (!activeLens) {
+    let remembered: string | null = null;
+    try {
+      remembered = localStorage.getItem(LENS_SELECTION_KEY);
+    } catch {
+      remembered = null;
+    }
+    const entries = allLenses();
+    const match = entries.find((entry) => entry.lens.id === remembered) ?? entries[0];
+    if (match) useLens(match.lens);
+  }
+  renderLensChips();
 }
 
 function resizeVisionCanvas(width: number, height: number): void {
@@ -2021,6 +2579,69 @@ function recordProcessingFps(timestamp: number): number {
  * actually selected. Motion elsewhere comes from the much cheaper frame
  * difference that Motion and Difference already need.
  */
+/**
+ * Gather the per-pixel fields a lens is bound to.
+ *
+ * Only the bound channels are assembled. A channel that is bound but not
+ * currently measurable is left OUT rather than supplied as zeroes — the
+ * renderer paints a missing channel as empty, and an empty picture is the
+ * truthful rendering of "this is not being measured right now". Handing it a
+ * zero-filled buffer would instead paint a confident floor colour across the
+ * whole frame.
+ */
+function buildLensSources(buffers: VisionBuffers, lens: CustomLens): ChannelSource {
+  const needed = lensChannels(lens);
+  const sources: ChannelSource = {};
+  const pixels = buffers.width * buffers.height;
+
+  if (needed.has('luma')) sources.luma = { values: buffers.gray };
+  if (needed.has('edges')) sources.edges = { values: buffers.edges };
+  if (needed.has('change') && buffers.hasPrevious) {
+    sources.change = { values: buffers.difference };
+  }
+
+  if (needed.has('relief')) {
+    if (!reliefScratch || reliefScratch.length !== pixels) {
+      reliefScratch = new Uint8ClampedArray(pixels);
+    }
+    sources.relief = {
+      values: reliefField(buffers.gray, buffers.width, buffers.height, reliefScratch, buffers.edges)
+    };
+  }
+
+  if (needed.has('speed') && speedField.speed.length === pixels) {
+    if (!lensValidScratch || lensValidScratch.length !== pixels) {
+      lensValidScratch = new Uint8Array(pixels);
+    }
+    const state = speedField.state;
+    // STILL is a real measurement of zero; UNRESOLVED is the aperture problem
+    // and must not be painted.
+    for (let i = 0; i < pixels; i++) lensValidScratch[i] = state[i] === UNRESOLVED ? 0 : 1;
+    sources.speed = { values: speedField.speed, valid: lensValidScratch };
+  }
+
+  if (needed.has('age')) {
+    const age = motionTrails.ageField;
+    const trailSpeed = motionTrails.speedFieldValues;
+    if (age.length === pixels) {
+      // Age only means anything where the trail has actually recorded a pass.
+      const valid = new Uint8Array(pixels);
+      for (let i = 0; i < pixels; i++) valid[i] = trailSpeed[i] > 0 ? 1 : 0;
+      sources.age = { values: age, valid };
+    }
+  }
+
+  if (needed.has('novelty')) {
+    latestBackground = backgroundModel.update(buffers.gray, buffers.width, buffers.height);
+    // Before the model has warmed up there is no "normally" to depart from.
+    if (backgroundModel.warmedUp && backgroundModel.deviation.length === pixels) {
+      sources.novelty = { values: backgroundModel.deviation };
+    }
+  }
+
+  return sources;
+}
+
 function processVisionFrame(timestamp: number): boolean {
   const frame = cameraSource.captureFrame(analysisWidth());
   if (!frame) return false;
@@ -2085,7 +2706,14 @@ function processVisionFrame(timestamp: number): boolean {
   lastAnalysisAt = timestamp;
   const usableDt = analysisDt > 0 && analysisDt < 1 ? analysisDt : 0;
 
-  if (visionMode === 'speed' || visionMode === 'motiontrails') {
+  // A lens binding either speed or age needs the same per-pixel estimate, so
+  // the field runs for it too — and only for it, so a lens reading edges costs
+  // nothing extra.
+  const wantsSpeedField = visionMode === 'speed'
+    || visionMode === 'motiontrails'
+    || lensNeeds('speed')
+    || lensNeeds('age');
+  if (wantsSpeedField) {
     latestSpeed = speedField.update(
       buffers.difference,
       buffers.gray,
@@ -2134,7 +2762,7 @@ function processVisionFrame(timestamp: number): boolean {
     // Trails are held rather than reset while the phone moves: a pass already
     // painted is still a real observation, and throwing it away because the
     // phone was picked up afterwards would lose the thing that was watched for.
-    if (visionMode === 'motiontrails' && !trailFrozen && !gated) {
+    if ((visionMode === 'motiontrails' || lensNeeds('age')) && !trailFrozen && !gated) {
       latestTrail = motionTrails.update(
         speedField.speed,
         speedField.state,
@@ -2219,6 +2847,21 @@ function processVisionFrame(timestamp: number): boolean {
     case 'night':
       renderNightFrame(buffers, frame.data);
       break;
+    case 'lens':
+      if (activeLens) {
+        const report = renderLens(
+          activeLens,
+          buildLensSources(buffers, activeLens),
+          buffers.gray,
+          buffers.width,
+          buffers.height,
+          buffers.rgba,
+          lensLut(activeLens)
+        );
+        latestLensCoverage = report.coverage;
+        putBuffer(buffers, buffers.rgba);
+      }
+      break;
     default:
       break;
   }
@@ -2267,6 +2910,7 @@ function processVisionFrame(timestamp: number): boolean {
   renderMetrics();
   renderObservationMetrics();
   renderMotionReadouts();
+  renderLensReadouts();
   renderLayerState();
   drawHistogram();
   paintViewer();
@@ -3633,6 +4277,30 @@ function nextFrame(): Promise<void> {
 }
 
 /** Render one mode at full resolution into an RGBA buffer. */
+/** Nearest-neighbour enlargement, so an exported still is the picture that was on screen. */
+function upscaleRgba(
+  source: Uint8ClampedArray,
+  sourceWidth: number,
+  sourceHeight: number,
+  targetWidth: number,
+  targetHeight: number
+): Uint8ClampedArray {
+  const out = new Uint8ClampedArray(targetWidth * targetHeight * 4);
+  for (let y = 0; y < targetHeight; y++) {
+    const sy = Math.min(sourceHeight - 1, Math.floor((y * sourceHeight) / targetHeight));
+    for (let x = 0; x < targetWidth; x++) {
+      const sx = Math.min(sourceWidth - 1, Math.floor((x * sourceWidth) / targetWidth));
+      const from = (sy * sourceWidth + sx) * 4;
+      const to = (y * targetWidth + x) * 4;
+      out[to] = source[from];
+      out[to + 1] = source[from + 1];
+      out[to + 2] = source[from + 2];
+      out[to + 3] = 255;
+    }
+  }
+  return out;
+}
+
 function renderStill(mode: VisionMode, frame: ImageData, previous: ImageData | null): Uint8ClampedArray {
   const { width, height } = frame;
   const gray = rgbaToGray(frame.data);
@@ -3681,6 +4349,26 @@ function renderStill(mode: VisionMode, frame: ImageData, previous: ImageData | n
         height
       );
       return renderMotionIronbow(gray, scaled.speed, scaled.state, new Uint8ClampedArray(width * height * 4));
+    }
+    case 'lens': {
+      // Rendered at the ANALYSIS resolution and enlarged, for the same reason
+      // Speed is: the channels a lens reads are per-pixel estimates made on
+      // the analysis frame, and re-deriving them at full size would save a
+      // different picture from the one that was on screen. Mixing a full-size
+      // luma with an analysis-size speed field would also misalign them.
+      const analysis = visionBuffers;
+      if (!analysis || !activeLens) return frame.data;
+      const small = new Uint8ClampedArray(analysis.width * analysis.height * 4);
+      renderLens(
+        activeLens,
+        buildLensSources(analysis, activeLens),
+        analysis.gray,
+        analysis.width,
+        analysis.height,
+        small,
+        lensLut(activeLens)
+      );
+      return upscaleRgba(small, analysis.width, analysis.height, width, height);
     }
     case 'night': {
       const rgba = Uint8ClampedArray.from(frame.data);
@@ -4950,6 +5638,9 @@ setText('secureContextValue', window.isSecureContext ? 'Secure ✓' : 'Needs HTT
 setChip('pwaChip', 'good', isStandalone() ? 'PWA installed' : browserCameraMode ? 'Browser camera mode' : 'PWA ready');
 syncSettingsControls();
 updateVisionMode('camera');
+// Lenses load after the mode is set, so a shared link can switch the mode to
+// its own lens without that being overwritten a line later.
+void initialiseLenses();
 installPinchZoom();
 installTerrainGestures();
 installTabs();

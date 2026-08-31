@@ -539,6 +539,22 @@ export class MotionTrailBuffer {
   private elapsed = 0;
   private lastExposure = 0;
 
+  /**
+   * Seconds since each pixel last moved, within the trail window.
+   *
+   * Exposed so a custom lens can bind brightness to age the way the built-in
+   * trail rendering does, rather than that pairing being available only from
+   * inside this class.
+   */
+  get ageField(): Float32Array {
+    return this.trailAge;
+  }
+
+  /** Speed recorded at each pixel when it last moved, in widths per second. */
+  get speedFieldValues(): Float32Array {
+    return this.trailSpeed;
+  }
+
   get framesAccumulated(): number {
     return this.frames;
   }
