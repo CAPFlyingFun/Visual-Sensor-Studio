@@ -75,7 +75,7 @@ test('a deliberate choice is never overridden by a default', () => {
 });
 
 test('the note points at the measured cost rather than urging caution', () => {
-  assert.match(mainSource, /Full matches the camera; drop it only if the frame rate beside it says you should/);
+  assert.match(mainSource, /up to the point where the screen runs out of pixels to show it with/);
 });
 
 test('Fill is a display crop and the save says so', () => {
@@ -125,7 +125,7 @@ test('the display size is capped by measured detail, not by the reported size', 
   assert.match(mainSource, /const DETAIL_CAP_MARGIN = 4;/);
   assert.match(mainSource, /const DETAIL_CAP_FLOOR = 720;/);
   assert.match(mainSource, /const ceiling = auto \? detailCappedShortSide\(sourceShort\) : sourceShort;/);
-  assert.match(mainSource, /Math\.min\(sourceShort, ceiling, wantedShort\)/);
+  assert.match(mainSource, /Math\.min\(sourceShort, ceiling, wantedShort, onScreen > 0 \? onScreen : sourceShort\)/);
 });
 
 test('the cap only acts on a confident, textured reading', () => {
@@ -182,4 +182,41 @@ test('the cap notice only appears where the cap applies', () => {
   // Explaining an auto-only behaviour under an explicit setting would describe
   // something that is not happening.
   assert.match(mainSource, /capped && settings\.lensDetail === 'auto'/);
+});
+
+test('the screen is a hard bound at every setting, including the explicit ones', () => {
+  // An iPhone 15 Plus shows about 1720x1290 device pixels full screen and
+  // 1020x765 in the panel. A 3024x4032 render was putting twelve megapixels
+  // through a window that can display two — which is why the small preview
+  // looked better than the same mode full screen.
+  //
+  // This is not the detail estimator inferring an upscale. It is arithmetic
+  // about a display: pixels beyond what a screen can resolve are invisible,
+  // so no setting can reasonably be read as a request for them.
+  assert.match(mainSource, /function displayedShortSide\(sourceAspect: number, now: number\)/);
+  assert.match(mainSource, /const onScreen = displayedShortSide\(aspect, performance\.now\(\)\)/);
+  // Contain and cover swap which axis limits the content box.
+  assert.match(mainSource, /const heightLimited = fill \? boxAspect < sourceAspect : boxAspect > sourceAspect/);
+});
+
+test('the layout read is throttled out of the render loop', () => {
+  // getBoundingClientRect every frame forces a reflow mid-render for a number
+  // that only changes when something is resized.
+  assert.match(mainSource, /now - lastDisplayMeasure < 400 && displayedShort > 0/);
+});
+
+test('saving is explicitly exempt from the screen bound', () => {
+  // A file is zoomed into and cropped long after the screen it was framed on
+  // stopped mattering.
+  assert.match(mainSource, /Saving is unaffected — a file is rendered from the full capture/);
+  const still = mainSource.slice(
+    mainSource.indexOf('function finishStill'),
+    mainSource.indexOf('function saveCanvas')
+  );
+  assert.doesNotMatch(still, /displayedShortSide|displayedShort/);
+});
+
+test('the label promises what the tier now delivers', () => {
+  assert.match(htmlSource, /Full — all the screen can show/);
+  assert.doesNotMatch(htmlSource, /Full — sensor resolution/);
 });

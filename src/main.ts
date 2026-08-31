@@ -167,7 +167,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.26.3';
+const APP_VERSION = '0.27.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -1330,15 +1330,23 @@ function renderLensReadouts(): void {
     const capped = measuredDetailScale !== null
       && sourceShort > 0
       && detailCappedShortSide(sourceShort) < sourceShort;
+    // The screen bound is stated first because it applies always and is
+    // arithmetic rather than inference — and because it is usually the
+    // tighter of the two by a wide margin.
+    const screenBound = displayedShort > 0 && sourceShort > displayedShort
+      ? `This window shows ${displayedShort}px on its short side, so a larger render`
+        + ' is invisible here. Saving is unaffected — a file is rendered from the full capture.'
+      : '';
     // A PEGGED reading is a bound, not a measurement: the search ran out of
     // levels without finding where detail stops. Quoting a pixel figure from
     // it states a precision that was never established.
     const real = Math.round(sourceShort * (measuredDetailScale ?? 1));
-    setText('lensDetailCap', capped && settings.lensDetail === 'auto'
+    const detailNote = capped && settings.lensDetail === 'auto'
       ? `This stream is ${sourceShort}px on its short side but carries`
         + `${measuredDetailPegged ? ' at most about' : ' about'} ${real}px of real detail,`
         + ' so rendering larger costs frame rate for pixels that are interpolation.'
-      : '');
+      : '';
+    setText('lensDetailCap', [screenBound, detailNote].filter(Boolean).join(' '));
     setText('lensCostValue', lensRenderMs > 0
       ? `${size} · ${lensRenderMs.toFixed(0)} ms/frame${settled}`
       : `${size}${settled}`);
@@ -2121,8 +2129,8 @@ function updateVisionMode(mode: VisionMode): void {
   // control only means anything for a mode that draws a processed picture.
   byId('displayDetailRow').hidden = mode === 'camera';
   setText('lensDetailNote', DISPLAY_SCALABLE_MODES.has(mode)
-    ? 'This mode reads the current frame, so a larger picture is genuinely more detail.'
-      + ' Full matches the camera; drop it only if the frame rate beside it says you should.'
+    ? 'This mode reads the current frame, so a larger picture is genuinely more detail —'
+      + ' up to the point where the screen runs out of pixels to show it with.'
     : 'This mode builds up over frames on the analysis picture, so it stays that size —'
       + ' drawing it larger would enlarge a small measurement, not improve it.');
   if (mode === 'lens') renderLensChips();
@@ -3283,7 +3291,13 @@ function lensDisplayWidth(): number {
   // ladder that is explicitly asking to be told what to do; nowhere near good
   // enough to overrule someone who has said what they want.
   const ceiling = auto ? detailCappedShortSide(sourceShort) : sourceShort;
-  const short = Math.min(sourceShort, ceiling, wantedShort);
+  // The screen bound applies at every setting. Pixels the display cannot
+  // resolve are not wasteful, they are invisible, and no setting should be
+  // read as a request for invisible ones.
+  const aspect = Math.max(source, camera.diagnostics.videoHeight || source)
+    / Math.max(1, sourceShort);
+  const onScreen = displayedShortSide(aspect, performance.now());
+  const short = Math.min(sourceShort, ceiling, wantedShort, onScreen > 0 ? onScreen : sourceShort);
   return Math.max(analysis, widthForShortSide(short));
 }
 
@@ -3388,6 +3402,57 @@ function detailCappedShortSide(sourceShort: number): number {
   if (measuredDetailScale === null || measuredDetailScale >= 1) return sourceShort;
   const real = sourceShort * measuredDetailScale;
   return Math.max(DETAIL_CAP_FLOOR, Math.round(real * DETAIL_CAP_MARGIN));
+}
+
+/* --- The screen is a hard bound, not an inference ---------------------- *
+ *
+ * Joshua: the small panel preview looked sharp while the same mode full
+ * screen was at maximum and lagging. Both are true at once, and the reason is
+ * that neither picture was ever fully shown.
+ *
+ * An iPhone 15 Plus is 2796x1290 physical pixels — 932x430 points at a device
+ * pixel ratio of 3. A 4:3 frame letterboxed into that full-screen box occupies
+ * about 1720x1290 device pixels, and inside the panel about 1020x765. So a
+ * 3024x4032 render was putting twelve megapixels through a window that can
+ * display two, and the small window looked better because it was closer to
+ * showing what it was given.
+ *
+ * This is not the detail estimator making an inference about upscaling. It is
+ * arithmetic about a screen: pixels beyond what the display can resolve are
+ * not merely wasteful, they are invisible. So this bound applies at every
+ * setting, including the explicit ones, and unlike the detail cap it never
+ * has to guess.
+ *
+ * SAVING IS NOT AFFECTED. A saved frame is rendered from the full sensor
+ * capture, because a file is zoomed into and cropped long after the screen it
+ * was framed on stopped mattering.
+ */
+let displayedShort = 0;
+let lastDisplayMeasure = 0;
+
+/**
+ * Device pixels across the short side of the canvas AS DISPLAYED.
+ *
+ * Measured from layout rather than assumed, because the canvas is fitted into
+ * its box with `contain` or `cover` and the content box is not the element
+ * box. Re-read a few times a second: a layout read every frame would force a
+ * reflow in the middle of the render loop for a number that changes only when
+ * something is resized.
+ */
+function displayedShortSide(sourceAspect: number, now: number): number {
+  if (now - lastDisplayMeasure < 400 && displayedShort > 0) return displayedShort;
+  lastDisplayMeasure = now;
+  const rect = visionCanvas.getBoundingClientRect();
+  if (!rect.width || !rect.height || !(sourceAspect > 0)) return displayedShort;
+  const dpr = Math.min(Math.max(window.devicePixelRatio || 1, 1), 4);
+  const boxAspect = rect.width / rect.height;
+  const fill = document.getElementById('cameraViewer')?.dataset.fit === 'fill';
+  // contain fits inside the box, cover fills it: the limiting axis swaps.
+  const heightLimited = fill ? boxAspect < sourceAspect : boxAspect > sourceAspect;
+  const contentHeight = heightLimited ? rect.height : rect.width / sourceAspect;
+  const contentWidth = heightLimited ? rect.height * sourceAspect : rect.width;
+  displayedShort = Math.round(Math.min(contentWidth, contentHeight) * dpr);
+  return displayedShort;
 }
 
 /** The width that produces this short side, in the source's own orientation. */

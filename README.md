@@ -401,6 +401,30 @@ does not hold costs a visible stutter, a step down that was not needed costs
 only detail nobody had yet. The settled rung is remembered, so a device learns
 this once.
 
+### The screen is a hard bound
+
+The small panel preview looked sharper than the same mode full screen, while
+full screen lagged. Both were true, and the reason is that neither picture was
+ever fully shown.
+
+An iPhone 15 Plus is 2796×1290 physical pixels — 932×430 points at a device
+pixel ratio of 3. A 4:3 frame letterboxed into the full-screen box occupies
+about **1720×1290 device pixels**, and inside the panel about **1020×765**. So
+a 3024×4032 render was putting twelve megapixels through a window that can
+display two, and the small window looked better precisely because it was
+closer to showing what it was given.
+
+This is not the detail estimator inferring an upscale. It is arithmetic about
+a display: pixels beyond what a screen can resolve are not merely wasteful,
+they are invisible. So the bound applies at **every** setting including the
+explicit ones, it is measured from layout rather than assumed (the canvas is
+fitted with `contain` or `cover`, and the content box is not the element box),
+and the layout read is throttled out of the render loop.
+
+**Saving is exempt.** A file is rendered from the full sensor capture, because
+it is zoomed into and cropped long after the screen it was framed on stopped
+mattering.
+
 ### Everything about size is a SHORT SIDE
 
 Width is orientation-dependent, so a setting named in width means two
