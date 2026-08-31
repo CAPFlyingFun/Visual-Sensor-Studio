@@ -173,7 +173,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.28.0';
+const APP_VERSION = '0.28.1';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -3448,11 +3448,11 @@ let lastDisplayMeasure = 0;
 function displayedShortSide(sourceAspect: number, now: number): number {
   if (now - lastDisplayMeasure < 400 && displayedShort > 0) return displayedShort;
   lastDisplayMeasure = now;
-  const rect = visionCanvas.getBoundingClientRect();
+  const rect = presentingElement().getBoundingClientRect();
   if (!rect.width || !rect.height || !(sourceAspect > 0)) return displayedShort;
   const dpr = Math.min(Math.max(window.devicePixelRatio || 1, 1), 4);
   const boxAspect = rect.width / rect.height;
-  const fill = document.getElementById('cameraViewer')?.dataset.fit === 'fill';
+  const fill = byId('cameraViewer').dataset.fit === 'fill';
   // contain fits inside the box, cover fills it: the limiting axis swaps.
   const heightLimited = fill ? boxAspect < sourceAspect : boxAspect > sourceAspect;
   const contentHeight = heightLimited ? rect.height : rect.width / sourceAspect;
@@ -5370,10 +5370,21 @@ let lastStageBox: { width: number; height: number; where: string; at: number } |
 /**
  * Which element is actually presenting the picture right now.
  *
- * In RGB there is no canvas at all — the video element is the picture — so
- * measuring the canvas would report the size of something not being shown.
+ * Three cases, and getting this wrong silently sizes the render to something
+ * nobody is looking at:
+ *
+ *  - Full screen draws to its OWN canvas, a blit of the pipeline's output.
+ *    The panel canvas stays laid out underneath at its small size, so
+ *    measuring it while the viewer is open sizes the whole render to the
+ *    panel and then stretches that across the screen.
+ *  - In RGB there is no canvas at all: the video element is the picture.
+ *  - Otherwise it is the panel canvas.
  */
 function presentingElement(): HTMLElement {
+  if (viewerOpen) {
+    const viewerCanvas = document.getElementById('viewerCanvas');
+    if (viewerCanvas) return viewerCanvas;
+  }
   return visionCanvas.hidden ? video : visionCanvas;
 }
 

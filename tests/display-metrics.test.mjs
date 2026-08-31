@@ -196,3 +196,26 @@ test('no measurement yields no projection rather than a made-up one', () => {
   const rows = projectTiers([{ shortSide: 720, label: 'x' }], 0.75, 0, 4032);
   assert.equal(rows[0].fps, 0);
 });
+
+test('full screen is measured on the viewer canvas, not the panel one', () => {
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  // Full screen draws to its OWN canvas — a blit of the pipeline output —
+  // while the panel canvas stays laid out underneath at its small size. So
+  // measuring the panel while the viewer is open sized the whole render to
+  // the panel and then stretched that across the screen.
+  const fn = main.slice(
+    main.indexOf('function presentingElement'),
+    main.indexOf('function sampleStageBox')
+  );
+  assert.match(fn, /if \(viewerOpen\) \{/);
+  assert.match(fn, /getElementById\('viewerCanvas'\)/);
+  assert.match(fn, /return visionCanvas\.hidden \? video : visionCanvas;/);
+  // And the sizing must read the same element the readout does, or the two
+  // disagree about the picture they are both describing.
+  const measure = main.slice(
+    main.indexOf('function displayedShortSide'),
+    main.indexOf('/** The width that produces this short side')
+  );
+  assert.match(measure, /presentingElement\(\)\.getBoundingClientRect\(\)/);
+  assert.doesNotMatch(measure, /visionCanvas\.getBoundingClientRect/);
+});
