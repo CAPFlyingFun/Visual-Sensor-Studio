@@ -183,7 +183,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.31.0';
+const APP_VERSION = '0.31.1';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -7184,6 +7184,10 @@ function isTabKey(value: string | null): value is TabKey {
 
 function setActiveTab(key: TabKey, remember = true): void {
   activeTab = key;
+  // Attach or release the burst preview as the tab comes and goes. The timer
+  // would get there within a second, but a second of black where the camera
+  // should be reads as the feature being broken.
+  syncBurstPreview();
   for (const tab of TABS) {
     const panel = document.getElementById(`tab-${tab}`);
     const button = document.getElementById(`tabbtn-${tab}`);
@@ -7598,8 +7602,38 @@ function renderBurstAgreement(
  * and a screenshot of six numbers is a poor way to report a measurement.
  */
 
+/**
+ * Show the camera in the Burst tab.
+ *
+ * Joshua: "I didn't see the camera on the screen unless I wasn't supposed to,
+ * and had to guess what I was looking at." He was aiming a measurement
+ * instrument blind, and the instrument only reads the CENTRE of the sensor at
+ * 1:1 — so "point at texture" meant something far more specific than the tab
+ * gave him any way to know.
+ *
+ * A second video element sharing the same MediaStream, the pattern already
+ * proven by the full-screen viewer. Attached only while the tab is showing:
+ * a hidden element still decoding frames is a decoder running for a picture
+ * nobody can see.
+ */
+function syncBurstPreview(): void {
+  const preview = document.getElementById('burstVideo') as HTMLVideoElement | null;
+  if (!preview) return;
+  const wanted = activeTab === 'burst' && camera.active && !!video.srcObject;
+
+  if (!wanted) {
+    if (preview.srcObject) preview.srcObject = null;
+    return;
+  }
+  if (preview.srcObject !== video.srcObject) {
+    preview.srcObject = video.srcObject;
+    void preview.play().catch(() => {});
+  }
+}
+
 /** Reuse the real enable paths rather than duplicating the permission dance. */
 function syncBurstReadiness(): void {
+  syncBurstPreview();
   const cameraButton = document.getElementById('burstEnableCamera') as HTMLButtonElement | null;
   const motionButton = document.getElementById('burstEnableMotion') as HTMLButtonElement | null;
   if (!cameraButton || !motionButton) return;

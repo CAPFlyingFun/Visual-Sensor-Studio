@@ -725,6 +725,17 @@
           is already the right size.
         </p>
 
+        <div class="burst-stage" id="burstStage">
+          <video id="burstVideo" autoplay muted playsinline></video>
+          <div class="burst-target" aria-hidden="true"><span></span></div>
+        </div>
+        <p class="helper">
+          Only what is inside the box is measured &mdash; the centre of the sensor at full
+          resolution, not the whole frame. Fill it with texture: gravel, foliage, brickwork,
+          fabric weave. A blank wall or a flat sky inside the box leaves nothing to measure
+          movement against, however detailed the rest of the view is.
+        </p>
+
         <div class="burst-enable" id="burstEnableRow">
           <button class="secondary-button" id="burstEnableCamera" type="button">Enable Camera</button>
           <button class="secondary-button" id="burstEnableMotion" type="button">Enable Motion</button>
@@ -838,7 +849,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.31.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.31.1</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">

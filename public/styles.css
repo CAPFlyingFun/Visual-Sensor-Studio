@@ -1377,3 +1377,38 @@ button.ghost.danger {
   overflow-x: auto;
   resize: vertical;
 }
+
+.burst-stage {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #04080d;
+  aspect-ratio: 4 / 3;
+  border: 1px solid rgba(120, 190, 255, .18);
+}
+.burst-stage video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/*
+ * The measured region is the CENTRE of the sensor at 1:1, so the box marks a
+ * fixed fraction of the frame rather than a fixed number of screen pixels.
+ * Its size on screen is therefore only indicative — what it communicates is
+ * "the middle, not the edges", which is the part that was invisible before.
+ */
+.burst-target {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+.burst-target span {
+  width: 42%;
+  aspect-ratio: 1 / 1;
+  border: 2px solid rgba(255, 196, 84, .9);
+  border-radius: 6px;
+  box-shadow: 0 0 0 100vmax rgba(2, 8, 14, .45);
+}

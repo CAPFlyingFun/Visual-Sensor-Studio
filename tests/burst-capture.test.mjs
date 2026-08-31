@@ -245,3 +245,25 @@ test('every log line carries the version and the numbers that decide the verdict
   // a steady hand from the offsets alone.
   assert.match(main, /appendBurstLog\(burstLogLine\(verdict, distinct, gyroTravel\)\)/);
 });
+
+test('the burst tab shows the camera, and marks the region it actually measures', () => {
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+
+  // Joshua: "I didn't see the camera on the screen... and had to guess what I
+  // was looking at." Aiming a measurement instrument blind.
+  assert.match(html, /<video id="burstVideo"[^>]*playsinline>/);
+  assert.match(main, /preview\.srcObject = video\.srcObject;/);
+
+  // Released when the tab is not showing: a hidden video still decoding is a
+  // decoder running for a picture nobody can see.
+  assert.match(main, /if \(preview\.srcObject\) preview\.srcObject = null;/);
+  assert.match(main, /activeTab === 'burst' && camera\.active/);
+  // And attached the moment the tab opens, not a second later on the timer.
+  assert.match(main, /activeTab = key;\s*\n(\s*\/\/[^\n]*\n)*\s*syncBurstPreview\(\);/);
+
+  // The probe reads the CENTRE at 1:1, not the whole frame — which is a much
+  // narrower instruction than "point at texture" and was invisible before.
+  assert.match(html, /class="burst-target"/);
+  assert.match(html, /Only what is inside the box is measured/);
+});
