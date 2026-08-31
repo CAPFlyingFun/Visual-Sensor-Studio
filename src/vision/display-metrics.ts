@@ -168,3 +168,43 @@ export function projectTiers(
       };
     });
 }
+
+/**
+ * Cap a render at the display's LOGICAL pixel count.
+ *
+ * Joshua measured his screen and found the number this is built on: an iPhone
+ * 15 Plus is 430x932 CSS pixels — 0.40 logical megapixels — presented on
+ * 1290x2796 physical ones at a device pixel ratio of 3. The screen bound was
+ * multiplying the on-screen box by that ratio, so full screen asked for 1290
+ * on the short side and 2.2 megapixels of work per frame.
+ *
+ * His reading of it was to render at CSS pixels outright. That is right about
+ * full screen and wrong about the panel, because the panel's content box is
+ * only 154x205 CSS points: at 1x it would render a ninth of the pixels it does
+ * now, and the small preview is the thing he said looked good. A ratio is the
+ * wrong dial because it scales everything equally, and the two windows are not
+ * equally overdrawn.
+ *
+ * A budget on the total is the right dial. It binds only where the render is
+ * genuinely extravagant and leaves everything under it alone: the panel goes
+ * 615 -> 548 on the short side and the full screen 968 -> 548, so both cost
+ * about 41ms on his device instead of 52 and 129.
+ *
+ * Why the LOGICAL count specifically, and not a constant: it is the one figure
+ * that already scales with the device. A bigger screen has more of them and
+ * has earned a bigger picture; a denser one does not, which is the whole point
+ * — density past a certain distance buys sharpness the frame rate pays for.
+ */
+export function budgetedShortSide(
+  shortSide: number,
+  elongation: number,
+  logicalPixels: number
+): number {
+  if (!(shortSide > 0)) return shortSide;
+  // No reading is not a reason to shrink a picture. Every other guard in this
+  // file works the same way, and for the same reason: an absent measurement is
+  // not evidence of a problem.
+  if (!(logicalPixels > 0) || !(elongation >= 1)) return shortSide;
+  const capped = Math.floor(Math.sqrt(logicalPixels / elongation));
+  return Math.min(shortSide, Math.max(1, capped));
+}

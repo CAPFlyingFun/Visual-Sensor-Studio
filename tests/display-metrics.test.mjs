@@ -219,3 +219,50 @@ test('full screen is measured on the viewer canvas, not the panel one', () => {
   assert.match(measure, /presentingElement\(\)\.getBoundingClientRect\(\)/);
   assert.doesNotMatch(measure, /visionCanvas\.getBoundingClientRect/);
 });
+
+test('the render is capped at the display logical pixel count', async () => {
+  const { budgetedShortSide } = await import('../.test-build/vision/display-metrics.js');
+  // Joshua's iPhone 15 Plus: 430x932 CSS pixels = 0.40 logical MP, shown on
+  // 1290x2796 physical at DPR 3. A 3:4 camera frame elongates by 4/3.
+  const LOGICAL = 430 * 932, ELONG = 4 / 3;
+  // Full screen asked for 968px on the short side and got 1.25 MP a frame.
+  assert.equal(budgetedShortSide(968, ELONG, LOGICAL), 548);
+  // The panel is barely touched: it was only slightly over.
+  assert.equal(budgetedShortSide(615, ELONG, LOGICAL), 548);
+  // And anything already under the budget passes through untouched. This is
+  // the property a flat device-pixel-ratio cap does NOT have, and why the
+  // panel (154x205 CSS points) would have lost 9/10 of its pixels to one.
+  assert.equal(budgetedShortSide(400, ELONG, LOGICAL), 400);
+  assert.equal(budgetedShortSide(154, ELONG, LOGICAL), 154);
+});
+
+test('the budget scales with the screen, not with its density', async () => {
+  const { budgetedShortSide } = await import('../.test-build/vision/display-metrics.js');
+  const ELONG = 4 / 3;
+  // A bigger screen has more logical pixels and has earned a bigger picture.
+  const phone = budgetedShortSide(4000, ELONG, 430 * 932);
+  const tablet = budgetedShortSide(4000, ELONG, 1024 * 1366);
+  assert.ok(tablet > phone, 'a tablet may render more than a phone');
+  // A denser screen of the same logical size has NOT: density past a certain
+  // distance buys sharpness the frame rate pays for, which is the whole point.
+  assert.equal(budgetedShortSide(4000, ELONG, 430 * 932), phone);
+});
+
+test('an unmeasured screen never shrinks the picture', async () => {
+  const { budgetedShortSide } = await import('../.test-build/vision/display-metrics.js');
+  // Same rule as every other guard here: an absent measurement is not evidence
+  // of a problem, and treating it as one is how a picture ends up at a floor.
+  for (const bad of [0, -1, Number.NaN, undefined]) {
+    assert.equal(budgetedShortSide(968, 4 / 3, bad), 968);
+  }
+  assert.equal(budgetedShortSide(968, 0, 430 * 932), 968, 'unknown elongation too');
+  assert.equal(budgetedShortSide(0, 4 / 3, 430 * 932), 0, 'and no size stays no size');
+});
+
+test('the screen bound reads the screen, not the viewport', () => {
+  const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  // Browser chrome comes and goes; a render budget that resized with it would
+  // rebuild every buffer when a toolbar hid.
+  assert.match(mainSource, /window\.screen\?\.width \?\? window\.innerWidth/);
+  assert.match(mainSource, /budgetedShortSide\(devicePixels, sourceAspect, logicalScreenPixels\(\)\)/);
+});

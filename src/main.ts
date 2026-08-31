@@ -12,6 +12,7 @@ import { GpsController } from './sensors/gps.js';
 import { zoomPresetStops } from './sensors/zoom.js';
 import { clamp, median } from './core/math.js';
 import {
+  budgetedShortSide,
   measureDisplay,
   megapixels,
   projectTiers,
@@ -173,7 +174,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.28.4';
+const APP_VERSION = '0.28.5';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -3445,6 +3446,18 @@ let lastDisplayMeasure = 0;
  * reflow in the middle of the render loop for a number that changes only when
  * something is resized.
  */
+/**
+ * The screen's size in CSS pixels — what the OS calls the resolution.
+ *
+ * `screen` rather than the viewport because browser chrome comes and goes and
+ * a render budget should not resize with it.
+ */
+function logicalScreenPixels(): number {
+  const w = window.screen?.width ?? window.innerWidth ?? 0;
+  const h = window.screen?.height ?? window.innerHeight ?? 0;
+  return w > 0 && h > 0 ? w * h : 0;
+}
+
 function displayedShortSide(sourceAspect: number, now: number): number {
   if (now - lastDisplayMeasure < 400 && displayedShort > 0) return displayedShort;
   lastDisplayMeasure = now;
@@ -3457,7 +3470,13 @@ function displayedShortSide(sourceAspect: number, now: number): number {
   const heightLimited = fill ? boxAspect < sourceAspect : boxAspect > sourceAspect;
   const contentHeight = heightLimited ? rect.height : rect.width / sourceAspect;
   const contentWidth = heightLimited ? rect.height * sourceAspect : rect.width;
-  displayedShort = Math.round(Math.min(contentWidth, contentHeight) * dpr);
+  const devicePixels = Math.round(Math.min(contentWidth, contentHeight) * dpr);
+  // Joshua measured the screen: 430x932 CSS pixels shown on 1290x2796 physical
+  // ones. Multiplying the box by a ratio of 3 is what made full screen ask for
+  // 1290 on the short side and 2.2 megapixels a frame. The budget caps the
+  // extravagant case without touching the panel, which a flat ratio could not
+  // do — see budgetedShortSide.
+  displayedShort = budgetedShortSide(devicePixels, sourceAspect, logicalScreenPixels());
   return displayedShort;
 }
 
