@@ -583,18 +583,9 @@ test('Milestone D: Speed and Trails carry their memory in a state pass at ANALYS
         assert.match(seen.note, /ANALYSIS resolution/, `${id}'s note names its resolution`);
       }
 
-      // Trails ACCUMULATE: switching back to Motion (no state) and then to
-      // Trails again starts from zero — a fresh filter never inherits memory.
-      await page.click('[data-filter="difference"]');
-      await page.waitForTimeout(300);
-      await page.click('[data-filter="trails"]');
-      await page.waitForTimeout(80);
-      const fresh = await sample();
-      await page.waitForTimeout(1200);
-      const warmed = await sample();
-      const brightness = (pixels) => pixels.reduce((sum, [r, g, b]) => sum + r + g + b, 0);
-      assert.ok(brightness(warmed.pixels) >= brightness(fresh.pixels),
-        'a trail builds over time: the accumulation is not brighter at its first frame than after a second');
+      // (Accumulation itself is proven under controlled frames in the
+      // renderer-contract test below; the fake camera's animation timing is
+      // not a fair judge of it.)
 
       // RGB has no state and re-enables the shutter.
       await page.click('[data-filter="rgb"]');
@@ -602,6 +593,95 @@ test('Milestone D: Speed and Trails carry their memory in a state pass at ANALYS
       assert.equal(await page.evaluate(() => document.getElementById('v2PhotoButton').disabled), false);
       await page.close();
       await context.close();
+    });
+  });
+
+test('temporal filters compare a frame against the SAME frame, not its mirror (renderer contract)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    // A vertical gradient is the sharpest possible mirror detector: compared
+    // against itself it is all zero; compared against its flip it is bright
+    // at both ends. Measured on device before this test existed: Motion,
+    // Speed and Trails all rendered a kaleidoscope — the frame against its
+    // own upside-down history.
+    await withBrowser(async (browser, base) => {
+      const page = await browser.newPage({ viewport: { width: 430, height: 932 } });
+      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.waitForTimeout(300);
+      const result = await page.evaluate(async () => {
+        const { GlRenderer } = await import('/app/v2/render/gl-renderer.js');
+        const target = document.createElement('canvas');
+        const renderer = new GlRenderer(target);
+        if (renderer.unavailableReason) return { unavailable: renderer.unavailableReason };
+        const source = document.createElement('canvas');
+        source.width = 128;
+        source.height = 96;
+        const ctx = source.getContext('2d');
+        const paint = (shift) => {
+          const g = ctx.createLinearGradient(0, 0, 0, 96);
+          g.addColorStop(0, '#000');
+          g.addColorStop(1, '#fff');
+          ctx.fillStyle = g;
+          ctx.fillRect(0, 0, 128, 96);
+          // A bright bar whose position we can move to create REAL change.
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(0, 10 + shift, 128, 6);
+        };
+        const size = { width: 128, height: 96 };
+        const readMean = () => {
+          const copy = document.createElement('canvas');
+          copy.width = target.width;
+          copy.height = target.height;
+          const c = copy.getContext('2d');
+          c.drawImage(target, 0, 0);
+          const d = c.getImageData(0, 0, copy.width, copy.height).data;
+          let sum = 0;
+          for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2];
+          return sum / (d.length / 4) / 3;
+        };
+        const out = {};
+        for (const id of ['difference', 'speed', 'trails']) {
+          // Warm up: identical frames, so history and state hold THIS frame.
+          paint(0);
+          for (let i = 0; i < 6; i++) {
+            renderer.uploadFrame(source);
+            renderer.render(id, size, size);
+            renderer.snapshotHistory(size);
+          }
+          const still = readMean();
+          // Now real motion: the bar moves 20 px.
+          paint(20);
+          renderer.uploadFrame(source);
+          renderer.render(id, size, size);
+          renderer.snapshotHistory(size);
+          const moved = readMean();
+          // Then the scene holds still again: Motion forgets at once, a
+          // trail lingers (decays by 0.94 a frame), Speed's average fades.
+          paint(20);
+          renderer.uploadFrame(source);
+          renderer.render(id, size, size);
+          renderer.snapshotHistory(size);
+          out[id] = { still, moved, after: readMean() };
+        }
+        return out;
+      });
+      assert.equal(result.unavailable, undefined, `renderer must be available, got "${result.unavailable}"`);
+      for (const id of ['difference', 'speed', 'trails']) {
+        const { still, moved } = result[id];
+        // The Ironbow ramp's foot is near-black; a frame against itself must sit there.
+        assert.ok(still < 30,
+          `${id}: a static frame must read dark, got mean ${still.toFixed(1)} — a mirror comparison lights the gradient's ends`);
+        assert.ok(moved > still + 5,
+          `${id}: real motion must register, still ${still.toFixed(1)} vs moved ${moved.toFixed(1)}`);
+      }
+      // Memory is the difference between the three: one still frame after
+      // the motion, Motion has forgotten it while Trails still shows it.
+      assert.ok(result.difference.after < result.difference.moved,
+        'Motion compares two frames only — a still frame after motion reads dark again');
+      assert.ok(result.trails.after > result.difference.after + 5,
+        `Trails keep the motion the frame pair has forgotten: trails ${result.trails.after.toFixed(1)} vs motion ${result.difference.after.toFixed(1)}`);
+      assert.ok(result.trails.after <= result.trails.moved + 1,
+        'a trail only ever decays once the motion stops');
+      await page.close();
     });
   });
 

@@ -23,6 +23,22 @@ void main() {
   gl_Position = vec4(aPosition, 0.0, 1.0);
 }`;
 
+/**
+ * OFFSCREEN passes must NOT flip. The frame history and the filter state
+ * are textures that the display pass samples with the SAME coordinates as
+ * the frame, so they must be stored in the frame's own layout. Writing them
+ * through the flipping shader stored them upside-down — and a temporal
+ * filter then compared every frame against its own vertical mirror, which
+ * reads as a kaleidoscope (Joshua, 2026-09-01: "Motion, Speed and Trails
+ * all look the same, like a kaleidoscope"). Same-layout in, same-layout out.
+ */
+const VERTEX_OFFSCREEN = `attribute vec2 aPosition;
+varying vec2 vUv;
+void main() {
+  vUv = aPosition * 0.5 + 0.5;
+  gl_Position = vec4(aPosition, 0.0, 1.0);
+}`;
+
 export interface RenderTargetSize {
   width: number;
   height: number;
@@ -130,10 +146,16 @@ export class GlRenderer {
     return texture;
   }
 
-  private program(filter: FilterDefinition, pass: 'display' | 'state' = 'display'): WebGLProgram | null {
+  /**
+   * display  the filter's fragment, drawn to the canvas (Y flipped).
+   * state    the filter's state pass, drawn to the state texture (no flip).
+   * copy     the filter's fragment drawn to a texture (no flip) — used with
+   *          RGB to store the frame history in the frame's own layout.
+   */
+  private program(filter: FilterDefinition, pass: 'display' | 'state' | 'copy' = 'display'): WebGLProgram | null {
     const gl = this.gl;
     if (!gl) return null;
-    const key = pass === 'state' ? `${filter.id}:state` : filter.id;
+    const key = pass === 'display' ? filter.id : `${filter.id}:${pass}`;
     const cached = this.programs.get(key);
     if (cached) return cached;
     const source = pass === 'state' ? filter.state : filter.fragment;
@@ -152,7 +174,7 @@ export class GlRenderer {
       return shader;
     };
 
-    const vertex = compile(gl.VERTEX_SHADER, VERTEX);
+    const vertex = compile(gl.VERTEX_SHADER, pass === 'display' ? VERTEX : VERTEX_OFFSCREEN);
     const fragment = compile(gl.FRAGMENT_SHADER, source);
     if (!vertex || !fragment) return null;
     const program = gl.createProgram();
@@ -301,7 +323,9 @@ export class GlRenderer {
     if (!gl || gl.isContextLost() || size.width <= 0 || size.height <= 0) return false;
     const rgb = FILTERS.find((f) => f.id === 'rgb');
     if (!rgb) return false;
-    const program = this.program(rgb);
+    // The COPY variant: same fragment, no Y flip, so the history lands in the
+    // frame's own layout and samples true against it.
+    const program = this.program(rgb, 'copy');
     if (!program) return false;
 
     if (!this.historyTexture) this.historyTexture = this.makeTexture(gl);
