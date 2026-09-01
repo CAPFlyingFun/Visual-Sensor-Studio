@@ -37,13 +37,26 @@ test('the size of a clip is stated before it is recorded, not after', () => {
   const thirty = fmt.estimateClipBytes(rate, 30);
   // A thirty-second 1080p clip is tens of megabytes. The exact figure is the
   // encoder's business; the order of magnitude is the user's.
-  assert.ok(thirty > 5e6 && thirty < 80e6, `${thirty} bytes is not a plausible clip`);
+  assert.ok(thirty > 5e6 && thirty < 120e6, `${thirty} bytes is not a plausible clip`);
   // Bit rate follows the frame size rather than being one constant.
   assert.ok(fmt.suggestedBitrate(640, 480, 30) < rate);
   // And it is bounded at both ends, so a huge or tiny frame cannot ask for an
   // absurd rate.
-  assert.ok(fmt.suggestedBitrate(8000, 6000, 60) <= 12_000_000);
-  assert.ok(fmt.suggestedBitrate(64, 64, 1) >= 800_000);
+  assert.ok(fmt.suggestedBitrate(8000, 6000, 60) <= 16_000_000);
+  assert.ok(fmt.suggestedBitrate(64, 64, 1) >= 1_500_000);
+});
+
+test('the rate suits a FILTERED picture, which is the hard case', () => {
+  // An Ironbow ramp or an edge map is high-contrast, noise-like detail across
+  // the whole frame — the hardest thing to encode and the first thing a tight
+  // rate control smears. A camera frame of a wall compresses; a false-colour
+  // speed field does not.
+  const recorded = fmt.suggestedBitrate(548, 732, 30);
+  // At the eight frames a second a heavy filter really produces, this is what
+  // each frame gets: enough that a still stops looking obviously compressed.
+  const bitsPerPixel = recorded / 8 / (548 * 732);
+  assert.ok(bitsPerPixel > 0.6,
+    `${bitsPerPixel.toFixed(2)} bits per pixel per frame is where smearing starts`);
 });
 
 /* --- Cutting the recording into clips ------------------------------------ */

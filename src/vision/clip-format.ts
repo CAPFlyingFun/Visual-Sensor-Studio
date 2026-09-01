@@ -118,15 +118,28 @@ export function estimateClipBytes(bitsPerSecond: number, seconds: number): numbe
 /**
  * A bit rate that suits the frame size, rather than one constant for everything.
  *
- * Roughly 0.1 bits per pixel per frame, which is a conventional starting point
- * for H.264 at ordinary motion — about 6 Mb/s for 1080p30 and 2.6 Mb/s for
- * 720p30. It is a starting point and not a measurement; the encoder's own rate
- * control is what actually decides, and this only tells it where to aim.
+ * 0.2 bits per pixel per frame. The first version used 0.1, a conventional
+ * starting point for H.264 at ordinary motion, and it was too mean here for a
+ * reason specific to this app: the pictures it records are FILTERED. An Ironbow
+ * ramp or an edge map is high-contrast noise-like detail across the whole
+ * frame, which is the hardest thing to encode and the first thing a tight rate
+ * control smears. A camera frame of a wall compresses; a false-colour speed
+ * field does not.
+ *
+ * What it works out to at the size this app actually records: 548x732 at a
+ * nominal 30 is 2.4 Mb/s, and at the 8 frames a second a heavy filter really
+ * produces that is about 37 kB a frame for 0.4 megapixels — roughly 0.75 bits
+ * per pixel, which is where a still stops looking obviously compressed. Under
+ * the old constant it was half that.
+ *
+ * A starting point, not a measurement: the encoder's own rate control decides,
+ * and this only tells it where to aim. The cost is file size, and the interface
+ * reports what each clip actually weighed.
  */
 export function suggestedBitrate(width: number, height: number, fps: number): number {
   const pixels = Math.max(1, width * height);
-  const rate = Math.round(pixels * Math.max(1, fps) * 0.1);
-  return Math.min(12_000_000, Math.max(800_000, rate));
+  const rate = Math.round(pixels * Math.max(1, fps) * 0.2);
+  return Math.min(16_000_000, Math.max(1_500_000, rate));
 }
 
 export function clipFileName(label: string, when: Date, extension: string): string {

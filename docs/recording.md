@@ -158,3 +158,44 @@ three rates while recording — delivered, analysed, recorded — and each held
 clip carries the rate it was actually written at. The levers that change it are
 Live detail and the vision rate preference, because they change how expensive a
 picture is; nothing in the recorder can.
+
+
+## Why a filtered recording is ~0.4 megapixels, and what would change it
+
+Joshua, on v0.39.3: *"the resolution on the video isn't good as it's low
+resolution/fps and quality."* Three separate limits, worth keeping apart:
+
+**Resolution.** A filtered recording is the filter's own render, upscaled to the
+display budget. That budget is the screen's *logical* pixel count — 430×932 on
+his phone, so a 4:3 frame caps at 548×732 ≈ 0.4 MP. It exists because rendering
+more than the screen can show is what made the preview lag, and it was added at
+his request. Recording a bigger file from the same render would be empty
+upscaling. **The lever is Live detail**, which raises what the filter computes
+and costs frame rate. An *unfiltered* recording bypasses all of this: the camera
+track is recorded directly at its own full resolution.
+
+**Frame rate.** Main-thread bound, measured, and not fixable by any recorder —
+see the table above.
+
+**Quality at a given size.** This one was genuinely too low and is fixed in
+v0.39.4: the bit rate went from 0.1 to 0.2 bits per pixel per frame. The
+project's own pictures are the hard case — an Ironbow ramp or an edge map is
+high-contrast, noise-like detail across the whole frame, which is the first
+thing a tight rate control smears. At 548×732 that is 2.4 Mb/s nominal, about
+37 kB a frame at the 8 fps a heavy filter really produces, ≈0.75 bits per pixel.
+Under the old constant it was half that.
+
+### On swapping in a recording library
+
+VideoRecorderJS (MIT) was suggested. Reading it: it is a wrapper around a canvas
+pipeline feeding MediaRecorder — the same architecture this app already has —
+defaulting to 640×480 and `video/webm`, with no iOS or MP4 story. It would not
+raise any of the three limits above, and its defaults are worse than the current
+ones for this device.
+
+The one API that *would* give real control is **WebCodecs** (`VideoEncoder`,
+Safari 17+): explicit codec, bitrate and keyframe control, and frames pushed in
+by hand rather than scraped off a canvas at whatever rate it repaints — which
+would also allow holding the last picture to produce a true constant-rate file.
+It needs an MP4 muxer written or vendored, and it still cannot create detail the
+filter never computed.
