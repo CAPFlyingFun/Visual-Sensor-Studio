@@ -8,6 +8,7 @@ import {
   DEFAULT_GEOMETRY_INPUTS, fitShortSide, resolveGeometry
 } from '../.test-build/v2/camera/geometry.js';
 import { captureAtMaxStream } from '../.test-build/v2/capture/shutter.js';
+import { pickContainer } from '../.test-build/v2/capture/record.js';
 import { FILTERS, filterById, ironbowLut } from '../.test-build/v2/filters/registry.js';
 import { ironbowColor } from '../.test-build/vision/motion-ironbow.js';
 
@@ -41,36 +42,68 @@ test('fitShortSide preserves aspect, lands on even pixels, never upscales', () =
 
 /* --- resolveGeometry: distinct facts, each with its reason (Rules 2–3) ---- */
 
+const INPUTS = {
+  previewBoxShortSide: 800, analysisShortSide: 384,
+  photoPolicy: 'source', recordPolicy: 'source'
+};
+
 test('every resolved size carries a reason', () => {
-  const g = resolveGeometry(size(3024, 4032), {
-    previewBoxShortSide: 800, analysisShortSide: 384, photoPolicy: 'source'
-  });
-  for (const key of ['analysis', 'preview', 'photo']) {
+  const g = resolveGeometry(size(3024, 4032), INPUTS);
+  for (const key of ['analysis', 'preview', 'photo', 'recordInput']) {
     assert.ok(g[key].reason.length > 0, `${key} must say why it is this size`);
     assert.ok(g[key].width > 0 && g[key].height > 0);
   }
   assert.deepEqual(g.source, size(3024, 4032), 'SOURCE passes through untouched');
 });
 
+test('RECORD IN follows the responsive stream and ignores the display', () => {
+  // The responsive live policy already bounds per-frame cost, so recording
+  // does not invent a second ceiling — and the viewfinder can never shrink
+  // what the encoder receives.
+  const source = size(720, 960);
+  const wide = resolveGeometry(source, { ...INPUTS, previewBoxShortSide: 2000 });
+  const tiny = resolveGeometry(source, { ...INPUTS, previewBoxShortSide: 200 });
+  assert.deepEqual(wide.recordInput, tiny.recordInput,
+    'record geometry must ignore the display entirely');
+  assert.deepEqual({ width: wide.recordInput.width, height: wide.recordInput.height },
+    { width: 720, height: 960 });
+  assert.match(wide.recordInput.reason, /responsive stream/);
+
+  // A numeric policy caps the short side and names itself, for the day a
+  // device measurement demands one.
+  const capped = resolveGeometry(size(3024, 4032), { ...INPUTS, recordPolicy: 548 });
+  assert.deepEqual({ width: capped.recordInput.width, height: capped.recordInput.height },
+    { width: 548, height: 730 });
+  assert.match(capped.recordInput.reason, /548/);
+});
+
+test('the container ladder prefers mp4, falls back honestly, never pins a level', () => {
+  assert.equal(pickContainer(() => true), 'video/mp4');
+  assert.equal(pickContainer((mime) => mime === 'video/webm'), 'video/webm');
+  assert.equal(pickContainer(() => false), '',
+    'no admitted container means the browser default, measured afterwards');
+  assert.equal(pickContainer(() => { throw new Error('no recorder'); }), '');
+  // The whole point: no candidate carries a codecs= parameter, so no
+  // hard-coded H.264 profile/level can ever cap the encoder again.
+  const seen = [];
+  pickContainer((mime) => { seen.push(mime); return false; });
+  assert.ok(seen.length > 0 && seen.every((mime) => !mime.includes('codecs')),
+    `plain containers only, saw: ${seen.join(', ')}`);
+});
+
 test('analysis downsamples for vision work and says so', () => {
-  const g = resolveGeometry(size(3024, 4032), {
-    previewBoxShortSide: 800, analysisShortSide: 384, photoPolicy: 'source'
-  });
+  const g = resolveGeometry(size(3024, 4032), INPUTS);
   assert.deepEqual({ width: g.analysis.width, height: g.analysis.height }, { width: 384, height: 512 });
   assert.match(g.analysis.reason, /downsampled/);
 
   // A stream already below the analysis tier is used whole, honestly.
-  const small = resolveGeometry(size(320, 240), {
-    previewBoxShortSide: 800, analysisShortSide: 384, photoPolicy: 'source'
-  });
+  const small = resolveGeometry(size(320, 240), INPUTS);
   assert.deepEqual({ width: small.analysis.width, height: small.analysis.height }, { width: 320, height: 240 });
   assert.match(small.analysis.reason, /already smaller/);
 });
 
 test('preview fits the viewfinder; an unmeasured viewfinder is admitted, not guessed', () => {
-  const g = resolveGeometry(size(3024, 4032), {
-    previewBoxShortSide: 800, analysisShortSide: 384, photoPolicy: 'source'
-  });
+  const g = resolveGeometry(size(3024, 4032), INPUTS);
   assert.deepEqual({ width: g.preview.width, height: g.preview.height }, { width: 800, height: 1066 });
   assert.match(g.preview.reason, /viewfinder/);
 
@@ -81,9 +114,7 @@ test('preview fits the viewfinder; an unmeasured viewfinder is admitted, not gue
   assert.match(unmeasured.preview.reason, /not measured yet/);
 
   // A viewfinder larger than the stream shows the stream as it is.
-  const bigBox = resolveGeometry(size(960, 720), {
-    previewBoxShortSide: 2000, analysisShortSide: 384, photoPolicy: 'source'
-  });
+  const bigBox = resolveGeometry(size(960, 720), { ...INPUTS, previewBoxShortSide: 2000 });
   assert.deepEqual({ width: bigBox.preview.width, height: bigBox.preview.height }, { width: 960, height: 720 });
   assert.match(bigBox.preview.reason, /smaller than the viewfinder/);
 });
@@ -93,24 +124,20 @@ test('the preview cap can NEVER touch the photo', () => {
   // recording at 548×732 while the sensor delivered 3024×4032. Here the photo
   // must be byte-identical whatever the viewfinder measures.
   const source = size(3024, 4032);
-  const wide = resolveGeometry(source, { previewBoxShortSide: 2000, analysisShortSide: 384, photoPolicy: 'source' });
-  const tiny = resolveGeometry(source, { previewBoxShortSide: 200, analysisShortSide: 384, photoPolicy: 'source' });
+  const wide = resolveGeometry(source, { ...INPUTS, previewBoxShortSide: 2000 });
+  const tiny = resolveGeometry(source, { ...INPUTS, previewBoxShortSide: 200 });
   assert.deepEqual(wide.photo, tiny.photo, 'photo geometry must ignore the display entirely');
   assert.deepEqual({ width: wide.photo.width, height: wide.photo.height }, { width: 3024, height: 4032 });
   assert.match(wide.photo.reason, /negotiated stream/);
 });
 
 test('a numeric photo policy caps the short side and names itself', () => {
-  const capped = resolveGeometry(size(3024, 4032), {
-    previewBoxShortSide: 800, analysisShortSide: 384, photoPolicy: 1080
-  });
+  const capped = resolveGeometry(size(3024, 4032), { ...INPUTS, photoPolicy: 1080 });
   assert.deepEqual({ width: capped.photo.width, height: capped.photo.height }, { width: 1080, height: 1440 });
   assert.match(capped.photo.reason, /1080/);
 
   // A policy at or above the stream is no cap at all.
-  const uncapped = resolveGeometry(size(960, 720), {
-    previewBoxShortSide: 800, analysisShortSide: 384, photoPolicy: 1080
-  });
+  const uncapped = resolveGeometry(size(960, 720), { ...INPUTS, photoPolicy: 1080 });
   assert.deepEqual({ width: uncapped.photo.width, height: uncapped.photo.height }, { width: 960, height: 720 });
   assert.match(uncapped.photo.reason, /negotiated stream/);
 });

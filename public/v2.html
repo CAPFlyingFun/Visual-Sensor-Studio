@@ -52,6 +52,7 @@
        shutter pause reads as intentional rather than a hiccup. */
     #v2ShutterFlash { position: absolute; inset: 0; z-index: 4; background: #fff; opacity: 0; pointer-events: none; transition: opacity .18s ease; }
     #v2ShutterFlash.firing { opacity: .85; }
+    .capture button.recording { color: #ff5c5c; border-color: #ff5c5c; box-shadow: 0 0 0 1px rgba(255, 92, 92, .35); }
     .enable-overlay {
       position: absolute; z-index: 6; left: 50%; top: 50%; transform: translate(-50%, -50%);
       min-height: 52px; padding: 0 22px; border-radius: 999px;
@@ -157,7 +158,7 @@
         <div class="zoom" id="v2ZoomStops" aria-label="Zoom presets"></div>
         <div class="capture">
           <button type="button" id="v2PhotoButton" title="Photo" disabled>◉</button>
-          <button type="button" title="Record — Milestone C" disabled>⏺</button>
+          <button type="button" id="v2RecordButton" title="Record" disabled>⏺</button>
           <button type="button" id="v2SwitchCamera" title="Switch camera" disabled>⟲</button>
         </div>
       </div>
@@ -185,6 +186,17 @@
         </div>
 
         <div class="card">
+          <h3>Recording</h3>
+          <p>
+            RGB records the camera stream directly &mdash; no render in the path, the
+            stream's own size. A filter records the same GPU render the preview shows,
+            at the RECORD IN size. The container is the browser's own choice, and the
+            ENCODED row is measured from the finished file &mdash; never from what was asked.
+          </p>
+          <p class="stage-note" id="v2RecordResult"></p>
+        </div>
+
+        <div class="card">
           <h3>Source truth</h3>
           <div class="diagnostics" aria-label="Frame truth table">
             <div><span class="k">SOURCE</span><b id="v2DiagSource">not started</b></div>
@@ -194,6 +206,8 @@
             <div><span class="k">ANALYSIS</span><span id="v2DiagAnalysis">—</span></div>
             <div><span class="k">PHOTO POLICY</span><span id="v2DiagPhotoPolicy">maximum available stream on shutter</span></div>
             <div><span class="k">LAST PHOTO</span><span id="v2DiagLastPhoto">none yet</span></div>
+            <div><span class="k">RECORD IN</span><span id="v2DiagRecordIn">—</span></div>
+            <div><span class="k">ENCODED</span><span id="v2DiagEncoded">none yet</span></div>
             <div><span class="k">STATE</span><span id="v2DiagState">idle</span></div>
             <div><span class="k">TRACK</span><span id="v2DiagTrack">—</span></div>
           </div>
@@ -203,15 +217,16 @@
         <div class="card">
           <h3>What this build is</h3>
           <p>
-            V2 Milestones A–B: the camera shell, the frame-geometry authority and the GPU
-            render contract. The live stream is a performance decision (responsive, smooth);
-            the photo is a quality decision (the camera's maximum, fetched only for the shot).
-            Preview and photo are ONE fragment shader at two sizes, and the truth table above
-            is the authority's live output — every row a separate fact with its own policy.
+            V2 Milestones A–C: the camera shell, the frame-geometry authority, the GPU
+            render contract and recording truth. The live stream is a performance decision;
+            the photo is a quality decision (the camera's maximum, fetched only for the shot);
+            a clip is measured from its own file. Preview, photo and filtered recording are
+            ONE fragment shader at explicit sizes, and the truth table above is the
+            authority's live output — every row a separate fact with its own policy.
           </p>
           <p>
-            Recording (C), temporal tools (D) and the lens workbench (E) come next. The
-            legacy app is unaffected and remains the default URL.
+            Temporal tools (D) and the lens workbench (E) come next. The legacy app is
+            unaffected and remains the default URL.
           </p>
         </div>
       </div>

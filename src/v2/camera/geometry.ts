@@ -24,6 +24,8 @@ export interface FrameGeometryState {
   analysis: SizedWithReason;
   preview: SizedWithReason;
   photo: SizedWithReason;
+  /** What the video encoder RECEIVES; what the file contains is measured. */
+  recordInput: SizedWithReason;
 }
 
 export interface GeometryInputs {
@@ -38,6 +40,13 @@ export interface GeometryInputs {
   analysisShortSide: number;
   /** 'source' records the negotiated size; a number caps the short side. */
   photoPolicy: 'source' | number;
+  /**
+   * RECORD IN policy. 'source' hands the encoder the responsive stream's own
+   * size — the live policy already bounds the per-frame cost, so no second
+   * ceiling is invented. A number caps the short side when measurement shows
+   * a device needs one.
+   */
+  recordPolicy: 'source' | number;
 }
 
 export const DEFAULT_GEOMETRY_INPUTS: GeometryInputs = {
@@ -45,7 +54,8 @@ export const DEFAULT_GEOMETRY_INPUTS: GeometryInputs = {
   // 384 keeps motion/statistics work sustainable on a phone; Milestone D's
   // temporal tools consume this. Nothing renders from it yet in B.
   analysisShortSide: 384,
-  photoPolicy: 'source'
+  photoPolicy: 'source',
+  recordPolicy: 'source'
 };
 
 /** Even numbers survive encoders and texture copies; the cost is one row. */
@@ -101,5 +111,15 @@ export function resolveGeometry(
       reason: `capped at a ${inputs.photoPolicy} short side by the photo policy`
     };
 
-  return { source, analysis, preview, photo };
+  const recordInput = inputs.recordPolicy === 'source' || inputs.recordPolicy >= sourceShort
+    ? {
+      ...source,
+      reason: 'the responsive stream — the live policy already bounds the cost'
+    }
+    : {
+      ...fitShortSide(source, inputs.recordPolicy),
+      reason: `capped at a ${inputs.recordPolicy} short side by the record policy`
+    };
+
+  return { source, analysis, preview, photo, recordInput };
 }

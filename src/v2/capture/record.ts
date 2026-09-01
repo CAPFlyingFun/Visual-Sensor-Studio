@@ -1,0 +1,188 @@
+/**
+ * RecordingService — recording truth (Milestone C).
+ *
+ * Owns MediaRecorder decisions and final-file diagnostics, never filter math.
+ * Two legitimate paths (the design spec's own split):
+ *
+ *   native    the camera stream borrowed directly — no render in the path,
+ *             so RGB recording costs nothing and carries the SOURCE size.
+ *   filtered  the pipeline's explicit RECORD IN render target, via
+ *             canvas.captureStream. The legacy app measured the law this
+ *             lives under: the recorded rate IS the canvas redraw rate, and
+ *             a canvas that is not redrawn emits nothing at all.
+ *
+ * Codec policy per docs/camera_rule.md and the design spec: browser default,
+ * never a hard-coded H.264 profile/level — a plain container ladder
+ * (video/mp4, then video/webm), and what the file REALLY contains is
+ * measured by decoding it. The recorder's reported mimeType travels along as
+ * a claim; the legacy app watched Safari report a Level-1.0 codec string for
+ * a stream that could not legally be one.
+ */
+
+import {
+  clipFileName, extensionForMime, suggestedBitrate
+} from '../../vision/clip-format.js';
+
+export interface ClipResult {
+  seconds: number;
+  bytes: number;
+  /** Measured by decoding the file — the authoritative dimensions. */
+  encodedWidth: number;
+  encodedHeight: number;
+  /** What the recorder claims it wrote. A claim, not a measurement. */
+  mimeType: string;
+  requestedBitsPerSecond: number;
+  /** bytes × 8 / seconds — the rate the file actually carries. */
+  measuredBitsPerSecond: number;
+  fileName: string;
+}
+
+/**
+ * Plain containers only, most compatible first. Parameterised codec strings
+ * are deliberately absent: the legacy app measured Chromium rejecting every
+ * one of them while plain video/mp4 encoded correctly, and a pinned low
+ * H.264 level is exactly the ceiling the spec forbids.
+ */
+const CONTAINER_LADDER = ['video/mp4', 'video/webm'] as const;
+
+export function pickContainer(isSupported: (mime: string) => boolean): string {
+  for (const mime of CONTAINER_LADDER) {
+    try {
+      if (isSupported(mime)) return mime;
+    } catch {
+      // An overzealous isTypeSupported must not take recording down.
+    }
+  }
+  // Empty string = let the browser pick; the file is measured either way.
+  return '';
+}
+
+/**
+ * Decode the produced file and read its true dimensions — the legacy app's
+ * own instrument, carried over: when an encoder resizes, the file is the
+ * only witness that tells the truth.
+ */
+function measureEncodedSize(blob: Blob): Promise<{ width: number; height: number }> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const probe = document.createElement('video');
+    let settled = false;
+    const done = (width: number, height: number) => {
+      if (settled) return;
+      settled = true;
+      URL.revokeObjectURL(url);
+      resolve({ width, height });
+    };
+    probe.preload = 'metadata';
+    probe.muted = true;
+    probe.onloadedmetadata = () => done(probe.videoWidth, probe.videoHeight);
+    probe.onerror = () => done(0, 0);
+    // A file that never reports metadata must not hold up the app.
+    window.setTimeout(() => done(probe.videoWidth, probe.videoHeight), 3000);
+    probe.src = url;
+  });
+}
+
+function saveBlob(blob: Blob, fileName: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export class ClipRecorder {
+  private recorder: MediaRecorder | null = null;
+  private chunks: Blob[] = [];
+  private startedAt = 0;
+  private mime = '';
+  private bitrate = 0;
+  private label = 'clip';
+
+  get active(): boolean {
+    return this.recorder !== null;
+  }
+
+  /**
+   * Start recording the given stream. The RECORD IN dimensions and cadence
+   * come from the caller (the authority and the measured delivered rate) —
+   * this class sets a bitrate to aim at and never decides a size.
+   */
+  start(
+    stream: MediaStream,
+    recordInput: { width: number; height: number },
+    measuredFps: number,
+    label: string
+  ): { ok: boolean; reason?: string } {
+    if (this.recorder) return { ok: false, reason: 'already recording' };
+    if (typeof MediaRecorder === 'undefined') {
+      return { ok: false, reason: 'MediaRecorder is unavailable in this browser' };
+    }
+    const mime = pickContainer((candidate) => MediaRecorder.isTypeSupported(candidate));
+    this.bitrate = suggestedBitrate(
+      recordInput.width, recordInput.height, measuredFps > 0 ? measuredFps : 30);
+    try {
+      this.recorder = new MediaRecorder(stream, mime
+        ? { mimeType: mime, videoBitsPerSecond: this.bitrate }
+        : { videoBitsPerSecond: this.bitrate });
+    } catch (error) {
+      this.recorder = null;
+      return { ok: false, reason: error instanceof Error ? error.message : 'recorder refused' };
+    }
+    this.mime = this.recorder.mimeType || mime;
+    this.label = label;
+    this.chunks = [];
+    this.recorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) this.chunks.push(event.data);
+    };
+    // A timeslice keeps data flowing, so a crash loses a second, not a clip.
+    this.recorder.start(1000);
+    this.startedAt = performance.now();
+    return { ok: true };
+  }
+
+  /** Stop, assemble, MEASURE, save. Null when nothing was recorded. */
+  async stop(): Promise<ClipResult | null> {
+    const recorder = this.recorder;
+    if (!recorder) return null;
+    this.recorder = null;
+    const seconds = Math.max(0, (performance.now() - this.startedAt) / 1000);
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+      };
+      recorder.onstop = finish;
+      window.setTimeout(finish, 3000);
+      try {
+        recorder.stop();
+      } catch {
+        finish();
+      }
+    });
+    const type = this.mime || this.chunks[0]?.type || '';
+    const blob = new Blob(this.chunks, type ? { type } : undefined);
+    this.chunks = [];
+    if (blob.size === 0) return null;
+
+    const encoded = await measureEncodedSize(blob);
+    const fileName = clipFileName(`v2-${this.label}`, new Date(), extensionForMime(type || blob.type));
+    saveBlob(blob, fileName);
+    return {
+      seconds,
+      bytes: blob.size,
+      encodedWidth: encoded.width,
+      encodedHeight: encoded.height,
+      mimeType: type || blob.type,
+      requestedBitsPerSecond: this.bitrate,
+      measuredBitsPerSecond: seconds > 0 ? (blob.size * 8) / seconds : 0,
+      fileName
+    };
+  }
+}

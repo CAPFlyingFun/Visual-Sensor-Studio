@@ -332,6 +332,92 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
     });
   });
 
+test('recording truth: native and filtered clips measured from their files (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({
+        viewport: { width: 430, height: 932 },
+        permissions: ['camera']
+      });
+      const page = await context.newPage();
+      page.on('download', () => { /* clips download like photos; discard */ });
+      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.waitForTimeout(400);
+      await page.click('#v2EnableCamera');
+      await page.waitForFunction(() =>
+        /\d+(\.\d+)? rendered fps/.test(document.getElementById('v2DiagPreview')?.textContent ?? ''),
+        null, { timeout: 8000 });
+      const dims = (text) => text.match(/(\d+)×(\d+)/).slice(1, 3).map(Number);
+
+      // With RGB active the idle row promises the native path.
+      await page.waitForFunction(() =>
+        /camera stream direct on record/.test(document.getElementById('v2DiagRecordIn')?.textContent ?? ''),
+        null, { timeout: 3000 });
+      const [sw, sh] = dims(await page.textContent('#v2DiagSource'));
+
+      // NATIVE clip: the camera stream borrowed directly.
+      await page.click('#v2RecordButton');
+      await page.waitForFunction(() =>
+        /RECORDING · camera stream direct/.test(document.getElementById('v2DiagRecordIn')?.textContent ?? ''),
+        null, { timeout: 3000 });
+      const during = await page.evaluate(() => ({
+        photoDisabled: document.getElementById('v2PhotoButton').disabled,
+        switchDisabled: document.getElementById('v2SwitchCamera').disabled,
+        filterDisabled: document.querySelector('#v2FilterStrip [data-filter="ironbow"]').disabled,
+        recClass: document.getElementById('v2RecordButton').classList.contains('recording')
+      }));
+      assert.ok(during.photoDisabled && during.switchDisabled && during.filterDisabled,
+        'shutter, switch and filters wait for the clip — a mode change would resize the encoder');
+      assert.ok(during.recClass, 'the record button shows its state');
+      await page.waitForTimeout(1800);
+      await page.click('#v2RecordButton');
+      await page.waitForFunction(() =>
+        (document.getElementById('v2RecordResult')?.textContent ?? '').startsWith('Saved'),
+        null, { timeout: 10000 });
+      const native = await page.textContent('#v2RecordResult');
+      assert.match(native, /^Saved \d+\.\ds · \d+×\d+ measured in the file/,
+        `the clip reports measured truth, got "${native}"`);
+      const [nw, nh] = dims(native.replace(/^Saved [\d.]+s · /, ''));
+      assert.equal(nw, sw, 'the native path records the SOURCE, measured in the file');
+      assert.equal(nh, sh);
+      await page.waitForFunction(([w, h]) =>
+        (document.getElementById('v2DiagEncoded')?.textContent ?? '').startsWith(`${w}×${h}`),
+        [nw, nh], { timeout: 3000 });
+
+      // FILTERED clip: the same GPU render, frozen at RECORD IN.
+      await page.click('[data-filter="ironbow"]');
+      await page.waitForTimeout(300);
+      await page.click('#v2RecordButton');
+      await page.waitForFunction(() =>
+        /RECORDING · filtered render/.test(document.getElementById('v2DiagRecordIn')?.textContent ?? ''),
+        null, { timeout: 3000 });
+      const frozen = await page.evaluate(() => ({
+        w: document.getElementById('v2PreviewCanvas').width,
+        h: document.getElementById('v2PreviewCanvas').height
+      }));
+      assert.equal(frozen.w, sw, 'the canvas is frozen at RECORD IN while recording');
+      assert.equal(frozen.h, sh);
+      await page.waitForTimeout(1800);
+      await page.click('#v2RecordButton');
+      await page.waitForFunction(() =>
+        (document.getElementById('v2RecordResult')?.textContent ?? '').startsWith('Saved'),
+        null, { timeout: 10000 });
+      const filtered = await page.textContent('#v2RecordResult');
+      const [fw, fh] = dims(filtered.replace(/^Saved [\d.]+s · /, ''));
+      assert.equal(fw, sw, 'the filtered clip measures at RECORD IN in the file');
+      assert.equal(fh, sh);
+
+      // After stop, the preview reclaims its own geometry through the owner.
+      await page.waitForTimeout(700);
+      const after = await page.evaluate(() => document.getElementById('v2PreviewCanvas').width);
+      const [pw] = dims(await page.textContent('#v2DiagPreview'));
+      assert.equal(after, pw, 'the preview returns to PREVIEW geometry after the clip');
+
+      await page.close();
+      await context.close();
+    });
+  });
+
 test('controls stay alive under the live frame loop (fake device)',
   { skip: runnable ? false : 'no browser available' }, async () => {
     // The measured iOS failure this guards against: every state broadcast —

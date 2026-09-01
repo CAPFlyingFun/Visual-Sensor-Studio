@@ -35,6 +35,28 @@ export interface SavedPhoto {
   bytes: number;
 }
 
+/**
+ * A recording in flight: which path, and the RECORD IN size FROZEN at start —
+ * the encoder was promised these dimensions, so nothing may resize the render
+ * target underneath it until stop.
+ */
+export interface ActiveRecording {
+  path: 'native' | 'filtered';
+  input: FrameSize;
+}
+
+/** What the last recording really produced — measured from the file. */
+export interface SavedClip {
+  seconds: number;
+  width: number;
+  height: number;
+  bytes: number;
+  measuredMbps: number;
+  mimeType: string;
+  /** The encoder wrote different dimensions than it was handed — flagged. */
+  resizedFromInput: boolean;
+}
+
 export interface V2State {
   camera: CameraStatus | null;
   /**
@@ -72,6 +94,10 @@ export interface V2State {
   lastPhoto: SavedPhoto | null;
   /** True only inside the shutter's temporary maximum-stream window. */
   captureActive: boolean;
+  /** Non-null while a clip is being recorded. */
+  recording: ActiveRecording | null;
+  /** ENCODED: what the last clip's file really contained. */
+  lastClip: SavedClip | null;
 }
 
 export function frameSize(width: number, height: number): FrameSize | null {
@@ -92,7 +118,9 @@ const state: V2State = {
   previewFps: 0,
   viewfinder: null,
   lastPhoto: null,
-  captureActive: false
+  captureActive: false,
+  recording: null,
+  lastClip: null
 };
 
 const listeners = new Set<Listener>();

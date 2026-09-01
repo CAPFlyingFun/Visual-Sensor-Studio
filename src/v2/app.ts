@@ -24,6 +24,7 @@ import { NAV_ROUTES } from './routes.js';
 import { readState, subscribe, updateState, frameSize } from './state.js';
 import { resolveGeometry, DEFAULT_GEOMETRY_INPUTS } from './camera/geometry.js';
 import { captureAtMaxStream, type Escalation, type ShutterStream } from './capture/shutter.js';
+import { ClipRecorder } from './capture/record.js';
 import { FILTERS, filterById } from './filters/registry.js';
 import { GlRenderer } from './render/gl-renderer.js';
 import { capturePhoto } from './capture/photo.js';
@@ -79,7 +80,7 @@ window.addEventListener('resize', refreshGeometry);
 const previewMeter = new FrameRateMeter();
 
 function renderPreview(now: number): void {
-  const { source, geometry, activeFilter } = readState();
+  const { source, geometry, activeFilter, recording } = readState();
   if (!source) return;
   // Resolve geometry HERE, for the frame being rendered — not by diffing
   // source at the delivery site. The status subscription can record the
@@ -91,7 +92,12 @@ function renderPreview(now: number): void {
   const resolved = readState().geometry;
   if (!resolved) return;
   if (!renderer.uploadFrame(video)) return;
-  if (renderer.render(activeFilter, resolved.preview)) {
+  // A filtered recording FREEZES the render target at the RECORD IN size the
+  // encoder was promised — resizing a canvas mid-recording corrupts the clip.
+  // The viewfinder shows this render scaled by CSS, so the preview stays
+  // honest: what you see is what the file receives.
+  const target = recording?.path === 'filtered' ? recording.input : resolved.preview;
+  if (renderer.render(activeFilter, target)) {
     byId('v2PreviewCanvas').hidden = false;
     previewMeter.recordProcessed(now, 0);
     updateState({ previewFps: previewMeter.report.processingFps });
@@ -256,6 +262,19 @@ function renderDiagnostics(): void {
   setText('v2DiagLastPhoto', lastPhoto
     ? `${lastPhoto.width}×${lastPhoto.height} · ${(lastPhoto.bytes / 1e6).toFixed(2)} MB JPEG · as saved`
     : 'none yet');
+  const { activeFilter, recording, lastClip } = readState();
+  const path = (recording ? recording.path === 'native' : activeFilter === 'rgb')
+    ? 'camera stream direct'
+    : 'filtered render';
+  setText('v2DiagRecordIn', recording
+    ? `${recording.input.width}×${recording.input.height} · RECORDING · ${path}`
+    : geometry
+      ? `${row(geometry.recordInput)} · ${path} on record`
+      : '—');
+  setText('v2DiagEncoded', lastClip
+    ? `${lastClip.width}×${lastClip.height} · ${lastClip.measuredMbps.toFixed(1)} Mb/s measured · `
+      + `${lastClip.mimeType || 'container unreported'}${lastClip.resizedFromInput ? ' · ENCODER RESIZED' : ''}`
+    : 'none yet');
   setText('v2DiagState', status ? `${status.state} · ${status.stage}` : 'idle');
   setText('v2DiagTrack', d.trackLabel
     ? `${d.trackLabel}${d.trackMuted ? ' · muted' : ''}`
@@ -269,17 +288,24 @@ function renderDiagnostics(): void {
  */
 let renderedControlsKey = '';
 function renderControls(): void {
-  const { camera: status, captureActive } = readState();
+  const { camera: status, captureActive, recording } = readState();
   const state = status?.state ?? 'idle';
-  const key = `${state}|${status?.stage ?? ''}|${status?.reason ?? ''}|${captureActive}|${renderer.unavailableReason}`;
+  const rec = recording !== null;
+  const key = `${state}|${status?.stage ?? ''}|${status?.reason ?? ''}|${captureActive}|${rec}|${renderer.unavailableReason}`;
   if (key === renderedControlsKey) return;
   renderedControlsKey = key;
   const enable = byId<HTMLButtonElement>('v2EnableCamera');
   enable.hidden = state === 'live' || state === 'requesting';
   enable.textContent = state === 'suspended' ? 'Resume Camera' : 'Enable Camera';
-  byId<HTMLButtonElement>('v2SwitchCamera').disabled = state !== 'live' || captureActive;
+  // A camera switch or a shutter's mode change would resize the stream the
+  // encoder was promised, so both wait until the recording stops.
+  byId<HTMLButtonElement>('v2SwitchCamera').disabled = state !== 'live' || captureActive || rec;
   byId<HTMLButtonElement>('v2PhotoButton').disabled =
-    state !== 'live' || captureActive || Boolean(renderer.unavailableReason);
+    state !== 'live' || captureActive || rec || Boolean(renderer.unavailableReason);
+  const record = byId<HTMLButtonElement>('v2RecordButton');
+  record.disabled = state !== 'live' || captureActive;
+  record.classList.toggle('recording', rec);
+  record.title = rec ? 'Stop recording' : 'Record';
   if (status && state === 'error') setText('v2Stage', status.reason || 'Camera error.');
   // Empty when healthy; a shader compile/link failure surfaces here instead
   // of leaving a black canvas with no explanation.
@@ -314,18 +340,25 @@ function buildFilterStrip(): void {
   }
 }
 
-let renderedFilter = '';
+let renderedFilterKey = '';
 function renderFilterStrip(): void {
-  const { activeFilter } = readState();
-  if (activeFilter === renderedFilter) return;
-  renderedFilter = activeFilter;
+  const { activeFilter, recording } = readState();
+  const rec = recording !== null;
+  const key = `${activeFilter}|${rec}`;
+  if (key === renderedFilterKey) return;
+  renderedFilterKey = key;
   for (const button of byId('v2FilterStrip').querySelectorAll<HTMLButtonElement>('[data-filter]')) {
     button.classList.toggle('active', button.dataset.filter === activeFilter);
+    // Switching filters mid-clip would change the recording path or shader
+    // under the encoder; the strip waits for stop, honestly disabled.
+    button.disabled = rec;
   }
   const filter = filterById(activeFilter);
-  setText('v2FilterNote', filter?.id === 'ironbow'
-    ? 'False colour: visible-light brightness through the Ironbow ramp — not thermal.'
-    : '');
+  setText('v2FilterNote', rec
+    ? 'Recording — stop to change filters.'
+    : filter?.id === 'ironbow'
+      ? 'False colour: visible-light brightness through the Ironbow ramp — not thermal.'
+      : '');
 }
 
 /**
@@ -439,6 +472,77 @@ function shutterStream(): ShutterStream {
   };
 }
 
+/* --- Recording: two honest paths (docs/camera_rule.md, spec C) ------------ */
+
+const clipRecorder = new ClipRecorder();
+
+async function toggleRecording(): Promise<void> {
+  const { camera: status, geometry, recording, activeFilter, deliveredFps } = readState();
+  if (recording) {
+    const result = await clipRecorder.stop();
+    updateState({
+      recording: null,
+      lastClip: result
+        ? {
+          seconds: result.seconds,
+          width: result.encodedWidth,
+          height: result.encodedHeight,
+          bytes: result.bytes,
+          measuredMbps: result.measuredBitsPerSecond / 1e6,
+          mimeType: result.mimeType,
+          resizedFromInput: result.encodedWidth !== recording.input.width
+            || result.encodedHeight !== recording.input.height
+        }
+        : readState().lastClip
+    });
+    setText('v2RecordResult', result
+      ? `Saved ${result.seconds.toFixed(1)}s · ${result.encodedWidth}×${result.encodedHeight} measured in the file · `
+        + `${(result.bytes / 1e6).toFixed(2)} MB · ${(result.measuredBitsPerSecond / 1e6).toFixed(1)} Mb/s measured `
+        + `(asked ${(result.requestedBitsPerSecond / 1e6).toFixed(1)}) · ${result.mimeType || 'container unreported'}`
+      : 'The recording produced no data.');
+    return;
+  }
+
+  if (capturing || !camera.active || status?.state !== 'live' || !geometry) return;
+  const filtered = activeFilter !== 'rgb';
+  if (filtered && renderer.unavailableReason) {
+    setText('v2RecordResult', renderer.unavailableReason);
+    return;
+  }
+  // RGB borrows the camera stream directly — no render in the path, SOURCE
+  // dimensions, zero cost. A filter records the pipeline's RECORD IN render.
+  const input = filtered ? geometry.recordInput : geometry.source;
+  let stream: MediaStream;
+  if (filtered) {
+    // Size the canvas to RECORD IN before the encoder ever sees it; the
+    // preview loop holds this target until stop.
+    if (!renderer.uploadFrame(video) || !renderer.render(activeFilter, geometry.recordInput)) {
+      setText('v2RecordResult', 'No frame to start the recording from.');
+      return;
+    }
+    stream = renderer.targetCanvas.captureStream();
+  } else {
+    const source = video.srcObject;
+    if (!(source instanceof MediaStream)) {
+      setText('v2RecordResult', 'The camera stream is not available to record.');
+      return;
+    }
+    stream = source;
+  }
+  const started = clipRecorder.start(stream, input, deliveredFps, filtered ? activeFilter : 'rgb');
+  if (!started.ok) {
+    setText('v2RecordResult', started.reason ?? 'The recorder refused to start.');
+    return;
+  }
+  setText('v2RecordResult', '');
+  updateState({
+    recording: {
+      path: filtered ? 'filtered' : 'native',
+      input: { width: input.width, height: input.height, aspect: input.aspect }
+    }
+  });
+}
+
 const CAPTURE_REASONS: Record<Escalation, string> = {
   granted: 'the largest stream the camera granted for this shot',
   unchanged: 'the camera kept its current mode',
@@ -447,8 +551,10 @@ const CAPTURE_REASONS: Record<Escalation, string> = {
 
 let capturing = false;
 async function takePhoto(): Promise<void> {
-  const { camera: status } = readState();
-  if (capturing || !camera.active || status?.state !== 'live') return;
+  const { camera: status, recording } = readState();
+  // The shutter's temporary mode change would resize the stream a recording
+  // is encoding; the button is disabled, and this guard backs it up.
+  if (capturing || recording || !camera.active || status?.state !== 'live') return;
   capturing = true;
   // captureActive drives the button states through renderControls — one
   // direction of flow, no direct disabled-flag fiddling to fight it.
@@ -578,6 +684,7 @@ function showRoute(id: string): void {
 
 byId('v2EnableCamera').addEventListener('click', () => void startCamera());
 byId('v2PhotoButton').addEventListener('click', () => void takePhoto());
+byId('v2RecordButton').addEventListener('click', () => void toggleRecording());
 byId('v2SwitchCamera').addEventListener('click', () => void switchCamera());
 byId('v2LegacyLink').addEventListener('click', () => {
   const back = new URL(location.href);
