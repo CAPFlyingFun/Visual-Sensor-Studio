@@ -205,7 +205,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.38.2';
+const APP_VERSION = '0.38.3';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -6786,6 +6786,61 @@ function detectClipFormat(): void {
   setText('recordFormat', clipFormat.label);
 }
 
+let recordCanvas: HTMLCanvasElement | null = null;
+let recordContext: CanvasRenderingContext2D | null = null;
+
+/**
+ * The size to record a FILTER at.
+ *
+ * Joshua: "was wondering why so small — was doing the original issue of
+ * 166x221 and not max resolution it can do." A ten-second clip came out
+ * 382kB because the overlay canvas IS 166x221: several modes compute at the
+ * analysis size for speed, and recording that canvas directly recorded the
+ * analysis frame rather than the picture on screen.
+ *
+ * So a filter is recorded at the size it is DISPLAYED, through the same budget
+ * the viewer uses — capped against the screen so a recording cannot ask for the
+ * twelve-megapixel frames that made the preview lag.
+ *
+ * BE CLEAR ABOUT WHAT THIS IS. Upscaling adds no detail. The picture in the
+ * file is the same picture that was on screen, at the size it was on screen,
+ * and the fine structure still comes from whatever the filter actually
+ * computed. Making the FILTER render larger is what the Live detail control
+ * does, and it costs frame rate — which is the trade Joshua already made once
+ * deliberately. This only stops the file being smaller than the preview.
+ */
+function recordTargetSize(): { width: number; height: number } {
+  const sourceWidth = visionCanvas.width || 4;
+  const sourceHeight = visionCanvas.height || 3;
+  const long = Math.max(sourceWidth, sourceHeight);
+  const short = Math.min(sourceWidth, sourceHeight);
+  const elongation = short > 0 ? long / short : 1;
+
+  const cameraShort = Math.min(
+    camera.diagnostics.videoWidth || 0,
+    camera.diagnostics.videoHeight || 0
+  );
+  const wanted = cameraShort > 0 ? cameraShort : short;
+  // Never smaller than what the filter produced — an upscale is a presentation
+  // choice, a downscale would throw away something that was actually computed.
+  const target = Math.max(short, budgetedShortSide(wanted, elongation, logicalScreenPixels()));
+  const even = (value: number) => Math.max(2, Math.round(value / 2) * 2);
+  const scale = target / short;
+  return sourceWidth >= sourceHeight
+    ? { width: even(sourceWidth * scale), height: even(target) }
+    : { width: even(target), height: even(sourceHeight * scale) };
+}
+
+/** Copy the overlay into the recording canvas at its own size. */
+function blitRecordFrame(): void {
+  if (!recordCanvas || !recordContext) return;
+  if (visionCanvas.hidden || !overlayPainted || !visionCanvas.width) return;
+  recordContext.drawImage(
+    visionCanvas, 0, 0, visionCanvas.width, visionCanvas.height,
+    0, 0, recordCanvas.width, recordCanvas.height
+  );
+}
+
 /**
  * The surface to record, and what to call it.
  *
@@ -6795,12 +6850,28 @@ function detectClipFormat(): void {
  */
 function recordSource(): { stream: MediaStream; ours: boolean; label: string } | null {
   const painting = !visionCanvas.hidden && overlayPainted && visionCanvas.width > 0;
-  if (painting && typeof visionCanvas.captureStream === 'function') {
-    return { stream: visionCanvas.captureStream(30), ours: true, label: visionMode };
+  if (painting) {
+    const { width, height } = recordTargetSize();
+    recordCanvas ??= document.createElement('canvas');
+    if (recordCanvas.width !== width) recordCanvas.width = width;
+    if (recordCanvas.height !== height) recordCanvas.height = height;
+    recordContext = recordCanvas.getContext('2d');
+    if (recordContext && typeof recordCanvas.captureStream === 'function') {
+      recordContext.imageSmoothingEnabled = true;
+      recordContext.imageSmoothingQuality = 'high';
+      blitRecordFrame();
+      return {
+        stream: recordCanvas.captureStream(30),
+        ours: true,
+        label: `${visionMode} ${width}×${height}`
+      };
+    }
   }
   const live = video.srcObject as MediaStream | null;
   if (live && live.getVideoTracks().length > 0) {
-    return { stream: live, ours: false, label: 'camera' };
+    const w = camera.diagnostics.videoWidth;
+    const h = camera.diagnostics.videoHeight;
+    return { stream: live, ours: false, label: w && h ? `camera ${w}×${h}` : 'camera' };
   }
   return null;
 }
@@ -6886,14 +6957,19 @@ async function pruneClips(): Promise<void> {
   const held = await listClips();
   const plan = planRetention(held, clipLimits);
   for (const clip of plan.evict) await deleteClip(clip.id);
-  const free = quota ? describeSize(Math.max(0, quota.quota - quota.usage)) : 'unknown';
+  // The browser's allowance for this ONE website, not the phone's free space.
+  // Joshua had 193GB free while this read 41GB, because they are different
+  // numbers and only one of them is any of the app's business.
+  const allowance = quota
+    ? `${describeSize(Math.max(0, quota.quota - quota.usage))} this browser allows this site`
+    : 'the browser does not say how much it allows this site';
   const minutes = clipBitrate > 0
     ? Math.floor(budgetSeconds(clipLimits, clipBitrate) / 60)
     : 0;
   setText('clipStorage',
     `${plan.reason} · budget ${describeSize(clipLimits.maxBytes)}`
     + (minutes > 0 ? ` (about ${minutes} min)` : '')
-    + ` · ${free} free on this device`);
+    + ` · ${allowance}`);
 }
 
 async function renderClips(): Promise<void> {
@@ -6985,15 +7061,27 @@ function startRecording(): void {
   segmentLabel = source.label;
   const track = source.stream.getVideoTracks()[0];
   const settings = track?.getSettings?.() ?? {};
+  // The RECORDING canvas, not the overlay: falling back to the overlay's size
+  // would aim the bit rate at the 166x221 analysis frame while encoding a
+  // frame several times that, and starve it.
+  const fallbackWidth = recordStreamIsOurs && recordCanvas ? recordCanvas.width : 1280;
+  const fallbackHeight = recordStreamIsOurs && recordCanvas ? recordCanvas.height : 720;
   clipBitrate = suggestedBitrate(
-    settings.width ?? visionCanvas.width ?? 1280,
-    settings.height ?? visionCanvas.height ?? 720,
+    settings.width ?? fallbackWidth,
+    settings.height ?? fallbackHeight,
     settings.frameRate ?? 30
   );
   rolling.start(performance.now());
   syncRecordButton();
+  const upscaled = recordStreamIsOurs
+    && recordCanvas
+    && recordCanvas.width > visionCanvas.width
+    ? ` · the ${visionMode} filter renders at ${visionCanvas.width}×${visionCanvas.height}`
+      + ' and is scaled up to that, so this is the picture on screen rather than'
+      + ' more detail — raise Live detail to render it larger'
+    : '';
   setText('recordMessage',
-    `Recording ${segmentLabel} · cutting a new clip every ${MAX_CLIP_SECONDS}s.`);
+    `Recording ${segmentLabel} · a new clip every ${MAX_CLIP_SECONDS}s${upscaled}.`);
 }
 
 function stopRecording(): void {
@@ -7004,6 +7092,7 @@ function stopRecording(): void {
   if (recordStreamIsOurs) recordStream?.getTracks().forEach((t) => t.stop());
   recordStream = null;
   recordStreamIsOurs = false;
+  recordContext = null;
   syncRecordButton();
   setText('recordElapsed', '');
   setText('recordMessage', 'Stopped. Clips are held below until you export them.');
@@ -7038,6 +7127,10 @@ function tickRecording(now: number): void {
     syncGifEstimate();
   }
   if (!rolling.recording) return;
+  // One blit per frame, and only while recording. The canvas is capped at the
+  // screen's budget, so this is nothing like the twelve-megapixel per-frame
+  // copy that made the preview lag.
+  blitRecordFrame();
   rolling.tick(now);
   if (now - lastElapsedPaint < 250) return;
   lastElapsedPaint = now;

@@ -192,7 +192,9 @@ test('the recorder records what is on screen, filters included', () => {
   // A recording of the raw camera would be a worse copy of what the phone's
   // own camera app already does. The processing is the reason to record here.
   const fn = main.slice(main.indexOf('function recordSource'), main.indexOf('function beginSegment'));
-  assert.match(fn, /visionCanvas\.captureStream/);
+  // Through the recording canvas, which carries the overlay at the size it is
+  // displayed rather than the size it is computed at — see recordTargetSize.
+  assert.match(fn, /recordCanvas\.captureStream/);
   // But only while the overlay is actually painting — a hidden or stale canvas
   // would record a black rectangle.
   assert.match(fn, /overlayPainted/);
@@ -312,4 +314,45 @@ test('every size the interface offers actually fits in memory', () => {
       }
     }
   }
+});
+
+test('a filter is recorded at the size it is shown, not the size it is computed', () => {
+  // A ten-second clip came out 382kB because the overlay canvas IS 166x221:
+  // several modes compute at the analysis size for speed, and recording that
+  // canvas directly recorded the analysis frame rather than the picture on
+  // screen.
+  const fn = main.slice(main.indexOf('function recordTargetSize'), main.indexOf('function blitRecordFrame'));
+  assert.match(fn, /budgetedShortSide/, 'the size should follow the display budget');
+  assert.match(fn, /Math\.max\(short,/, 'and never end up smaller than what was computed');
+
+  // The recording canvas is what is captured, refreshed once per frame.
+  assert.match(main, /recordCanvas\.captureStream\(30\)/);
+  const tick = main.slice(main.indexOf('function tickRecording'), main.indexOf('function canShareFile'));
+  assert.match(tick, /blitRecordFrame\(\);/);
+
+  // And the bit rate aims at the frame being encoded, not at the analysis one.
+  assert.match(main, /recordStreamIsOurs && recordCanvas \? recordCanvas\.width : 1280/);
+});
+
+test('upscaling is called upscaling', () => {
+  // It adds no detail, and a recording that quietly implied otherwise would be
+  // the app overstating what it measured.
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.match(html, /scaled up from it to the size you actually see/);
+  assert.match(html, /not\s+extra detail/);
+  assert.match(main, /rather than\n\s*\* more detail|so this is the picture on screen rather than/);
+});
+
+test('the storage figure is the browser’s allowance, not the phone’s free space', () => {
+  // Joshua's iPhone had 192.95GB free of 512GB while the app reported
+  // "41.23GB free on this device". storage.estimate() reports the quota this
+  // browser allows this one website — a fraction of the disk, deliberately
+  // coarsened, and nothing to do with what Settings shows.
+  assert.match(main, /this browser allows this site/);
+  assert.ok(!/free on this device/.test(main), 'the app must not claim to know the phone’s free space');
+
+  // The cap is stated in the same units it is displayed in, or a "600MB"
+  // ceiling prints as 629.1MB and looks like a different number.
+  assert.equal(lib.MAX_BUDGET_BYTES, 600e6);
+  assert.equal(lib.describeSize(lib.MAX_BUDGET_BYTES), '600.0 MB');
 });

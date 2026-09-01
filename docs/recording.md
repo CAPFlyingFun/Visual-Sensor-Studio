@@ -41,6 +41,24 @@ two — this is not the way to record something that must not have a gap in it.
 backgrounded tab is throttled or deferred, and a clip that ran long because the
 phone was in a pocket is exactly the oversized file the limit exists to prevent.
 
+### Two numbers that are not what they look like
+
+**The storage figure is the browser's allowance for one website, not the
+phone's free space.** An iPhone with 192.95 GB free of 512 GB had the app
+reporting "41.23 GB free on this device". `navigator.storage.estimate()` returns
+the quota this browser will let this origin use — a fraction of the disk,
+deliberately coarsened so a page cannot fingerprint a device — and it has
+nothing to do with what Settings shows. It is described as an allowance now.
+
+**A filter is recorded at the size it is displayed, not the size it is
+computed.** A ten-second clip came out at 382 kB because several modes compute
+on a 166×221 analysis frame for speed, and recording that canvas recorded the
+analysis frame rather than the picture on screen. The recording now goes through
+a canvas sized by the same display budget the viewer uses. Upscaling adds no
+detail and the interface says so: **Live detail** is what makes the filter
+itself render larger, at the cost of frame rate. The camera on its own is
+recorded at its own full resolution with no scaling at all.
+
 Clips are held in IndexedDB — they survive a reload or a discarded tab, are
 never uploaded, and the browser may still evict them. When room is needed,
 already-exported clips go first (a copy exists elsewhere), then the oldest, and

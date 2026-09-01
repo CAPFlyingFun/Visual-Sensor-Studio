@@ -505,6 +505,13 @@
               clips of at most 30 seconds. Each clip is a finished file the moment it is cut, so
               a call or a lock screen costs the clip in hand and nothing already recorded.
             </p>
+            <p class="helper">
+              Several filters compute at a small analysis frame for speed, and the recording is
+              scaled up from it to the size you actually see. That is the picture on screen, not
+              extra detail: <strong>Live detail</strong> above is what makes the filter itself
+              render larger, and it costs frame rate. The camera on its own records at its own
+              full resolution with no scaling.
+            </p>
             <div class="button-row">
               <button class="primary-button" id="recordButton" type="button" disabled>Record</button>
               <span class="record-elapsed" id="recordElapsed" aria-live="polite"></span>
@@ -971,7 +978,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.38.2</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.38.3</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">

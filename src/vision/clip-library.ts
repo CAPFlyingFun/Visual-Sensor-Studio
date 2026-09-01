@@ -55,15 +55,20 @@ export const MIN_BUDGET_BYTES = 40 * 1024 * 1024;
  * stranger's storage for held clips would be rude even where the quota allows
  * it. The share is deliberately modest and the ceiling is absolute.
  */
-export const MAX_BUDGET_BYTES = 600 * 1024 * 1024;
+export const MAX_BUDGET_BYTES = 600e6;
 export const BUDGET_SHARE = 0.25;
 
 /**
  * Turn what the browser reports about storage into a budget.
  *
- * `navigator.storage.estimate()` is approximate by design — it is deliberately
- * coarsened so a page cannot fingerprint a device by its exact free space — so
- * this is a budget, not an accounting. It errs small.
+ * THIS IS NOT THE PHONE'S FREE SPACE, and calling it that was wrong. Joshua's
+ * iPhone had 192.95GB free of 512GB while the app reported "41.23GB free on
+ * this device" — because `navigator.storage.estimate()` reports the QUOTA this
+ * browser will allow this one website, which is a fraction of the disk and has
+ * nothing to do with what Settings shows. It is also deliberately coarsened, so
+ * a page cannot fingerprint a device by its exact free space.
+ *
+ * So it is an allowance, not an accounting, and it is described as one.
  */
 export function budgetFromQuota(quotaBytes: number, usedBytes: number): RetentionLimits {
   const free = Math.max(0, (Number.isFinite(quotaBytes) ? quotaBytes : 0) - Math.max(0, usedBytes));
@@ -71,7 +76,7 @@ export function budgetFromQuota(quotaBytes: number, usedBytes: number): Retentio
   // Thirty seconds at a middling bit rate is about 20MB, so the clip count
   // follows the byte budget rather than being a second, independent limit that
   // could contradict it.
-  const maxClips = Math.max(0, Math.floor(maxBytes / (20 * 1024 * 1024)));
+  const maxClips = Math.max(0, Math.floor(maxBytes / 20e6));
   return { maxBytes, maxClips };
 }
 
