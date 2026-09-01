@@ -23,6 +23,15 @@ export interface StreamTier {
   shortSide: number | 'max';
   /** How the SOURCE row describes a stream running under this tier. */
   streamLabel: string;
+  /**
+   * RECORD IN policy while this tier is chosen. 'source' records the stream
+   * the user deliberately picked — the tier IS the eyes-open choice
+   * (Joshua's decision, 2026-09-01: MAX means MAX for filtered clips too,
+   * with the risk stated rather than a cap second-guessing the choice).
+   */
+  recordPolicy: 'source' | number;
+  /** Shown beside the filter strip when a filtered clip carries known risk. */
+  clipWarning?: string;
 }
 
 export const STREAM_TIERS: readonly StreamTier[] = [
@@ -30,19 +39,27 @@ export const STREAM_TIERS: readonly StreamTier[] = [
     id: 'speed',
     label: '720',
     shortSide: 720,
-    streamLabel: 'responsive live stream'
+    streamLabel: 'responsive live stream',
+    recordPolicy: 'source'
   },
   {
     id: 'detail',
     label: '1080',
     shortSide: 1080,
-    streamLabel: 'detail live stream — chosen'
+    streamLabel: 'detail live stream — chosen',
+    recordPolicy: 'source'
   },
   {
     id: 'maximum',
     label: 'MAX',
     shortSide: 'max',
-    streamLabel: 'maximum live stream — chosen, expect fewer fps'
+    streamLabel: 'maximum live stream — chosen, expect fewer fps',
+    recordPolicy: 'source',
+    // Measured on the reference iPhone: a 12 MP filtered clip can exceed the
+    // device's memory and kill the recording (the app recovers, the clip may
+    // not finalise). Stated, not prevented — the tier is the user's call.
+    clipWarning: 'Filtered clips record at the full MAX stream. Depending on the device this '
+      + 'can crash the recording — if it does, drop one tier. Photos always stay at MAX.'
   }
 ];
 
