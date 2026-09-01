@@ -220,3 +220,57 @@ by hand rather than scraped off a canvas at whatever rate it repaints — which
 would also allow holding the last picture to produce a true constant-rate file.
 It needs an MP4 muxer written or vendored, and it still cannot create detail the
 filter never computed.
+
+
+## Recording by taking stills (v0.39.6)
+
+Joshua: *"I know it's possible to record video at full resolution as the preview
+works live in HD with filters, so why can't the recording basically keep taking
+stills of the video feed?"*
+
+It can, and this is it. The still path already renders every mode it can
+re-derive at the camera's own resolution — that is how Save Frame works — so
+the only new part is doing it repeatedly and handing each result to the encoder
+as one frame, through `captureStream(0)` so no frame in the file is a duplicate
+of a slow one.
+
+**What it costs.** One sobel pass over random data, single-threaded:
+
+| | | |
+|---|---|---|
+| 0.40 MP (the preview's size) | 29 ms | 35 frames/s |
+| 1.67 MP | 123 ms | 8 frames/s |
+| 2.07 MP (1080p) | 143 ms | 7 frames/s |
+| 8.29 MP (4K) | 515 ms | 1.9 frames/s |
+| 12.19 MP (this sensor) | 784 ms | 1.3 frames/s |
+
+A whole mode is several times one sobel pass, so this produces roughly **one
+frame a second** — a full-resolution *timelapse*, not a video. That is not a
+limitation of the recorder; it is what filtering twelve megapixels in a browser
+costs, and it is the same arithmetic that made the preview budget exist.
+
+**Two limits worth knowing.** H.264 levels are specified in macroblocks and top
+out near 36,864 (~8.3 MP); a 3024×4032 sensor frame is 47,628, which no level
+allows, so the short side is capped at 2160. And the modes that *accumulate*
+over time — trails, amplify, the learned background, chronochrome, slit scan —
+have no full-resolution history to redraw from, so a "still" of one would be
+the camera frame with the filter missing. They are excluded and the interface
+says why rather than recording a large file of the wrong picture.
+
+## Two caps, and raising one left the other binding
+
+v0.39.5 raised the display budget while recording and the recordings stayed
+548×732. Two reasons, both mine:
+
+1. **The Live detail ladder still capped it.** On Auto the rung is chosen from
+   the frame rate the device is managing — so exactly the phone that needs a
+   bigger recording has settled on a small rung, and it silently overruled the
+   recording budget. A recording at a raised detail now overrules the ladder,
+   the same way choosing "Full" does.
+2. **`recordTargetSize` still used `logicalScreenPixels()`** rather than the
+   raised budget, so a mode that cannot render larger stayed pinned to the
+   preview's size even as one that could did not.
+
+The record message now states which of the three paths applied — stills,
+scaled-up, or native — because "it is still 548×732" cannot be diagnosed from
+outside otherwise.

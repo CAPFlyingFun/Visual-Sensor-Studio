@@ -125,7 +125,13 @@ test('the display size is capped by measured detail, not by the reported size', 
   assert.match(mainSource, /const DETAIL_CAP_MARGIN = 4;/);
   assert.match(mainSource, /const DETAIL_CAP_FLOOR = 720;/);
   assert.match(mainSource, /const ceiling = auto \? detailCappedShortSide\(sourceShort\) : sourceShort;/);
-  assert.match(mainSource, /Math\.min\(sourceShort, ceiling, wantedShort, onScreen > 0 \? onScreen : sourceShort\)/);
+  // The ladder still binds while previewing. Since v0.39.6 a recording at a
+  // raised detail overrules it, because on Auto the rung is chosen from the
+  // frame rate the device is managing — so exactly the phone that needs a
+  // bigger recording has settled on a small rung.
+  assert.match(mainSource, /const budget = onScreen > 0 \? onScreen : sourceShort;/);
+  assert.match(mainSource, /: Math\.min\(sourceShort, ceiling, wantedShort, budget\);/);
+  assert.match(mainSource, /recording\s*\n\s*\? Math\.min\(sourceShort, budget\)/);
 });
 
 test('the cap only acts on a confident, textured reading', () => {

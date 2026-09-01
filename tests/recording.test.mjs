@@ -354,7 +354,7 @@ test('upscaling is called upscaling', () => {
   const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
   assert.match(html, /scaled up from it to the size you actually see/);
   assert.match(html, /not\s+extra detail/);
-  assert.match(main, /rather than\n\s*\* more detail|so this is the picture on screen rather than/);
+  assert.match(main, /\+ ' not more detail';/);
 });
 
 test('the storage figure is the browser’s allowance, not the phone’s free space', () => {
@@ -457,4 +457,59 @@ test('what the choice costs is stated in numbers, not adjectives', () => {
   // Default is the preview's own size: a setting that costs frame rate should
   // be chosen, not inherited.
   assert.match(main, /recordDetail: 'preview',/);
+});
+
+/* --- Recording by taking stills ------------------------------------------ */
+
+test('a recording can be made of full-resolution stills', () => {
+  // Joshua: "why can't the recording basically keep taking stills of the video
+  // feed?" It can — the still path already renders every mode it can re-derive
+  // at the camera's own resolution, which is how Save Frame works.
+  const loop = main.slice(main.indexOf('async function stillsRecordingLoop'),
+    main.indexOf('/**\n * The surface to record'));
+  assert.match(loop, /grabFullFrame\(width\)/);
+  assert.match(loop, /renderStill\(visionMode, frame, stillsPrevious\)/);
+  assert.match(loop, /stillsTrack\.requestFrame\?\.\(\)/);
+  // Manual frames, so every frame in the file is one that was rendered rather
+  // than a duplicate of a slow one.
+  assert.match(main, /recordCanvas\.captureStream\(0\)/);
+  // And it yields, or the interface is frozen for the whole recording.
+  assert.match(loop, /setTimeout\(resolve, 0\)/);
+  // The preview blit must not overwrite a still.
+  assert.match(main, /if \(!stillsTrack\) blitRecordFrame\(\);/);
+});
+
+test('the modes that cannot be re-derived are refused, not faked', () => {
+  // Trails, amplify, the learned background, chronochrome and slit scan
+  // accumulate over time ON THE ANALYSIS FRAME. There is no full-resolution
+  // history to redraw them from, so a "still" of one is the camera frame with
+  // the filter missing — a large file of the wrong picture.
+  const set = main.slice(main.indexOf('const STILL_RENDERABLE_MODES'),
+    main.indexOf('const STILLS_MAX_SHORT_SIDE'));
+  for (const mode of ['relief', 'edges', 'motion', 'difference', 'flow', 'speed', 'lens', 'night']) {
+    assert.match(set, new RegExp(`'${mode}'`), `${mode} can be re-derived at full size`);
+  }
+  for (const mode of ['motiontrails', 'amplify', 'background', 'chrono', 'slitscan']) {
+    assert.ok(!new RegExp(`'${mode}'`).test(set), `${mode} cannot be, and must not be offered`);
+  }
+  // And the interface says which it is, rather than silently recording small.
+  assert.match(main, /accumulates over frames on the analysis picture/);
+});
+
+test('the frame size stays inside what an H.264 encoder accepts', () => {
+  // H.264 levels are specified in macroblocks and top out near 36,864 — about
+  // 8.3 MP. A 3024x4032 sensor frame is 47,628, which no level allows.
+  const cap = Number(/const STILLS_MAX_SHORT_SIDE = (\d+);/.exec(main)[1]);
+  assert.ok(cap <= 2160, `${cap} on the short side asks the encoder for too much`);
+  const macroblocks = (cap / 16) * ((cap * 16 / 9) / 16);
+  assert.ok(macroblocks < 36864, `${Math.round(macroblocks)} macroblocks exceeds every level`);
+});
+
+test('what a recording actually did is reported, not inferred', () => {
+  // Three different things decide the size, and "it is still 548x732" is
+  // impossible to diagnose from outside without the app saying which applied.
+  const fn = main.slice(main.indexOf('SAY WHAT WAS ACTUALLY DONE'), main.indexOf("a new clip every ${MAX_CLIP_SECONDS}s"));
+  assert.match(fn, /full-resolution stills at/);
+  assert.match(fn, /full-resolution version of it to save/);
+  assert.match(fn, /scaled up to/);
 });

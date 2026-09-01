@@ -205,9 +205,9 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-type RecordDetail = 'preview' | 'higher' | 'full';
+type RecordDetail = 'preview' | 'higher' | 'full' | 'sensor';
 
-const APP_VERSION = '0.39.5';
+const APP_VERSION = '0.39.6';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -396,7 +396,7 @@ function loadSettings(): AppSettings {
         ? parsed.lensDetail as LensDetail
         : DEFAULT_SETTINGS.lensDetail,
       lensDetailChosen: parsed.lensDetailChosen === true,
-      recordDetail: ['preview', 'higher', 'full'].includes(String(parsed.recordDetail))
+      recordDetail: ['preview', 'higher', 'full', 'sensor'].includes(String(parsed.recordDetail))
         ? parsed.recordDetail as RecordDetail
         : DEFAULT_SETTINGS.recordDetail,
       saveAspect: ['sensor', 'wide'].includes(String(parsed.saveAspect))
@@ -2229,6 +2229,8 @@ function updateVisionMode(mode: VisionMode): void {
   if (mode === 'lens') renderLensChips();
   else stopLensPreview();
   setText('visionModeLabel', `${MODE_LABELS[mode]} • ${settings.visionRatePreference}`);
+  // Whether a full-resolution recording is even possible depends on the mode.
+  syncRecordDetailNote();
 }
 
 /* ------------------------------------------------------------------ *
@@ -3384,13 +3386,24 @@ function lensDisplayWidth(): number {
   // ladder that is explicitly asking to be told what to do; nowhere near good
   // enough to overrule someone who has said what they want.
   const ceiling = auto ? detailCappedShortSide(sourceShort) : sourceShort;
+  // A RECORDING OVERRULES THE LADDER.
+  //
+  // Two caps were in play and raising one left the other binding: on Auto the
+  // rung is chosen from the frame rate the device is managing, so exactly the
+  // phone that needs a bigger recording has settled on a small rung, and the
+  // recording budget below was silently overruled by it. While recording at a
+  // raised detail the request IS the instruction, the same way "Full" is.
+  const recording = (rolling.recording || armingDetail) && settings.recordDetail !== 'preview';
   // The screen bound applies at every setting. Pixels the display cannot
   // resolve are not wasteful, they are invisible, and no setting should be
   // read as a request for invisible ones.
   const aspect = Math.max(source, camera.diagnostics.videoHeight || source)
     / Math.max(1, sourceShort);
   const onScreen = displayedShortSide(aspect, performance.now());
-  const short = Math.min(sourceShort, ceiling, wantedShort, onScreen > 0 ? onScreen : sourceShort);
+  const budget = onScreen > 0 ? onScreen : sourceShort;
+  const short = recording
+    ? Math.min(sourceShort, budget)
+    : Math.min(sourceShort, ceiling, wantedShort, budget);
   return Math.max(analysis, widthForShortSide(short));
 }
 
@@ -6842,6 +6855,96 @@ function detectClipFormat(): void {
 
 let recordCanvas: HTMLCanvasElement | null = null;
 let recordContext: CanvasRenderingContext2D | null = null;
+/** Manual-frame track while recording full-resolution stills. */
+let stillsTrack: (MediaStreamTrack & { requestFrame?: () => void }) | null = null;
+let stillsPrevious: ImageData | null = null;
+
+/**
+ * Modes a full-resolution still can actually reproduce.
+ *
+ * renderStill re-derives these from the frame in hand at whatever size it is
+ * given. The rest — trails, amplify, the learned background, chronochrome,
+ * slit scan — are accumulated over time ON THE ANALYSIS FRAME, so there is no
+ * full-resolution history to redraw them from and a "still" of one is just the
+ * camera frame with the filter missing. Offering sensor-resolution recording
+ * for those would produce a large file of the wrong picture.
+ */
+const STILL_RENDERABLE_MODES: ReadonlySet<VisionMode> = new Set<VisionMode>([
+  'camera', 'relief', 'edges', 'motion', 'difference', 'flow', 'speed', 'lens', 'night'
+]);
+
+/**
+ * The largest frame the H.264 encoder will take, as a short side.
+ *
+ * Not an arbitrary limit: H.264 levels are specified in macroblocks, and the
+ * highest level phones implement tops out around 36,864 of them — about 8.3
+ * megapixels. This phone's sensor is 3024x4032, which is 12.2 MP and 47,628
+ * macroblocks, so asking the encoder for the true sensor size would be asking
+ * for something no level allows. 2160 on the short side is 4K-class and inside
+ * every level that matters.
+ */
+const STILLS_MAX_SHORT_SIDE = 2160;
+
+function stillsRecordingWanted(): boolean {
+  return settings.recordDetail === 'sensor' && STILL_RENDERABLE_MODES.has(visionMode);
+}
+
+function stillsTargetWidth(): number {
+  const w = camera.diagnostics.videoWidth || 0;
+  const h = camera.diagnostics.videoHeight || 0;
+  if (!w || !h) return 0;
+  const shortSide = Math.min(w, h);
+  const scale = Math.min(1, STILLS_MAX_SHORT_SIDE / shortSide);
+  return Math.max(32, Math.round(w * scale));
+}
+
+/**
+ * Record by taking stills, which is Joshua's own proposal: "why can't the
+ * recording basically keep taking stills of the video feed?"
+ *
+ * It can, and this is it. The still path already renders every mode it can
+ * re-derive at the camera's own resolution — that is how Save Frame works — so
+ * the only new thing is doing it repeatedly and handing each result to the
+ * encoder as one frame.
+ *
+ * WHAT IT COSTS, measured on one sobel pass over random data, single-threaded:
+ *
+ *   0.40 MP (the preview's size)   29 ms   35 frames/s
+ *   1.67 MP                       123 ms    8 frames/s
+ *   2.07 MP (1080p)               143 ms    7 frames/s
+ *   8.29 MP (4K)                  515 ms    1.9 frames/s
+ *  12.19 MP (this sensor)         784 ms    1.3 frames/s
+ *
+ * and a whole mode is several times one sobel pass. So this produces about one
+ * frame a second at 4K: a full-resolution TIMELAPSE, not a video, and the
+ * control says so. That is not a limitation of the recorder — it is what
+ * filtering twelve megapixels in a browser costs, and it is the same arithmetic
+ * that made the preview budget exist in the first place.
+ *
+ * captureStream(0) rather than a frame rate: in manual mode the canvas emits a
+ * frame only when asked, so every frame in the file is one that was actually
+ * rendered and none is a duplicate of a slow one.
+ */
+async function stillsRecordingLoop(): Promise<void> {
+  const width = stillsTargetWidth();
+  while (rolling.recording && stillsTrack && recordContext && recordCanvas) {
+    const frame = grabFullFrame(width);
+    if (!frame) break;
+    const rgba = renderStill(visionMode, frame, stillsPrevious);
+    const image = new ImageData(frame.width, frame.height);
+    image.data.set(rgba);
+    if (recordCanvas.width !== frame.width) recordCanvas.width = frame.width;
+    if (recordCanvas.height !== frame.height) recordCanvas.height = frame.height;
+    recordContext.putImageData(image, 0, 0);
+    stillsTrack.requestFrame?.();
+    segmentFrames += 1;
+    stillsPrevious = frame;
+    // Yield, or the interface is frozen for the whole recording. A full-size
+    // render already blocks for most of a second; this at least lets the timer
+    // that cuts a clip, and the button that stops one, run between frames.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
 
 /**
  * The size to record a FILTER at.
@@ -6877,7 +6980,10 @@ function recordTargetSize(): { width: number; height: number } {
   const wanted = cameraShort > 0 ? cameraShort : short;
   // Never smaller than what the filter produced — an upscale is a presentation
   // choice, a downscale would throw away something that was actually computed.
-  const target = Math.max(short, budgetedShortSide(wanted, elongation, logicalScreenPixels()));
+  // renderPixelBudget, not logicalScreenPixels: the two have to agree or a mode
+  // that cannot render larger is still pinned to the preview's size while one
+  // that can is not.
+  const target = Math.max(short, budgetedShortSide(wanted, elongation, renderPixelBudget()));
   const even = (value: number) => Math.max(2, Math.round(value / 2) * 2);
   const scale = target / short;
   return sourceWidth >= sourceHeight
@@ -6929,6 +7035,20 @@ function blitRecordFrame(): void {
  * this returns the camera track to avoid.
  */
 function recordSource(): { stream: MediaStream; ours: boolean; label: string } | null {
+  if (stillsRecordingWanted()) {
+    const width = stillsTargetWidth();
+    if (width > 0) {
+      recordCanvas ??= document.createElement('canvas');
+      recordContext = recordCanvas.getContext('2d');
+      if (recordContext && typeof recordCanvas.captureStream === 'function') {
+        // Manual frames: every frame in the file is one that was rendered.
+        const stream = recordCanvas.captureStream(0);
+        stillsTrack = stream.getVideoTracks()[0] as typeof stillsTrack;
+        stillsPrevious = null;
+        return { stream, ours: true, label: `${visionMode} stills` };
+      }
+    }
+  }
   const painting = !visionCanvas.hidden && overlayPainted && visionCanvas.width > 0;
   if (painting) {
     const { width, height } = recordTargetSize();
@@ -7154,7 +7274,7 @@ async function awaitRecordDetail(): Promise<void> {
 
 async function startRecording(): Promise<void> {
   if (!recordingSupported() || rolling.recording || armingDetail) return;
-  if (settings.recordDetail !== 'preview') {
+  if (settings.recordDetail !== 'preview' && !stillsRecordingWanted()) {
     armingDetail = true;
     lastDisplayMeasure = 0;
     setText('recordMessage', 'Raising the render size for recording…');
@@ -7193,15 +7313,25 @@ async function startRecording(): Promise<void> {
   // measured under, so the old answer is stale the instant recording starts.
   lastDisplayMeasure = 0;
   syncRecordButton();
-  const upscaled = recordStreamIsOurs
-    && recordCanvas
-    && recordCanvas.width > visionCanvas.width
-    ? ` · the ${visionMode} filter renders at ${visionCanvas.width}×${visionCanvas.height}`
-      + ' and is scaled up to that, so this is the picture on screen rather than'
-      + ' more detail — raise Live detail to render it larger'
-    : '';
+  if (stillsTrack) void stillsRecordingLoop();
+  // SAY WHAT WAS ACTUALLY DONE, because three different things decide the size
+  // and "it is still 548x732" is otherwise impossible to diagnose from outside.
+  let how: string;
+  if (stillsTrack) {
+    how = ` · full-resolution stills at ${recordCanvas?.width}×${recordCanvas?.height},`
+      + ' about a frame a second — a timelapse, not a video';
+  } else if (settings.recordDetail === 'sensor') {
+    how = ` · ${visionMode} accumulates over frames on the analysis picture, so there is no`
+      + ' full-resolution version of it to save; recorded at the preview size instead';
+  } else if (recordCanvas && recordCanvas.width > visionCanvas.width) {
+    how = ` · ${visionMode} renders at ${visionCanvas.width}×${visionCanvas.height} and is`
+      + ` scaled up to ${recordCanvas.width}×${recordCanvas.height} — the picture on screen,`
+      + ' not more detail';
+  } else {
+    how = ` · ${visionMode} at ${recordCanvas?.width ?? 0}×${recordCanvas?.height ?? 0}`;
+  }
   setText('recordMessage',
-    `Recording ${segmentLabel} · a new clip every ${MAX_CLIP_SECONDS}s${upscaled}.`);
+    `Recording${how} · a new clip every ${MAX_CLIP_SECONDS}s.`);
 }
 
 function stopRecording(): void {
@@ -7214,6 +7344,9 @@ function stopRecording(): void {
   recordStream = null;
   recordStreamIsOurs = false;
   recordContext = null;
+  stillsTrack = null;
+  // The largest thing this app holds, and it is a full-resolution frame.
+  stillsPrevious = null;
   syncRecordButton();
   setText('recordElapsed', '');
   setText('recordMessage', 'Stopped. Clips are held below until you export them.');
@@ -7233,6 +7366,21 @@ function syncRecordDetailNote(): void {
   if (control && control.value !== settings.recordDetail) control.value = settings.recordDetail;
   const screen = logicalScreenPixels();
   if (!(screen > 0)) return;
+  if (settings.recordDetail === 'sensor') {
+    const width = stillsTargetWidth();
+    const height = width > 0
+      ? Math.round(width * (camera.diagnostics.videoHeight || 3) / (camera.diagnostics.videoWidth || 4))
+      : 0;
+    const size = width > 0 ? `${width}×${height}` : 'the camera\u2019s own size';
+    setText('recordDetailNote', STILL_RENDERABLE_MODES.has(visionMode)
+      ? `Takes full-resolution stills (${size}) and encodes them as frames — about one a `
+        + 'second, so the result is a timelapse rather than a video. This is the only '
+        + 'setting that produces detail the preview never had.'
+      : `${MODE_LABELS[visionMode]} builds up over frames on the small analysis picture, so `
+        + 'there is no full-resolution version of it to save. This setting will record at '
+        + 'the preview size for this mode.');
+    return;
+  }
   const factor = settings.recordDetail === 'preview' ? 1
     : settings.recordDetail === 'higher' ? 2
       : Math.max(1, (window.devicePixelRatio || 1) ** 2);
@@ -7274,8 +7422,9 @@ function tickRecording(now: number): void {
   if (!rolling.recording) return;
   // One blit per frame, and only while recording. The canvas is capped at the
   // screen's budget, so this is nothing like the twelve-megapixel per-frame
-  // copy that made the preview lag.
-  blitRecordFrame();
+  // copy that made the preview lag. Skipped while recording stills, which draw
+  // their own frames and would otherwise be overwritten by the preview.
+  if (!stillsTrack) blitRecordFrame();
   rolling.tick(now);
   if (now - lastElapsedPaint < 250) return;
   lastElapsedPaint = now;
@@ -7506,7 +7655,7 @@ on('recordButton', 'click', () => {
 });
 on('recordDetail', 'change', (event) => {
   const value = (event.target as HTMLSelectElement).value;
-  settings.recordDetail = ['preview', 'higher', 'full'].includes(value)
+  settings.recordDetail = ['preview', 'higher', 'full', 'sensor'].includes(value)
     ? value as RecordDetail
     : 'preview';
   saveSettings();
