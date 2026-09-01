@@ -99,6 +99,7 @@
     .button-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
     .btn { min-height: 42px; padding: 0 14px; border: 1px solid var(--line2); background: #0d1a26; border-radius: 11px; cursor: pointer; }
     .btn[disabled] { opacity: .45; }
+    .probe-out { margin: 10px 0 0; font-size: 11px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; color: var(--muted); }
     .stage-note { font-size: 11px; color: #ffc46b; min-height: 1.2em; margin: 8px 0 0; }
     .stage-note.timing { color: #9fb0bf; font-family: ui-monospace, 'SF Mono', Menlo, monospace; white-space: pre-line; min-height: 0; }
 
@@ -211,6 +212,14 @@
           </p>
           <p class="stage-note" id="v2RecordResult"></p>
           <button type="button" class="share-save" id="v2ShareClip" hidden>Share &middot; Save to Photos</button>
+          <p>
+            <strong>Encoder envelope probe.</strong> Records a synthetic moving-noise canvas
+            through the same recorder at 4:3 sizes bracketing the H.264 Level 5.2 frame limit
+            (36,864 macroblocks), then MAX at 30 / 15 / 10 / 5 fed fps &mdash; each file decoded.
+            About 30 s; nothing is saved.
+          </p>
+          <div class="button-row"><button type="button" class="btn" id="v2EncoderProbe">Probe encoder envelope</button></div>
+          <pre class="probe-out" id="v2EncoderProbeOut" hidden></pre>
         </div>
 
         <div class="card">

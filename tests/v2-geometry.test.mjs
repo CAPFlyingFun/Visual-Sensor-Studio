@@ -497,6 +497,45 @@ test('the stream tier renegotiates the LIVE stream and the row measures it (fake
     });
   });
 
+test('the encoder probe records a synthetic canvas through the real recorder and decodes it',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({ viewport: { width: 430, height: 932 } });
+      const page = await context.newPage();
+      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.waitForTimeout(300);
+      // Tiny trials: the instrument's mechanics, not the device's envelope —
+      // the 12 MP ladder is for the phone.
+      const rows = await page.evaluate(async () => {
+        const probe = await import('/app/v2/capture/encoder-probe.js');
+        const texts = [];
+        const rows = await probe.runEncoderProbe(
+          [{ width: 320, height: 240, fps: 10, seconds: 1.2, note: 'tiny' },
+            { width: 640, height: 480, fps: 10, seconds: 1.2, note: 'small' }],
+          (_row, text) => texts.push(text));
+        return rows.map((row, i) => ({ ...row, text: texts[i] }));
+      });
+      assert.equal(rows.length, 2);
+      for (const row of rows) {
+        assert.equal(row.error, null, `trial ran, got "${row.text}"`);
+        assert.equal(row.decoded, true, `the file decodes, got "${row.text}"`);
+        assert.equal(row.encodedWidth, row.trial.width, 'measured from the file at the trial size');
+        assert.equal(row.encodedHeight, row.trial.height);
+        assert.equal(row.aboveLevel52, false);
+        assert.match(row.text, /DECODED \d+×\d+ · [\d.]+ MB · [\d.]+ Mb\/s · \d+ chunks? · finalised/);
+      }
+      // Nothing was saved: the probe measures and discards.
+      const button = await page.evaluate(() => ({
+        exists: Boolean(document.getElementById('v2EncoderProbe')),
+        outHidden: document.getElementById('v2EncoderProbeOut')?.hidden ?? null
+      }));
+      assert.equal(button.exists, true, 'the instrument is reachable from the Recording card');
+      assert.equal(button.outHidden, true, 'no output until the button is pressed');
+      await page.close();
+      await context.close();
+    });
+  });
+
 test('recording truth: native and filtered clips measured from their files (fake device)',
   { skip: runnable ? false : 'no browser available' }, async () => {
     await withBrowser(async (browser, base) => {

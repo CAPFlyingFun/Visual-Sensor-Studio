@@ -15,6 +15,9 @@ import {
 import { readState } from '../.test-build/v2/state.js';
 import { FILTERS, filterById, ironbowLut } from '../.test-build/v2/filters/registry.js';
 import { ironbowColor } from '../.test-build/vision/motion-ironbow.js';
+import {
+  ENCODER_PROBE_LADDER, H264_LEVEL_5_2_MACROBLOCKS, describeRow, macroblocks
+} from '../.test-build/v2/capture/encoder-probe.js';
 
 /*
  * V2 Milestone B: the geometry authority and the filter registry, tested as
@@ -507,4 +510,43 @@ test('the Ironbow LUT is the legacy ramp, not a re-derivation', () => {
     assert.equal(lut[i * 4 + 2], b, `texel ${i} blue`);
     assert.equal(lut[i * 4 + 3], 255, `texel ${i} is opaque`);
   }
+});
+
+test('the encoder probe ladder brackets the H.264 Level 5.2 frame limit exactly', () => {
+  // The two hypotheses for dead MAX clips — frame size vs throughput — are
+  // separable only if the ladder steps across the level line at one place
+  // and then holds the size fixed while the fed rate changes.
+  assert.equal(H264_LEVEL_5_2_MACROBLOCKS, 36864, 'MaxFS for Level 5.2, ITU-T H.264 Table A-1');
+  assert.equal(macroblocks(2160, 2880), 24300, 'the proven 2K tier');
+  assert.equal(macroblocks(2592, 3456), 34992, 'just below the line');
+  assert.equal(macroblocks(2688, 3584), 37632, 'just above the line');
+  assert.equal(macroblocks(3024, 4032), 47628, 'the sensor maximum');
+  for (const trial of ENCODER_PROBE_LADDER) {
+    assert.equal(trial.width % 16, 0, `${trial.width} must be macroblock-aligned`);
+    assert.equal(trial.height % 16, 0, `${trial.height} must be macroblock-aligned`);
+    assert.ok(Math.abs(trial.width / trial.height - 3 / 4) < 1e-9, 'every trial is 4:3 like the sensor');
+  }
+  // The size ladder at one fixed rate, crossing the line exactly once.
+  const sizeLadder = ENCODER_PROBE_LADDER.slice(0, 4);
+  assert.ok(sizeLadder.every((t) => t.fps === sizeLadder[0].fps), 'size trials share one fed rate');
+  const above = sizeLadder.map((t) => macroblocks(t.width, t.height) > H264_LEVEL_5_2_MACROBLOCKS);
+  assert.deepEqual(above, [false, false, true, true], 'below, below, above, above');
+  // Then MAX held fixed while the fed rate walks down.
+  const rateLadder = ENCODER_PROBE_LADDER.filter((t) => t.width === 3024 && t.height === 4032);
+  assert.ok(rateLadder.length >= 4, 'MAX at four fed rates');
+  assert.ok(new Set(rateLadder.map((t) => t.fps)).size === rateLadder.length, 'distinct fed rates');
+  assert.ok(rateLadder.some((t) => t.fps === 30) && rateLadder.some((t) => t.fps <= 5),
+    'from the full rate down to a rate no throughput problem could survive');
+  // The row text names the level relationship and the decode verdict.
+  const row = {
+    trial: ENCODER_PROBE_LADDER[2], macroblocks: 37632, aboveLevel52: true, decoded: false,
+    encodedWidth: 0, encodedHeight: 0, bytes: 1.5e6, measuredMbps: 4.8, chunkCount: 1,
+    finalizeMs: 12, encoderDied: 'recorder error (UnknownError) at 1.9s', error: null
+  };
+  const text = describeRow(row);
+  assert.match(text, /ABOVE L5\.2/);
+  assert.match(text, /DID NOT DECODE/);
+  assert.match(text, /ENCODER DIED: recorder error/);
+  assert.match(describeRow({ ...row, decoded: true, encodedWidth: 2688, encodedHeight: 3584, encoderDied: null }),
+    /DECODED 2688×3584/);
 });

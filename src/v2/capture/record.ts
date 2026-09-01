@@ -124,6 +124,8 @@ export class ClipRecorder {
   private bitrate = 0;
   private label = 'clip';
   private diedReason: string | null = null;
+  /** False for instruments (the encoder probe) that measure and discard. */
+  private save = true;
 
   get active(): boolean {
     return this.recorder !== null;
@@ -144,9 +146,11 @@ export class ClipRecorder {
     stream: MediaStream,
     recordInput: { width: number; height: number },
     measuredFps: number,
-    label: string
+    label: string,
+    options: { save?: boolean } = {}
   ): { ok: boolean; reason?: string } {
     if (this.recorder) return { ok: false, reason: 'already recording' };
+    this.save = options.save ?? true;
     if (typeof MediaRecorder === 'undefined') {
       return { ok: false, reason: 'MediaRecorder is unavailable in this browser' };
     }
@@ -179,15 +183,19 @@ export class ClipRecorder {
       // stopped ITSELF while we still considered the clip live.
       this.markDied('the recorder stopped itself');
     };
-    // CHUNKED delivery, one second at a time — restored after the one-blob
-    // experiment failed on device. Measured: a chunked 12 MP clip decoded
-    // fine even under encoder distress (fragments carry their index as they
-    // go, so a dying encoder loses a second, not the clip), while one-blob
-    // 12 MP clips truncated on BOTH paths — an MP4's index is written at
-    // finalisation, and a killed encoder never writes it. The one-blob
-    // switch had chased a Photos-import theory that turned out to be the
-    // browser's download sandbox instead. If the share sheet ever refuses a
-    // fragmented file, the fix is a remux, not losing crash-resilience.
+    // CHUNKED delivery, one second at a time. HONEST STATUS (2026-09-01,
+    // superseding an earlier, too-confident note here): chunking has NOT
+    // been demonstrated to protect a 12 MP recording on the reference
+    // iPhone. Latest device evidence — MAX clips arrived as 1 and as 3
+    // chunks and neither file decoded; 2K clips arrive as 3-4 chunks and
+    // decode. This WebKit's chunks are byte slices of one MP4 whose index is
+    // written at finalisation, so a dead encoder loses the clip regardless
+    // of how many chunks it emitted first. One 12 MP clip did finalise and
+    // decode earlier in the day, so the encoder is unreliable above that
+    // size, not provably incapable — the encoder probe (encoder-probe.ts)
+    // exists to settle which. Chunking stays because it costs nothing and
+    // helps on browsers that write fragmented MP4; `chunkCount` on every
+    // result is the measurement, not this comment.
     this.recorder.start(1000);
     this.startedAt = performance.now();
     return { ok: true };
@@ -239,7 +247,7 @@ export class ClipRecorder {
 
     const encoded = await measureEncodedSize(blob);
     const fileName = clipFileName(`v2-${this.label}`, new Date(), extensionForMime(type || blob.type));
-    saveBlob(blob, fileName);
+    if (this.save) saveBlob(blob, fileName);
     return {
       seconds,
       bytes: blob.size,

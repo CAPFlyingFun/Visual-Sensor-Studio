@@ -25,6 +25,7 @@ import { readState, subscribe, updateState, frameSize } from './state.js';
 import { resolveGeometry, DEFAULT_GEOMETRY_INPUTS } from './camera/geometry.js';
 import { captureAtMaxStream, type Escalation, type ShutterStream } from './capture/shutter.js';
 import { ClipRecorder, type ClipResult } from './capture/record.js';
+import { ENCODER_PROBE_LADDER, runEncoderProbe } from './capture/encoder-probe.js';
 import { STREAM_TIERS, tierAvailable, tierById } from './camera/stream-tiers.js';
 import { FILTERS, filterById } from './filters/registry.js';
 import { GlRenderer } from './render/gl-renderer.js';
@@ -1034,6 +1035,35 @@ function showRoute(id: string): void {
 byId('v2EnableCamera').addEventListener('click', () => void startCamera());
 byId('v2PhotoButton').addEventListener('click', () => void takePhoto());
 byId('v2RecordButton').addEventListener('click', () => void toggleRecording());
+
+/**
+ * The encoder envelope probe: an instrument, not a feature. It runs the
+ * same ClipRecorder the clips use against a synthetic canvas, so its verdict
+ * is about the ENCODER alone — see capture/encoder-probe.ts for the two
+ * hypotheses it is built to separate.
+ */
+let probing = false;
+byId('v2EncoderProbe').addEventListener('click', () => {
+  if (probing || readState().recording) return;
+  probing = true;
+  const button = byId<HTMLButtonElement>('v2EncoderProbe');
+  const out = byId('v2EncoderProbeOut');
+  button.disabled = true;
+  out.hidden = false;
+  out.textContent = `Encoder envelope probe — camera live: ${readState().camera?.state === 'live' ? 'yes' : 'no'} `
+    + `· ${ENCODER_PROBE_LADDER.length} trials, ~30 s, nothing saved\n`;
+  void runEncoderProbe(ENCODER_PROBE_LADDER, (_row, text) => {
+    out.textContent += `${text}\n`;
+  }).then((rows) => {
+    const decoded = rows.filter((row) => row.decoded).length;
+    out.textContent += `Done — ${decoded}/${rows.length} trials produced a decodable file.`;
+  }).catch((error: unknown) => {
+    out.textContent += `Probe failed: ${error instanceof Error ? error.message : String(error)}`;
+  }).finally(() => {
+    probing = false;
+    button.disabled = false;
+  });
+});
 byId('v2SwitchCamera').addEventListener('click', () => void switchCamera());
 byId('v2LegacyLink').addEventListener('click', () => {
   const back = new URL(location.href);
