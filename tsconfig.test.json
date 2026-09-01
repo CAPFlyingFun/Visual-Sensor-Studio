@@ -59,6 +59,7 @@
     "src/v2/camera/stream-tiers.ts",
     "src/v2/capture/shutter.ts",
     "src/v2/capture/record.ts",
+    "src/v2/capture/encoder-envelope.ts",
     "src/v2/capture/encoder-probe.ts",
     "src/v2/filters/registry.ts"
   ]

@@ -536,6 +536,58 @@ test('the encoder probe records a synthetic canvas through the real recorder and
     });
   });
 
+test('a stream above the encoder envelope records through the render, held under it, and says why',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({
+        viewport: { width: 430, height: 932 },
+        permissions: ['camera']
+      });
+      // A remembered probe verdict from "this device": a wall far below the
+      // fake camera's stream, so the RGB clip must go through the render.
+      await context.addInitScript(() => {
+        localStorage.setItem('vss.v2.encoderEnvelope.v1',
+          JSON.stringify({ largestDecoded: 1000, smallestFailed: 1200 }));
+      });
+      const page = await context.newPage();
+      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.waitForTimeout(400);
+      await page.click('#v2EnableCamera');
+      await page.waitForFunction(() =>
+        /\d+(\.\d+)? rendered fps/.test(document.getElementById('v2DiagPreview')?.textContent ?? ''),
+        null, { timeout: 8000 });
+      await page.waitForTimeout(600);
+
+      const before = await page.evaluate(() => ({
+        encoder: document.getElementById('v2DiagEncoder')?.textContent ?? '',
+        recordIn: document.getElementById('v2DiagRecordIn')?.textContent ?? '',
+        source: document.getElementById('v2DiagSource')?.textContent ?? ''
+      }));
+      assert.match(before.encoder, /^1,000 macroblocks max frame · MEASURED/,
+        `the ENCODER row carries the stored measurement, got "${before.encoder}"`);
+      assert.match(before.recordIn, /macroblock frame limit/, 'RECORD IN names the envelope before recording');
+      assert.match(before.recordIn, /RGB render — the stream exceeds the encoder envelope/);
+      const dims = (t) => t.match(/^(\d+)×(\d+)/).slice(1, 3).map(Number);
+      const [sw, sh] = dims(before.source);
+      const [rw, rh] = dims(before.recordIn);
+      assert.ok(rw < sw && rh < sh, `RECORD IN ${rw}×${rh} held under SOURCE ${sw}×${sh}`);
+      assert.ok(Math.ceil(rw / 16) * Math.ceil(rh / 16) <= 1000, 'inside the envelope');
+
+      await page.click('#v2RecordButton');
+      await page.waitForTimeout(1800);
+      await page.click('#v2RecordButton');
+      await page.waitForFunction(() =>
+        (document.getElementById('v2RecordResult')?.textContent ?? '').startsWith('Saved'),
+        null, { timeout: 10000 });
+      const line = await page.textContent('#v2RecordResult');
+      const [fw, fh] = dims(line.replace(/^Saved [\d.]+s · /, ''));
+      assert.equal(fw, rw, `the file carries RECORD IN, not the stream, got "${line}"`);
+      assert.equal(fh, rh);
+      await page.close();
+      await context.close();
+    });
+  });
+
 test('recording truth: native and filtered clips measured from their files (fake device)',
   { skip: runnable ? false : 'no browser available' }, async () => {
     await withBrowser(async (browser, base) => {
@@ -653,15 +705,18 @@ test('a maximum-tier filtered clip records the CHOSEN stream, risk stated up fro
       await page.click('[data-filter="ironbow"]');
       await page.waitForTimeout(300);
 
-      // The RISK announces itself BEFORE the button, beside the filter
-      // choice — and no cap pretends to exist.
+      // The encoder ceiling announces itself BEFORE the button, beside the
+      // filter choice — and where the stream fits the envelope (the fake
+      // camera's 3840×2160 = 32,400 macroblocks, inside Level 5.2), RECORD IN
+      // holds the full stream with no cap pretending to exist.
       await page.waitForFunction(() =>
-        /can crash the recording/.test(document.getElementById('v2FilterNote')?.textContent ?? ''),
+        /largest frame this device's H\.264 encoder can write/.test(
+          document.getElementById('v2FilterNote')?.textContent ?? ''),
         null, { timeout: 3000 });
       assert.match(await page.textContent('#v2FilterNote'), /Photos always stay at MAX/,
-        'the warning says stills are exempt');
-      assert.ok(!/capped/.test(await page.textContent('#v2DiagRecordIn')),
-        'no cap pretends to exist');
+        'the note says stills are exempt');
+      assert.ok(!/macroblock|capped/.test(await page.textContent('#v2DiagRecordIn')),
+        'inside the envelope, no cap pretends to exist');
 
       await page.click('#v2RecordButton');
       await page.waitForFunction(() =>

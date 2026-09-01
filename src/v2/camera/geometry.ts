@@ -13,6 +13,7 @@
  */
 
 import type { FrameSize } from '../state.js';
+import { largestEncodable, macroblocks } from '../capture/encoder-envelope.js';
 
 export interface SizedWithReason extends FrameSize {
   /** Why this size and not another — every downgrade names its cause. */
@@ -47,6 +48,13 @@ export interface GeometryInputs {
    * a device needs one.
    */
   recordPolicy: 'source' | number;
+  /**
+   * ENCODER CAPABILITY: the largest frame, in macroblocks, the video encoder
+   * can write — measured or assumed, with its reason. Null skips the check.
+   * A stream above it is not recorded smaller in silence: RECORD IN names
+   * the envelope as its cause.
+   */
+  encoderMacroblocks: { limit: number; reason: string } | null;
 }
 
 export const DEFAULT_GEOMETRY_INPUTS: GeometryInputs = {
@@ -57,10 +65,11 @@ export const DEFAULT_GEOMETRY_INPUTS: GeometryInputs = {
   photoPolicy: 'source',
   // The record policy follows the CHOSEN STREAM TIER (stream-tiers.ts): a
   // tier records what it streams — "if MAX is recorded in 1080, that's not
-  // MAX" (Joshua, 2026-09-01). The 12 MP filtered crash measurement stands,
-  // as the MAX tier's stated warning rather than a silent cap here; the
-  // numeric form stays for any policy a future measurement demands.
-  recordPolicy: 'source'
+  // MAX" (Joshua, 2026-09-01). The numeric form stays for any policy a
+  // future measurement demands. The one bound above the tier is the ENCODER
+  // envelope below, which the shell supplies from the state.
+  recordPolicy: 'source',
+  encoderMacroblocks: null
 };
 
 /** Even numbers survive encoders and texture copies; the cost is one row. */
@@ -116,7 +125,7 @@ export function resolveGeometry(
       reason: `capped at a ${inputs.photoPolicy} short side by the photo policy`
     };
 
-  const recordInput = inputs.recordPolicy === 'source' || inputs.recordPolicy >= sourceShort
+  const byPolicy = inputs.recordPolicy === 'source' || inputs.recordPolicy >= sourceShort
     ? {
       ...source,
       reason: 'the responsive stream — the live policy already bounds the cost'
@@ -125,6 +134,17 @@ export function resolveGeometry(
       ...fitShortSide(source, inputs.recordPolicy),
       reason: `capped at a ${inputs.recordPolicy} short side by the record policy`
     };
+  // The encoder's own frame limit is the last word (measured 2026-09-01: an
+  // H.264 frame above Level 5.2 never decodes on the reference iPhone, at
+  // any frame rate). Above it, RECORD IN shrinks and says exactly why.
+  const envelope = inputs.encoderMacroblocks;
+  const recordInput = envelope && macroblocks(byPolicy.width, byPolicy.height) > envelope.limit
+    ? {
+      ...largestEncodable(byPolicy, envelope.limit),
+      reason: `held under the encoder's ${envelope.limit.toLocaleString('en-US')}-macroblock frame limit `
+        + `(${macroblocks(byPolicy.width, byPolicy.height).toLocaleString('en-US')} would not decode) — ${envelope.reason}`
+    }
+    : byPolicy;
 
   return { source, analysis, preview, photo, recordInput };
 }

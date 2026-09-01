@@ -30,13 +30,9 @@
  */
 
 import { ClipRecorder } from './record.js';
+import { H264_LEVEL_5_2_MACROBLOCKS, macroblocks } from './encoder-envelope.js';
 
-/** H.264 Level 5.2 maximum frame size in macroblocks (MaxFS, ITU-T H.264 Table A-1). */
-export const H264_LEVEL_5_2_MACROBLOCKS = 36_864;
-
-export function macroblocks(width: number, height: number): number {
-  return Math.ceil(width / 16) * Math.ceil(height / 16);
-}
+export { H264_LEVEL_5_2_MACROBLOCKS, macroblocks };
 
 export interface ProbeTrial {
   width: number;

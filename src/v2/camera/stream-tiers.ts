@@ -14,11 +14,15 @@
  * is 720/1080/2K/MAX with 4K grey. The SOURCE row reports what was actually
  * granted, and no tier ever invents pixels the sensor lacks.
  *
- * The risk stays a WARNING, not a cap: filtered recording at this device's
- * full 12 MP was measured to crash (three times, differently each time), so
- * the MAX tier says so beside the filter strip and leaves the choice made
- * with eyes open. Photos always escalate to the sensor's maximum through the
- * shutter regardless of tier.
+ * One bound sits above the tier, and it is the ENCODER's, not the camera's:
+ * measured 2026-09-01 with the encoder probe, an H.264 frame above 36,864
+ * macroblocks (Level 5.2) never decodes on the reference iPhone, at any
+ * frame rate — the "12 MP crash" was never a crash, it was a file the level
+ * cannot describe. So a tier still STREAMS what it streams, and RECORD IN
+ * is held under the encoder envelope with the reason named
+ * (capture/encoder-envelope.ts); the tiers whose streams can exceed it say
+ * so beside the filter strip. Photos always escalate to the sensor's maximum
+ * through the shutter regardless of tier — JPEG has no such level.
  */
 
 export interface StreamTier {
@@ -65,13 +69,15 @@ export const STREAM_TIERS: readonly StreamTier[] = [
     id: '4k',
     label: '4K',
     // The 4K class is a 4320 long edge — 3240 short at 4:3. Only offered
-    // where the camera truly reaches it (tierAvailable), so a running 4K
-    // stream is at least ~14 MP and shares MAX's measured filtered-clip risk.
+    // where the camera truly reaches it (tierAvailable); a running 4K stream
+    // is ~14 MP, above any Level 5.2 encoder, so its clips hold under the
+    // envelope like MAX's.
     shortSide: 3240,
     streamLabel: '4K-class live stream — chosen, expect fewer fps',
     recordPolicy: 'source',
-    clipWarning: 'Filtered clips at 4K size can crash the recording on some devices — '
-      + 'if it does, drop one tier. Photos always stay at MAX.'
+    clipWarning: 'A 4K-class frame exceeds the H.264 encoder\'s frame limit on most devices — '
+      + 'clips record at the largest frame this encoder can write (RECORD IN names it and why). '
+      + 'Photos always stay at MAX.'
   },
   {
     id: 'maximum',
@@ -79,10 +85,10 @@ export const STREAM_TIERS: readonly StreamTier[] = [
     shortSide: 'max',
     streamLabel: 'maximum live stream — chosen, expect fewer fps',
     recordPolicy: 'source',
-    // Measured on the reference iPhone: a 12 MP filtered clip can exceed the
-    // device's memory and kill the recording. Stated, not prevented.
-    clipWarning: 'Filtered clips record at the full MAX stream. Depending on the device this '
-      + 'can crash the recording — if it does, drop one tier. Photos always stay at MAX.'
+    // Measured on the reference iPhone: a 12 MP H.264 frame is above the
+    // encoder's Level 5.2 limit, so MAX clips are held under the envelope.
+    clipWarning: 'Clips at MAX record at the largest frame this device\'s H.264 encoder can write — '
+      + 'RECORD IN names the size and why. Photos always stay at MAX.'
   }
 ];
 

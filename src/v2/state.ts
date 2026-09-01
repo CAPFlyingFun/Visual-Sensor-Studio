@@ -14,6 +14,7 @@
 
 import type { CameraStatus, CameraZoomState } from '../sensors/camera.js';
 import type { FrameGeometryState } from './camera/geometry.js';
+import { ASSUMED_ENVELOPE, type EncoderEnvelope } from './capture/encoder-envelope.js';
 
 export interface FrameSize {
   width: number;
@@ -110,6 +111,12 @@ export interface V2State {
   recording: ActiveRecording | null;
   /** ENCODED: what the last clip's file really contained. */
   lastClip: SavedClip | null;
+  /**
+   * ENCODER CAPABILITY: the largest frame the video encoder can write —
+   * assumed at the H.264 Level 5.2 line until the encoder probe measures
+   * this device. RECORD IN is held under it, with the reason named.
+   */
+  encoderEnvelope: EncoderEnvelope;
 }
 
 export function frameSize(width: number, height: number): FrameSize | null {
@@ -134,7 +141,8 @@ const state: V2State = {
   captureActive: false,
   streamTier: '720',
   recording: null,
-  lastClip: null
+  lastClip: null,
+  encoderEnvelope: ASSUMED_ENVELOPE
 };
 
 const listeners = new Set<Listener>();

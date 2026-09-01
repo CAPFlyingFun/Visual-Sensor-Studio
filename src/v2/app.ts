@@ -26,6 +26,9 @@ import { resolveGeometry, DEFAULT_GEOMETRY_INPUTS } from './camera/geometry.js';
 import { captureAtMaxStream, type Escalation, type ShutterStream } from './capture/shutter.js';
 import { ClipRecorder, type ClipResult } from './capture/record.js';
 import { ENCODER_PROBE_LADDER, runEncoderProbe } from './capture/encoder-probe.js';
+import {
+  envelopeFromMeasurement, measurementFromRows, type EnvelopeMeasurement
+} from './capture/encoder-envelope.js';
 import { STREAM_TIERS, tierAvailable, tierById } from './camera/stream-tiers.js';
 import { FILTERS, filterById } from './filters/registry.js';
 import { GlRenderer } from './render/gl-renderer.js';
@@ -73,12 +76,46 @@ function refreshGeometry(): void {
         previewBoxShortSide: viewfinder.shortSide,
         // The chosen tier is the eyes-open trade; its record policy rides
         // along rather than a second opinion being formed here.
-        recordPolicy: tierById(readState().streamTier)?.recordPolicy ?? 'source'
+        recordPolicy: tierById(readState().streamTier)?.recordPolicy ?? 'source',
+        // ENCODER CAPABILITY is the last bound on RECORD IN — measured by the
+        // probe or assumed at the Level 5.2 line, and always with its reason.
+        encoderMacroblocks: {
+          limit: readState().encoderEnvelope.maxMacroblocks,
+          reason: readState().encoderEnvelope.reason
+        }
       })
       : null
   });
 }
 window.addEventListener('resize', refreshGeometry);
+
+/* --- ENCODER CAPABILITY: assumed until this device's probe measures it ----- */
+
+const ENVELOPE_STORE_KEY = 'vss.v2.encoderEnvelope.v1';
+
+function storedEnvelopeMeasurement(): EnvelopeMeasurement | null {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(ENVELOPE_STORE_KEY) ?? 'null');
+    if (!parsed || typeof parsed !== 'object') return null;
+    const { largestDecoded, smallestFailed } = parsed as Record<string, unknown>;
+    if (typeof largestDecoded !== 'number' || typeof smallestFailed !== 'number') return null;
+    return { largestDecoded, smallestFailed };
+  } catch {
+    return null;
+  }
+}
+
+function rememberEnvelopeMeasurement(measurement: EnvelopeMeasurement): void {
+  try {
+    localStorage.setItem(ENVELOPE_STORE_KEY, JSON.stringify(measurement));
+  } catch {
+    // Storage is optional; the session keeps the measured envelope in state.
+  }
+}
+
+// The stored measurement (a previous probe run on this device) outranks the
+// assumption from the first frame, so RECORD IN never has to be corrected.
+updateState({ encoderEnvelope: envelopeFromMeasurement(storedEnvelopeMeasurement()) });
 
 /* --- The pipeline: one frame in, explicit products out -------------------- */
 
@@ -485,16 +522,24 @@ function renderDiagnostics(): void {
   setText('v2DiagLastPhoto', lastPhoto
     ? `${lastPhoto.width}×${lastPhoto.height} · ${(lastPhoto.bytes / 1e6).toFixed(2)} MB JPEG · as saved`
     : 'none yet');
-  const { activeFilter, recording, lastClip } = readState();
-  const path = (recording ? recording.path === 'native' : activeFilter === 'rgb')
-    ? 'camera stream direct'
-    : 'filtered render';
+  const { activeFilter, recording, lastClip, encoderEnvelope } = readState();
   // When the record policy binds, its REASON belongs on screen before the
   // button is pressed — a 12 MP view with a 1080 file must never read as a
   // silent shortfall (it read exactly that way on device, twice).
   const recordCapped = geometry !== null
     && Math.min(geometry.recordInput.width, geometry.recordInput.height)
       < Math.min(geometry.source.width, geometry.source.height);
+  // RGB borrows the stream directly ONLY when the encoder can take the
+  // stream as it is; above the envelope even RGB goes through the render,
+  // because that is the only way to hand the encoder a frame it can write.
+  const path = recording
+    ? recording.path === 'native' ? 'camera stream direct' : `${activeFilter === 'rgb' ? 'RGB' : 'filtered'} render`
+    : activeFilter !== 'rgb'
+      ? 'filtered render'
+      : recordCapped ? 'RGB render — the stream exceeds the encoder envelope' : 'camera stream direct';
+  setText('v2DiagEncoder',
+    `${encoderEnvelope.maxMacroblocks.toLocaleString('en-US')} macroblocks max frame · `
+    + `${encoderEnvelope.measured ? 'MEASURED' : 'assumed'} · ${encoderEnvelope.reason}`);
   setText('v2DiagRecordIn', recording
     ? `${recording.input.width}×${recording.input.height} · RECORDING · ${path}`
     : geometry
@@ -849,15 +894,22 @@ async function toggleRecording(): Promise<void> {
 
   if (capturing || scanningCapability || !camera.active || status?.state !== 'live' || !geometry) return;
   const filtered = activeFilter !== 'rgb';
-  if (filtered && renderer.unavailableReason) {
+  // RGB borrows the camera stream directly — no render in the path, SOURCE
+  // dimensions, zero cost — UNLESS the authority held RECORD IN under the
+  // encoder envelope: then the stream itself is a frame the encoder cannot
+  // write (measured: no H.264 file above Level 5.2 ever decoded here), and
+  // the only honest road is the same render path a filter takes, at the
+  // RECORD IN size, with the RECORD IN row naming why.
+  const heldUnderEnvelope = geometry.recordInput.width !== geometry.source.width
+    || geometry.recordInput.height !== geometry.source.height;
+  const viaRender = filtered || heldUnderEnvelope;
+  if (viaRender && renderer.unavailableReason) {
     setText('v2RecordResult', renderer.unavailableReason);
     return;
   }
-  // RGB borrows the camera stream directly — no render in the path, SOURCE
-  // dimensions, zero cost. A filter records the pipeline's RECORD IN render.
-  const input = filtered ? geometry.recordInput : geometry.source;
+  const input = viaRender ? geometry.recordInput : geometry.source;
   let stream: MediaStream;
-  if (filtered) {
+  if (viaRender) {
     // Size the canvas to RECORD IN before the encoder ever sees it; the
     // preview loop holds this target until stop.
     if (!renderer.uploadFrame(video) || !renderer.render(activeFilter, geometry.recordInput)) {
@@ -873,7 +925,7 @@ async function toggleRecording(): Promise<void> {
     }
     stream = source;
   }
-  const started = clipRecorder.start(stream, input, deliveredFps, filtered ? activeFilter : 'rgb');
+  const started = clipRecorder.start(stream, input, deliveredFps, activeFilter);
   if (!started.ok) {
     setText('v2RecordResult', started.reason ?? 'The recorder refused to start.');
     return;
@@ -881,7 +933,9 @@ async function toggleRecording(): Promise<void> {
   setText('v2RecordResult', '');
   updateState({
     recording: {
-      path: filtered ? 'filtered' : 'native',
+      // 'filtered' here means "through the render" — RGB held under the
+      // envelope takes that path too, and the RECORD IN row says so.
+      path: viaRender ? 'filtered' : 'native',
       input: { width: input.width, height: input.height, aspect: input.aspect }
     }
   });
@@ -1056,7 +1110,16 @@ byId('v2EncoderProbe').addEventListener('click', () => {
     out.textContent += `${text}\n`;
   }).then((rows) => {
     const decoded = rows.filter((row) => row.decoded).length;
-    out.textContent += `Done — ${decoded}/${rows.length} trials produced a decodable file.`;
+    // The probe's verdict becomes this device's ENCODER CAPABILITY: stored,
+    // written into the state, and RECORD IN re-resolved under it now.
+    const measurement = measurementFromRows(rows);
+    rememberEnvelopeMeasurement(measurement);
+    const envelope = envelopeFromMeasurement(measurement);
+    updateState({ encoderEnvelope: envelope });
+    refreshGeometry();
+    out.textContent += `Done — ${decoded}/${rows.length} trials produced a decodable file.\n`
+      + `ENCODER CAPABILITY set: ${envelope.maxMacroblocks.toLocaleString('en-US')} macroblocks max frame — `
+      + `${envelope.reason}. RECORD IN now holds under it (see the truth table).`;
   }).catch((error: unknown) => {
     out.textContent += `Probe failed: ${error instanceof Error ? error.message : String(error)}`;
   }).finally(() => {

@@ -18,6 +18,9 @@ import { ironbowColor } from '../.test-build/vision/motion-ironbow.js';
 import {
   ENCODER_PROBE_LADDER, H264_LEVEL_5_2_MACROBLOCKS, describeRow, macroblocks
 } from '../.test-build/v2/capture/encoder-probe.js';
+import {
+  ASSUMED_ENVELOPE, envelopeFromMeasurement, largestEncodable, measurementFromRows
+} from '../.test-build/v2/capture/encoder-envelope.js';
 
 /*
  * V2 Milestone B: the geometry authority and the filter registry, tested as
@@ -51,7 +54,7 @@ test('fitShortSide preserves aspect, lands on even pixels, never upscales', () =
 
 const INPUTS = {
   previewBoxShortSide: 800, analysisShortSide: 384,
-  photoPolicy: 'source', recordPolicy: 'source'
+  photoPolicy: 'source', recordPolicy: 'source', encoderMacroblocks: null
 };
 
 test('every resolved size carries a reason', () => {
@@ -105,12 +108,12 @@ test('stream tiers are one registry: deliberate, labelled, defaulting responsive
   for (const tier of STREAM_TIERS) {
     assert.equal(tier.recordPolicy, 'source', `${tier.id} records the stream it chose`);
   }
-  assert.match(tierById('maximum')?.clipWarning ?? '', /crash/i,
-    'the measured 12 MP risk is stated on MAX, not hidden');
+  assert.match(tierById('maximum')?.clipWarning ?? '', /encoder/i,
+    'the measured encoder ceiling is stated on MAX, not hidden');
   assert.match(tierById('maximum')?.clipWarning ?? '', /Photos always stay at MAX/,
-    'stills are exempt from the risk and say so');
-  assert.match(tierById('4k')?.clipWarning ?? '', /crash/i,
-    'a running 4K stream is ~14 MP or more — the same stated filtered-clip risk as MAX');
+    'stills are exempt from the ceiling and say so');
+  assert.match(tierById('4k')?.clipWarning ?? '', /encoder/i,
+    'a running 4K stream is ~14 MP — above any Level 5.2 encoder, so it says so');
   assert.ok(!tierById('720')?.clipWarning && !tierById('1080')?.clipWarning
     && !tierById('2k')?.clipWarning,
     'no scare copy on the proven tiers');
@@ -549,4 +552,60 @@ test('the encoder probe ladder brackets the H.264 Level 5.2 frame limit exactly'
   assert.match(text, /ENCODER DIED: recorder error/);
   assert.match(describeRow({ ...row, decoded: true, encodedWidth: 2688, encodedHeight: 3584, encoderDied: null }),
     /DECODED 2688×3584/);
+});
+
+test('ENCODER CAPABILITY: the largest frame the encoder can write, with its reason', () => {
+  // Measured 2026-09-01 on the reference iPhone: 34,992 decodes, 37,632
+  // does not, at any frame rate — the H.264 Level 5.2 line (36,864).
+  const size = (w, h) => ({ width: w, height: h, aspect: w / h });
+  const held = largestEncodable(size(3024, 4032), H264_LEVEL_5_2_MACROBLOCKS);
+  assert.ok(macroblocks(held.width, held.height) <= H264_LEVEL_5_2_MACROBLOCKS, 'fits the level');
+  assert.ok(macroblocks(held.width, held.height) > 34992,
+    'as large as the level allows — better than the probe\'s own "just below" trial');
+  assert.ok(held.width % 2 === 0 && held.height % 2 === 0, 'even dimensions for the encoder');
+  assert.ok(Math.abs(held.aspect - 3 / 4) < 0.002, 'the sensor aspect survives');
+  assert.ok(held.width < 3024 && held.height < 4032, 'never upscaled, always smaller than the source');
+  assert.deepEqual(largestEncodable(size(2160, 2880), H264_LEVEL_5_2_MACROBLOCKS), size(2160, 2880),
+    'a frame already inside the envelope passes through untouched');
+
+  // The probe's rows become the measurement; the measurement becomes the envelope.
+  const row = (mbs, decoded, error = null) => ({ macroblocks: mbs, decoded, error });
+  const iphone = measurementFromRows([row(24300, true), row(34992, true), row(37632, false), row(47628, false)]);
+  assert.deepEqual(iphone, { largestDecoded: 34992, smallestFailed: 37632 });
+  const bracketed = envelopeFromMeasurement(iphone);
+  assert.equal(bracketed.maxMacroblocks, H264_LEVEL_5_2_MACROBLOCKS,
+    'measurements that bracket the standard line adopt the line');
+  assert.equal(bracketed.measured, true);
+  assert.match(bracketed.reason, /Level 5\.2/);
+  assert.match(bracketed.reason, /34,992 decoded, 37,632 did not/, 'the reason carries the evidence');
+
+  const capable = envelopeFromMeasurement(measurementFromRows([row(24300, true), row(47628, true)]));
+  assert.equal(capable.maxMacroblocks, 47628, 'a device that decodes everything keeps its MAX clips');
+  assert.equal(capable.measured, true);
+
+  const weaker = envelopeFromMeasurement(measurementFromRows([row(24300, true), row(30000, false)]));
+  assert.equal(weaker.maxMacroblocks, 24300, 'a lower wall than the standard is honored as measured');
+
+  assert.equal(envelopeFromMeasurement(null), ASSUMED_ENVELOPE, 'no measurement → the assumption, labelled');
+  assert.equal(ASSUMED_ENVELOPE.measured, false);
+  assert.match(ASSUMED_ENVELOPE.reason, /assumed/);
+  assert.equal(envelopeFromMeasurement(measurementFromRows([row(24300, false, 'canvas unavailable')])),
+    ASSUMED_ENVELOPE, 'rows that never ran do not count as failures');
+
+  // The geometry authority holds RECORD IN under the envelope and names it.
+  const g = resolveGeometry(size(3024, 4032), {
+    ...INPUTS, encoderMacroblocks: { limit: H264_LEVEL_5_2_MACROBLOCKS, reason: bracketed.reason }
+  });
+  assert.deepEqual({ width: g.recordInput.width, height: g.recordInput.height },
+    { width: held.width, height: held.height }, 'the same arithmetic — one owner');
+  assert.match(g.recordInput.reason, /36,864-macroblock frame limit/);
+  assert.match(g.recordInput.reason, /47,628 would not decode/);
+  assert.match(g.recordInput.reason, /Level 5\.2/);
+  assert.deepEqual(g.photo, { ...size(3024, 4032), reason: g.photo.reason },
+    'PHOTO is untouched — JPEG has no such level');
+  const inside = resolveGeometry(size(2160, 2880), {
+    ...INPUTS, encoderMacroblocks: { limit: H264_LEVEL_5_2_MACROBLOCKS, reason: 'x' }
+  });
+  assert.equal(inside.recordInput.width, 2160, 'inside the envelope nothing changes');
+  assert.doesNotMatch(inside.recordInput.reason, /macroblock/);
 });
