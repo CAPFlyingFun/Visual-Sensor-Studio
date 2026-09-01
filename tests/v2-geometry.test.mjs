@@ -473,6 +473,66 @@ test('recording truth: native and filtered clips measured from their files (fake
     });
   });
 
+test('a lost GPU context is reported and recovered — never a silent black camera (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    // The device measurement this guards: a 12 MP filtered recording put
+    // enough memory pressure on WebKit to kill the WebGL context, and the
+    // viewfinder went permanently black while the camera kept delivering.
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({
+        viewport: { width: 430, height: 932 },
+        permissions: ['camera']
+      });
+      const page = await context.newPage();
+      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.waitForTimeout(400);
+      await page.click('#v2EnableCamera');
+      await page.waitForFunction(() =>
+        /\d+(\.\d+)? rendered fps/.test(document.getElementById('v2DiagPreview')?.textContent ?? ''),
+        null, { timeout: 8000 });
+
+      await page.evaluate(() => {
+        const gl = document.getElementById('v2PreviewCanvas').getContext('webgl');
+        window.__lose = gl.getExtension('WEBGL_lose_context');
+        window.__lose.loseContext();
+      });
+      await page.waitForFunction(() =>
+        /GPU context was lost/.test(document.getElementById('v2Stage')?.textContent ?? ''),
+        null, { timeout: 5000 });
+
+      await page.evaluate(() => window.__lose.restoreContext());
+      await page.waitForFunction(() =>
+        (document.getElementById('v2Stage')?.textContent ?? '') === '',
+        null, { timeout: 8000 });
+      await page.waitForTimeout(800);
+      const pixel = await page.evaluate(() => {
+        const canvas = document.getElementById('v2PreviewCanvas');
+        const copy = document.createElement('canvas');
+        copy.width = canvas.width;
+        copy.height = canvas.height;
+        const ctx = copy.getContext('2d');
+        ctx.drawImage(canvas, 0, 0);
+        const d = ctx.getImageData(Math.floor(copy.width / 2), Math.floor(copy.height / 2), 1, 1).data;
+        return d[0] + d[1] + d[2];
+      });
+      assert.ok(pixel > 30, `the restored context draws real frames again (centre sum ${pixel})`);
+
+      // And where no share sheet exists, no dead Share button pretends.
+      const share = await page.evaluate(() => ({
+        hasShare: typeof navigator.share === 'function',
+        photoHidden: document.getElementById('v2SharePhoto').hidden,
+        clipHidden: document.getElementById('v2ShareClip').hidden
+      }));
+      if (!share.hasShare) {
+        assert.ok(share.photoHidden && share.clipHidden,
+          'an unavailable action must never look functional');
+      }
+
+      await page.close();
+      await context.close();
+    });
+  });
+
 test('controls stay alive under the live frame loop (fake device)',
   { skip: runnable ? false : 'no browser available' }, async () => {
     // The measured iOS failure this guards against: every state broadcast —

@@ -36,14 +36,35 @@ export class GlRenderer {
   private failure = '';
 
   constructor(private readonly canvas: HTMLCanvasElement) {
-    const gl = canvas.getContext('webgl', {
+    // A GPU context CAN be taken away — measured on device: a 12 MP filtered
+    // recording (render + H.264 encode of 47k macroblocks per frame) put
+    // enough memory pressure on WebKit that the context was lost and the
+    // viewfinder went permanently black, while the camera itself kept
+    // delivering. preventDefault() on the lost event is what makes the
+    // browser willing to restore; the restored event rebuilds everything.
+    canvas.addEventListener('webglcontextlost', (event) => {
+      event.preventDefault();
+      this.failure = 'The GPU context was lost — usually memory pressure at very large '
+        + 'render sizes. Recovering…';
+    });
+    canvas.addEventListener('webglcontextrestored', () => {
+      this.initialize();
+    });
+    this.initialize();
+  }
+
+  /** First-time setup AND post-loss recovery: one path, so they cannot drift. */
+  private initialize(): void {
+    this.programs.clear();
+    const gl = this.canvas.getContext('webgl', {
       // The preview canvas is also read back for photo/record products, and a
       // cleared buffer reads as black without this.
       preserveDrawingBuffer: true,
       antialias: false,
       alpha: false
     });
-    if (!gl) {
+    if (!gl || gl.isContextLost()) {
+      this.gl = null;
       this.failure = 'WebGL is unavailable in this browser, so filters cannot render. '
         + 'The legacy app still works.';
       return;
@@ -58,6 +79,7 @@ export class GlRenderer {
     this.rampTexture = this.makeTexture(gl);
     gl.bindTexture(gl.TEXTURE_2D, this.rampTexture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, ironbowLut());
+    this.failure = '';
   }
 
   /** Empty when the renderer works; the honest sentence when it cannot. */
@@ -125,7 +147,7 @@ export class GlRenderer {
   /** One upload per camera frame; every product of that frame reuses it. */
   uploadFrame(video: HTMLVideoElement): boolean {
     const gl = this.gl;
-    if (!gl || video.videoWidth === 0) return false;
+    if (!gl || gl.isContextLost() || video.videoWidth === 0) return false;
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.frameTexture);
     try {
@@ -145,7 +167,7 @@ export class GlRenderer {
   render(filterId: string, target: RenderTargetSize): boolean {
     const gl = this.gl;
     const filter = FILTERS.find((f) => f.id === filterId);
-    if (!gl || !filter) return false;
+    if (!gl || gl.isContextLost() || !filter) return false;
     const program = this.program(filter);
     if (!program) return false;
 

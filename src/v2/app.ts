@@ -525,6 +525,34 @@ function shutterStream(): ShutterStream {
   };
 }
 
+/* --- Share: the iOS-native road to the camera roll ------------------------ */
+
+/**
+ * A browser download lands in the BROWSER'S sandbox (Files › browser ›
+ * Downloads on iOS) and Photos never sees it — measured confusion on device.
+ * The share sheet is the native road to "Save Image / Save Video", and it
+ * must run inside a FRESH tap's activation — the capture's own tap has long
+ * expired by the time the file exists — so each result holds its file and
+ * offers a button. `onclick` assignment on purpose: a new result replaces
+ * the old handler instead of stacking listeners.
+ */
+function offerShare(buttonId: string, file: File): void {
+  const button = byId<HTMLButtonElement>(buttonId);
+  const nav = navigator as Navigator & {
+    canShare?: (data: { files: File[] }) => boolean;
+    share?: (data: { files: File[] }) => Promise<void>;
+  };
+  if (typeof nav.share !== 'function' || nav.canShare?.({ files: [file] }) === false) {
+    button.hidden = true;
+    return;
+  }
+  button.hidden = false;
+  button.onclick = () => {
+    // A dismissed sheet is a choice, not an error.
+    void nav.share?.({ files: [file] }).catch(() => undefined);
+  };
+}
+
 /* --- Recording: two honest paths (docs/camera_rule.md, spec C) ------------ */
 
 const clipRecorder = new ClipRecorder();
@@ -553,6 +581,10 @@ async function toggleRecording(): Promise<void> {
         + `${(result.bytes / 1e6).toFixed(2)} MB · ${(result.measuredBitsPerSecond / 1e6).toFixed(1)} Mb/s measured `
         + `(asked ${(result.requestedBitsPerSecond / 1e6).toFixed(1)}) · ${result.mimeType || 'container unreported'}`
       : 'The recording produced no data.');
+    if (result) {
+      offerShare('v2ShareClip',
+        new File([result.blob], result.fileName, { type: result.mimeType || 'video/mp4' }));
+    }
     return;
   }
 
@@ -635,6 +667,8 @@ async function takePhoto(): Promise<void> {
           bytes: outcome.still.bytes
         }
       });
+      offerShare('v2SharePhoto',
+        new File([outcome.still.blob], outcome.still.fileName, { type: 'image/jpeg' }));
     }
     const restoreNote = outcome.restoration === 'refused' || outcome.restoration === 'unconfirmed'
       ? ` · live stream not confirmed back (${outcome.restoration})`

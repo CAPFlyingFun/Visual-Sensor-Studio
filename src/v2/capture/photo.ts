@@ -15,6 +15,8 @@ export interface PhotoResult {
   width: number;
   height: number;
   bytes: number;
+  /** The encoded JPEG itself — held so a fresh tap can share it to Photos. */
+  blob: Blob;
   fileName: string;
   reason: string;
   /** Measured stage costs: GPU render + copy-out, then JPEG encoding. */
@@ -64,6 +66,7 @@ export async function capturePhoto(
     width: photo.width,
     height: photo.height,
     bytes: blob.size,
+    blob,
     fileName,
     reason: photo.reason,
     timing: { renderMs: renderDone - t0, encodeMs: encodeDone - renderDone }

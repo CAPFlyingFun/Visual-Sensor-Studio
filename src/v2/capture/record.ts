@@ -26,6 +26,8 @@ import {
 export interface ClipResult {
   seconds: number;
   bytes: number;
+  /** The finished file itself — held so a fresh tap can share it to Photos. */
+  blob: Blob;
   /** Measured by decoding the file — the authoritative dimensions. */
   encodedWidth: number;
   encodedHeight: number;
@@ -138,8 +140,12 @@ export class ClipRecorder {
     this.recorder.ondataavailable = (event) => {
       if (event.data && event.data.size > 0) this.chunks.push(event.data);
     };
-    // A timeslice keeps data flowing, so a crash loses a second, not a clip.
-    this.recorder.start(1000);
+    // ONE blob at stop, no timeslice. Chunked delivery produces a fragmented
+    // container that iOS Photos refuses to import even though Files plays it
+    // (measured on device); a single coherent file is what "Save Video"
+    // accepts. The trade — a crash loses the whole short clip — returns when
+    // rolling 30-second clips arrive with a proper remux.
+    this.recorder.start();
     this.startedAt = performance.now();
     return { ok: true };
   }
@@ -177,6 +183,7 @@ export class ClipRecorder {
     return {
       seconds,
       bytes: blob.size,
+      blob,
       encodedWidth: encoded.width,
       encodedHeight: encoded.height,
       mimeType: type || blob.type,

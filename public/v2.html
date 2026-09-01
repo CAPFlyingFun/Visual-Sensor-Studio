@@ -53,6 +53,7 @@
     #v2ShutterFlash { position: absolute; inset: 0; z-index: 4; background: #fff; opacity: 0; pointer-events: none; transition: opacity .18s ease; }
     #v2ShutterFlash.firing { opacity: .85; }
     .capture button.recording { color: #ff5c5c; border-color: #ff5c5c; box-shadow: 0 0 0 1px rgba(255, 92, 92, .35); }
+    .share-save { margin-top: 9px; min-height: 42px; padding: 0 16px; border-radius: 11px; border: 1px solid var(--blue); background: #10203a; color: #cfe4ff; font-size: 12px; font-weight: 600; }
     .enable-overlay {
       position: absolute; z-index: 6; left: 50%; top: 50%; transform: translate(-50%, -50%);
       min-height: 52px; padding: 0 22px; border-radius: 999px;
@@ -188,6 +189,7 @@
           </p>
           <p class="stage-note" id="v2PhotoResult"></p>
           <p class="stage-note timing" id="v2PhotoTiming"></p>
+          <button type="button" class="share-save" id="v2SharePhoto" hidden>Share &middot; Save to Photos</button>
         </div>
 
         <div class="card">
@@ -199,6 +201,7 @@
             ENCODED row is measured from the finished file &mdash; never from what was asked.
           </p>
           <p class="stage-note" id="v2RecordResult"></p>
+          <button type="button" class="share-save" id="v2ShareClip" hidden>Share &middot; Save to Photos</button>
         </div>
 
         <div class="card">
