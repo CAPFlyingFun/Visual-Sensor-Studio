@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#050b12">
+  <title>Visual Sensor Studio V2 — Camera Workbench Prototype</title>
+  <!--
+    VISUAL / INTERACTION REFERENCE ONLY.
+    This is not production camera code.
+
+    Portrait rule for V2:
+    ONLY the viewfinder is sticky. The controls below use normal page scrolling.
+    Do not rebuild the rejected fixed-height tiny tool drawer or a giant sticky head.
+  -->
+  <style>
+    :root{
+      color-scheme:dark;
+      --bg:#02060a;--shell:#071019;--panel:#0c1620;--panel2:#111d29;
+      --line:#263746;--line2:#375064;--text:#f3f7fa;--muted:#93a4b3;
+      --blue:#438dff;--blue2:#7db4ff;--red:#ff4a4f;--green:#78df8a;
+      --safe-top:max(10px,env(safe-area-inset-top));
+      --safe-bottom:max(10px,env(safe-area-inset-bottom));
+      font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;background:#000;color:var(--text)}
+    body{display:flex;justify-content:center;min-height:100dvh}
+    button,input{font:inherit}
+    button{color:inherit}
+    .app{width:min(100%,520px);min-height:100dvh;background:linear-gradient(#071019,#02060a 70%);padding-bottom:78px}
+    .topbar{padding:var(--safe-top) 13px 9px;display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:9px;background:rgba(5,11,18,.96);border-bottom:1px solid rgba(255,255,255,.08)}
+    .topbar h1{font-size:16px;margin:0;text-align:center;white-space:nowrap}
+    .mini-btn,.pill{border:1px solid var(--line);background:#0b151f;border-radius:10px;min-height:36px}
+    .mini-btn{width:38px}
+    .pill{padding:0 9px;font-size:11px;display:grid;place-items:center;color:#dbe6ef}
+    .v2{border-color:#355f94;color:#9fc5ff}
+
+    .viewfinder-wrap{position:sticky;top:0;z-index:20;background:#03070c;border-bottom:1px solid var(--line);box-shadow:0 12px 25px rgba(0,0,0,.32)}
+    .viewfinder{height:clamp(245px,38dvh,390px);position:relative;overflow:hidden;background:linear-gradient(180deg,#071838 0 57%,#101b28 58%,#05080c 100%)}
+    .viewfinder::before{content:"";position:absolute;left:-7%;right:-7%;bottom:14%;height:31%;background:#101922;clip-path:polygon(0 74%,13% 52%,25% 70%,38% 39%,51% 67%,62% 34%,76% 66%,88% 45%,100% 72%,100% 100%,0 100%)}
+    .viewfinder::after{content:"";position:absolute;left:0;right:0;bottom:12%;height:5%;background:radial-gradient(circle at 8% 60%,#ffc861 0 2px,transparent 3px),radial-gradient(circle at 23% 50%,#ff8d3a 0 2px,transparent 3px),radial-gradient(circle at 38% 65%,#ffd667 0 2px,transparent 3px),radial-gradient(circle at 56% 45%,#ff9c3d 0 2px,transparent 3px),radial-gradient(circle at 73% 60%,#ffe079 0 2px,transparent 3px),radial-gradient(circle at 91% 45%,#ff8e35 0 2px,transparent 3px);filter:drop-shadow(0 0 5px #ff9d43)}
+    .trail{position:absolute;left:13%;top:31%;width:57%;height:7px;border-radius:99px;transform:rotate(11deg);background:linear-gradient(90deg,#29117a,#9c19bd,#e42778,#ff5138,#ffad28,#fff05a,#fff);box-shadow:0 0 6px #dc2677,0 0 14px rgba(255,114,40,.72)}
+    .track{position:absolute;left:68%;top:39%;width:54px;height:42px;border:1.5px solid #e5f4ff;border-radius:4px;box-shadow:0 0 5px #438dff}
+    .track::before,.track::after{content:"";position:absolute;background:#7db4ff}.track::before{width:12px;height:1px;left:20px;top:20px}.track::after{height:12px;width:1px;left:26px;top:14px}
+    .palette{position:absolute;left:10px;top:18px;bottom:57px;width:9px;background:linear-gradient(#fff,#fff45b,#ff9e2c,#f33f51,#ad17b4,#47148d,#061953);border:1px solid rgba(255,255,255,.35)}
+    .palette-label{position:absolute;left:25px;font-size:8px;letter-spacing:.08em;text-transform:uppercase}.fast{top:18px}.still{bottom:57px}
+    .hud{position:absolute;left:10px;right:10px;bottom:9px;display:flex;justify-content:space-around;gap:7px;padding:7px 8px;border:1px solid rgba(192,219,240,.32);border-radius:10px;background:rgba(2,7,12,.68);backdrop-filter:blur(8px);font-size:9px}
+    .hud span{white-space:nowrap}.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--blue);margin-right:4px}
+
+    .quickbar{display:grid;grid-template-columns:1fr auto;gap:9px;align-items:center;padding:8px 10px;background:#08111a}
+    .zoom{display:flex;gap:6px;overflow:auto;scrollbar-width:none}.zoom::-webkit-scrollbar{display:none}
+    .zoom button{min-width:45px;height:38px;border:1px solid var(--line);background:#0c1721;border-radius:10px}.zoom button.active{border-color:var(--blue);box-shadow:inset 0 0 0 1px rgba(67,141,255,.3)}
+    .capture{display:flex;gap:8px}.capture button{width:43px;height:43px;border-radius:50%;border:1px solid #6b7b89;background:#0b141c}.capture .record{border:2px solid #e2eaf0;position:relative}.capture .record::after{content:"";position:absolute;inset:10px;border-radius:7px;background:var(--red)}
+
+    .section{padding:11px 11px 0}.section-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}.section-title h2{font-size:13px;margin:0}.hint{font-size:9px;color:var(--muted)}
+    .filters{display:flex;gap:8px;overflow-x:auto;padding:1px 1px 9px;scroll-snap-type:x proximity;scrollbar-width:none}.filters::-webkit-scrollbar{display:none}
+    .filter{flex:0 0 76px;scroll-snap-align:start;border:1px solid var(--line);background:#0c1620;border-radius:12px;padding:6px;text-align:left}.filter.active{border-color:var(--blue);box-shadow:0 0 0 1px rgba(67,141,255,.24)}
+    .thumb{height:53px;border-radius:8px;background:linear-gradient(135deg,#182838,#07111a);margin-bottom:6px;position:relative;overflow:hidden}.thumb.iron{background:linear-gradient(135deg,#07124a,#51118c,#d52078,#ff5c37,#ffd93d)}.thumb.edge{background:repeating-linear-gradient(135deg,#05080a 0 8px,#e8f2fa 8px 10px,#05080a 10px 18px)}.thumb.motion{background:linear-gradient(135deg,#06101d,#102a55 47%,#f54b42 50%,#ffe65e)}.thumb.night{background:linear-gradient(135deg,#03102a,#0b2e55,#1c665e)}.thumb.custom{display:grid;place-items:center;font-size:26px;color:#8cbcff}.filter small{display:block;font-size:9px;color:#d9e3eb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+    .card{margin:0 11px 10px;padding:13px;border:1px solid var(--line);border-radius:15px;background:linear-gradient(180deg,#0d1823,#09131c)}
+    .card h3{font-size:13px;margin:0 0 10px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.metric{padding:9px;border:1px solid #263847;border-radius:11px;background:#0a141d}.metric b{display:block;font-size:16px}.metric span{font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+    .row{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;margin:11px 0}.row label{font-size:11px}.row input[type=range]{width:100%}.value{min-width:54px;text-align:center;padding:6px;border:1px solid var(--line);border-radius:8px;background:#071019;font-size:10px}
+    .switches{display:grid;gap:7px}.switch{display:flex;justify-content:space-between;align-items:center;padding:9px 10px;border:1px solid var(--line);border-radius:10px;background:#0a141d;font-size:10px}.toggle{width:35px;height:19px;border-radius:99px;background:#263746;position:relative}.toggle::after{content:"";position:absolute;width:15px;height:15px;border-radius:50%;background:#dfe9f1;top:2px;left:2px}.toggle.on{background:#1d67c8}.toggle.on::after{left:18px}
+    .diagnostics{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;line-height:1.65;color:#c9d8e4}.diagnostics b{color:#fff}
+    .placeholder{margin:10px 11px 0;padding:16px;border:1px dashed #345064;border-radius:14px;color:#9fb0bf;font-size:11px;text-align:center}
+
+    .dock{position:fixed;z-index:50;left:50%;bottom:0;transform:translateX(-50%);width:min(100%,520px);height:68px;padding:6px 8px var(--safe-bottom);display:grid;grid-template-columns:repeat(5,1fr);background:rgba(5,10,16,.97);border-top:1px solid rgba(255,255,255,.1);backdrop-filter:blur(18px)}
+    .dock button{border:0;background:transparent;color:#7f91a0;font-size:9px;display:grid;place-items:center;gap:2px}.dock button.active{color:#86b7ff}.dock i{font-style:normal;font-size:19px}
+
+    @media (orientation:landscape) and (max-height:520px){
+      .app{width:100%;max-width:none;padding-bottom:58px}.topbar{display:none}.camera-layout{display:grid;grid-template-columns:minmax(45%,1.1fr) minmax(340px,.9fr);align-items:start}.viewfinder-wrap{position:sticky;top:0;height:100dvh}.viewfinder{height:calc(100dvh - 58px)}.quickbar{position:absolute;left:10px;right:10px;bottom:10px;border-radius:12px;background:rgba(5,12,18,.78)}.content{min-width:0}.dock{height:58px;width:100%}
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <button class="mini-btn">☰</button>
+    <h1>Visual Sensor Studio</h1>
+    <span class="pill v2">V2 · Experimental</span>
+  </header>
+
+  <div class="camera-layout">
+    <div class="viewfinder-wrap">
+      <div class="viewfinder" aria-label="Camera preview design reference">
+        <div class="trail"></div><div class="track"></div><div class="palette"></div><span class="palette-label fast">Fast</span><span class="palette-label still">Still</span>
+        <div class="hud"><span><i class="dot"></i>LIVE</span><span>1920×1440</span><span>29.9 fps</span><span>1× camera</span></div>
+      </div>
+      <div class="quickbar">
+        <div class="zoom"><button>.5×</button><button class="active">1×</button><button>2×</button><button>5×</button></div>
+        <div class="capture"><button title="Photo">◉</button><button class="record" title="Record"></button><button title="Fullscreen">⛶</button></div>
+      </div>
+    </div>
+
+    <main class="content">
+      <section class="section">
+        <div class="section-title"><h2>Filters & Lenses</h2><span class="hint">Swipe →</span></div>
+        <div class="filters" id="filters">
+          <button class="filter" data-name="RGB"><div class="thumb"></div><small>RGB</small></button>
+          <button class="filter active" data-name="Brightness False Color"><div class="thumb iron"></div><small>Intensity</small></button>
+          <button class="filter" data-name="Edges"><div class="thumb edge"></div><small>Edges</small></button>
+          <button class="filter" data-name="Motion Speed"><div class="thumb motion"></div><small>Speed</small></button>
+          <button class="filter" data-name="Motion Trails"><div class="thumb motion"></div><small>Trails</small></button>
+          <button class="filter" data-name="Night"><div class="thumb night"></div><small>Night</small></button>
+          <button class="filter" data-name="Color Picker"><div class="thumb custom">⌾</div><small>Color Pick</small></button>
+          <button class="filter" data-name="Custom Lens"><div class="thumb custom">＋</div><small>Custom +</small></button>
+        </div>
+      </section>
+
+      <article class="card">
+        <h3 id="modeTitle">Brightness False Color</h3>
+        <div class="row"><label>Intensity range</label><span class="value">Auto</span></div>
+        <input type="range" min="0" max="100" value="68">
+        <div class="row"><label>Scene blend</label><span class="value">18%</span></div>
+        <input type="range" min="0" max="100" value="18">
+        <div class="switches" style="margin-top:12px">
+          <div class="switch"><span>Histogram overlay</span><span class="toggle on"></span></div>
+          <div class="switch"><span>Zebra highlights</span><span class="toggle"></span></div>
+          <div class="switch"><span>Focus peaking</span><span class="toggle"></span></div>
+        </div>
+      </article>
+
+      <article class="card">
+        <h3>Frame Pipeline</h3>
+        <div class="grid">
+          <div class="metric"><span>Source</span><b>1920×1440</b></div>
+          <div class="metric"><span>Analysis</span><b>512×384</b></div>
+          <div class="metric"><span>Photo</span><b>1920×1440</b></div>
+          <div class="metric"><span>Record In</span><b>1280×960</b></div>
+        </div>
+      </article>
+
+      <article class="card">
+        <h3>Recording Truth</h3>
+        <div class="diagnostics">
+          <b>SOURCE</b> &nbsp;&nbsp;&nbsp;1920×1440 · 29.9 delivered fps<br>
+          <b>ANALYSIS</b> &nbsp;512×384 &nbsp;· 14.8 fps<br>
+          <b>PREVIEW</b> &nbsp;&nbsp;1020×765 · display<br>
+          <b>PHOTO</b> &nbsp;&nbsp;&nbsp;&nbsp;1920×1440 · JPEG<br>
+          <b>RECORD IN</b> 1280×960 &nbsp;· 29.8 fps<br>
+          <b>ENCODED</b> &nbsp;&nbsp;1280×960 &nbsp;· H.264
+        </div>
+      </article>
+
+      <div class="placeholder">Sensors, World/3D, Data and GPS are intentionally deferred. Their dock buttons exist so V2 can grow into them later without dragging those subsystems into the first camera build.</div>
+      <div style="height:18px"></div>
+    </main>
+  </div>
+
+  <nav class="dock">
+    <button class="active"><i>◉</i><span>Camera</span></button>
+    <button><i>◌</i><span>Sensors</span></button>
+    <button><i>◎</i><span>World</span></button>
+    <button><i>▱</i><span>Data</span></button>
+    <button><i>•••</i><span>More</span></button>
+  </nav>
+</div>
+<script>
+  document.querySelectorAll('.filter').forEach(btn=>btn.addEventListener('click',()=>{
+    document.querySelectorAll('.filter').forEach(x=>x.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('modeTitle').textContent=btn.dataset.name;
+  }));
+  document.querySelectorAll('.zoom button').forEach(btn=>btn.addEventListener('click',()=>{
+    document.querySelectorAll('.zoom button').forEach(x=>x.classList.remove('active'));btn.classList.add('active');
+  }));
+  document.querySelectorAll('.toggle').forEach(t=>t.addEventListener('click',()=>t.classList.toggle('on')));
+</script>
+</body>
+</html>
