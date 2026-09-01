@@ -2,6 +2,18 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <script>
+    /*
+     * V2 routing. ?scene=v2 hands this visit to the experimental rebuild,
+     * which is its own document (v2.html) sharing only the camera engine.
+     * Without the parameter this script does nothing at all, so the legacy
+     * app's behaviour is untouched — and it must stay the FIRST script in the
+     * head, before anything legacy can begin to boot.
+     */
+    if (new URLSearchParams(location.search).get('scene') === 'v2') {
+      location.replace('./v2.html' + location.search + location.hash);
+    }
+  </script>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#071019" />
   <meta name="description" content="A privacy-first iPhone camera, motion, GPS, parallax and 3D sensor-fusion playground." />

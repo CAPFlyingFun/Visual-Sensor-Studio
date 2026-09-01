@@ -52,6 +52,8 @@
     "src/vision/clip-format.ts",
     "src/vision/clip-recorder.ts",
     "src/vision/clip-library.ts",
-    "src/vision/gif.ts"
+    "src/vision/gif.ts",
+    "src/v2/state.ts",
+    "src/v2/routes.ts"
   ]
 }

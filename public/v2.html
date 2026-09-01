@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#050b12" />
+  <title>Visual Sensor Studio V2</title>
+  <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
+  <!--
+    VISUAL SENSOR STUDIO V2 — Milestone A: the trustworthy camera shell.
+
+    Reached through ?scene=v2 (index.html redirects here); the legacy app
+    remains the default document. This page deliberately shares NO stylesheet
+    and no bundle with the legacy app: the only shared pieces are the persistent
+    camera engine (camera-bootstrap.js, which owns #cameraVideo and every
+    getUserMedia call) and the compiled src/ modules V2 imports explicitly.
+
+    Portrait rule, from the V2 design spec and two rejected legacy layouts:
+    ONLY the viewfinder is sticky. Everything below scrolls normally.
+  -->
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #02060a; --shell: #071019; --panel: #0c1620; --panel2: #111d29;
+      --line: #263746; --line2: #375064; --text: #f3f7fa; --muted: #93a4b3;
+      --blue: #438dff; --blue2: #7db4ff; --red: #ff4a4f; --green: #78df8a;
+      --safe-top: max(10px, env(safe-area-inset-top));
+      --safe-bottom: max(10px, env(safe-area-inset-bottom));
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: #000; color: var(--text); }
+    /* The two lessons v1 paid for: no block may inflate text, and no element
+       may widen the document. */
+    html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+    body { display: flex; justify-content: center; min-height: 100dvh; overflow-x: clip; }
+    button, input { font: inherit; color: inherit; }
+    .app { width: min(100%, 520px); min-width: 0; min-height: 100dvh; background: linear-gradient(#071019, #02060a 70%); padding-bottom: calc(74px + var(--safe-bottom)); }
+
+    .topbar { padding: var(--safe-top) 13px 9px; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 9px; background: rgba(5, 11, 18, .96); border-bottom: 1px solid rgba(255, 255, 255, .08); }
+    .topbar h1 { font-size: 16px; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .pill { padding: 5px 9px; font-size: 11px; border: 1px solid #355f94; color: #9fc5ff; background: #0b151f; border-radius: 10px; white-space: nowrap; }
+
+    /* --- The one sticky element on the page. ------------------------------ */
+    .viewfinder-wrap { position: sticky; top: 0; z-index: 20; background: #03070c; border-bottom: 1px solid var(--line); box-shadow: 0 12px 25px rgba(0, 0, 0, .32); }
+    .viewfinder { height: clamp(245px, 38dvh, 390px); position: relative; overflow: hidden; background: #04090f; }
+    .viewfinder video { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .enable-overlay {
+      position: absolute; z-index: 6; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      min-height: 52px; padding: 0 22px; border-radius: 999px;
+      border: 1px solid rgba(125, 180, 255, .7); background: rgba(10, 40, 70, .93);
+      color: #eef6ff; font-weight: 700; cursor: pointer;
+    }
+    .hud {
+      position: absolute; left: 10px; right: 10px; bottom: 9px; z-index: 5;
+      display: flex; justify-content: space-around; align-items: center; gap: 7px;
+      padding: 7px 8px; border: 1px solid rgba(192, 219, 240, .32); border-radius: 10px;
+      background: rgba(2, 7, 12, .68); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      font-size: 11px; pointer-events: none;
+    }
+    .hud span { white-space: nowrap; }
+    .hud .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #627080; margin-right: 4px; }
+    .hud .dot[data-state="live"] { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .hud .dot[data-state="requesting"] { background: var(--blue); }
+    .hud .dot[data-state="error"], .hud .dot[data-state="suspended"] { background: var(--red); }
+
+    .quickbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; align-items: center; padding: 8px 10px; background: #08111a; }
+    .zoom { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
+    .zoom::-webkit-scrollbar { display: none; }
+    .zoom button { min-width: 45px; height: 38px; border: 1px solid var(--line); background: #0c1721; border-radius: 10px; flex: 0 0 auto; }
+    .zoom button.active { border-color: var(--blue); box-shadow: inset 0 0 0 1px rgba(67, 141, 255, .3); color: #fff; }
+    .capture { display: flex; gap: 8px; }
+    .capture button { width: 43px; height: 43px; border-radius: 50%; border: 1px solid #6b7b89; background: #0b141c; font-size: 15px; }
+    .capture button[disabled] { opacity: .4; }
+
+    .section { padding: 12px 11px 0; }
+    .section-title { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+    .section-title h2 { font-size: 13px; margin: 0; }
+    .hint { font-size: 10px; color: var(--muted); }
+    .card { margin: 0 11px 10px; padding: 13px; border: 1px solid var(--line); border-radius: 15px; background: linear-gradient(180deg, #0d1823, #09131c); }
+    .card h3 { font-size: 13px; margin: 0 0 10px; }
+    .card p { font-size: 12px; color: var(--muted); line-height: 1.5; margin: 0 0 8px; }
+    .button-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+    .btn { min-height: 42px; padding: 0 14px; border: 1px solid var(--line2); background: #0d1a26; border-radius: 11px; cursor: pointer; }
+    .btn[disabled] { opacity: .45; }
+    .stage-note { font-size: 11px; color: #ffc46b; min-height: 1.2em; margin: 8px 0 0; }
+
+    .diagnostics { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.7; color: #c9d8e4; overflow-x: auto; }
+    .diagnostics b { color: #fff; font-weight: 650; }
+    .diagnostics .k { display: inline-block; min-width: 86px; color: var(--muted); letter-spacing: .04em; }
+
+    .placeholder { margin: 10px 11px 0; padding: 18px 14px; border: 1px dashed #345064; border-radius: 14px; color: #9fb0bf; font-size: 12px; text-align: center; }
+    .placeholder h2 { font-size: 14px; margin: 0 0 8px; color: #cfe0ee; }
+    .placeholder button { margin-top: 10px; }
+
+    .dock {
+      position: fixed; z-index: 50; left: 50%; bottom: 0; transform: translateX(-50%);
+      width: min(100%, 520px); padding: 6px 8px var(--safe-bottom);
+      display: grid; grid-template-columns: repeat(5, 1fr);
+      background: rgba(5, 10, 16, .97); border-top: 1px solid rgba(255, 255, 255, .1);
+      backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+    }
+    .dock button { border: 0; background: transparent; color: #7f91a0; font-size: 10px; min-height: 52px; display: grid; place-items: center; gap: 2px; }
+    .dock button.active { color: #86b7ff; }
+    .dock i { font-style: normal; font-size: 19px; line-height: 1; }
+
+    footer { margin: 14px 11px 0; font-size: 10px; color: #6d7d8b; text-align: center; }
+
+    @media (orientation: landscape) and (min-width: 700px) {
+      .app { width: 100%; max-width: none; }
+      .camera-layout { display: grid; grid-template-columns: minmax(45%, 1.1fr) minmax(340px, .9fr); align-items: start; }
+      .viewfinder-wrap { position: sticky; top: 0; }
+      .viewfinder { height: calc(100dvh - 130px); }
+      .content { min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <h1>Visual Sensor Studio</h1>
+    <span class="pill" id="v2Badge">V2 · Experimental</span>
+  </header>
+
+  <div class="camera-layout">
+    <div class="viewfinder-wrap">
+      <div class="viewfinder" id="v2Viewfinder">
+        <video id="cameraVideo" autoplay muted playsinline></video>
+        <button class="enable-overlay" id="v2EnableCamera" type="button">Enable Camera</button>
+        <div class="hud" aria-label="Live readouts">
+          <span><i class="dot" id="v2HudDot"></i><span id="v2HudState">IDLE</span></span>
+          <span id="v2HudSource">—</span>
+          <span id="v2HudFps">— fps</span>
+          <span id="v2HudZoom">—</span>
+        </div>
+      </div>
+      <div class="quickbar">
+        <div class="zoom" id="v2ZoomStops" aria-label="Zoom presets"></div>
+        <div class="capture">
+          <button type="button" title="Photo — Milestone B" disabled>◉</button>
+          <button type="button" title="Record — Milestone C" disabled>⏺</button>
+          <button type="button" id="v2SwitchCamera" title="Switch camera" disabled>⟲</button>
+        </div>
+      </div>
+    </div>
+
+    <main class="content">
+      <div id="v2CameraRoute">
+        <section class="section">
+          <div class="section-title"><h2>Camera</h2><span class="hint">Milestone A — shell only</span></div>
+        </section>
+
+        <div class="card">
+          <h3>Source truth</h3>
+          <div class="diagnostics" aria-label="Frame truth table">
+            <div><span class="k">SOURCE</span><b id="v2DiagSource">not started</b></div>
+            <div><span class="k">STATE</span><span id="v2DiagState">idle</span></div>
+            <div><span class="k">TRACK</span><span id="v2DiagTrack">—</span></div>
+          </div>
+          <p class="stage-note" id="v2Stage"></p>
+        </div>
+
+        <div class="card">
+          <h3>What this build is</h3>
+          <p>
+            V2 Milestone A: the camera shell only. It proves the persistent camera engine,
+            the negotiated stream size and the measured delivered frame rate inside the new
+            architecture before any filter is migrated. The numbers above are read from the
+            stream itself — never from CSS, and never from what was merely requested.
+          </p>
+          <p>
+            Filters, capture, recording and the frame-geometry authority arrive in
+            Milestones B–F. The legacy app is unaffected and remains the default URL.
+          </p>
+        </div>
+      </div>
+
+      <div id="v2RoutePlaceholder" class="placeholder" hidden>
+        <h2 id="v2PlaceholderTitle"></h2>
+        <span id="v2PlaceholderPlan"></span>
+        <div><button class="btn" id="v2LegacyLink" type="button">Open the legacy app</button></div>
+      </div>
+
+      <footer>V2 shell · the legacy app is the default URL and is unchanged by this page.</footer>
+    </main>
+  </div>
+</div>
+
+<nav class="dock" id="v2Dock" aria-label="Primary navigation"></nav>
+
+<script src="./camera-bootstrap.js"></script>
+<script type="module" src="./app/v2/app.js"></script>
+</body>
+</html>
