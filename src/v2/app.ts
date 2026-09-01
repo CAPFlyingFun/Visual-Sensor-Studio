@@ -356,6 +356,29 @@ function isStandalone(): boolean {
  * actually arrives is read back from the stream per frame, never assumed;
  * a tier the camera declines simply shows its refusal in the SOURCE row.
  */
+/**
+ * A size presented the way the phone is currently held — the STREAM's
+ * orientation, the one display-independent fact V2 has about "which way
+ * round" (the display itself is read in exactly one place, measureViewfinder).
+ * Capability arrives as the sensor reports it (4032×3024) while a portrait
+ * stream stands 3024×4032 — the same pixels, and the toast read "tops out at
+ * 4032×3024" on a portrait phone (Joshua, 2026-09-01). Every user-facing size
+ * goes through here; the numbers never change, only which is printed first.
+ * With no stream yet there is nothing honest to orient against, so the size
+ * is shown as reported.
+ */
+function orientedToLayout(size: { width: number; height: number }): { width: number; height: number } {
+  const { source } = readState();
+  if (!source) return size;
+  const portrait = source.height > source.width;
+  return (size.height > size.width) === portrait ? size : { width: size.height, height: size.width };
+}
+
+function dims(size: { width: number; height: number }): string {
+  const o = orientedToLayout(size);
+  return `${o.width}×${o.height}`;
+}
+
 /** The advertised CAPABILITY's short side — null where the browser withholds it. */
 function capabilityShortSide(): number | null {
   const cap = readState().capability;
@@ -406,7 +429,7 @@ function buildStreamTiers(): void {
       if (!tierAvailable(tier, capabilityShortSide())) {
         const cap = readState().capability;
         showToast(`${tier.label} is not available — this camera's output tops out at `
-          + `${cap ? `${cap.width}×${cap.height}` : 'a smaller size'}. MAX is already its largest.`);
+          + `${cap ? dims(cap) : 'a smaller size'}. MAX is already its largest.`);
         return;
       }
       applyStreamTier(tier.id);
@@ -497,14 +520,7 @@ function renderHud(): void {
     const feeding = recording.path === 'filtered'
       ? (elapsed >= 1 ? framesFedThisClip / elapsed : 0)
       : deliveredFps;
-    // The photo size in the STREAM's orientation: capability arrives as the
-    // sensor reports it (4032×3024) while the stream stands portrait.
-    const portrait = recording.input.height > recording.input.width;
-    const photo = capability
-      ? (capability.height > capability.width) === portrait
-        ? `${capability.width}×${capability.height}`
-        : `${capability.height}×${capability.width}`
-      : '';
+    const photo = capability ? dims(capability) : '';
     recHud.textContent = `🔴 Recording in ${recording.input.width}×${recording.input.height}`
       + (feeding > 0 ? ` · ${feeding.toFixed(0)} fps avg` : '')
       + (photo ? ` · Photo ${photo}` : '');
@@ -542,9 +558,11 @@ function renderDiagnostics(): void {
         : tierById(readState().streamTier)?.streamLabel ?? 'live stream')
     : 'not started');
   setText('v2DiagCapability', capability
-    ? `${capability.width}×${capability.height} · ${readState().capabilitySource === 'measured'
+    ? `${dims(capability)} · ${readState().capabilitySource === 'measured'
       ? 'measured maximum — scanned on this camera'
       : 'the track\'s advertised maximum'}`
+      + (dims(capability) !== `${capability.width}×${capability.height}`
+        ? ` (reported ${capability.width}×${capability.height})` : '')
     : scanningCapability
       ? 'measuring — asking this camera for its maximum…'
       : 'not exposed by this browser');
