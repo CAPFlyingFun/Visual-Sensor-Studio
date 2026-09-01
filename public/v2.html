@@ -48,6 +48,10 @@
     /* The filtered preview sits over the raw video; when WebGL is unavailable
        it stays hidden and the honest raw feed shows instead. */
     .viewfinder canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 2; }
+    /* While a filtered clip records, the GL canvas belongs to the encoder at
+       RECORD IN and this 2D canvas shows the PREVIEW-geometry blit on top —
+       what you see never resizes because of what the file needs. */
+    #v2DisplayCanvas { z-index: 3; }
     /* The capture flash: the mode renegotiation happens behind it, so the
        shutter pause reads as intentional rather than a hiccup. */
     #v2ShutterFlash { position: absolute; inset: 0; z-index: 4; background: #fff; opacity: 0; pointer-events: none; transition: opacity .18s ease; }
@@ -147,6 +151,7 @@
       <div class="viewfinder" id="v2Viewfinder">
         <video id="cameraVideo" autoplay muted playsinline></video>
         <canvas id="v2PreviewCanvas" hidden></canvas>
+        <canvas id="v2DisplayCanvas" hidden></canvas>
         <div id="v2ShutterFlash" aria-hidden="true"></div>
         <button class="enable-overlay" id="v2EnableCamera" type="button">Enable Camera</button>
         <div class="hud" aria-label="Live readouts">

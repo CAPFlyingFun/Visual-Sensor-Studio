@@ -586,13 +586,25 @@ test('a maximum-tier filtered clip records the CHOSEN stream, risk stated up fro
         null, { timeout: 3000 });
       const during = await page.evaluate(() => ({
         row: document.getElementById('v2DiagRecordIn').textContent,
+        previewRow: document.getElementById('v2DiagPreview').textContent,
         canvasW: document.getElementById('v2PreviewCanvas').width,
-        canvasH: document.getElementById('v2PreviewCanvas').height
+        canvasH: document.getElementById('v2PreviewCanvas').height,
+        displayHidden: document.getElementById('v2DisplayCanvas').hidden,
+        displayW: document.getElementById('v2DisplayCanvas').width,
+        displayH: document.getElementById('v2DisplayCanvas').height
       }));
       assert.match(during.row, /^3840×2160 ·/,
         `RECORD IN is the chosen stream itself, got "${during.row}"`);
       assert.equal(Math.min(during.canvasW, during.canvasH), 2160,
-        'the render target is frozen at the chosen stream');
+        'the GL canvas belongs to the encoder, frozen at the chosen stream');
+      // PREVIEW stays its own product: what you SEE renders at the PREVIEW
+      // geometry on the display canvas, exactly as the row reports it.
+      assert.equal(during.displayHidden, false, 'the display blit covers the encoder canvas');
+      const dims = (text) => text.match(/(\d+)×(\d+)/).slice(1, 3).map(Number);
+      const [dpw, dph] = dims(during.previewRow);
+      assert.equal(during.displayW, dpw,
+        'what you see stays at PREVIEW geometry while the file records bigger');
+      assert.equal(during.displayH, dph);
       await page.waitForTimeout(1500);
       await page.click('#v2RecordButton');
       await page.waitForFunction(() =>
@@ -601,6 +613,11 @@ test('a maximum-tier filtered clip records the CHOSEN stream, risk stated up fro
       const line = await page.textContent('#v2RecordResult');
       assert.match(line, /3840×2160 measured in the file/,
         `the file carries the chosen size, got "${line}"`);
+      // After stop the display blit retires and the GL canvas is the preview again.
+      await page.waitForTimeout(700);
+      assert.equal(await page.evaluate(() =>
+        document.getElementById('v2DisplayCanvas').hidden), true,
+        'the display canvas retires once the encoder lets go');
 
       await page.close();
       await context.close();

@@ -96,13 +96,27 @@ function renderPreview(now: number): void {
   const resolved = readState().geometry;
   if (!resolved) return;
   if (!renderer.uploadFrame(video)) return;
-  // A filtered recording FREEZES the render target at the RECORD IN size the
-  // encoder was promised — resizing a canvas mid-recording corrupts the clip.
-  // The viewfinder shows this render scaled by CSS, so the preview stays
-  // honest: what you see is what the file receives.
-  const target = recording?.path === 'filtered' ? recording.input : resolved.preview;
+  // A filtered recording FREEZES the GL render target at the RECORD IN size
+  // the encoder was promised — resizing a canvas mid-recording corrupts the
+  // clip. PREVIEW stays its own product (Joshua's rule: what you SEE never
+  // changes size because of what the file needs): while the GL canvas
+  // belongs to the encoder, the viewfinder shows a scaled blit of it at the
+  // PREVIEW geometry on a separate display canvas.
+  const recordingFiltered = recording?.path === 'filtered';
+  const target = recordingFiltered ? recording.input : resolved.preview;
   if (renderer.render(activeFilter, target)) {
     byId('v2PreviewCanvas').hidden = false;
+    const display = byId<HTMLCanvasElement>('v2DisplayCanvas');
+    if (recordingFiltered) {
+      const pw = resolved.preview.width;
+      const ph = resolved.preview.height;
+      if (display.width !== pw) display.width = pw;
+      if (display.height !== ph) display.height = ph;
+      display.getContext('2d')?.drawImage(renderer.targetCanvas, 0, 0, pw, ph);
+      display.hidden = false;
+    } else if (!display.hidden) {
+      display.hidden = true;
+    }
     previewMeter.recordProcessed(now, 0);
     updateState({ previewFps: previewMeter.report.processingFps });
     // Temporal filters compare against the PREVIOUS frame: store this one as
