@@ -227,6 +227,22 @@ test('held clips are described as temporary, because they are', () => {
 
 /* --- The iPhone that "could not record" ---------------------------------- */
 
+test('the recording subsystem actually starts up', () => {
+  // The bug this exists for: these four lines were inserted after `void
+  // applyAutoStart()`, and there are four of those — three inside change
+  // handlers in the settings panel. They landed in the FIRST one, so recording
+  // only initialised if you toggled "start the camera automatically". The
+  // format was never detected and the badge sat on "checking…" forever, which
+  // the app reported as "this browser cannot record video from a web page".
+  //
+  // At the END of the file it cannot be nested inside anything: a handler would
+  // have to close after it. That is what makes this a real check rather than an
+  // indentation convention — the misplaced copy was at column zero too.
+  assert.match(main.trimEnd(), /\n\}\);$/, 'the file should end with the startup block');
+  const tail = main.trimEnd().slice(-400);
+  assert.match(tail, /^[\s\S]*detectClipFormat\(\);\nsyncRecordButton\(\);\nsyncGifEstimate\(\);\nvoid renderClips\(\)/m);
+});
+
 test('a browser that names no format can still record', () => {
   // Joshua's iPhone: isTypeSupported matched nothing at all, and the app told a
   // phone that records video perfectly well that it could not. A MediaRecorder

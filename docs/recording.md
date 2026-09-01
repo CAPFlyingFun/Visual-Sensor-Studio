@@ -8,10 +8,17 @@ v0.38.0.
 The browser encodes this itself, through `MediaRecorder`. Three decisions are
 worth recording.
 
-**The format is asked for, never assumed** — but asking is not the only way to
-find out, and on an iPhone it was the wrong one. `isTypeSupported` matched
-nothing at all, and v0.38.0 told a phone that records video perfectly well that
-it "cannot record video from a web page".
+**The format is asked for, never assumed** — and asking is not the only way to
+find out, so there is a fallback.
+
+A correction first: v0.38.1 blamed `isTypeSupported` for reporting nothing on an
+iPhone. That was wrong. `detectClipFormat()` was never called at all — its
+startup line had been inserted inside a settings change handler, so the whole
+recording subsystem only initialised if you toggled "start the camera
+automatically". The badge sat on "checking…", the format stayed null, and the
+app told a phone that records video perfectly well that it could not. Whether
+Safari's `isTypeSupported` names a format is still unmeasured; the badge now
+says which path was taken.
 
 A MediaRecorder constructed with **no** `mimeType` uses the browser's own
 default and reports it back on `.mimeType`. That is strictly better than a

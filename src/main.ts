@@ -205,7 +205,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.38.1';
+const APP_VERSION = '0.38.2';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -7489,14 +7489,6 @@ on('autoStartCamera', 'change', (event) => {
   settings.autoStartCamera = (event.target as HTMLInputElement).checked;
   saveSettings();
   void applyAutoStart();
-
-// Recording: ask what this browser can write, then show what is already held.
-detectClipFormat();
-syncRecordButton();
-syncGifEstimate();
-void renderClips().then(() => pruneClips()).catch(() => {
-  setText('clipStorage', 'Held clips could not be read from this device.');
-});
 });
 on('autoStartGps', 'change', (event) => {
   settings.autoStartGps = (event.target as HTMLInputElement).checked;
@@ -8693,4 +8685,24 @@ on('burstClearLog', 'click', () => {
   const log = document.getElementById('burstLog') as HTMLTextAreaElement | null;
   if (log) log.value = '';
   setText('burstCopyStatus', '');
+});
+
+/*
+ * RECORDING STARTS UP LAST, at the end of the file, on purpose.
+ *
+ * The first version of these four lines was inserted after `void
+ * applyAutoStart()` — and there are four of those, three of them inside change
+ * handlers in the settings panel. It landed in the FIRST one, so the whole
+ * recording subsystem only initialised if you happened to toggle "start the
+ * camera automatically". The format was never detected, and the app told a
+ * phone that records video perfectly well that it could not record video.
+ *
+ * At the end of the file it cannot be nested inside anything, and a test holds
+ * it there: main.ts must END with this block.
+ */
+detectClipFormat();
+syncRecordButton();
+syncGifEstimate();
+void renderClips().then(() => pruneClips()).catch(() => {
+  setText('clipStorage', 'Held clips could not be read from this device.');
 });
