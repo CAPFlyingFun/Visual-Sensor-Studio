@@ -89,6 +89,21 @@ test('stream tiers are one registry: deliberate, labelled, defaulting responsive
   }
   assert.equal(STREAM_TIERS.filter((t) => t.shortSide === 'max').length, 1,
     'exactly one tier asks for the largest mode');
+
+  // Joshua's ladder: familiar video classes, and a tier RECORDS WHAT IT
+  // STREAMS — "if MAX is recorded in 1080, that's not MAX". The camera's own
+  // aspect and modes decide the real dimensions; these are the requests.
+  assert.deepEqual(STREAM_TIERS.map((t) => t.id), ['720', '1080', '2k', '4k', 'maximum']);
+  assert.deepEqual(STREAM_TIERS.map((t) => t.shortSide), [720, 1080, 1440, 2160, 'max']);
+  for (const tier of STREAM_TIERS) {
+    assert.equal(tier.recordPolicy, 'source', `${tier.id} records the stream it chose`);
+  }
+  assert.match(tierById('maximum')?.clipWarning ?? '', /crash/i,
+    'the measured 12 MP risk is stated on MAX, not hidden');
+  assert.match(tierById('maximum')?.clipWarning ?? '', /Photos always stay at MAX/,
+    'stills are exempt from the risk and say so');
+  assert.ok(!tierById('720')?.clipWarning && !tierById('1080')?.clipWarning,
+    'no scare copy on the proven tiers');
   const fallback = tierById(DEFAULT_STREAM_TIER);
   assert.ok(fallback && fallback.shortSide === 720,
     'the default tier is the responsive one — the maximum never arrives by accident');
@@ -98,20 +113,17 @@ test('stream tiers are one registry: deliberate, labelled, defaulting responsive
   assert.equal(tierById('nope'), null);
 });
 
-test('the default record policy caps the FILTERED path at the measured envelope', () => {
-  // Device measurement, 2026-09-01: a 12 MP filtered clip (framebuffer +
-  // canvas capture + encode + RAM buffering) killed the GPU context and left
-  // an unfinalised file, while the native path took 12 MP fine and 720
-  // recorded at 58–60 fps. The default policy caps the render the encoder
-  // receives — never the stream, never the photo.
+test('the record policy records the chosen stream; no silent default cap', () => {
+  // A tier records what it streams (Joshua, 2026-09-01) — the measured 12 MP
+  // crash risk lives as the MAX tier's stated warning, never a hidden cap.
+  // Photos keep the full sensor regardless.
+  assert.equal(DEFAULT_GEOMETRY_INPUTS.recordPolicy, 'source');
   const g = resolveGeometry(size(3024, 4032), { ...DEFAULT_GEOMETRY_INPUTS, previewBoxShortSide: 0 });
   assert.deepEqual({ width: g.recordInput.width, height: g.recordInput.height },
-    { width: 1080, height: 1440 });
-  assert.match(g.recordInput.reason, /1080/);
+    { width: 3024, height: 4032 }, 'the chosen stream is what records');
   assert.deepEqual({ width: g.photo.width, height: g.photo.height },
     { width: 3024, height: 4032 }, 'the photo keeps the full sensor');
 
-  // At or below the cap the responsive stream passes through untouched.
   const small = resolveGeometry(size(720, 960), DEFAULT_GEOMETRY_INPUTS);
   assert.deepEqual({ width: small.recordInput.width, height: small.recordInput.height },
     { width: 720, height: 960 });

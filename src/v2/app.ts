@@ -69,7 +69,10 @@ function refreshGeometry(): void {
     geometry: source
       ? resolveGeometry(source, {
         ...DEFAULT_GEOMETRY_INPUTS,
-        previewBoxShortSide: viewfinder.shortSide
+        previewBoxShortSide: viewfinder.shortSide,
+        // The chosen tier is the eyes-open trade; its record policy rides
+        // along rather than a second opinion being formed here.
+        recordPolicy: tierById(readState().streamTier)?.recordPolicy ?? 'source'
       })
       : null
   });
@@ -195,6 +198,9 @@ function applyStreamTier(id: string): void {
   const tier = tierById(id);
   if (!tier || readState().recording || readState().captureActive) return;
   updateState({ streamTier: id });
+  // The tier's record policy applies immediately, even if the camera later
+  // declines the stream change itself.
+  refreshGeometry();
   if (tier.shortSide === 'max') {
     camera.preferMaxCaptureSize();
     if (camera.active) void camera.applyMaxCaptureSize();
@@ -420,17 +426,20 @@ function buildFilterStrip(): void {
 
 let renderedFilterKey = '';
 function renderFilterStrip(): void {
-  const { activeFilter, recording, geometry } = readState();
+  const { activeFilter, recording, geometry, streamTier } = readState();
   const rec = recording !== null;
-  // The record cap surfaces HERE, next to the choice that triggers it: a
-  // filter selected on a large stream means capped clips, and saying so
-  // before the shutter beats explaining a "small" file after it.
+  // Recording risk and caps surface HERE, next to the choice that triggers
+  // them — before the shutter, never as an explanation after the file. A
+  // numeric policy shows its cap; the MAX tier shows its measured warning.
   const cap = geometry !== null
     && Math.min(geometry.recordInput.width, geometry.recordInput.height)
       < Math.min(geometry.source.width, geometry.source.height)
     ? `${geometry.recordInput.width}×${geometry.recordInput.height}`
     : '';
-  const key = `${activeFilter}|${rec}|${cap}`;
+  const warning = !cap && activeFilter !== 'rgb'
+    ? tierById(streamTier)?.clipWarning ?? ''
+    : '';
+  const key = `${activeFilter}|${rec}|${cap}|${warning}`;
   if (key === renderedFilterKey) return;
   renderedFilterKey = key;
   for (const button of byId('v2FilterStrip').querySelectorAll<HTMLButtonElement>('[data-filter]')) {
@@ -445,12 +454,12 @@ function renderFilterStrip(): void {
       + 'Video is this filter’s product; stills are declined rather than upscaled.'
   };
   const capNote = cap && activeFilter !== 'rgb'
-    ? `Filtered clips at this stream size record at ${cap} — the measured memory envelope. `
+    ? `Filtered clips at this stream size record at ${cap} — the record policy's cap. `
       + 'RGB clips keep the full stream.'
     : '';
   setText('v2FilterNote', rec
     ? 'Recording — stop to change filters.'
-    : `${FILTER_NOTES[activeFilter] ?? ''} ${capNote}`.trim());
+    : `${FILTER_NOTES[activeFilter] ?? ''} ${capNote || warning}`.trim());
 }
 
 /**

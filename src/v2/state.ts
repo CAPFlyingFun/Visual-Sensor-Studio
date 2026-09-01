@@ -121,7 +121,7 @@ const state: V2State = {
   viewfinder: null,
   lastPhoto: null,
   captureActive: false,
-  streamTier: 'speed',
+  streamTier: '720',
   recording: null,
   lastClip: null
 };

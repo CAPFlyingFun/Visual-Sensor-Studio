@@ -420,7 +420,7 @@ test('the stream tier renegotiates the LIVE stream and the row measures it (fake
       const tiers = await page.evaluate(() =>
         [...document.querySelectorAll('#v2StreamTiers [data-stream-tier]')]
           .map((b) => b.dataset.streamTier));
-      assert.deepEqual(tiers, ['speed', 'detail', 'maximum'],
+      assert.deepEqual(tiers, ['720', '1080', '2k', '4k', 'maximum'],
         'the tier strip mirrors STREAM_TIERS, in order');
       await page.waitForFunction(() =>
         /responsive live stream/.test(document.getElementById('v2DiagSource')?.textContent ?? ''),
@@ -428,18 +428,18 @@ test('the stream tier renegotiates the LIVE stream and the row measures it (fake
 
       // Up to 1080: a deliberate choice, applied to the RUNNING track, and
       // the SOURCE row reports the measured stream — never the request.
-      await page.click('[data-stream-tier="detail"]');
+      await page.click('[data-stream-tier="1080"]');
       await page.waitForFunction(() => {
         const text = document.getElementById('v2DiagSource')?.textContent ?? '';
         const m = text.match(/^(\d+)×(\d+)/);
         return m !== null
           && Math.min(Number(m[1]), Number(m[2])) === 1080
-          && /detail live stream/.test(text);
+          && /1080-class live stream/.test(text);
       }, null, { timeout: 8000 });
 
       // And back down — responsive is one tap away, and the preview follows
       // the stream through both changes via the one geometry owner.
-      await page.click('[data-stream-tier="speed"]');
+      await page.click('[data-stream-tier="720"]');
       await page.waitForFunction(() => {
         const text = document.getElementById('v2DiagSource')?.textContent ?? '';
         const m = text.match(/^(\d+)×(\d+)/);
@@ -543,12 +543,11 @@ test('recording truth: native and filtered clips measured from their files (fake
     });
   });
 
-test('a maximum-tier filtered clip records at the capped RECORD IN, never 12 MP (fake device)',
+test('a maximum-tier filtered clip records the CHOSEN stream, risk stated up front (fake device)',
   { skip: runnable ? false : 'no browser available' }, async () => {
-    // The device crash this guards: MAX-tier Edges/Ironbow clips died with an
-    // unfinalised 0×0 file while RGB-at-MAX (native path) was fine. The
-    // filtered path now records at the policy cap while the live stream and
-    // the photo keep the sensor.
+    // Joshua's ladder: a tier records what it streams, MAX included — the
+    // measured crash risk is announced beside the filter strip before the
+    // button, and the file records at the stream the user deliberately chose.
     await withBrowser(async (browser, base) => {
       const context = await browser.newContext({
         viewport: { width: 430, height: 932 },
@@ -571,13 +570,15 @@ test('a maximum-tier filtered clip records at the capped RECORD IN, never 12 MP 
       await page.click('[data-filter="ironbow"]');
       await page.waitForTimeout(300);
 
-      // The cap announces itself, reason and all, BEFORE the button: in the
-      // RECORD IN row and beside the filter choice that triggers it.
+      // The RISK announces itself BEFORE the button, beside the filter
+      // choice — and no cap pretends to exist.
       await page.waitForFunction(() =>
-        /capped at a 1080/.test(document.getElementById('v2DiagRecordIn')?.textContent ?? ''),
+        /can crash the recording/.test(document.getElementById('v2FilterNote')?.textContent ?? ''),
         null, { timeout: 3000 });
-      assert.match(await page.textContent('#v2FilterNote'), /memory envelope/,
-        'the filter note warns about the cap before recording, not after the file');
+      assert.match(await page.textContent('#v2FilterNote'), /Photos always stay at MAX/,
+        'the warning says stills are exempt');
+      assert.ok(!/capped/.test(await page.textContent('#v2DiagRecordIn')),
+        'no cap pretends to exist');
 
       await page.click('#v2RecordButton');
       await page.waitForFunction(() =>
@@ -588,18 +589,18 @@ test('a maximum-tier filtered clip records at the capped RECORD IN, never 12 MP 
         canvasW: document.getElementById('v2PreviewCanvas').width,
         canvasH: document.getElementById('v2PreviewCanvas').height
       }));
-      assert.match(during.row, /^1920×1080 ·/,
-        `RECORD IN is the capped policy size, got "${during.row}"`);
-      assert.equal(Math.min(during.canvasW, during.canvasH), 1080,
-        'the render target is frozen at the cap, not the 4K stream');
+      assert.match(during.row, /^3840×2160 ·/,
+        `RECORD IN is the chosen stream itself, got "${during.row}"`);
+      assert.equal(Math.min(during.canvasW, during.canvasH), 2160,
+        'the render target is frozen at the chosen stream — what you see is what records');
       await page.waitForTimeout(1500);
       await page.click('#v2RecordButton');
       await page.waitForFunction(() =>
         (document.getElementById('v2RecordResult')?.textContent ?? '').startsWith('Saved'),
-        null, { timeout: 10000 });
+        null, { timeout: 15000 });
       const line = await page.textContent('#v2RecordResult');
-      assert.match(line, /1920×1080 measured in the file/,
-        `the file carries the capped size, got "${line}"`);
+      assert.match(line, /3840×2160 measured in the file/,
+        `the file carries the chosen size, got "${line}"`);
 
       await page.close();
       await context.close();
