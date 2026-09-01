@@ -356,3 +356,40 @@ test('the storage figure is the browser’s allowance, not the phone’s free sp
   assert.equal(lib.MAX_BUDGET_BYTES, 600e6);
   assert.equal(lib.describeSize(lib.MAX_BUDGET_BYTES), '600.0 MB');
 });
+
+test('a clip carries the rate it was actually written at', () => {
+  // Joshua's lens clip came back at 7.52 fps and the reasonable guess was that
+  // the counter was wrong. It was not: the recorded rate IS the rate the app
+  // managed to redraw a filtered picture. Measuring it and saying so beats
+  // leaving someone to infer it from a file's properties in Photos.
+  assert.match(main, /segmentFrames \+= 1;/, 'frames written must be counted');
+  assert.match(main, /recordedFps = seconds > 0 \? frames \/ seconds : 0;/);
+  assert.match(main, /fps: recordedFps,/, 'and stored on the clip');
+
+  const described = lib.describeClip({
+    id: 'a', startedAt: Date.now(), seconds: 7, bytes: 318_000,
+    label: 'lens 548x732', savedAt: null, fps: 7.52
+  });
+  assert.match(described, /7\.5 fps/);
+  // Clips recorded before this was measured simply do not claim a rate.
+  const older = lib.describeClip({
+    id: 'b', startedAt: Date.now(), seconds: 7, bytes: 318_000,
+    label: 'lens', savedAt: null
+  });
+  assert.ok(!/fps/.test(older), 'an unmeasured clip must not invent a rate');
+});
+
+test('all three rates are shown while recording, and named apart', () => {
+  // The camera delivers at one rate, the pipeline analyses at another, and the
+  // recording gets a frame only when a picture is redrawn. Showing one number
+  // called "Processing" was what made the other two look wrong.
+  const tick = main.slice(main.indexOf('function tickRecording'), main.indexOf('function canShareFile'));
+  assert.match(tick, /deliveredFps/);
+  assert.match(tick, /processingFps/);
+  assert.match(tick, /recording \$\{writtenFps\.toFixed\(1\)\} fps/);
+
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.match(html, /Three rates, and they are three different things/);
+  // And it says where the lever is, since it is not in the recorder.
+  assert.match(html, /cannot invent\s+frames the pipeline never drew/);
+});

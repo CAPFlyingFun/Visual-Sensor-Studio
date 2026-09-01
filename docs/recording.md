@@ -129,3 +129,32 @@ thirty-second MP4 of the same scene is smaller than that.
 
 It is still worth having: a GIF plays inline anywhere, in any message, with no
 player and no codec question.
+
+## Why a clip's frame rate is the pipeline's rate
+
+A seven-second lens clip came back at **7.52 fps**, and the obvious guess — that
+the recorder was tied to the render loop and could be freed by compositing into
+a recording canvas at a steady 30 fps — is wrong. Measured in Chromium:
+
+| how the recording canvas was driven | recorded |
+|---|---|
+| redrawn 60×/s, content changing | 29.6 fps |
+| redrawn 60×/s, content identical | 29.6 fps (tiny file) |
+| redrawn 8×/s | 8.3 fps |
+| drawn once, then never again | **no frames at all** |
+| 120 ms of blocking work per frame, redraw when free | 4.4 fps |
+| same, plus `track.requestFrame()` at 30 Hz | 4.3 fps |
+
+Three things follow. The recorded rate is exactly the rate the canvas is
+redrawn. A canvas that is not redrawn produces nothing — not even duplicate
+frames, so "hold the last picture at 30 fps" is not something the browser will
+do on its own. And on a saturated main thread there is no trick that helps:
+`requestFrame()` on a fixed timer changed 4.4 fps into 4.3, because that timer
+queues behind the same blocked thread.
+
+So a low recorded rate is a **measurement of how often the app managed to draw
+a filtered picture**, not a defect in the recorder. The interface now shows all
+three rates while recording — delivered, analysed, recorded — and each held
+clip carries the rate it was actually written at. The levers that change it are
+Live detail and the vision rate preference, because they change how expensive a
+picture is; nothing in the recorder can.

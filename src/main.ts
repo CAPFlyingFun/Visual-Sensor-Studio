@@ -205,7 +205,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.39.0';
+const APP_VERSION = '0.39.1';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -6755,6 +6755,10 @@ let segmentLabel = 'camera';
 let recordStream: MediaStream | null = null;
 /** True when recordStream is ours to stop — never the camera's own tracks. */
 let recordStreamIsOurs = false;
+/** Frames actually written into the recording canvas this clip. */
+let segmentFrames = 0;
+/** The last clip's measured rate, or 0 before one exists. */
+let recordedFps = 0;
 let clipLimits: RetentionLimits = { maxClips: 0, maxBytes: 0 };
 let lastElapsedPaint = 0;
 
@@ -6831,7 +6835,32 @@ function recordTargetSize(): { width: number; height: number } {
     : { width: even(target), height: even(sourceHeight * scale) };
 }
 
-/** Copy the overlay into the recording canvas at its own size. */
+/**
+ * Copy the overlay into the recording canvas, and COUNT IT.
+ *
+ * The count is the honest frame rate of the recording, and it is worth
+ * measuring rather than assuming, because Joshua's 7-second lens clip came out
+ * at 7.52 fps and the obvious explanation was wrong.
+ *
+ * Measured in Chromium, four ways:
+ *
+ *   redraw at 60Hz, changing content   -> 29.6 fps recorded
+ *   redraw at 60Hz, identical content  -> 29.6 fps recorded (tiny file)
+ *   redraw at 8Hz                      ->  8.3 fps recorded
+ *   never redrawn after the first draw ->  no frames at all
+ *
+ * So the recorded rate is exactly the rate this function runs at, and a canvas
+ * that is not redrawn produces nothing — not even duplicates. Then the case
+ * that matters: with 120ms of blocking work per frame, the way a
+ * display-resolution lens render behaves, the recording came out at 4.4 fps —
+ * and poking the track with requestFrame() 30 times a second changed it to 4.3,
+ * because that timer is queued behind the same blocked thread.
+ *
+ * THERE IS NO MAIN-THREAD TRICK. A steady 30 fps output while the pipeline
+ * makes 7 pictures a second is not something the recorder can arrange; the
+ * frames do not exist. What the app can do is say so, which is what
+ * recordedFps is for.
+ */
 function blitRecordFrame(): void {
   if (!recordCanvas || !recordContext) return;
   if (visionCanvas.hidden || !overlayPainted || !visionCanvas.width) return;
@@ -6839,6 +6868,7 @@ function blitRecordFrame(): void {
     visionCanvas, 0, 0, visionCanvas.width, visionCanvas.height,
     0, 0, recordCanvas.width, recordCanvas.height
   );
+  segmentFrames += 1;
 }
 
 /**
@@ -6880,6 +6910,7 @@ function beginSegment(): void {
   if (!recordStream || !clipFormat) return;
   segmentChunks = [];
   segmentStartedAt = performance.now();
+  segmentFrames = 0;
   try {
     mediaRecorder = clipFormat.mime
       ? new MediaRecorder(recordStream, {
@@ -6916,6 +6947,8 @@ async function finishSegment(): Promise<void> {
   const format = clipFormat;
   if (!format || chunks.length === 0) return;
   const seconds = Math.max(0, (performance.now() - segmentStartedAt) / 1000);
+  const frames = segmentFrames;
+  recordedFps = seconds > 0 ? frames / seconds : 0;
   const blob = new Blob(chunks, { type: format.mime });
   const clip: StoredClip = {
     id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
@@ -6924,6 +6957,7 @@ async function finishSegment(): Promise<void> {
     bytes: blob.size,
     label: segmentLabel,
     savedAt: null,
+    fps: recordedFps,
     blob,
     mime: format.mime,
     extension: format.extension
@@ -7136,8 +7170,18 @@ function tickRecording(now: number): void {
   lastElapsedPaint = now;
   const total = rolling.totalElapsedMs(now) / 1000;
   const segment = rolling.segmentElapsedMs(now) / 1000;
+  // THREE RATES, because they are three different things and only the last one
+  // is what the file will contain. The camera delivers at one rate, the vision
+  // pipeline analyses at another, and the recording gets a frame every time a
+  // picture is actually redrawn — which on a saturated thread is the slowest of
+  // the three. Showing only "Processing" invited the reasonable guess that the
+  // counter was wrong rather than that the pictures were genuinely that rare.
+  const rates = frameRateMeter.report;
+  const writtenFps = segment > 0.5 ? segmentFrames / segment : 0;
   setText('recordElapsed',
-    `${total.toFixed(0)}s · clip ${rolling.segmentIndex + 1} at ${segment.toFixed(0)}/${MAX_CLIP_SECONDS}s`);
+    `${total.toFixed(0)}s · clip ${rolling.segmentIndex + 1} at ${segment.toFixed(0)}/${MAX_CLIP_SECONDS}s`
+    + ` · in ${rates.deliveredFps.toFixed(0)} · analysed ${rates.processingFps.toFixed(0)}`
+    + ` · recording ${writtenFps.toFixed(1)} fps`);
 }
 
 function canShareFile(type: string): boolean {

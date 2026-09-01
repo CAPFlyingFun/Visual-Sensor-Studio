@@ -542,7 +542,7 @@
               <span class="small-badge" id="recordFormat">checking…</span>
             </div>
             <details class="explainer">
-              <summary>How recording works</summary>
+              <summary>How recording works, and what its frame rate means</summary>
               <p class="helper">
               Records what is on screen &mdash; the filter as well as the camera &mdash; in
               clips of at most 30 seconds. Each clip is a finished file the moment it is cut, so
@@ -554,6 +554,15 @@
               extra detail: <strong>Live detail</strong> above is what makes the filter itself
               render larger, and it costs frame rate. The camera on its own records at its own
               full resolution with no scaling.
+            </p>
+            <p class="helper">
+              <strong>Three rates, and they are three different things.</strong> The camera
+              delivers frames at one rate, the vision pipeline analyses at another, and the
+              recording gets a frame every time a filtered picture is actually redrawn. On a
+              heavy filter the last one is the slowest, and it is the one the file contains &mdash;
+              measured, not requested, and shown while recording. A recorder cannot invent
+              frames the pipeline never drew, so if the number is low the levers are
+              <strong>Live detail</strong> and the vision rate in Settings, not the recorder.
             </p>
             </details>
             <div class="button-row">
@@ -1024,7 +1033,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.39.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.39.1</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">

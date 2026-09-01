@@ -31,6 +31,15 @@ export interface ClipRecord {
   label: string;
   /** When it was exported, or null while this is the only copy. */
   savedAt: number | null;
+  /**
+   * Frames a second the clip actually contains.
+   *
+   * Measured rather than requested: the recorded rate is the rate the app
+   * managed to redraw a picture, which is not the camera's rate and not the
+   * analysis rate either. Optional because clips recorded before this was
+   * measured do not carry it.
+   */
+  fps?: number;
 }
 
 export interface RetentionLimits {
@@ -145,7 +154,8 @@ export function describeClip(clip: ClipRecord): string {
   const when = new Date(clip.startedAt);
   const time = when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const held = clip.savedAt === null ? 'held only here' : 'exported';
-  return `${time} · ${clip.seconds.toFixed(1)}s · ${describeSize(clip.bytes)} · ${clip.label} · ${held}`;
+  const rate = clip.fps && clip.fps > 0 ? ` · ${clip.fps.toFixed(1)} fps` : '';
+  return `${time} · ${clip.seconds.toFixed(1)}s${rate} · ${describeSize(clip.bytes)} · ${clip.label} · ${held}`;
 }
 
 /**
