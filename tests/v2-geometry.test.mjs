@@ -650,8 +650,12 @@ test('recording truth: native and filtered clips measured from their files (fake
         `the clip reports measured truth, got "${native}"`);
       assert.match(native, / · \d+ chunks?/,
         `the delivery pattern is measured, not assumed, got "${native}"`);
-      assert.match(native, / · finalised in \d+\.\ds$/,
-        `finalisation is timed — a slow drain and a dead encoder must read differently, got "${native}"`);
+      assert.match(native, / · finalised in \d+\.\ds · fed [\d.]+ fps → file /,
+        `the fed rate and the file's own rate are both reported, got "${native}"`);
+      if (/video\/mp4/.test(native)) {
+        assert.match(native, /file [\d.]+ fps \(\d+ frames\)/,
+          `an MP4's frames are counted from its tables, got "${native}"`);
+      }
       const [nw, nh] = dims(native.replace(/^Saved [\d.]+s · /, ''));
       assert.equal(nw, sw, 'the native path records the SOURCE, measured in the file');
       assert.equal(nh, sh);

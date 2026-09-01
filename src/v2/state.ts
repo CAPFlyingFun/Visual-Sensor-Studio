@@ -59,6 +59,12 @@ export interface SavedClip {
   /** dataavailable deliveries that built the file — 1 means the timeslice
    * request was not honored and a killed encoder loses the whole clip. */
   chunkCount: number;
+  /** Frames the file really holds — null where the container was unreadable. */
+  encodedFrames: number | null;
+  /** The encoder's kept rate: frames / the file's own (or the clip's) seconds. */
+  encodedFps: number | null;
+  /** Frames handed to the encoder per second over the clip, measured. */
+  fedFps: number;
 }
 
 export interface V2State {

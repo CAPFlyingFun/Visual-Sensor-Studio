@@ -21,6 +21,7 @@ import {
 import {
   ASSUMED_ENVELOPE, envelopeFromMeasurement, largestEncodable, measurementFromRows
 } from '../.test-build/v2/capture/encoder-envelope.js';
+import { countMp4Frames } from '../.test-build/v2/capture/mp4-frames.js';
 
 /*
  * V2 Milestone B: the geometry authority and the filter registry, tested as
@@ -608,4 +609,52 @@ test('ENCODER CAPABILITY: the largest frame the encoder can write, with its reas
   });
   assert.equal(inside.recordInput.width, 2160, 'inside the envelope nothing changes');
   assert.doesNotMatch(inside.recordInput.reason, /macroblock/);
+});
+
+/* --- The encoder's KEPT rate is counted from the file ---------------------- */
+
+const box = (type, ...parts) => {
+  const body = Buffer.concat(parts.map((p) => (Buffer.isBuffer(p) ? p : Buffer.from(p))));
+  const head = Buffer.alloc(8);
+  head.writeUInt32BE(8 + body.length, 0);
+  head.write(type, 4, 'ascii');
+  return Buffer.concat([head, body]);
+};
+const u32 = (...values) => {
+  const b = Buffer.alloc(values.length * 4);
+  values.forEach((v, i) => b.writeUInt32BE(v, i * 4));
+  return b;
+};
+const fullbox = (type, version, ...parts) => box(type, Buffer.from([version, 0, 0, 0]), ...parts);
+
+test('countMp4Frames reads the video track\'s sample tables, flat and fragmented', () => {
+  // A flat MP4: 100 video samples of 20 ticks at a 600 timescale = 3.333 s,
+  // beside an audio track that must NOT be counted as frames.
+  const video = box('trak', box('mdia',
+    fullbox('mdhd', 0, u32(0, 0, 600, 2000)),
+    fullbox('hdlr', 0, u32(0), Buffer.from('vide'), u32(0, 0, 0), Buffer.from([0])),
+    box('minf', box('stbl', fullbox('stts', 0, u32(1, 100, 20))))));
+  const audio = box('trak', box('mdia',
+    fullbox('mdhd', 0, u32(0, 0, 48000, 160000)),
+    fullbox('hdlr', 0, u32(0), Buffer.from('soun'), u32(0, 0, 0), Buffer.from([0])),
+    box('minf', box('stbl', fullbox('stts', 0, u32(1, 156, 1024))))));
+  const flat = Buffer.concat([box('ftyp', Buffer.from('isom')), box('moov', video, audio), box('mdat', Buffer.alloc(16))]);
+  const counted = countMp4Frames(new Uint8Array(flat));
+  assert.deepEqual(counted, { frames: 100, seconds: 2000 / 600 });
+  assert.ok(Math.abs(counted.frames / counted.seconds - 30) < 1e-9, 'a 30 fps file counts as 30 fps');
+
+  // A fragmented MP4 (what a chunked WebKit recorder may write): sample
+  // counts live in each fragment's run; the duration is the clip's own.
+  const trun = (count) => fullbox('trun', 0, u32(count));
+  const fragmented = Buffer.concat([
+    box('moov', box('trak', box('mdia', fullbox('hdlr', 0, u32(0), Buffer.from('vide'), u32(0, 0, 0))))),
+    box('moof', box('traf', trun(30))), box('mdat', Buffer.alloc(8)),
+    box('moof', box('traf', trun(28))), box('mdat', Buffer.alloc(8))
+  ]);
+  assert.deepEqual(countMp4Frames(new Uint8Array(fragmented)), { frames: 58, seconds: null });
+
+  // Not an MP4, or an MP4 with no index (the truncated-file signature): unmeasured, never guessed.
+  assert.equal(countMp4Frames(new Uint8Array(Buffer.from('\x1aE\xdf\xa3webm-ish garbage'))), null);
+  assert.equal(countMp4Frames(new Uint8Array(box('mdat', Buffer.alloc(64)))), null);
+  assert.equal(countMp4Frames(new Uint8Array(0)), null);
 });

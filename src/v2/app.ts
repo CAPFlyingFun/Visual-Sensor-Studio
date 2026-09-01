@@ -127,6 +127,8 @@ const previewMeter = new FrameRateMeter();
  * renderPreview reads it every frame to stop feeding a draining encoder.
  */
 let stoppingClip = false;
+/** Frames handed to the encoder during the current clip — the FED rate. */
+let framesFedThisClip = 0;
 
 function renderPreview(now: number): void {
   const { source, geometry, activeFilter, recording } = readState();
@@ -152,6 +154,7 @@ function renderPreview(now: number): void {
   if (recording?.path === 'filtered' && stoppingClip) return;
   const target = recording?.path === 'filtered' ? recording.input : resolved.preview;
   if (renderer.render(activeFilter, target)) {
+    if (recording?.path === 'filtered') framesFedThisClip += 1;
     byId('v2PreviewCanvas').hidden = false;
     previewMeter.recordProcessed(now, 0);
     updateState({ previewFps: previewMeter.report.processingFps });
@@ -475,7 +478,13 @@ function renderHud(): void {
   const recHud = byId('v2RecHud');
   if (recording) {
     recHud.hidden = false;
+    // The rate shown is what reaches the ENCODER: renders per second on the
+    // filtered path, delivered camera frames on the native one. What the
+    // encoder keeps of them is counted from the file at stop.
+    const { previewFps } = readState();
+    const feeding = recording.path === 'filtered' ? previewFps : deliveredFps;
     recHud.textContent = `🔴 Recording in ${recording.input.width}×${recording.input.height}`
+      + (feeding > 0 ? ` · ${feeding.toFixed(0)} fps to encoder` : '')
       + (capability ? ` · Photo ${capability.width}×${capability.height}` : '');
   } else {
     recHud.hidden = true;
@@ -563,6 +572,9 @@ function renderDiagnostics(): void {
       ? `${lastClip.width}×${lastClip.height} · ${lastClip.measuredMbps.toFixed(1)} Mb/s measured · `
         + `${lastClip.mimeType || 'container unreported'}${lastClip.resizedFromInput ? ' · ENCODER RESIZED' : ''}`
         + ` · ${lastClip.chunkCount} chunk${lastClip.chunkCount === 1 ? '' : 's'}`
+        + (lastClip.encodedFps !== null
+          ? ` · ${lastClip.encodedFps.toFixed(1)} fps in the file (fed ${lastClip.fedFps.toFixed(1)})`
+          : '')
       : `truncated file — did not decode · ${lastClip.mimeType || 'container unreported'}`
         + ` · delivered as ${lastClip.chunkCount} chunk${lastClip.chunkCount === 1 ? '' : 's'}`
     : 'none yet');
@@ -853,6 +865,17 @@ async function toggleRecording(): Promise<void> {
       window.clearInterval(ticker);
       stoppingClip = false;
     }
+    // THREE rates, three facts (measured 2026-09-01: 30 fps viewfinder,
+    // 17 fps file): what the camera delivered, what was FED to the encoder,
+    // and what the encoder KEPT — the last counted from the file's own
+    // sample tables, never inferred from the feed.
+    const fedFps = result && result.seconds > 0
+      ? (recording.path === 'filtered' ? framesFedThisClip / result.seconds : readState().deliveredFps)
+      : 0;
+    framesFedThisClip = 0;
+    const fileFps = result && result.encodedFrames !== null
+      ? result.encodedFrames / (result.encodedSeconds ?? result.seconds)
+      : null;
     updateState({
       recording: null,
       lastClip: result
@@ -865,7 +888,10 @@ async function toggleRecording(): Promise<void> {
           mimeType: result.mimeType,
           resizedFromInput: result.encodedWidth !== recording.input.width
             || result.encodedHeight !== recording.input.height,
-          chunkCount: result.chunkCount
+          chunkCount: result.chunkCount,
+          encodedFrames: result.encodedFrames,
+          encodedFps: fileFps,
+          fedFps
         }
         : readState().lastClip
     });
@@ -885,6 +911,13 @@ async function toggleRecording(): Promise<void> {
         : `finalised in ${(result.finalizeMs / 1000).toFixed(1)}s`)
         + (result.encoderDied ? ` · ENCODER DIED: ${result.encoderDied}` : '')
       : '';
+    const rateText = result
+      ? ` · fed ${fedFps.toFixed(1)} fps → file `
+        + (fileFps !== null
+          ? `${fileFps.toFixed(1)} fps (${result.encodedFrames} frames)`
+            + (fedFps > 0 && fileFps < fedFps * 0.85 ? ' · ENCODER DROPPED FRAMES' : '')
+          : 'frame count unreadable in this container')
+      : '';
     // The 1 s timeslice is a REQUEST. Whether this browser actually delivered
     // chunks is the fact that decides if a killed encoder loses a second or
     // the whole clip — measure and print it instead of assuming it.
@@ -897,7 +930,7 @@ async function toggleRecording(): Promise<void> {
       ? `Saved ${result.seconds.toFixed(1)}s · ${dimsText} · `
         + `${(result.bytes / 1e6).toFixed(2)} MB · ${(result.measuredBitsPerSecond / 1e6).toFixed(1)} Mb/s measured `
         + `(asked ${(result.requestedBitsPerSecond / 1e6).toFixed(1)}) · ${result.mimeType || 'container unreported'}`
-        + ` · ${chunkText} · ${finalizeText}`
+        + ` · ${chunkText} · ${finalizeText}${rateText}`
       : 'The recording produced no data.');
     if (result) {
       offerShare('v2ShareClip',
@@ -946,6 +979,7 @@ async function toggleRecording(): Promise<void> {
     return;
   }
   setText('v2RecordResult', '');
+  framesFedThisClip = 0;
   updateState({
     recording: {
       // 'filtered' here means "through the render" — RGB held under the

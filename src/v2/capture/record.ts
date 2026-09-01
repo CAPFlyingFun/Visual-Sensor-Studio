@@ -22,6 +22,7 @@
 import {
   clipFileName, extensionForMime, suggestedBitrate
 } from '../../vision/clip-format.js';
+import { countMp4Frames } from './mp4-frames.js';
 
 export interface ClipResult {
   seconds: number;
@@ -57,6 +58,15 @@ export interface ClipResult {
    * — and nothing was listening.
    */
   encoderDied: string | null;
+  /**
+   * Frames the file really contains, counted from its sample tables; null
+   * when the container cannot be read. The encoder's KEPT rate is
+   * encodedFrames / seconds — the camera's rate and the render's rate are
+   * different numbers (measured: a 30 fps viewfinder, a 17 fps file).
+   */
+  encodedFrames: number | null;
+  /** The file's own duration from its sample tables, when it carries one. */
+  encodedSeconds: number | null;
 }
 
 /**
@@ -246,6 +256,12 @@ export class ClipRecorder {
     if (blob.size === 0) return null;
 
     const encoded = await measureEncodedSize(blob);
+    let counted: { frames: number; seconds: number | null } | null = null;
+    try {
+      counted = countMp4Frames(new Uint8Array(await blob.arrayBuffer()));
+    } catch {
+      counted = null;
+    }
     const fileName = clipFileName(`v2-${this.label}`, new Date(), extensionForMime(type || blob.type));
     if (this.save) saveBlob(blob, fileName);
     return {
@@ -261,7 +277,9 @@ export class ClipRecorder {
       chunkCount,
       finalizeMs,
       finalizeTimedOut,
-      encoderDied: this.diedReason
+      encoderDied: this.diedReason,
+      encodedFrames: counted?.frames ?? null,
+      encodedSeconds: counted?.seconds ?? null
     };
   }
 }
