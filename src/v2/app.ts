@@ -25,7 +25,7 @@ import { readState, subscribe, updateState, frameSize } from './state.js';
 import { resolveGeometry, DEFAULT_GEOMETRY_INPUTS } from './camera/geometry.js';
 import { captureAtMaxStream, type Escalation, type ShutterStream } from './capture/shutter.js';
 import { ClipRecorder } from './capture/record.js';
-import { STREAM_TIERS, tierById } from './camera/stream-tiers.js';
+import { STREAM_TIERS, tierAvailable, tierById } from './camera/stream-tiers.js';
 import { FILTERS, filterById } from './filters/registry.js';
 import { GlRenderer } from './render/gl-renderer.js';
 import { capturePhoto } from './capture/photo.js';
@@ -194,9 +194,16 @@ function isStandalone(): boolean {
  * actually arrives is read back from the stream per frame, never assumed;
  * a tier the camera declines simply shows its refusal in the SOURCE row.
  */
+/** The advertised CAPABILITY's short side — null where the browser withholds it. */
+function capabilityShortSide(): number | null {
+  const cap = readState().capability;
+  return cap ? Math.min(cap.width, cap.height) : null;
+}
+
 function applyStreamTier(id: string): void {
   const tier = tierById(id);
   if (!tier || readState().recording || readState().captureActive) return;
+  if (!tierAvailable(tier, capabilityShortSide())) return;
   updateState({ streamTier: id });
   // The tier's record policy applies immediately, even if the camera later
   // declines the stream change itself.
@@ -227,14 +234,33 @@ let renderedTierKey = '';
 function renderStreamTiers(): void {
   const { streamTier, recording, captureActive } = readState();
   const busy = recording !== null || captureActive;
-  const key = `${streamTier}|${busy}`;
+  const capShort = capabilityShortSide();
+  const key = `${streamTier}|${busy}|${capShort ?? 'unknown'}`;
   if (key === renderedTierKey) return;
   renderedTierKey = key;
+  // A class this camera cannot fill greys out with the reason (Joshua,
+  // 2026-09-01) — offering it would promise pixels the sensor lacks. Only
+  // properties change here; the buttons themselves stay stable under fingers.
+  const greyed: string[] = [];
   for (const button of byId('v2StreamTiers').querySelectorAll<HTMLButtonElement>('[data-stream-tier]')) {
+    const tier = tierById(button.dataset.streamTier ?? '');
+    const available = tier !== null && tierAvailable(tier, capShort);
+    if (tier && !available) greyed.push(tier.label);
     button.classList.toggle('active', button.dataset.streamTier === streamTier);
     // A tier change renegotiates the camera mode — it waits for the clip or
     // the shutter, exactly like the other mode-changing controls.
-    button.disabled = busy;
+    button.disabled = busy || !available;
+  }
+  const note = byId('v2TierNote');
+  if (greyed.length > 0) {
+    const chosenGreyed = greyed.includes(tierById(streamTier)?.label ?? '');
+    note.hidden = false;
+    note.textContent = `${greyed.join(' & ')} greyed out — this camera's output is not big enough `
+      + 'for the class. MAX is already this camera\'s largest.'
+      + (chosenGreyed ? ' The chosen tier exceeds this camera, so the stream runs at its largest.' : '');
+  } else {
+    note.hidden = true;
+    note.textContent = '';
   }
 }
 

@@ -426,6 +426,40 @@ test('the stream tier renegotiates the LIVE stream and the row measures it (fake
         /responsive live stream/.test(document.getElementById('v2DiagSource')?.textContent ?? ''),
         null, { timeout: 3000 });
 
+      // A class the camera cannot fill greys out with the reason; MAX never
+      // greys. Read the CAPABILITY row the app itself reads, so the check
+      // holds whether or not this browser exposes capability.
+      const availability = await page.evaluate(() => {
+        const cap = document.getElementById('v2DiagCapability')?.textContent ?? '';
+        const m = cap.match(/^(\d+)×(\d+)/);
+        const disabled = (id) =>
+          document.querySelector(`[data-stream-tier="${id}"]`)?.disabled ?? null;
+        const note = document.getElementById('v2TierNote');
+        return {
+          capShort: m ? Math.min(Number(m[1]), Number(m[2])) : null,
+          fourK: disabled('4k'),
+          max: disabled('maximum'),
+          noteHidden: note?.hidden ?? null,
+          noteText: note?.textContent ?? ''
+        };
+      });
+      assert.equal(availability.max, false, 'MAX is always this camera\'s own largest');
+      if (availability.capShort !== null) {
+        const expectGrey = availability.capShort < 3240;
+        assert.equal(availability.fourK, expectGrey,
+          `capability short side ${availability.capShort} vs the 4K class (3240)`);
+        assert.equal(availability.noteHidden, !expectGrey,
+          'the note shows exactly when a tier is greyed');
+        if (expectGrey) {
+          assert.match(availability.noteText, /not big enough/,
+            'the grey-out names its reason');
+        }
+      } else {
+        assert.equal(availability.fourK, false,
+          'unknown capability greys nothing — that would state an unmeasured fact');
+        assert.equal(availability.noteHidden, true);
+      }
+
       // Up to 1080: a deliberate choice, applied to the RUNNING track, and
       // the SOURCE row reports the measured stream — never the request.
       await page.click('[data-stream-tier="1080"]');

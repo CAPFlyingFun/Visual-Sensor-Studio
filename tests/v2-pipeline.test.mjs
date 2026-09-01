@@ -9,7 +9,9 @@ import {
 } from '../.test-build/v2/camera/geometry.js';
 import { captureAtMaxStream } from '../.test-build/v2/capture/shutter.js';
 import { pickContainer } from '../.test-build/v2/capture/record.js';
-import { STREAM_TIERS, DEFAULT_STREAM_TIER, tierById } from '../.test-build/v2/camera/stream-tiers.js';
+import {
+  STREAM_TIERS, DEFAULT_STREAM_TIER, tierAvailable, tierById
+} from '../.test-build/v2/camera/stream-tiers.js';
 import { readState } from '../.test-build/v2/state.js';
 import { FILTERS, filterById, ironbowLut } from '../.test-build/v2/filters/registry.js';
 import { ironbowColor } from '../.test-build/vision/motion-ironbow.js';
@@ -91,10 +93,12 @@ test('stream tiers are one registry: deliberate, labelled, defaulting responsive
     'exactly one tier asks for the largest mode');
 
   // Joshua's ladder: familiar video classes, and a tier RECORDS WHAT IT
-  // STREAMS — "if MAX is recorded in 1080, that's not MAX". The camera's own
-  // aspect and modes decide the real dimensions; these are the requests.
+  // STREAMS — "if MAX is recorded in 1080, that's not MAX". His classes
+  // double: 2K = 2160 short (twice 1080), 4K = 4320 long edge ("technically
+  // 4K is actually 4320") = 3240 short at 4:3. A class the camera cannot
+  // fill greys out (tierAvailable below) rather than clamping in disguise.
   assert.deepEqual(STREAM_TIERS.map((t) => t.id), ['720', '1080', '2k', '4k', 'maximum']);
-  assert.deepEqual(STREAM_TIERS.map((t) => t.shortSide), [720, 1080, 1440, 2160, 'max']);
+  assert.deepEqual(STREAM_TIERS.map((t) => t.shortSide), [720, 1080, 2160, 3240, 'max']);
   for (const tier of STREAM_TIERS) {
     assert.equal(tier.recordPolicy, 'source', `${tier.id} records the stream it chose`);
   }
@@ -102,7 +106,10 @@ test('stream tiers are one registry: deliberate, labelled, defaulting responsive
     'the measured 12 MP risk is stated on MAX, not hidden');
   assert.match(tierById('maximum')?.clipWarning ?? '', /Photos always stay at MAX/,
     'stills are exempt from the risk and say so');
-  assert.ok(!tierById('720')?.clipWarning && !tierById('1080')?.clipWarning,
+  assert.match(tierById('4k')?.clipWarning ?? '', /crash/i,
+    'a running 4K stream is ~14 MP or more — the same stated filtered-clip risk as MAX');
+  assert.ok(!tierById('720')?.clipWarning && !tierById('1080')?.clipWarning
+    && !tierById('2k')?.clipWarning,
     'no scare copy on the proven tiers');
   const fallback = tierById(DEFAULT_STREAM_TIER);
   assert.ok(fallback && fallback.shortSide === 720,
@@ -111,6 +118,30 @@ test('stream tiers are one registry: deliberate, labelled, defaulting responsive
   assert.equal(readState().streamTier, DEFAULT_STREAM_TIER,
     'the state boots on the registry default — one owner for the default');
   assert.equal(tierById('nope'), null);
+});
+
+test('a tier is offered only when the camera can fill its class', () => {
+  // Joshua, 2026-09-01: "if it can't do 4320×5760 for 4K, [it] should be
+  // grayed out saying device's output is not big enough" — his iPhone
+  // (3024×4032) keeps 4 of the 5 tiers.
+  const iphone = 3024;
+  assert.deepEqual(
+    STREAM_TIERS.filter((t) => tierAvailable(t, iphone)).map((t) => t.id),
+    ['720', '1080', '2k', 'maximum']);
+  // A camera at exactly the class boundary fills it.
+  assert.equal(tierAvailable(tierById('2k'), 2160), true);
+  assert.equal(tierAvailable(tierById('2k'), 2159), false);
+  // The rule is generic, not a 4K special case.
+  assert.deepEqual(
+    STREAM_TIERS.filter((t) => tierAvailable(t, 480)).map((t) => t.id),
+    ['maximum'], 'a tiny camera honestly offers only its own largest');
+  // MAX never greys: it promises the camera's own largest, not a number.
+  assert.equal(tierAvailable(tierById('maximum'), 1), true);
+  // Unknown capability greys NOTHING — that would state an unmeasured fact.
+  for (const tier of STREAM_TIERS) {
+    assert.equal(tierAvailable(tier, null), true, `${tier.id} stays offered when capability is unknown`);
+    assert.equal(tierAvailable(tier, 0), true);
+  }
 });
 
 test('the record policy records the chosen stream; no silent default cap', () => {

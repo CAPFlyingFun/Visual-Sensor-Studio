@@ -3,11 +3,16 @@
  *
  * Joshua's ladder (2026-09-01): preset video classes — 720 / 1080 / 2K / 4K /
  * MAX — and a tier RECORDS WHAT IT STREAMS, maximum included. "If MAX is
- * recorded in 1080, that's not MAX, that's the middle setting." The classes
- * name the request by their standard short side (720p, 1080p, 1440p, 2160p);
- * the CAMERA decides both edges from its own aspect and modes, and the
- * SOURCE row reports what was actually granted — the preset adjusts to the
- * specific camera automatically, and never invents pixels the sensor lacks.
+ * recorded in 1080, that's not MAX, that's the middle setting." His ladder
+ * doubles: 2K is twice the 1080 class (2160 short side), and 4K is twice the
+ * 2K class — a 4320 long edge ("technically 4K is actually 4320"), which at
+ * 4:3 is a 3240 short side. A class the camera cannot FILL is not offered:
+ * its button greys out naming the reason ("should be grayed out saying
+ * device's output is not big enough"), never a silently clamped stand-in.
+ * MAX is always real because it promises the camera's own largest, whatever
+ * that is — on the reference iPhone (3024×4032 capability) the live ladder
+ * is 720/1080/2K/MAX with 4K grey. The SOURCE row reports what was actually
+ * granted, and no tier ever invents pixels the sensor lacks.
  *
  * The risk stays a WARNING, not a cap: filtered recording at this device's
  * full 12 MP was measured to crash (three times, differently each time), so
@@ -52,16 +57,21 @@ export const STREAM_TIERS: readonly StreamTier[] = [
   {
     id: '2k',
     label: '2K',
-    shortSide: 1440,
-    streamLabel: '2K-class live stream — chosen',
+    shortSide: 2160,
+    streamLabel: '2K-class live stream — chosen, expect fewer fps',
     recordPolicy: 'source'
   },
   {
     id: '4k',
     label: '4K',
-    shortSide: 2160,
+    // The 4K class is a 4320 long edge — 3240 short at 4:3. Only offered
+    // where the camera truly reaches it (tierAvailable), so a running 4K
+    // stream is at least ~14 MP and shares MAX's measured filtered-clip risk.
+    shortSide: 3240,
     streamLabel: '4K-class live stream — chosen, expect fewer fps',
-    recordPolicy: 'source'
+    recordPolicy: 'source',
+    clipWarning: 'Filtered clips at 4K size can crash the recording on some devices — '
+      + 'if it does, drop one tier. Photos always stay at MAX.'
   },
   {
     id: 'maximum',
@@ -80,4 +90,18 @@ export const DEFAULT_STREAM_TIER = '720';
 
 export function tierById(id: string): StreamTier | null {
   return STREAM_TIERS.find((tier) => tier.id === id) ?? null;
+}
+
+/**
+ * Can this camera genuinely FILL the tier's class? Compared on the short
+ * side of the track's advertised CAPABILITY. 'max' is always available — it
+ * promises the camera's own largest, not a number. An unknown capability
+ * (some browsers withhold it) disables nothing: greying a button out on a
+ * guess would state an unmeasured fact, so there the SOURCE row's measured
+ * answer remains the check.
+ */
+export function tierAvailable(tier: StreamTier, capabilityShortSide: number | null): boolean {
+  if (tier.shortSide === 'max') return true;
+  if (capabilityShortSide === null || !(capabilityShortSide > 0)) return true;
+  return capabilityShortSide >= tier.shortSide;
 }
