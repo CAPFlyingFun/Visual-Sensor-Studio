@@ -1,3 +1,13 @@
+@media (max-height: 620px) {
+  /* A short phone in portrait, or any phone on its side: the picture gives up
+     height first, because everything else is a touch target. */
+  #tab-camera .vision-stage { height: clamp(150px, 34dvh, 300px); }
+  .command-strip { margin-top: 6px; }
+  .family-tab { min-height: 38px; }
+  .view-hud { gap: 4px 10px; padding: 4px 8px; }
+  .view-hud #visionModeLabel { display: none; }
+}
+
 :root {
   color-scheme: dark;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
@@ -540,10 +550,8 @@ footer strong { color: #9fb2c3; }
 @media (max-width: 900px) {
   .metric-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .mode-strip.wide { grid-template-columns: repeat(4, 1fr); }
-  /* The top bar stays ONE ROW at every width. Stacking it cost 120px of a
-     932px screen and the tool drawer was left with 36. */
-  .topbar { align-items: center; flex-direction: row; }
-  .status-row { justify-content: flex-end; }
+  .topbar { align-items: flex-start; flex-direction: column; }
+  .status-row { justify-content: flex-start; }
   .primary-grid, .sensor-grid { grid-template-columns: 1fr; }
   .fusion-scene { height: 350px; }
   .parallax-layout { grid-template-columns: 1fr; }
@@ -1575,94 +1583,71 @@ button.ghost.danger {
    CAMERA WORKBENCH
    ==========================================================================
 
-   A FIXED APP WORKSPACE, from the approved mockup:
+   THE PAGE SCROLLS. ONLY THE PICTURE IS PINNED.
 
-     compact top bar
-     live camera / filter        always visible, never scrolled
-     zoom + photo + record
-     family + submode controls
-     TOOL DRAWER                 the only thing that scrolls
-     bottom navigation
+   Two layouts have been tried and rejected on the device, and the reason is
+   the same both times: too much was fixed in place.
 
-   v0.39.0 made the head sticky and let the page scroll under it. That was my
-   substitution, not the design, and on the device it did exactly what a sticky
-   overlay does: the controls slid behind a large fixed block and left a small
-   usable window to hunt in. Rejected and removed.
+     v0.39.0 pinned the whole head — picture, zoom, shutter, mode families and
+     submodes, about 500px of it — and the controls slid behind it.
 
-   THE ONE SCROLLING SURFACE IS THE DRAWER. The shell is 100dvh, the rows are a
-   grid, and `minmax(0, 1fr)` gives the drawer whatever height is left. The page
-   itself does not scroll while Camera Lab is open, so there is no scroller
-   inside an active scroller — the thing that makes iOS scrolling fight itself.
+     v0.39.2 built the fixed-height workspace with its own scrolling drawer,
+     and Joshua: "That looks bad as there is a small window to scroll, and
+     can't see a thing in the small preview." Both problems are one problem:
+     everything above the drawer is a fixed cost, and on a phone that cost is
+     most of the screen.
+
+   So: the ordinary scrolling page is back, and the ONLY sticky element is the
+   viewfinder itself. The picture can then be large — 40% of the screen —
+   because it is the only thing holding position; the zoom, shutter, mode rows
+   and every control scroll underneath it and use the whole rest of the screen
+   rather than a window carved out of it.
    ========================================================================== */
 
-/* The shell becomes the app frame: top bar, workspace, dock. */
-.app-shell {
-  height: 100dvh;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  padding-bottom: var(--dock-height);
-  overflow: hidden;
-}
-:root { --dock-height: calc(64px + env(safe-area-inset-bottom)); }
-body { overflow: hidden; overscroll-behavior: none; }
-.app-shell > main {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
 /*
- * Every tab gets exactly one scrolling surface: itself. The camera tab is the
- * exception — it hands that job to its drawer, below.
+ * `clip`, not the `hidden` that .panel sets, and this is the line the sticky
+ * viewfinder depends on: `overflow: hidden` makes an element a SCROLL
+ * CONTAINER, so a sticky descendant pins to that box instead of the viewport —
+ * and the panel never scrolls. Measured when it was `hidden`: scrolling 900px
+ * put the picture 518px above the top of the screen. `clip` gives the same
+ * rounded-corner clipping without becoming a scrollport.
  */
-.tab-panel:not([hidden]) {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: clip;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior: contain;
-}
-#tab-camera:not([hidden]) { overflow: hidden; display: flex; }
-#tab-camera > .primary-grid { flex: 1; min-height: 0; height: 100%; }
-#tab-camera .vision-panel {
-  height: 100%;
-  min-height: 0;
-  display: grid;
-  /*
-   * A SHARE of the workspace, not a fixed height. 40% of whatever is left
-   * after the top bar and the dock keeps the picture in the 35-45% the design
-   * asks for on any screen, and — the part a fixed height got wrong — it means
-   * the drawer's height cannot be squeezed to nothing by a tall phone or a
-   * taller control row. The floor is what a viewfinder stops being useful
-   * below; the ceiling stops it dominating a tablet.
-   */
-  grid-template-rows: minmax(130px, 40%) auto auto minmax(0, 1fr);
-  overflow: hidden;
-}
-/*
- * The heading's own title is redundant here — the app is named in the top bar
- * and the mode is named in the HUD — and in a fixed workspace every row it
- * takes is a row the drawer does not get.
- */
-#tab-camera .vision-panel > .panel-heading { display: none; }
-/*
- * `contents`, so the three head rows ARE grid rows of the workspace rather than
- * one block that could be given a position of its own. It is also what makes
- * "not sticky" structural rather than a declaration someone could re-add.
- */
-.workbench-head { display: contents; }
+.vision-panel { overflow: clip; }
 
+.vision-stage {
+  position: sticky;
+  /* Below the status bar rather than under the clock: in a standalone PWA the
+     status bar overlays the page. */
+  top: env(safe-area-inset-top);
+  z-index: 6;
+}
+/*
+ * Big enough to see. It was 26% of the screen at 16/10, which is what "can't
+ * see a thing in the small preview" was about. object-fit: cover is how this
+ * stage already behaved, so a taller box crops differently rather than
+ * distorting anything.
+ */
 #tab-camera .vision-stage {
-  /* The grid row decides the height; the stage fills it. */
-  height: auto;
-  min-height: 0;
+  height: clamp(200px, 40dvh, 440px);
   aspect-ratio: auto;
-  border-radius: 12px;
 }
 #tab-camera .vision-stage video,
 #tab-camera .vision-stage canvas { object-fit: cover; }
+
+/*
+ * `contents`, so the wrapper contributes no box of its own.
+ *
+ * This is what gives the sticky viewfinder somewhere to stick TO. A sticky
+ * element is confined to its containing block, so while the head was a real
+ * box the picture pinned only until that box — picture plus zoom plus shutter
+ * plus mode rows, about 600px — had scrolled past, and then went with it.
+ * Measured: it left the screen 342px up. With the wrapper gone the containing
+ * block is the whole camera panel, so the picture holds while every control
+ * under it scrolls.
+ *
+ * Only the picture is sticky. Nothing else in Camera Lab is positioned.
+ */
+.workbench-head { display: contents; }
 
 /* --- Readouts over the picture ------------------------------------------ */
 /*
@@ -1847,25 +1832,24 @@ body { overflow: hidden; overscroll-behavior: none; }
  * to make the drawer contextual — no new show/hide logic was added, and none
  * should be.
  */
-/* --- The drawer: the only scrolling surface in Camera Lab ---------------- */
+/* --- The drawer -----------------------------------------------------------
+ *
+ * Not a scroll container: the PAGE scrolls, and a scroller inside a scrolling
+ * page is what makes iOS momentum and rubber-banding fight each other. Its
+ * grouping is what makes it a drawer, not its overflow.
+ */
 .tool-drawer {
   min-width: 0;
-  min-height: 0;
-  overflow-y: auto;
   overflow-x: clip;
-  -webkit-overflow-scrolling: touch;
-  /* A drawer that hands its overscroll to the page would rubber-band the whole
-     workspace, which is the nested-scroll behaviour this layout exists to
-     avoid. */
-  overscroll-behavior: contain;
-  padding: 10px 1px calc(12px + env(safe-area-inset-bottom));
+  padding-top: 10px;
 }
 .tool-drawer > .metric-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 
 /* --- The dock ------------------------------------------------------------ */
 /* See the .tabbar rule above: it IS the dock now, and the shell reserves
-   exactly its height via --dock-height. A guessed 96px wasted 41px of the
-   workspace against a dock that measures 55. */
+   exactly its height so the last control is never trapped behind it. */
+:root { --dock-height: calc(64px + env(safe-area-inset-bottom)); }
+.app-shell { padding-bottom: var(--dock-height); }
 
 @media (max-width: 380px) {
   .family-tab { font-size: .74rem; }
@@ -1912,21 +1896,18 @@ body { overflow: hidden; overscroll-behavior: none; }
  * is what scrolls.
  */
 @media (min-width: 760px) and (orientation: landscape) {
-  #tab-camera .vision-panel {
+  /* The tripod case: picture on the left, controls on the right, and the
+     picture stays put while the right column scrolls. */
+  .vision-panel {
+    display: grid;
     grid-template-columns: minmax(0, 1.2fr) minmax(300px, .8fr);
-    grid-template-rows: auto auto minmax(0, 1fr);
     column-gap: 14px;
+    align-items: start;
   }
-  #tab-camera .vision-stage {
-    grid-column: 1;
-    grid-row: 1 / -1;
-    height: 100%;
-    max-height: none;
-    align-self: stretch;
-  }
-  .command-strip { grid-column: 2; grid-row: 1; margin-top: 0; }
-  .mode-console { grid-column: 2; grid-row: 2; }
-  .tool-drawer { grid-column: 2; grid-row: 3; }
+  .vision-panel > .panel-heading { grid-column: 1 / -1; }
+  .workbench-head { grid-column: 1; }
+  #tab-camera .vision-stage { height: clamp(220px, 62dvh, 640px); }
+  .tool-drawer { grid-column: 2; grid-row: 2; padding-top: 0; }
 }
 
 /*
@@ -1959,99 +1940,4 @@ body { overflow: hidden; overscroll-behavior: none; }
 .explainer > *:not(summary) { padding: 0 12px; }
 .explainer > *:last-child { padding-bottom: 10px; }
 
-/* --- A COMPACT TOP BAR, because every row it takes is a row the drawer loses -
- *
- * Measured at 430x932 before this: the top bar was 259px of a 932px screen —
- * title, subtitle, four status chips and a settings button, all stacked — and
- * the tool drawer was left with 22px. In a scrolling page that was merely
- * generous; in a fixed workspace it is the whole problem.
- *
- * One row: name, status, settings. The subtitle and the eyebrow say what the
- * app is, which is worth reading once and never again while working.
- */
-.topbar {
-  align-items: center;
-  gap: 10px;
-  padding: 6px 2px 8px;
-  flex-wrap: nowrap;
-  min-width: 0;
-}
-.topbar h1 {
-  font-size: 1.05rem;
-  margin: 0;
-  letter-spacing: -0.01em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.topbar .eyebrow, .topbar .subtitle { display: none; }
-.topbar > div:first-child { min-width: 0; flex: 0 1 auto; }
-/*
- * The name is the first thing to give up room, and on a phone it gives up all
- * of it: four status chips and a settings button do not fit beside it at 430px,
- * and a clipped title butted against a clipped chip reads as a bug. The chips
- * are live state a person checks; the name is on the tab, in the footer and on
- * the home screen icon.
- */
-.topbar h1 { max-width: 42vw; }
-@media (max-width: 560px) { .topbar h1 { display: none; } }
-.topbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-/* The chips are status, not navigation: they may run off the edge and scroll
-   rather than wrapping into a second and third row. */
-.status-row {
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  scrollbar-width: none;
-  gap: 5px;
-}
-.status-row::-webkit-scrollbar { display: none; }
-.status-chip { min-height: 26px; padding: 4px 8px; font-size: 0.68rem; }
-.settings-button { min-height: 38px; padding: 0 10px; white-space: nowrap; }
-@media (max-width: 400px) {
-  .topbar h1 { font-size: 0.95rem; }
-  .status-chip { font-size: 0.62rem; padding: 3px 6px; }
-}
-
-/*
- * THE FOOTER IS A LINE, NOT A BLOCK.
- *
- * Measured at 430x932: it sat inside the shell below the workspace and took
- * 110px — more than half of what the tool drawer had. The version has to stay
- * visible (it is the first thing to check when a fix appears not to have
- * landed) and so does the disclaimer, so neither is removed; they are simply
- * one small line above the dock.
- */
-.app-shell > footer {
-  flex: 0 0 auto;
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  justify-content: center;
-  margin: 2px 0 0;
-  padding: 0;
-  font-size: .6rem;
-  line-height: 1.3;
-  opacity: .55;
-  min-width: 0;
-}
-.app-shell > footer strong { font-weight: 600; white-space: nowrap; }
-/* Whatever the generic footer styling was doing, in a fixed workspace a line
-   of small print is a line of small print. */
-.app-shell > footer * { margin: 0; padding: 0; line-height: 1.25; display: inline; }
-.app-shell > footer span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* A workspace has no room for generous card padding. */
-#tab-camera .vision-panel { padding: 8px; gap: 0; }
-@media (max-height: 620px) {
-  #tab-camera .vision-panel { padding: 6px; }
-  .tool-drawer { padding-top: 6px; }
 }

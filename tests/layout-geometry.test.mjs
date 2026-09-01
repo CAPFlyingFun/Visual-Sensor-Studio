@@ -66,8 +66,7 @@ const READ = () => {
       width: Math.round(b.width), height: Math.round(b.height)
     };
   };
-  const drawer = document.querySelector('.tool-drawer');
-  const drawerStyle = getComputedStyle(drawer);
+  const stage = document.querySelector('#visionStage');
   return {
     viewport: { width: innerWidth, height: innerHeight },
     camera: rect('#visionStage'),
@@ -76,10 +75,10 @@ const READ = () => {
     drawer: rect('.tool-drawer'),
     dock: rect('.tabbar'),
     topbar: rect('.topbar'),
-    headPosition: getComputedStyle(document.querySelector('.workbench-head')).position,
-    drawerOverflowY: drawerStyle.overflowY,
-    drawerMinHeight: drawerStyle.minHeight,
-    drawerScrolls: drawer.scrollHeight > drawer.clientHeight + 1,
+    stagePosition: getComputedStyle(stage).position,
+    stickySelectors: [...document.styleSheets]
+      .flatMap((sheet) => { try { return [...sheet.cssRules]; } catch { return []; } })
+      .filter((rule) => rule.style && rule.style.position === 'sticky').length,
     pageScrolls: document.documentElement.scrollHeight > innerHeight + 1,
     documentWidth: document.documentElement.scrollWidth,
     modes14: document.querySelectorAll('#tab-camera [data-vision-mode]').length,
@@ -96,58 +95,59 @@ const READ = () => {
 
 const overlaps = (a, b) => a && b && a.top < b.bottom - 1 && b.top < a.bottom - 1;
 
-for (const [label, width, height, minDrawer] of [
-  ['430x932', 430, 932, 180],
-  ['320x568', 320, 568, 100]
+for (const [label, width, height, minRoom] of [
+  ['430x932', 430, 932, 380],
+  ['320x568', 320, 568, 240]
 ]) {
-  test(`the workspace is laid out in rows at ${label}`, { skip: runnable ? false : 'no browser available' },
+  test(`the picture stays put while the controls scroll at ${label}`,
+    { skip: runnable ? false : 'no browser available' },
     async () => {
       const seen = await withPage(width, height, async (page) => {
         const before = await page.evaluate(READ);
-        // Scroll the drawer to its end; the camera must not move a pixel.
-        await page.evaluate(() => {
-          const d = document.querySelector('.tool-drawer');
-          d.scrollTop = d.scrollHeight;
+        // Scroll the PAGE to its end — the picture must still be on screen.
+        await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+        await page.waitForTimeout(200);
+        const after = await page.evaluate(() => {
+          const b = document.querySelector('#visionStage').getBoundingClientRect();
+          const dock = document.querySelector('.tabbar').getBoundingClientRect();
+          return {
+            cameraTop: Math.round(b.top), cameraBottom: Math.round(b.bottom),
+            visible: b.top < innerHeight && b.bottom > 0,
+            clearsDock: b.bottom <= dock.top,
+            scrolled: Math.round(window.scrollY)
+          };
         });
-        await page.waitForTimeout(150);
-        const after = await page.evaluate(() => ({
-          camera: Math.round(document.querySelector('#visionStage').getBoundingClientRect().top),
-          scrolled: Math.round(document.querySelector('.tool-drawer').scrollTop)
-        }));
         return { before, after };
       });
-      const { camera, command, modes, drawer, dock } = seen.before;
+      const { camera, command, modes, dock } = seen.before;
 
-      // Nothing is sticky and nothing overlays anything.
-      assert.notEqual(seen.before.headPosition, 'sticky');
-      const rows = { camera, command, modes, drawer, dock };
-      for (const [a, b] of [['camera', 'command'], ['command', 'modes'], ['modes', 'drawer'],
-        ['drawer', 'dock'], ['camera', 'drawer'], ['camera', 'dock']]) {
-        assert.ok(!overlaps(rows[a], rows[b]),
-          `${a} ${JSON.stringify(rows[a])} overlaps ${b} ${JSON.stringify(rows[b])}`);
-      }
-      // ...and they are in the order the design specifies.
-      assert.ok(camera.bottom <= command.top, 'the command strip must sit below the camera');
-      assert.ok(command.bottom <= modes.top, 'the mode controls must sit below the command strip');
-      assert.ok(modes.bottom <= drawer.top, 'the drawer must sit below the mode controls');
-      assert.ok(drawer.bottom <= dock.top, 'the drawer must end above the dock');
+      // The picture is pinned; nothing else is.
+      assert.equal(seen.before.stagePosition, 'sticky');
+      assert.equal(seen.before.stickySelectors, 1,
+        'exactly one element in the stylesheet may be sticky');
 
-      // The camera owns a useful share of the screen, and the drawer is not a slot.
-      assert.ok(camera.height >= height * 0.15, `the camera is only ${camera.height}px`);
-      assert.ok(camera.height <= height * 0.5, `the camera takes ${camera.height}px of ${height}`);
-      assert.ok(drawer.height >= minDrawer,
-        `the drawer has ${drawer.height}px, which is not enough to work in`);
+      // Rows in the order the design specifies, none overlapping.
+      assert.ok(!overlaps(camera, command), 'the command strip is under the picture');
+      assert.ok(!overlaps(command, modes), 'the mode controls are under the command strip');
+      assert.ok(camera.bottom <= command.top);
+      assert.ok(command.bottom <= modes.top);
 
-      // One scrolling surface: the drawer. The page does not scroll.
-      assert.equal(seen.before.drawerOverflowY, 'auto');
-      assert.equal(seen.before.drawerMinHeight, '0px');
-      assert.ok(seen.before.drawerScrolls, 'the drawer should have more content than height');
-      assert.equal(seen.before.pageScrolls, false, 'the page itself must not scroll');
+      // A preview worth looking at, and room left for the controls.
+      assert.ok(camera.height >= height * 0.25, `the preview is only ${camera.height}px`);
+      assert.ok(camera.height <= height * 0.5, `the preview takes ${camera.height}px of ${height}`);
+      const room = height - camera.height - dock.height;
+      assert.ok(room >= minRoom,
+        `only ${room}px is left for controls below the picture`);
+
+      // One scrolling surface: the page.
+      assert.ok(seen.before.pageScrolls, 'the page should scroll');
       assert.equal(seen.before.documentWidth, width, 'no horizontal overflow');
 
-      // Scrolling the controls does not move the picture.
-      assert.ok(seen.after.scrolled > 50, 'the drawer should have scrolled');
-      assert.equal(seen.after.camera, camera.top, 'the camera moved while the drawer scrolled');
+      // Scrolled to the very end, the picture is still there and still clear of
+      // the dock.
+      assert.ok(seen.after.scrolled > 100, 'the page should have scrolled');
+      assert.ok(seen.after.visible, 'the picture left the screen');
+      assert.ok(seen.after.clearsDock, 'the picture overlaps the bottom dock');
 
       // And the app underneath is intact.
       assert.equal(seen.before.modes14, 14);

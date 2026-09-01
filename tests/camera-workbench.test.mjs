@@ -62,23 +62,30 @@ test('all fourteen modes survive, grouped but unchanged', () => {
   }
 });
 
-test('the camera and its everyday controls are rows, not an overlay', () => {
+test('only the picture is pinned, and it can pin for the whole panel', () => {
   for (const id of ['visionStage', 'zoomSlider', 'captureStillButton', 'recordButton',
     'expandViewButton', 'visionModeLabel']) {
     assert.ok(head.includes(`id="${id}"`), `#${id} should be in the workbench head`);
   }
 
-  // NOT STICKY, and structurally so. v0.39.0 made the head sticky and let the
-  // page scroll under it; on the device the controls slid behind a large fixed
-  // block and left a small window to hunt in. `display: contents` makes the
-  // three head rows into rows of the workspace grid, so there is no box left to
-  // give a position of its own.
-  assert.ok(!/position:\s*sticky/.test(css), 'nothing in Camera Lab may be sticky');
+  // Two layouts were rejected on the device for the same reason: too much was
+  // fixed in place. v0.39.0 pinned the whole head and the controls slid behind
+  // it; v0.39.2's fixed workspace left "a small window to scroll" and a preview
+  // too small to see. So the page scrolls and the ONLY sticky element is the
+  // viewfinder.
+  const sticky = [...css.matchAll(/([^{}]+)\{[^}]*position:\s*sticky/g)].map((m) => m[1].trim());
+  assert.deepEqual(sticky, ['.vision-stage'],
+    `only the viewfinder may be sticky, found: ${sticky.join(', ')}`);
+
+  // A sticky element is confined to its containing block. While the head was a
+  // real box the picture pinned only until that box had scrolled past —
+  // measured, it left the screen 342px up — so the wrapper contributes no box.
   assert.match(css, /\.workbench-head \{ display: contents; \}/);
 
-  // The workspace is the viewport, and the drawer takes what is left.
-  assert.match(css, /\.app-shell \{[\s\S]{0,200}height: 100dvh;/);
-  assert.match(css, /grid-template-rows: minmax\(\d+px, \d+%\) auto auto minmax\(0, 1fr\);/);
+  // And this is what a sticky descendant needs from its ancestors:
+  // `overflow: hidden` would make the panel a scroll container and pin the
+  // picture to a box that never scrolls.
+  assert.match(css, /\.vision-panel \{ overflow: clip; \}/);
 });
 
 test('mode panels and clip management are in the drawer, below the controls', () => {
@@ -120,16 +127,14 @@ test('the redesign did not touch application logic', () => {
   assert.ok(!main.includes('fam-view'));
 });
 
-test('the tool drawer is the only scrolling surface in Camera Lab', () => {
-  // One scroller. A drawer inside a scrolling page is the nested-scroll
-  // arrangement that makes iOS momentum and rubber-banding fight each other.
+test('the drawer is grouping, not a scroll container', () => {
+  // The page scrolls. A scroller inside a scrolling page is what makes iOS
+  // momentum and rubber-banding fight each other, and the fixed-height version
+  // of this drawer was the layout Joshua rejected.
   const drawer = css.slice(css.indexOf('.tool-drawer {'), css.indexOf('}', css.indexOf('.tool-drawer {')));
-  assert.match(drawer, /overflow-y: auto;/);
-  assert.match(drawer, /min-height: 0;/);
-  assert.match(drawer, /-webkit-overflow-scrolling: touch;/);
-  assert.match(drawer, /overscroll-behavior: contain;/);
+  assert.ok(!/overflow-y:\s*auto/.test(drawer), 'the drawer must not be its own scroller');
   assert.match(drawer, /overflow-x: clip;/);
-  assert.match(css, /body \{ overflow: hidden;/, 'the page itself must not scroll');
+  assert.ok(!/body \{ overflow: hidden;/.test(css), 'the page has to scroll');
   assert.match(css, /text-size-adjust: 100%;/);
 });
 

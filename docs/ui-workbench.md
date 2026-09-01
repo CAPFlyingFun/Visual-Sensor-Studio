@@ -12,40 +12,40 @@ recording or encoding code changed.
 
 ## How it is built
 
-A fixed app workspace, as the mockup specifies:
+The ordinary scrolling page, with **one** sticky element: the viewfinder.
 
-    compact top bar
-    live camera / filter        always visible, never scrolled
-    zoom + photo + record
+    compact top bar          scrolls away
+    live camera / filter     PINNED
+    zoom + photo + record    scroll under it
     family + submode controls
-    TOOL DRAWER                 the only thing that scrolls
-    bottom navigation
+    tool drawer
+    bottom navigation        fixed
 
-The shell is `100dvh`, the workspace is a grid, and `minmax(0, 1fr)` gives the
-drawer whatever height is left. The page itself does not scroll while Camera
-Lab is open, so there is no scroller inside an active scroller.
+### Two rejected layouts, and the reason was the same both times
 
-`.workbench-head` is `display: contents`, so its three rows *are* rows of the
-workspace grid. That makes "not sticky" structural rather than a declaration
-someone could re-add.
+**v0.39.0** pinned the whole head — picture, zoom, shutter, families and
+submodes, about 500px of it — and the controls slid behind it.
 
-### What v0.39.0 got wrong
+**v0.39.2** built the fixed-height workspace the mockup implies, with its own
+scrolling drawer. Joshua: *"That looks bad as there is a small window to
+scroll, and can't see a thing in the small preview."* At 430×932 the drawer was
+232px and the preview 299px, and both were too small, because everything above
+the drawer is a fixed cost and on a phone that cost is most of the screen.
 
-v0.39.0 substituted a sticky head over a scrolling page. On the device that did
-exactly what a sticky overlay does: the controls slid behind a large fixed
-block and left a small usable window to hunt in. Rejected and removed — this is
-the approved layout, not an interpretation of it.
+Pinning only the picture spends the fixed budget on the one thing that has to
+stay: the preview is 373px (40%), and the zoom, shutter, mode rows and every
+control below use the **whole** rest of the page rather than a 232px window
+carved out of it — 504px of room, and as much scroll as the controls need.
 
-### Four things that were quietly eating the workspace
+### The line it depends on
 
-Measured at 430×932, each found by reading rectangles rather than CSS:
-
-| | before | after |
-|---|---|---|
-| top bar (title, subtitle, four chips, button — stacked) | 120px | 50px |
-| footer inside the shell | 33px, below a 110px gap | one 20px line |
-| shell padding reserved for the dock | 96px guessed | 64px measured |
-| tool drawer | **36px** | **232px** |
+A sticky element is confined to its containing block. While `.workbench-head`
+was a real box, the picture pinned only until that box had scrolled past —
+measured, it left the screen 342px up. `display: contents` removes the wrapper's
+box so the containing block becomes the whole camera panel. And
+`.vision-panel { overflow: clip }` matters for the same reason as before:
+`overflow: hidden` (which `.panel` sets) would make the panel a scroll container
+and pin the picture to a box that never scrolls.
 
 ## Mapping
 
@@ -78,25 +78,23 @@ setting Lens moved the selection to Custom.
 
 ## Measured geometry
 
-Rectangles at 430×932, none overlapping, in the order the design specifies:
+At 430×932, scrolled to the end of the page:
 
-| row | top | bottom | height |
-|---|---|---|---|
-| top bar | 18 | 68 | 50 |
-| camera | 77 | 376 | 299 |
-| command strip | 384 | 485 | 101 |
-| mode controls | 493 | 593 | 100 |
-| tool drawer | 593 | 825 | 232 |
-| bottom dock | 877 | 932 | 55 |
+| | |
+|---|---|
+| viewfinder | pinned at top 0, 373px tall (40% of the screen) |
+| room for controls below it | 504px |
+| page scrolls | yes, and it is the only scrolling surface |
+| document width | 430 = viewport, no horizontal overflow |
+| sticky elements in the stylesheet | 1 (`.vision-stage`) |
 
-The camera is 39% of the usable height (viewport less top bar and dock), inside
-the 35–45% asked for. At 320×568 the same layout gives a 101px camera and a
-107px drawer — the picture gives up height first so the drawer stays usable.
+At 320×568: preview 227px, 286px of room below. At 393×852: 341px and 456px.
 
 `tests/layout-geometry.test.mjs` drives a real browser and asserts on those
-rectangles: nothing sticky, no overlaps, the drawer scrolls while the camera
-does not move, the page does not scroll, no horizontal overflow, 14 modes, no
-duplicate ids. It skips loudly where no browser is available rather than
-passing silently.
+rectangles — exactly one sticky rule, the picture still on screen after
+scrolling to the end and still clear of the dock, rows in order and not
+overlapping, a preview between 25% and 50% of the screen, a floor on the room
+left for controls, no horizontal overflow, 14 modes, no duplicate ids. It skips
+loudly where no browser is available rather than passing silently.
 
 ## Not done in this pass
