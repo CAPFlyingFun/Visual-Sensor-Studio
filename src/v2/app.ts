@@ -132,6 +132,102 @@ function renderPreview(now: number): void {
 /* --- Camera events flow INTO the state; the UI renders FROM it (Rule 7). -- */
 
 /**
+ * CAPABILITY has two honest sources, tried in order:
+ *
+ *   advertised  the track's own getCapabilities() numbers.
+ *   measured    V2's scan — this WebKit build advertises nothing at all
+ *               (measured on device, 2026-09-01: the retry read stayed null
+ *               forever and the 4K grey-out never engaged), so once the
+ *               camera is LIVE and advertises nothing, the shutter's own
+ *               choreography runs with a no-op still: ask the live track for
+ *               its maximum, confirm with a decoded frame, restore. The
+ *               result is remembered per camera label, so each camera pays
+ *               for its scan once per device — and switching front/rear
+ *               scans the NEW camera instead of wearing the old answer.
+ */
+const CAPABILITY_STORE_KEY = 'vss.v2.measuredCapability.v1';
+
+function storedCapabilities(): Record<string, { width: number; height: number }> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(CAPABILITY_STORE_KEY) ?? '{}');
+    return parsed && typeof parsed === 'object'
+      ? parsed as Record<string, { width: number; height: number }>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function rememberMeasuredCapability(label: string, size: { width: number; height: number }): void {
+  if (!label) return;
+  try {
+    const all = storedCapabilities();
+    all[label] = size;
+    localStorage.setItem(CAPABILITY_STORE_KEY, JSON.stringify(all));
+  } catch {
+    // Storage is optional; the session-scanned value in state still stands.
+  }
+}
+
+let capabilityCameraLabel = '';
+let scanningCapability = false;
+const capabilityScanAttempted = new Set<string>();
+
+function scheduleCapabilityScan(label: string): void {
+  const { camera: status, captureActive, recording } = readState();
+  if (scanningCapability || capabilityScanAttempted.has(label)) return;
+  if (status?.state !== 'live' || captureActive || recording) return;
+  capabilityScanAttempted.add(label);
+  scanningCapability = true;
+  // The scan IS a temporary maximum-stream window — the same busy state the
+  // shutter holds, so nothing renegotiates underneath it.
+  updateState({ captureActive: true });
+  void (async () => {
+    try {
+      const outcome = await captureAtMaxStream(shutterStream(), async () => null, {
+        // The scan needs the SIZE confirmed, not the exposure settled.
+        exposureStableFrames: 1,
+        exposureTimeoutMs: 1
+      });
+      const measured = frameSize(outcome.captureSource.width, outcome.captureSource.height);
+      if (measured && outcome.escalation !== 'declined') {
+        rememberMeasuredCapability(label, { width: measured.width, height: measured.height });
+        updateState({ capability: measured, capabilitySource: 'measured' });
+      }
+    } finally {
+      scanningCapability = false;
+      updateState({ captureActive: false });
+    }
+  })();
+}
+
+/** Resolve CAPABILITY for the CURRENT camera — advertised, stored, or scan. */
+function reconcileCapability(): void {
+  const d = camera.diagnostics;
+  const label = d.trackLabel || '';
+  const switched = label !== capabilityCameraLabel;
+  if (switched) capabilityCameraLabel = label;
+  const advertised = frameSize(d.capabilityWidth, d.capabilityHeight);
+  if (advertised) {
+    updateState({ capability: advertised, capabilitySource: 'advertised' });
+    return;
+  }
+  const stored = label ? storedCapabilities()[label] : undefined;
+  const measured = stored ? frameSize(stored.width, stored.height) : null;
+  if (measured) {
+    if (switched || !readState().capability) {
+      updateState({ capability: measured, capabilitySource: 'measured' });
+    }
+    return;
+  }
+  // A different camera must not wear the previous one's capability.
+  if (switched && readState().capabilitySource !== null) {
+    updateState({ capability: null, capabilitySource: null });
+  }
+  scheduleCapabilityScan(label);
+}
+
+/**
  * V2's LIVE-SOURCE policy is RESPONSIVE (docs/camera_rule.md): the engine's
  * default stream request stands, because the live stream is a performance
  * decision — on the reference device it negotiates ~720×960 at ~60 delivered
@@ -144,9 +240,9 @@ camera.subscribe((status: CameraStatus) => {
   updateState({
     camera: status,
     zoom: status.zoom,
-    source: frameSize(d.videoWidth, d.videoHeight),
-    capability: frameSize(d.capabilityWidth, d.capabilityHeight)
+    source: frameSize(d.videoWidth, d.videoHeight)
   });
+  reconcileCapability();
 });
 
 /**
@@ -164,11 +260,12 @@ function startDeliveryMeter(): void {
     updateState({
       deliveredFps: meter.report.deliveredFps,
       // The negotiated size can settle a beat after `live`; re-read it on
-      // frames so SOURCE is the stream's own answer, not a stale one. The
-      // capability rides along — WebKit fills it in once the track is real.
-      source: frameSize(d.videoWidth, d.videoHeight),
-      capability: frameSize(d.capabilityWidth, d.capabilityHeight)
+      // frames so SOURCE is the stream's own answer, not a stale one.
+      source: frameSize(d.videoWidth, d.videoHeight)
     });
+    // Capability rides on frames too: advertised numbers can arrive late,
+    // and where none ever arrive the per-frame reconcile launches the scan.
+    reconcileCapability();
     renderPreview(frame.now);
   });
 }
@@ -346,12 +443,18 @@ function renderDiagnostics(): void {
   setText('v2DiagSource', source
     ? `${source.width}×${source.height} · ${live && deliveredFps > 0 ? deliveredFps.toFixed(1) : '—'} delivered fps · `
       + (captureActive
-        ? 'maximum stream for this shot'
+        ? scanningCapability
+          ? 'measuring this camera\'s maximum'
+          : 'maximum stream for this shot'
         : tierById(readState().streamTier)?.streamLabel ?? 'live stream')
     : 'not started');
   setText('v2DiagCapability', capability
-    ? `${capability.width}×${capability.height} · the track's advertised maximum`
-    : 'not exposed by this browser');
+    ? `${capability.width}×${capability.height} · ${readState().capabilitySource === 'measured'
+      ? 'measured maximum — scanned on this camera'
+      : 'the track\'s advertised maximum'}`
+    : scanningCapability
+      ? 'measuring — asking this camera for its maximum…'
+      : 'not exposed by this browser');
   setText('v2DiagViewfinder', viewfinder
     ? `${viewfinder.width}×${viewfinder.height} device px · display geometry, PREVIEW’s only input`
     : '—');
@@ -728,7 +831,7 @@ async function toggleRecording(): Promise<void> {
     return;
   }
 
-  if (capturing || !camera.active || status?.state !== 'live' || !geometry) return;
+  if (capturing || scanningCapability || !camera.active || status?.state !== 'live' || !geometry) return;
   const filtered = activeFilter !== 'rgb';
   if (filtered && renderer.unavailableReason) {
     setText('v2RecordResult', renderer.unavailableReason);
@@ -781,7 +884,7 @@ async function takePhoto(): Promise<void> {
   // is encoding; the button is disabled, and this guard backs it up. A
   // filter whose metadata declines stills (temporal history at analysis
   // resolution cannot honestly fill a 12 MP frame) is refused the same way.
-  if (capturing || recording || !camera.active || status?.state !== 'live') return;
+  if (capturing || scanningCapability || recording || !camera.active || status?.state !== 'live') return;
   if (!(filterById(activeFilter)?.supportsPhoto ?? true)) return;
   capturing = true;
   // captureActive drives the button states through renderControls — one

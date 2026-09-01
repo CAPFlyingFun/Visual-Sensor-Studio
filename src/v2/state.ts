@@ -75,6 +75,13 @@ export interface V2State {
    * between them is the difference between "cannot do more" and "did not ask".
    */
   capability: FrameSize | null;
+  /**
+   * Where CAPABILITY came from: the track advertising it, or V2 measuring it
+   * with a scan (ask the live track for max, confirm a decoded frame,
+   * restore). Two different kinds of fact, per docs/camera_rule.md, so the
+   * row names which one it is.
+   */
+  capabilitySource: 'advertised' | 'measured' | null;
   /** Measured from presented frames. 0 until enough frames have arrived. */
   deliveredFps: number;
   zoom: CameraZoomState | null;
@@ -116,6 +123,7 @@ const state: V2State = {
   camera: null,
   source: null,
   capability: null,
+  capabilitySource: null,
   deliveredFps: 0,
   zoom: null,
   geometry: null,

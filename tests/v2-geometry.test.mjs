@@ -155,7 +155,7 @@ test('the camera goes live and the HUD carries measured truth (fake device)',
       // CAPABILITY is a fact of its own: numbers where the browser exposes
       // them, an honest "not exposed" where it does not — never a dash once
       // the camera is live.
-      assert.match(hud.capability, /advertised maximum|not exposed/,
+      assert.match(hud.capability, /advertised maximum|measured maximum|measuring|not exposed/,
         `the CAPABILITY row must commit, got "${hud.capability}"`);
       assert.equal(hud.enableHidden, true, 'the enable overlay hides once live');
       assert.equal(hud.switchEnabled, true);
