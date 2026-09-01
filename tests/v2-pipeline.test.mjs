@@ -470,12 +470,31 @@ test('FILTERS is the one list: unique ids, honest metadata, real shaders', () =>
     assert.match(filter.fragment, /void main\(\)/, `${filter.id} must carry a fragment shader`);
     assert.match(filter.fragment, /uFrame/, `${filter.id} must sample the camera frame`);
     // The metadata and the shader must agree about history: a temporal
-    // filter's BODY samples uPrevious; a non-temporal one never does.
+    // filter's BODY (display or state pass) samples uPrevious; a
+    // non-temporal one never does. A state pass must feed the display.
+    if (filter.state) {
+      const stateBody = filter.state.slice(filter.state.indexOf('void main'));
+      assert.ok(stateBody.includes('uState'), `${filter.id}: a state pass reads its own previous output`);
+      assert.ok(filter.fragment.slice(filter.fragment.indexOf('void main')).includes('uState'),
+        `${filter.id}: the display pass must sample the state it computes`);
+      assert.equal(filter.supportsPhoto, false,
+        `${filter.id}: state at ANALYSIS resolution cannot honestly fill a still`);
+    }
     const body = filter.fragment.split('void main')[1] ?? '';
-    assert.equal(body.includes('uPrevious'), filter.temporal,
+    const stateSamplesHistory = filter.state
+      ? filter.state.slice(filter.state.indexOf('void main')).includes('uPrevious') : false;
+    assert.equal(body.includes('uPrevious') || stateSamplesHistory, filter.temporal,
       `${filter.id}: temporal metadata and shader body must agree`);
   }
-  assert.deepEqual(FILTERS.map((f) => f.id), ['rgb', 'ironbow', 'difference', 'edges']);
+  assert.deepEqual(FILTERS.map((f) => f.id), ['rgb', 'ironbow', 'difference', 'speed', 'trails', 'edges']);
+  // Milestone D's second stage: Speed and Trails carry their memory in a
+  // state pass, at ANALYSIS resolution, and decline stills like Motion.
+  for (const id of ['speed', 'trails']) {
+    const filter = filterById(id);
+    assert.ok(filter?.state && filter.temporal && !filter.supportsPhoto && filter.supportsVideo,
+      `${id} is a stateful, temporal, video-only filter`);
+  }
+  assert.equal(filterById('difference')?.state, undefined, 'Motion needs no state — it compares two frames');
   assert.equal(filterById('rgb')?.name, 'RGB');
   assert.equal(filterById('nope'), null);
 

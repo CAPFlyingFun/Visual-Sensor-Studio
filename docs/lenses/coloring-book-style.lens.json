@@ -1,0 +1,27 @@
+{
+  "lenses": [
+    {
+      "version": 1,
+      "id": "lens-mtjarl1w-pcpts4",
+      "name": "Coloring Book Style",
+      "color": {
+        "channel": "edges",
+        "low": 0,
+        "high": 254,
+        "gamma": 1.6
+      },
+      "stops": [
+        {
+          "at": 0,
+          "color": "#f6f2e8"
+        },
+        {
+          "at": 1,
+          "color": "#12100c"
+        }
+      ],
+      "base": "black",
+      "sceneBlend": 0
+    }
+  ]
+}

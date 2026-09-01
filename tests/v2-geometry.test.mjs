@@ -212,7 +212,7 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
         canvasHidden: document.getElementById('v2PreviewCanvas').hidden,
         stage: document.getElementById('v2Stage').textContent
       }));
-      assert.deepEqual(boot.filters, ['rgb', 'ironbow', 'difference', 'edges'],
+      assert.deepEqual(boot.filters, ['rgb', 'ironbow', 'difference', 'speed', 'trails', 'edges'],
         'the strip mirrors the FILTERS registry, in order');
       assert.deepEqual(boot.active, ['rgb'], 'RGB is the default filter');
       assert.equal(boot.photoDisabled, true, 'no photo before the camera is live');
@@ -516,6 +516,90 @@ test('the stream tier renegotiates the LIVE stream and the row measures it (fake
       const preview = Number((await page.textContent('#v2DiagPreview')).match(/^(\d+)×/)[1]);
       assert.equal(canvas, preview, 'the preview tracks the geometry through tier changes');
 
+      await page.close();
+      await context.close();
+    });
+  });
+
+test('Milestone D: Speed and Trails carry their memory in a state pass at ANALYSIS size (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    const { ironbowColor } = await import('../.test-build/vision/motion-ironbow.js');
+    const ramp = [];
+    for (let i = 0; i < 256; i++) ramp.push(ironbowColor(i / 255));
+    const onRamp = ([r, g, b]) => ramp.some(([rr, gg, bb]) =>
+      Math.abs(rr - r) <= 10 && Math.abs(gg - g) <= 10 && Math.abs(bb - b) <= 10);
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({
+        viewport: { width: 430, height: 932 },
+        permissions: ['camera']
+      });
+      const page = await context.newPage();
+      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.waitForTimeout(400);
+      await page.click('#v2EnableCamera');
+      await page.waitForFunction(() =>
+        /\d+(\.\d+)? rendered fps/.test(document.getElementById('v2DiagPreview')?.textContent ?? ''),
+        null, { timeout: 8000 });
+
+      const sample = () => page.evaluate(() => {
+        const canvas = document.getElementById('v2PreviewCanvas');
+        const copy = document.createElement('canvas');
+        copy.width = canvas.width;
+        copy.height = canvas.height;
+        const ctx = copy.getContext('2d');
+        ctx.drawImage(canvas, 0, 0);
+        const pixels = [];
+        for (let y = 0; y < 6; y++) {
+          for (let x = 0; x < 6; x++) {
+            const d = ctx.getImageData(
+              Math.floor((x + 0.5) * copy.width / 6),
+              Math.floor((y + 0.5) * copy.height / 6), 1, 1).data;
+            pixels.push([d[0], d[1], d[2]]);
+          }
+        }
+        return {
+          pixels,
+          drawn: pixels.some(([r, g, b]) => r + g + b > 0),
+          photoDisabled: document.getElementById('v2PhotoButton').disabled,
+          analysisRow: document.getElementById('v2DiagAnalysis').textContent,
+          note: document.getElementById('v2FilterNote').textContent,
+          stage: document.getElementById('v2Stage').textContent
+        };
+      });
+
+      for (const id of ['speed', 'trails']) {
+        await page.click(`[data-filter="${id}"]`);
+        // Let the state pass run for a while: the fake device's moving
+        // pattern feeds real change into the accumulation.
+        await page.waitForTimeout(1200);
+        const seen = await sample();
+        assert.ok(!/shader failed/.test(seen.stage), `${id}: shaders compile and link, got "${seen.stage}"`);
+        assert.ok(seen.drawn, `${id}: the state-fed display pass draws pixels`);
+        const offRamp = seen.pixels.filter((p) => !onRamp(p));
+        assert.equal(offRamp.length, 0,
+          `${id}: every pixel is a point on the ramp — nothing but measured state, off-ramp: ${JSON.stringify(offRamp.slice(0, 3))}`);
+        assert.equal(seen.photoDisabled, true, `${id} declines stills by metadata`);
+        assert.match(seen.analysisRow, /holding frame history/, `${id} states where its history lives`);
+        assert.match(seen.note, /ANALYSIS resolution/, `${id}'s note names its resolution`);
+      }
+
+      // Trails ACCUMULATE: switching back to Motion (no state) and then to
+      // Trails again starts from zero — a fresh filter never inherits memory.
+      await page.click('[data-filter="difference"]');
+      await page.waitForTimeout(300);
+      await page.click('[data-filter="trails"]');
+      await page.waitForTimeout(80);
+      const fresh = await sample();
+      await page.waitForTimeout(1200);
+      const warmed = await sample();
+      const brightness = (pixels) => pixels.reduce((sum, [r, g, b]) => sum + r + g + b, 0);
+      assert.ok(brightness(warmed.pixels) >= brightness(fresh.pixels),
+        'a trail builds over time: the accumulation is not brighter at its first frame than after a second');
+
+      // RGB has no state and re-enables the shutter.
+      await page.click('[data-filter="rgb"]');
+      await page.waitForTimeout(300);
+      assert.equal(await page.evaluate(() => document.getElementById('v2PhotoButton').disabled), false);
       await page.close();
       await context.close();
     });

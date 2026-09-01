@@ -22,12 +22,23 @@ export interface FilterDefinition {
   id: string;
   name: string;
   family: FilterFamily;
-  /** Needs frame history — none of Milestone B's filters do. */
+  /** Needs frame history (uPrevious) — in the display pass or the state pass. */
   temporal: boolean;
   supportsPhoto: boolean;
   supportsVideo: boolean;
-  /** Fragment shader; samples uFrame, may read uTexel and uRamp. */
+  /** Fragment shader; samples uFrame, may read uTexel, uRamp, uPrevious, uState. */
   fragment: string;
+  /**
+   * Milestone D's history machinery, second stage. An optional STATE pass:
+   * a fragment shader run at ANALYSIS resolution before the display pass,
+   * reading uFrame, uPrevious and its own previous output (uState), writing
+   * the new state. The display `fragment` then samples uState. Motion
+   * needs none (it compares two frames); Speed smooths over frames and
+   * Trails accumulates, and both keep that memory here — bounded at the
+   * analysis size, never at the stream's — so the memory envelope that
+   * killed a GPU context on device is never approached.
+   */
+  state?: string;
 }
 
 const HEADER = `precision mediump float;
@@ -35,6 +46,7 @@ varying vec2 vUv;
 uniform sampler2D uFrame;
 uniform sampler2D uRamp;
 uniform sampler2D uPrevious;
+uniform sampler2D uState;
 uniform vec2 uTexel;
 float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 `;
@@ -86,6 +98,63 @@ export const FILTERS: readonly FilterDefinition[] = [
   float before = luma(texture2D(uPrevious, vUv).rgb);
   float change = clamp(abs(now - before) * 4.0, 0.0, 1.0);
   gl_FragColor = vec4(texture2D(uRamp, vec2(change, 0.5)).rgb, 1.0);
+}`
+  },
+  {
+    id: 'speed',
+    name: 'Speed',
+    family: 'motion',
+    temporal: true,
+    supportsPhoto: false,
+    supportsVideo: true,
+    // NORMAL FLOW: motion along the brightness gradient, from the optical
+    // flow constraint |dI/dt| / |∇I| — texels per frame at ANALYSIS
+    // resolution. That is the component of motion a single pixel can see;
+    // it is not full optical flow and not a velocity in metres. A noise
+    // floor on the temporal difference keeps flat, static regions dark, and
+    // an exponential average over frames (0.35 per frame) steadies it.
+    // Full scale = 8 texels/frame — display tuning, not a measurement.
+    state: HEADER + `void main() {
+  float now = luma(texture2D(uFrame, vUv).rgb);
+  float before = luma(texture2D(uPrevious, vUv).rgb);
+  float dx = luma(texture2D(uFrame, vUv + uTexel * vec2(1.0, 0.0)).rgb)
+           - luma(texture2D(uFrame, vUv - uTexel * vec2(1.0, 0.0)).rgb);
+  float dy = luma(texture2D(uFrame, vUv + uTexel * vec2(0.0, 1.0)).rgb)
+           - luma(texture2D(uFrame, vUv - uTexel * vec2(0.0, 1.0)).rgb);
+  float grad = length(vec2(dx, dy)) * 0.5;
+  float dt = abs(now - before);
+  float flow = dt * smoothstep(0.01, 0.05, dt) / (grad + 0.02);
+  float target = clamp(flow / 8.0, 0.0, 1.0);
+  float s = mix(texture2D(uState, vUv).r, target, 0.35);
+  gl_FragColor = vec4(s, s, s, 1.0);
+}`,
+    fragment: HEADER + `void main() {
+  float s = texture2D(uState, vUv).r;
+  gl_FragColor = vec4(texture2D(uRamp, vec2(s, 0.5)).rgb, 1.0);
+}`
+  },
+  {
+    id: 'trails',
+    name: 'Trails',
+    family: 'motion',
+    temporal: true,
+    supportsPhoto: false,
+    supportsVideo: true,
+    // Motion that FADES: each frame's change (the same measure Motion shows)
+    // is kept as the maximum of "now" and the previous trail decayed by
+    // 0.94 — about half a second to half brightness at 30 fps. The trail
+    // itself lives in the state texture at ANALYSIS resolution; the
+    // legacy app's constant-memory trail buffer, made a shader.
+    state: HEADER + `void main() {
+  float now = luma(texture2D(uFrame, vUv).rgb);
+  float before = luma(texture2D(uPrevious, vUv).rgb);
+  float change = clamp(abs(now - before) * 4.0, 0.0, 1.0);
+  float t = max(change, texture2D(uState, vUv).r * 0.94);
+  gl_FragColor = vec4(t, t, t, 1.0);
+}`,
+    fragment: HEADER + `void main() {
+  float t = texture2D(uState, vUv).r;
+  gl_FragColor = vec4(texture2D(uRamp, vec2(t, 0.5)).rgb, 1.0);
 }`
   },
   {

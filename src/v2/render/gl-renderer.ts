@@ -36,6 +36,17 @@ export class GlRenderer {
   private historyTexture: WebGLTexture | null = null;
   private historyFramebuffer: WebGLFramebuffer | null = null;
   private historySize = { width: 0, height: 0 };
+  /**
+   * Filter STATE — the accumulation a Speed or Trails filter carries between
+   * frames. Two textures ping-pong (read one, write the other) at the bounded
+   * analysis size; a filter change clears both, so no filter inherits
+   * another's memory.
+   */
+  private stateTextures: [WebGLTexture, WebGLTexture] | null = null;
+  private stateFramebuffer: WebGLFramebuffer | null = null;
+  private stateSize = { width: 0, height: 0 };
+  private stateRead = 0;
+  private stateOwner = '';
   private failure = '';
 
   constructor(private readonly canvas: HTMLCanvasElement) {
@@ -82,10 +93,15 @@ export class GlRenderer {
     this.rampTexture = this.makeTexture(gl);
     gl.bindTexture(gl.TEXTURE_2D, this.rampTexture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, ironbowLut());
-    // History belongs to the old context; forget it so restore reallocates.
+    // History and state belong to the old context; forget them so restore
+    // reallocates.
     this.historyTexture = null;
     this.historyFramebuffer = null;
     this.historySize = { width: 0, height: 0 };
+    this.stateTextures = null;
+    this.stateFramebuffer = null;
+    this.stateSize = { width: 0, height: 0 };
+    this.stateOwner = '';
     this.failure = '';
   }
 
@@ -114,11 +130,14 @@ export class GlRenderer {
     return texture;
   }
 
-  private program(filter: FilterDefinition): WebGLProgram | null {
+  private program(filter: FilterDefinition, pass: 'display' | 'state' = 'display'): WebGLProgram | null {
     const gl = this.gl;
     if (!gl) return null;
-    const cached = this.programs.get(filter.id);
+    const key = pass === 'state' ? `${filter.id}:state` : filter.id;
+    const cached = this.programs.get(key);
     if (cached) return cached;
+    const source = pass === 'state' ? filter.state : filter.fragment;
+    if (!source) return null;
 
     const compile = (type: number, source: string): WebGLShader | null => {
       const shader = gl.createShader(type);
@@ -134,7 +153,7 @@ export class GlRenderer {
     };
 
     const vertex = compile(gl.VERTEX_SHADER, VERTEX);
-    const fragment = compile(gl.FRAGMENT_SHADER, filter.fragment);
+    const fragment = compile(gl.FRAGMENT_SHADER, source);
     if (!vertex || !fragment) return null;
     const program = gl.createProgram();
     if (!program) return null;
@@ -147,8 +166,66 @@ export class GlRenderer {
         + (gl.getProgramInfoLog(program) ?? 'no reason given');
       return null;
     }
-    this.programs.set(filter.id, program);
+    this.programs.set(key, program);
     return program;
+  }
+
+  /**
+   * Advance a filter's STATE by one frame at the bounded analysis size:
+   * read the previous state, the current frame and the previous frame,
+   * write the new state. Returns the texture the display pass should
+   * sample as uState. A different filter than last time starts from zero.
+   */
+  private advanceState(filter: FilterDefinition, size: RenderTargetSize): WebGLTexture | null {
+    const gl = this.gl;
+    if (!gl || !filter.state || size.width <= 0 || size.height <= 0) return null;
+    const program = this.program(filter, 'state');
+    if (!program) return null;
+
+    if (!this.stateTextures) this.stateTextures = [this.makeTexture(gl), this.makeTexture(gl)];
+    if (!this.stateFramebuffer) this.stateFramebuffer = gl.createFramebuffer();
+    const resized = this.stateSize.width !== size.width || this.stateSize.height !== size.height;
+    if (resized) {
+      this.stateSize = { width: size.width, height: size.height };
+      for (const texture of this.stateTextures) {
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size.width, size.height, 0,
+          gl.RGBA, gl.UNSIGNED_BYTE, null);
+      }
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.stateFramebuffer);
+    if (resized || this.stateOwner !== filter.id) {
+      // Fresh memory for a new filter (or a new size): both buffers to zero.
+      this.stateOwner = filter.id;
+      for (const texture of this.stateTextures) {
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+        gl.clearColor(0, 0, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+      }
+    }
+    const read = this.stateTextures[this.stateRead];
+    const write = this.stateTextures[1 - this.stateRead];
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, write, 0);
+    gl.viewport(0, 0, size.width, size.height);
+    gl.useProgram(program);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.frameTexture);
+    gl.uniform1i(gl.getUniformLocation(program, 'uFrame'), 0);
+    if (this.historyTexture) {
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, this.historyTexture);
+      gl.uniform1i(gl.getUniformLocation(program, 'uPrevious'), 2);
+    }
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, read);
+    gl.uniform1i(gl.getUniformLocation(program, 'uState'), 3);
+    gl.uniform2f(gl.getUniformLocation(program, 'uTexel'), 1 / size.width, 1 / size.height);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.stateRead = 1 - this.stateRead;
+    return write;
   }
 
   /** One upload per camera frame; every product of that frame reuses it. */
@@ -171,12 +248,15 @@ export class GlRenderer {
    * authority via the caller — passing it here is what keeps the renderer
    * from owning a resolution opinion of its own.
    */
-  render(filterId: string, target: RenderTargetSize): boolean {
+  render(filterId: string, target: RenderTargetSize, stateSize?: RenderTargetSize): boolean {
     const gl = this.gl;
     const filter = FILTERS.find((f) => f.id === filterId);
     if (!gl || gl.isContextLost() || !filter) return false;
     const program = this.program(filter);
     if (!program) return false;
+    // A stateful filter advances its memory first, at the ANALYSIS size the
+    // caller resolves — the display pass then reads it, whatever its own size.
+    const state = filter.state && stateSize ? this.advanceState(filter, stateSize) : null;
 
     if (this.canvas.width !== target.width) this.canvas.width = target.width;
     if (this.canvas.height !== target.height) this.canvas.height = target.height;
@@ -195,6 +275,11 @@ export class GlRenderer {
       gl.activeTexture(gl.TEXTURE2);
       gl.bindTexture(gl.TEXTURE_2D, this.historyTexture);
       gl.uniform1i(gl.getUniformLocation(program, 'uPrevious'), 2);
+    }
+    if (state) {
+      gl.activeTexture(gl.TEXTURE3);
+      gl.bindTexture(gl.TEXTURE_2D, state);
+      gl.uniform1i(gl.getUniformLocation(program, 'uState'), 3);
     }
     gl.uniform2f(gl.getUniformLocation(program, 'uTexel'), 1 / target.width, 1 / target.height);
 

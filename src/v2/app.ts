@@ -161,7 +161,9 @@ function renderPreview(now: number): void {
   // canvas size the encoder was promised) until finalisation completes.
   if (recording?.path === 'filtered' && stoppingClip) return;
   const target = recording?.path === 'filtered' ? recording.input : resolved.preview;
-  if (renderer.render(activeFilter, target)) {
+  // Stateful filters (Speed, Trails) advance their memory at the ANALYSIS
+  // size — the same bounded size the frame history uses.
+  if (renderer.render(activeFilter, target, resolved.analysis)) {
     if (recording?.path === 'filtered') {
       framesFedThisClip += 1;
       const second = Math.max(0, Math.floor((now - clipStartedAt) / 1000));
@@ -716,7 +718,11 @@ function renderFilterStrip(): void {
   const FILTER_NOTES: Record<string, string> = {
     ironbow: 'False colour: visible-light brightness through the Ironbow ramp — not thermal.',
     difference: 'Change between frames through the ramp — history held at ANALYSIS resolution. '
-      + 'Video is this filter’s product; stills are declined rather than upscaled.'
+      + 'Video is this filter’s product; stills are declined rather than upscaled.',
+    speed: 'Motion along the brightness gradient (normal flow), smoothed over frames — '
+      + 'texels per frame at ANALYSIS resolution, not a velocity. Stills are declined.',
+    trails: 'Motion that fades over about half a second — the trail lives at ANALYSIS '
+      + 'resolution. Stills are declined.'
   };
   // RECORD IN below SOURCE now has one cause on every path, RGB included:
   // the encoder's frame limit (measured 2026-09-01) — so the note names it
