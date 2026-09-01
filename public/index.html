@@ -76,40 +76,105 @@
       <section class="tab-panel" id="tab-camera" role="tabpanel" aria-labelledby="tabbtn-camera" hidden>
         <div class="primary-grid single">
         <article class="panel vision-panel">
-          <div class="panel-heading">
+<div class="panel-heading">
             <div>
               <p class="section-kicker">LIVE VISION</p>
               <h2>Camera Lab</h2>
             </div>
-            <span class="small-badge" id="visionModeLabel">RGB camera</span>
           </div>
 
-          <div class="vision-stage" id="visionStage" aria-label="Live camera view">
+        <!--
+          THE WORKBENCH HEAD STAYS PUT.
+
+          Everything a person looks at while aiming — the picture, the readouts
+          over it, the shutter, and the mode choice — is one sticky block, and
+          the controls scroll underneath it. That is the whole point of the
+          redesign: the controls come to the camera instead of the camera
+          scrolling away from the controls.
+        -->
+        <div class="workbench-head">
+<div class="vision-stage" id="visionStage" aria-label="Live camera view">
             <video id="cameraVideo" autoplay muted playsinline></video>
             <canvas id="visionCanvas" class="vision-overlay" hidden></canvas>
             <button class="camera-enable-overlay" id="cameraOverlayButton" type="button">Enable Camera</button>
             <div class="reticle" aria-hidden="true"></div>
             <div class="horizon-wrap" aria-hidden="true"><div id="horizonLine" class="horizon-line"></div></div>
+          
+            <div class="view-hud" aria-label="Live readouts">
+              <span class="small-badge" id="visionModeLabel">RGB camera</span>
+              <div class="metric"><span>Processing</span><strong id="metricFps">&mdash;</strong></div>
+              <div class="metric"><span>Zoom</span><strong id="metricZoom">&mdash;</strong></div>
+              <div class="metric"><span>Delivered</span><strong id="metricDelivered">—</strong></div>
+              <div class="metric"><span>Objects</span><strong id="metricObjects">—</strong></div>
+            </div>
           </div>
 
-          <div class="mode-strip wide" aria-label="Camera visualization mode">
-            <button class="segmented active" type="button" data-vision-mode="camera">RGB</button>
-            <button class="segmented" type="button" data-vision-mode="relief">Relief</button>
-            <button class="segmented" type="button" data-vision-mode="edges">Edges</button>
-            <button class="segmented" type="button" data-vision-mode="motion">Motion</button>
-            <button class="segmented" type="button" data-vision-mode="flow">Flow</button>
-            <button class="segmented" type="button" data-vision-mode="difference">Difference</button>
-            <button class="segmented" type="button" data-vision-mode="speed">Speed</button>
-            <button class="segmented" type="button" data-vision-mode="motiontrails">Trails</button>
-            <button class="segmented" type="button" data-vision-mode="amplify">Amplify</button>
-            <button class="segmented" type="button" data-vision-mode="background">Background</button>
-            <button class="segmented" type="button" data-vision-mode="chrono">Chrono</button>
-            <button class="segmented" type="button" data-vision-mode="slitscan">Slit Scan</button>
-            <button class="segmented" type="button" data-vision-mode="night">Night</button>
-            <button class="segmented" type="button" data-vision-mode="lens">Lens</button>
+          <div class="command-strip">
+<div class="zoom-row" aria-label="Camera zoom">
+            <div class="zoom-presets" id="zoomPresets" role="group" aria-label="Zoom presets"></div>
+            <input class="zoom-slider" id="zoomSlider" type="range" min="1" max="5" step="0.1" value="1"
+                   aria-label="Camera zoom level" disabled />
+            <span class="zoom-value" id="zoomValue">1.0&times; <em>None</em></span>
+          </div>
+            <div class="capture-cluster">
+              <button class="secondary-button shutter-button" id="captureStillButton" type="button">📸 Save Frame</button>
+              <button class="primary-button" id="recordButton" type="button" disabled>Record</button>
+              <button class="secondary-button" id="expandViewButton" type="button">⤢ Full Screen</button>
+              <span class="record-elapsed" id="recordElapsed" aria-live="polite"></span>
+            </div>
           </div>
 
-          <div class="night-grid lens-detail-row" id="displayDetailRow" hidden>
+          <!--
+            Families are five radio buttons and five labels, and the rows below
+            are shown by :checked. No script decides what is visible, so nothing
+            here can fall out of step with the app's own mode state — the real
+            mode buttons are the same elements they always were, with the same
+            data-vision-mode attributes, merely grouped.
+          -->
+          <div class="mode-console" role="group" aria-label="Camera mode family">
+          <input class="family-radio" type="radio" name="modeFamily" id="fam-view" checked />
+          <input class="family-radio" type="radio" name="modeFamily" id="fam-motion" />
+          <input class="family-radio" type="radio" name="modeFamily" id="fam-time" />
+          <input class="family-radio" type="radio" name="modeFamily" id="fam-night" />
+          <input class="family-radio" type="radio" name="modeFamily" id="fam-custom" />
+            <div class="family-tabs">
+            <label class="family-tab" for="fam-view">View</label>
+            <label class="family-tab" for="fam-motion">Motion</label>
+            <label class="family-tab" for="fam-time">Time</label>
+            <label class="family-tab" for="fam-night">Night</label>
+            <label class="family-tab" for="fam-custom">Custom</label>
+            </div>
+            <div class="mode-strip wide" aria-label="Camera visualization mode">
+            <div class="mode-row" data-family="view">
+              <button class="segmented active" type="button" data-vision-mode="camera">RGB</button>
+              <button class="segmented" type="button" data-vision-mode="relief">Relief</button>
+              <button class="segmented" type="button" data-vision-mode="edges">Edges</button>
+            </div>
+            <div class="mode-row" data-family="motion">
+              <button class="segmented" type="button" data-vision-mode="motion">Motion</button>
+              <button class="segmented" type="button" data-vision-mode="difference">Difference</button>
+              <button class="segmented" type="button" data-vision-mode="flow">Flow</button>
+              <button class="segmented" type="button" data-vision-mode="speed">Speed</button>
+              <button class="segmented" type="button" data-vision-mode="motiontrails">Trails</button>
+            </div>
+            <div class="mode-row" data-family="time">
+              <button class="segmented" type="button" data-vision-mode="amplify">Amplify</button>
+              <button class="segmented" type="button" data-vision-mode="background">Background</button>
+              <button class="segmented" type="button" data-vision-mode="chrono">Chrono</button>
+              <button class="segmented" type="button" data-vision-mode="slitscan">Slit Scan</button>
+            </div>
+            <div class="mode-row" data-family="night">
+              <button class="segmented" type="button" data-vision-mode="night">Night</button>
+            </div>
+            <div class="mode-row" data-family="custom">
+              <button class="segmented" type="button" data-vision-mode="lens">Lens</button>
+            </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tool-drawer">
+<div class="night-grid lens-detail-row" id="displayDetailRow" hidden>
             <label>Live detail
               <select id="lensDetail">
                 <option value="auto">Auto — settles by measuring</option>
@@ -124,24 +189,81 @@
               <span class="helper" id="lensDetailCap"></span>
             </label>
           </div>
-
-          <div class="zoom-row" aria-label="Camera zoom">
-            <div class="zoom-presets" id="zoomPresets" role="group" aria-label="Zoom presets"></div>
-            <input class="zoom-slider" id="zoomSlider" type="range" min="1" max="5" step="0.1" value="1"
-                   aria-label="Camera zoom level" disabled />
-            <span class="zoom-value" id="zoomValue">1.0&times; <em>None</em></span>
-          </div>
-
-          <div class="metric-strip" id="metricStrip" aria-label="Live camera measurements">
-            <div class="metric"><span>Brightness</span><strong id="metricBrightness">&mdash;</strong></div>
-            <div class="metric"><span>Contrast</span><strong id="metricContrast">&mdash;</strong></div>
-            <div class="metric"><span>Detail</span><strong id="metricDetail">&mdash;</strong></div>
-            <div class="metric"><span>Motion</span><strong id="metricMotion">&mdash;</strong></div>
-            <div class="metric"><span>Processing</span><strong id="metricFps">&mdash;</strong></div>
-            <div class="metric"><span>Zoom</span><strong id="metricZoom">&mdash;</strong></div>
-          </div>
-
-          <section class="night-panel" id="layerPanel" hidden aria-label="Time layer controls">
+<section class="night-panel" id="motionPanel" hidden aria-label="Motion speed controls">
+            <div class="night-heading">
+              <strong id="motionPanelTitle">Motion Ironbow</strong>
+              <span class="small-badge warning">Speed, not temperature</span>
+            </div>
+            <p class="helper">
+              Colour is how fast part of the image is moving, measured in frame widths per second.
+              This camera has no infrared sensitivity and measures no temperature at all — the palette
+              is borrowed because it reads well, not because anything here is thermal.
+            </p>
+            <ul class="speed-legend" id="speedLegend">
+              <li><span class="swatch" data-speed="0"></span>Still</li>
+              <li><span class="swatch" data-speed="0.2"></span>Very slow</li>
+              <li><span class="swatch" data-speed="0.4"></span>Slow</li>
+              <li><span class="swatch" data-speed="0.6"></span>Medium</li>
+              <li><span class="swatch" data-speed="0.8"></span>Fast</li>
+              <li><span class="swatch" data-speed="1"></span>Very fast</li>
+              <li><span class="swatch unresolved"></span>Moved, speed unknown</li>
+            </ul>
+            <div class="night-grid" id="motionTrailControls">
+              <label>Trail Length
+                <select id="motionExposure">
+                  <option value="1">1 sec</option>
+                  <option value="2">2 sec</option>
+                  <option value="5">5 sec</option>
+                  <option value="10">10 sec</option>
+                  <option value="30">30 sec</option>
+                  <option value="60">60 sec</option>
+                </select>
+              </label>
+              <label>Sensitivity <span class="range-value" id="motionSensitivityValue">18</span>
+                <input id="motionSensitivity" type="range" min="4" max="60" step="1" value="18" />
+              </label>
+              <label class="switch-row">
+                <input id="motionKeepFastest" type="checkbox" checked /> Keep fastest colour
+              </label>
+              <label class="switch-row">
+                <input id="motionFadeTrails" type="checkbox" checked /> Fade older motion
+              </label>
+              <label class="switch-row">
+                <input id="motionEventTrigger" type="checkbox" /> Event trigger (tripod watch)
+              </label>
+              <label>Horizontal FOV <span class="range-value" id="motionFovValue">not set</span>
+                <input id="motionFov" type="number" min="0" max="180" step="0.1" placeholder="degrees" />
+              </label>
+            </div>
+            <div class="night-status">
+              <div class="readout"><span>Peak speed</span><strong id="motionPeakSpeed">—</strong></div>
+              <div class="readout"><span>Full scale</span><strong id="motionFullScale">—</strong></div>
+              <div class="readout"><span>Moving</span><strong id="motionMovingFraction">—</strong></div>
+              <div class="readout wide"><span>Speed source</span><strong id="motionUnresolved">—</strong></div>
+              <div class="readout"><span>Trail coverage</span><strong id="motionTrailCoverage">—</strong></div>
+              <div class="readout"><span>Angular speed</span><strong id="motionAngular">—</strong></div>
+              <div class="readout"><span>At the ceiling</span><strong id="motionSaturated">—</strong></div>
+              <div class="readout wide"><span>Event</span><strong id="motionEventState">Trigger off</strong></div>
+              <div class="readout wide"><span>Steady gate</span><strong id="steadyState">Gate off</strong></div>
+            </div>
+            <div class="button-row">
+              <button class="secondary-button" id="motionFreezeButton" type="button">Freeze Trail</button>
+              <button class="secondary-button" id="motionClearButton" type="button">Clear Trails</button>
+              <button class="secondary-button" id="motionSnapshotButton" type="button">Save Observation</button>
+            </div>
+            <div class="button-row">
+              <button class="secondary-button" id="motionCalibrateButton" type="button">Hold Still &amp; Calibrate</button>
+              <button class="secondary-button" id="motionSteadyToggle" type="button" aria-pressed="false">Steady Gate: Off</button>
+            </div>
+            <p class="helper" id="motionCalibrationHint">Calibration measures how still this phone is in your hand, so tremor stops counting as motion. It is a gate, not stabilisation.</p>
+            <p class="helper">
+              Save Observation writes a JSON record — speeds, the measured/inferred/unknown split,
+              camera settings, and position and heading when those are enabled — alongside the frame
+              with the same figures burned in. A trail image on its own is unreadable a week later:
+              two trails look identical whether one covered five seconds or sixty.
+            </p>
+          </section>
+<section class="night-panel" id="layerPanel" hidden aria-label="Time layer controls">
             <div class="night-heading">
               <strong id="layerPanelTitle">Time layer</strong>
               <span class="small-badge warning">Builds up over frames</span>
@@ -165,8 +287,55 @@
               <button class="secondary-button" id="layerResetButton" type="button">Restart Layer</button>
             </div>
           </section>
-
-          <section class="night-panel" id="lensPanel" hidden aria-label="Custom lens">
+<section class="night-panel" id="nightPanel" hidden aria-label="Night and low light controls">
+            <div class="night-heading">
+              <strong>Night / Low Light</strong>
+              <span class="small-badge warning">Computational, not infrared</span>
+            </div>
+            <div class="night-grid">
+              <label>Stack Mode
+                <select id="nightStackMode">
+                  <option value="clean">Clean · average, less noise</option>
+                  <option value="brighten">Brighten · accumulate dim signal</option>
+                  <option value="trails">Light Trails · keep brightest</option>
+                </select>
+              </label>
+              <label>Integration
+                <select id="nightIntegration">
+                  <option value="0.5">0.5 sec</option>
+                  <option value="1">1 sec</option>
+                  <option value="2">2 sec</option>
+                  <option value="4">4 sec</option>
+                  <option value="8">8 sec</option>
+                  <option value="15">15 sec</option>
+                  <option value="30">30 sec</option>
+                </select>
+              </label>
+              <label>Palette
+                <select id="nightPalette">
+                  <option value="natural">Natural</option>
+                  <option value="monochrome">Monochrome</option>
+                  <option value="green">Green</option>
+                  <option value="falsecolor">False Color</option>
+                </select>
+              </label>
+              <label>Light Boost <span class="range-value" id="nightGainValue">1.0×</span>
+                <input id="nightGain" type="range" min="1" max="6" step="0.1" value="1" />
+              </label>
+              <label>Gamma <span class="range-value" id="nightGammaValue">1.00</span>
+                <input id="nightGamma" type="range" min="0.3" max="2" step="0.05" value="1" />
+              </label>
+            </div>
+            <div class="night-status">
+              <div class="readout"><span>Integration</span><strong id="nightIntegrationState">Idle</strong></div>
+              <div class="readout"><span>Frames stacked</span><strong id="nightFrames">0</strong></div>
+              <div class="readout"><span>Stability</span><strong id="nightStability">—</strong></div>
+            </div>
+            <div class="button-row">
+              <button class="secondary-button" id="nightRestartButton" type="button">Restart Exposure</button>
+            </div>
+          </section>
+<section class="night-panel" id="lensPanel" hidden aria-label="Custom lens">
             <div class="night-heading">
               <strong>Custom lens</strong>
               <span class="small-badge" id="lensCoverage">—</span>
@@ -306,133 +475,8 @@
               <p class="helper" id="lensImportStatus" role="status"></p>
             </div>
           </section>
-          <section class="night-panel" id="motionPanel" hidden aria-label="Motion speed controls">
-            <div class="night-heading">
-              <strong id="motionPanelTitle">Motion Ironbow</strong>
-              <span class="small-badge warning">Speed, not temperature</span>
-            </div>
-            <p class="helper">
-              Colour is how fast part of the image is moving, measured in frame widths per second.
-              This camera has no infrared sensitivity and measures no temperature at all — the palette
-              is borrowed because it reads well, not because anything here is thermal.
-            </p>
-            <ul class="speed-legend" id="speedLegend">
-              <li><span class="swatch" data-speed="0"></span>Still</li>
-              <li><span class="swatch" data-speed="0.2"></span>Very slow</li>
-              <li><span class="swatch" data-speed="0.4"></span>Slow</li>
-              <li><span class="swatch" data-speed="0.6"></span>Medium</li>
-              <li><span class="swatch" data-speed="0.8"></span>Fast</li>
-              <li><span class="swatch" data-speed="1"></span>Very fast</li>
-              <li><span class="swatch unresolved"></span>Moved, speed unknown</li>
-            </ul>
-            <div class="night-grid" id="motionTrailControls">
-              <label>Trail Length
-                <select id="motionExposure">
-                  <option value="1">1 sec</option>
-                  <option value="2">2 sec</option>
-                  <option value="5">5 sec</option>
-                  <option value="10">10 sec</option>
-                  <option value="30">30 sec</option>
-                  <option value="60">60 sec</option>
-                </select>
-              </label>
-              <label>Sensitivity <span class="range-value" id="motionSensitivityValue">18</span>
-                <input id="motionSensitivity" type="range" min="4" max="60" step="1" value="18" />
-              </label>
-              <label class="switch-row">
-                <input id="motionKeepFastest" type="checkbox" checked /> Keep fastest colour
-              </label>
-              <label class="switch-row">
-                <input id="motionFadeTrails" type="checkbox" checked /> Fade older motion
-              </label>
-              <label class="switch-row">
-                <input id="motionEventTrigger" type="checkbox" /> Event trigger (tripod watch)
-              </label>
-              <label>Horizontal FOV <span class="range-value" id="motionFovValue">not set</span>
-                <input id="motionFov" type="number" min="0" max="180" step="0.1" placeholder="degrees" />
-              </label>
-            </div>
-            <div class="night-status">
-              <div class="readout"><span>Peak speed</span><strong id="motionPeakSpeed">—</strong></div>
-              <div class="readout"><span>Full scale</span><strong id="motionFullScale">—</strong></div>
-              <div class="readout"><span>Moving</span><strong id="motionMovingFraction">—</strong></div>
-              <div class="readout wide"><span>Speed source</span><strong id="motionUnresolved">—</strong></div>
-              <div class="readout"><span>Trail coverage</span><strong id="motionTrailCoverage">—</strong></div>
-              <div class="readout"><span>Angular speed</span><strong id="motionAngular">—</strong></div>
-              <div class="readout"><span>At the ceiling</span><strong id="motionSaturated">—</strong></div>
-              <div class="readout wide"><span>Event</span><strong id="motionEventState">Trigger off</strong></div>
-              <div class="readout wide"><span>Steady gate</span><strong id="steadyState">Gate off</strong></div>
-            </div>
-            <div class="button-row">
-              <button class="secondary-button" id="motionFreezeButton" type="button">Freeze Trail</button>
-              <button class="secondary-button" id="motionClearButton" type="button">Clear Trails</button>
-              <button class="secondary-button" id="motionSnapshotButton" type="button">Save Observation</button>
-            </div>
-            <div class="button-row">
-              <button class="secondary-button" id="motionCalibrateButton" type="button">Hold Still &amp; Calibrate</button>
-              <button class="secondary-button" id="motionSteadyToggle" type="button" aria-pressed="false">Steady Gate: Off</button>
-            </div>
-            <p class="helper" id="motionCalibrationHint">Calibration measures how still this phone is in your hand, so tremor stops counting as motion. It is a gate, not stabilisation.</p>
-            <p class="helper">
-              Save Observation writes a JSON record — speeds, the measured/inferred/unknown split,
-              camera settings, and position and heading when those are enabled — alongside the frame
-              with the same figures burned in. A trail image on its own is unreadable a week later:
-              two trails look identical whether one covered five seconds or sixty.
-            </p>
-          </section>
-
-          <section class="night-panel" id="nightPanel" hidden aria-label="Night and low light controls">
-            <div class="night-heading">
-              <strong>Night / Low Light</strong>
-              <span class="small-badge warning">Computational, not infrared</span>
-            </div>
-            <div class="night-grid">
-              <label>Stack Mode
-                <select id="nightStackMode">
-                  <option value="clean">Clean · average, less noise</option>
-                  <option value="brighten">Brighten · accumulate dim signal</option>
-                  <option value="trails">Light Trails · keep brightest</option>
-                </select>
-              </label>
-              <label>Integration
-                <select id="nightIntegration">
-                  <option value="0.5">0.5 sec</option>
-                  <option value="1">1 sec</option>
-                  <option value="2">2 sec</option>
-                  <option value="4">4 sec</option>
-                  <option value="8">8 sec</option>
-                  <option value="15">15 sec</option>
-                  <option value="30">30 sec</option>
-                </select>
-              </label>
-              <label>Palette
-                <select id="nightPalette">
-                  <option value="natural">Natural</option>
-                  <option value="monochrome">Monochrome</option>
-                  <option value="green">Green</option>
-                  <option value="falsecolor">False Color</option>
-                </select>
-              </label>
-              <label>Light Boost <span class="range-value" id="nightGainValue">1.0×</span>
-                <input id="nightGain" type="range" min="1" max="6" step="0.1" value="1" />
-              </label>
-              <label>Gamma <span class="range-value" id="nightGammaValue">1.00</span>
-                <input id="nightGamma" type="range" min="0.3" max="2" step="0.05" value="1" />
-              </label>
-            </div>
-            <div class="night-status">
-              <div class="readout"><span>Integration</span><strong id="nightIntegrationState">Idle</strong></div>
-              <div class="readout"><span>Frames stacked</span><strong id="nightFrames">0</strong></div>
-              <div class="readout"><span>Stability</span><strong id="nightStability">—</strong></div>
-            </div>
-            <div class="button-row">
-              <button class="secondary-button" id="nightRestartButton" type="button">Restart Exposure</button>
-            </div>
-          </section>
-
-          <div class="lens-row" id="lensRow" hidden aria-label="Camera lens"></div>
-
-          <div class="manual-row" id="manualRow" aria-label="Manual camera controls">
+<div class="lens-row" id="lensRow" hidden aria-label="Camera lens"></div>
+<div class="manual-row" id="manualRow" aria-label="Manual camera controls">
             <button class="manual-toggle" id="torchToggle" type="button" hidden aria-pressed="false">🔦 Torch</button>
             <label class="toggle inline-select" id="whiteBalanceWrap" hidden>WB
               <select id="whiteBalanceMode"></select>
@@ -460,11 +504,8 @@
             </label>
             <button class="secondary-button" id="exposureResetButton" type="button">Reset Exposure</button>
             <p class="helper" id="exposureNote">Brightness and Gamma are applied after capture — they cannot recover a blown highlight or add light that was never collected. Real exposure controls appear above only where this device exposes them.</p>
-            <button class="secondary-button shutter-button" id="captureStillButton" type="button">📸 Save Frame</button>
-            <button class="secondary-button" id="expandViewButton" type="button">⤢ Full Screen</button>
           </div>
-
-          <div class="observe-row" aria-label="Observation tools">
+<div class="observe-row" aria-label="Observation tools">
             <label class="toggle"><input type="checkbox" id="trackingToggle" checked /> Track objects</label>
             <label class="toggle"><input type="checkbox" id="zebraToggle" /> Zebra</label>
             <label class="toggle"><input type="checkbox" id="focusPeakToggle" /> Focus peak</label>
@@ -477,30 +518,32 @@
               </select>
             </label>
           </div>
-
-          <canvas class="histogram" id="histogramCanvas" width="256" height="46" aria-label="Live luminance histogram"></canvas>
-
-          <div class="metric-strip observe" aria-label="Observation measurements">
-            <div class="metric"><span>Delivered</span><strong id="metricDelivered">—</strong></div>
+<canvas class="histogram" id="histogramCanvas" width="256" height="46" aria-label="Live luminance histogram"></canvas>
+<div class="metric-strip" id="metricStrip" aria-label="Live camera measurements">
+            <div class="metric"><span>Brightness</span><strong id="metricBrightness">&mdash;</strong></div>
+            <div class="metric"><span>Contrast</span><strong id="metricContrast">&mdash;</strong></div>
+            <div class="metric"><span>Detail</span><strong id="metricDetail">&mdash;</strong></div>
+            <div class="metric"><span>Motion</span><strong id="metricMotion">&mdash;</strong></div>
+          </div>
+<div class="metric-strip observe" aria-label="Observation measurements">
             <div class="metric"><span>Analysis</span><strong id="metricAnalysis">—</strong></div>
             <div class="metric"><span>Adaptive</span><strong id="metricAdaptive">—</strong></div>
-            <div class="metric"><span>Objects</span><strong id="metricObjects">—</strong></div>
             <div class="metric"><span>Fastest</span><strong id="metricFastest">—</strong></div>
             <div class="metric"><span>Dropped</span><strong id="metricDropped">—</strong></div>
           </div>
-
-          <div class="button-row">
+<div class="button-row">
             <button class="primary-button" id="cameraButton" type="button">Enable Camera</button>
             <button class="secondary-button" id="switchCameraButton" type="button" disabled>Use Front Camera</button>
             <button class="secondary-button camera-browser-fallback" id="cameraBrowserFallback" type="button" hidden>Open Live Camera in Edge</button>
           </div>
-
-          <section class="night-panel" id="recordPanel" aria-label="Recording">
+<section class="night-panel" id="recordPanel" aria-label="Recording">
             <div class="night-heading">
               <strong>Record</strong>
               <span class="small-badge" id="recordFormat">checking…</span>
             </div>
-            <p class="helper">
+            <details class="explainer">
+              <summary>How recording works</summary>
+              <p class="helper">
               Records what is on screen &mdash; the filter as well as the camera &mdash; in
               clips of at most 30 seconds. Each clip is a finished file the moment it is cut, so
               a call or a lock screen costs the clip in hand and nothing already recorded.
@@ -512,9 +555,8 @@
               render larger, and it costs frame rate. The camera on its own records at its own
               full resolution with no scaling.
             </p>
+            </details>
             <div class="button-row">
-              <button class="primary-button" id="recordButton" type="button" disabled>Record</button>
-              <span class="record-elapsed" id="recordElapsed" aria-live="polite"></span>
             </div>
             <p class="helper" id="recordMessage">Enable the camera to record.</p>
             <div class="clip-list" id="clipList"></div>
@@ -532,13 +574,16 @@
               <strong>GIF</strong>
               <span class="small-badge warning">256 colours, and large</span>
             </div>
-            <p class="helper">
+            <details class="explainer">
+              <summary>What a GIF costs</summary>
+              <p class="helper">
               No browser can encode a GIF, so this app writes the file itself. The format holds
               256 colours and compresses each frame on its own, so a few seconds of camera can
               outweigh a thirty-second video &mdash; keep them short and small. What it buys is
               that a GIF plays inline anywhere, in any message, with no player and no codec
               question.
             </p>
+            </details>
             <div class="night-grid">
               <label>Length
                 <select id="gifSeconds">
@@ -574,9 +619,10 @@
               <figcaption id="gifCaption"></figcaption>
             </figure>
           </section>
-          <p class="helper" id="cameraMessage">Tap Enable Camera for live video. Pinch the preview or use the zoom slider once the camera is live.</p>
+<p class="helper" id="cameraMessage">Tap Enable Camera for live video. Pinch the preview or use the zoom slider once the camera is live.</p>
           <p class="stage-trace" id="cameraStage" hidden>stage: idle</p>
-        </article>
+        </div>
+</article>
         </div>
       </section>
 
@@ -978,7 +1024,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.38.3</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.39.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">
@@ -1249,5 +1295,47 @@
 
   <script src="./camera-bootstrap.js"></script>
   <script type="module" src="./app/main.js"></script>
+  <script>
+  /*
+   * Keep the family tabs in step with the mode the APP thinks is active.
+   *
+   * The tabs themselves are pure CSS — five radios and `:checked` — which is
+   * why no script decides what is visible. But the app also sets the mode on
+   * its own: it restores the remembered mode at startup, and a shared lens link
+   * switches to Lens. Without this, the workbench would open showing the View
+   * family while Trails was the mode actually running.
+   *
+   * So this mirrors state one way only, from the app to the chrome, by watching
+   * for the `.active` class the existing code already applies. It reads; it
+   * never sets a mode, and it is deliberately in the page rather than in
+   * main.ts so that the redesign changed no application logic at all.
+   */
+  (() => {
+    const FAMILY = {
+      camera: 'view', relief: 'view', edges: 'view',
+      motion: 'motion', difference: 'motion', flow: 'motion',
+      speed: 'motion', motiontrails: 'motion',
+      amplify: 'time', background: 'time', chrono: 'time', slitscan: 'time',
+      night: 'night',
+      lens: 'custom'
+    };
+    const strip = document.querySelector('.mode-console .mode-strip');
+    if (!strip) return;
+
+    const follow = () => {
+      const active = strip.querySelector('.segmented.active[data-vision-mode]');
+      if (!active) return;
+      const radio = document.getElementById('fam-' + FAMILY[active.dataset.visionMode]);
+      // Only when it is not already right: assigning `checked` unconditionally
+      // would fight a person mid-tap on a family they are still choosing.
+      if (radio && !radio.checked) radio.checked = true;
+    };
+
+    new MutationObserver(follow).observe(strip, {
+      subtree: true, attributes: true, attributeFilter: ['class']
+    });
+    follow();
+  })();
+  </script>
 </body>
 </html>

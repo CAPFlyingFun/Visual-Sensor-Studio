@@ -142,10 +142,11 @@ test('the gallery and its modules are cached so lenses work offline', () => {
 });
 
 test('the panel explains what a lens can and cannot do', () => {
-  const panel = htmlSource.slice(
-    htmlSource.indexOf('id="lensPanel"'),
-    htmlSource.indexOf('id="motionPanel"')
-  );
+  // Sliced from the lens panel forwards rather than "up to the motion panel":
+  // the old version encoded the ORDER of two panels, so grouping the mode
+  // panels into the workbench tool drawer failed a test about wording.
+  const start = htmlSource.indexOf('id="lensPanel"');
+  const panel = htmlSource.slice(start, start + 6000);
   assert.match(panel, /cannot add/i, 'say plainly that a lens recolours rather than measures');
   assert.match(panel, /stay on this device/i);
   const importBlock = htmlSource.slice(htmlSource.indexOf('id="lensImport"'));

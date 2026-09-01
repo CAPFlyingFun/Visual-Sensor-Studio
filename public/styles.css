@@ -1015,20 +1015,31 @@ footer strong { color: #9fb2c3; }
    Everything used to share one long scroll, so reaching the terrain map meant
    passing the whole camera lab. Each section is now a tab, and the 3D viewport
    moves into whichever tab wants it rather than being duplicated. */
+/*
+ * A DOCK AT THE BOTTOM, where a thumb is.
+ *
+ * Same nav, same buttons, same data-tab attributes — only its position moved.
+ * Moving it off the top is also what frees `top: 0` for the sticky camera
+ * workbench head, which cannot share that edge with a sticky tab bar.
+ *
+ * z-index 30 keeps it under the full-screen viewer at 40.
+ */
 .tabbar {
-  position: sticky;
-  top: 0;
-  z-index: 20;
+  position: fixed;
+  inset: auto 0 0;
+  z-index: 30;
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: 1fr;
   gap: 4px;
-  padding: 6px;
-  margin-bottom: 14px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: rgba(8, 15, 24, 0.94);
-  backdrop-filter: blur(10px);
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  background: rgba(5, 10, 16, 0.96);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   overflow-x: auto;
 }
 .tab {
@@ -1557,3 +1568,333 @@ button.ghost.danger {
   background: #04080d;
   border: 1px solid var(--border);
 }
+
+/* ==========================================================================
+   CAMERA WORKBENCH
+   ==========================================================================
+
+   The redesign's one real requirement, in Joshua's words: "While the user is
+   working inside Camera Lab, the live camera should remain visible. Controls
+   should come to the camera rather than forcing the user to leave the camera
+   to find controls."
+
+   HOW THIS IS BUILT, and why it is not the nested scroll container the mockup
+   implies. A fixed-height app shell with its own scrolling drawer means a
+   scroll container inside a scroll container, and on iOS that is where
+   momentum scrolling, rubber-banding and sticky elements start fighting each
+   other. A STICKY HEAD gets the same result from the page's own scroll: the
+   picture, its readouts, the shutter and the mode choice stay pinned while the
+   controls move under them. One scroller, no nested-scroll chaos, and no
+   magic height arithmetic that breaks on a device nobody tested.
+
+   Nothing here changes application logic. Every control is the element it
+   always was, with the same id — only its position and its dress are new.
+   ========================================================================== */
+
+/*
+ * `clip`, not the `hidden` .panel sets — and this is the line that makes the
+ * sticky head work at all.
+ *
+ * `overflow: hidden` makes an element a SCROLL CONTAINER, so a sticky
+ * descendant sticks to that container's scrollport rather than to the
+ * viewport. The panel never scrolls, so the head never moved: measured at
+ * 430x932, scrolling 900px put the picture 518px above the top of the screen.
+ * `clip` gives the same rounded-corner clipping without becoming a scrollport.
+ */
+.vision-panel { overflow: clip; }
+
+.workbench-head {
+  position: sticky;
+  /* Below the status bar rather than under the clock: in a standalone PWA the
+     status bar overlays the page. */
+  top: env(safe-area-inset-top);
+  z-index: 12;
+  padding: 8px 0 6px;
+  margin: 0 -4px;
+  padding-inline: 4px;
+  background: linear-gradient(180deg, rgba(5, 9, 16, .97) 78%, rgba(5, 9, 16, .82));
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-radius: 14px;
+}
+
+/* The picture is the largest thing on the screen, and it keeps its aspect
+   rather than being cropped to a band — a viewfinder that lies about framing
+   is worse than a smaller one. It is capped so the controls under it are
+   reachable without scrolling on a phone. */
+.workbench-head .vision-stage {
+  /* Height first, aspect second: at 16/10 the picture is width-limited to a
+     quarter of a phone screen, and the brief asks for the camera to own 40-55%
+     of it. object-fit: cover was already how this stage behaved, so a taller
+     box crops differently rather than distorting anything. */
+  height: clamp(220px, 42dvh, 440px);
+  aspect-ratio: auto;
+}
+.workbench-head .vision-stage video,
+.workbench-head .vision-stage canvas { object-fit: cover; }
+
+/* --- Readouts over the picture ------------------------------------------ */
+/*
+ * These are the SAME metric elements the app already writes to, moved here
+ * from the strips below. Nothing new is displayed and nothing new needs
+ * filling in — which is the only reason a HUD can be added without touching
+ * the render loop.
+ */
+.view-hud {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 6px 10px;
+  border: 1px solid rgba(183, 211, 235, .28);
+  border-radius: 10px;
+  background: rgba(3, 8, 13, .62);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  pointer-events: none;
+}
+.view-hud .metric {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  min-height: 0;
+}
+.view-hud #visionModeLabel {
+  /* block, not the badge's own inline-flex: text-overflow does not apply to a
+     flex container's text, so the name was being cut mid-word with no ellipsis
+     to say it had been. */
+  display: block;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.view-hud .metric span {
+  font-size: .62rem;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: rgba(198, 216, 232, .72);
+}
+.view-hud .metric strong {
+  display: inline;
+  margin: 0;
+  font-size: .78rem;
+  font-weight: 700;
+  color: #eaf3ff;
+}
+.view-hud #visionModeLabel { margin-left: auto; }
+
+/* --- Zoom + capture ------------------------------------------------------ */
+/*
+ * Stacked on a phone, side by side only where there is room.
+ *
+ * Measured at 430px: the three capture controls take most of the row, which
+ * squeezed the zoom slider down to a stub and wrapped its readout underneath.
+ * A control that has been squeezed to nothing is worse than one on its own
+ * line.
+ */
+.command-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+@media (min-width: 620px) {
+  .command-strip { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
+  .capture-cluster { justify-content: flex-end; }
+}
+.command-strip .zoom-row { margin: 0; min-width: 0; }
+.capture-cluster {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: center;
+  gap: 7px;
+}
+.capture-cluster .secondary-button,
+.capture-cluster .primary-button {
+  min-height: 46px;
+  padding: 0 8px;
+  font-size: .82rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Red is reserved for recording and for destructive actions, and this is the
+   only control on the workbench that gets it. */
+.capture-cluster #recordButton {
+  background: linear-gradient(180deg, #d8443f, #a12723);
+  border-color: rgba(255, 150, 150, .45);
+  color: #fff5f5;
+}
+.capture-cluster #recordButton[disabled] {
+  background: rgba(60, 26, 26, .5);
+  border-color: rgba(255, 150, 150, .18);
+  color: rgba(255, 210, 210, .45);
+}
+.capture-cluster #recordButton[data-recording="yes"] {
+  animation: recordPulse 1.4s ease-in-out infinite alternate;
+}
+@keyframes recordPulse { to { box-shadow: 0 0 0 4px rgba(216, 68, 63, .22); } }
+.capture-cluster .record-elapsed { grid-column: 1 / -1; text-align: center; }
+/* The zoom slider gets the room it needs before anything else in the row. */
+.command-strip .zoom-row .zoom-slider { flex: 1 1 120px; min-width: 96px; }
+
+/* --- Mode families -------------------------------------------------------
+ *
+ * Five radios, five labels, five rows — and `:checked` decides which row is
+ * visible. No script chooses, so this cannot fall out of step with the app's
+ * own mode state: the real mode buttons are the same elements as before, with
+ * the same data-vision-mode attributes and the same .active class applied by
+ * the same code. They are merely grouped.
+ */
+.mode-console { margin-top: 8px; }
+.family-radio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.family-tabs {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(8, 15, 24, .7);
+}
+.family-tab {
+  display: grid;
+  place-items: center;
+  min-height: 40px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: #9eb1c2;
+  font-size: .82rem;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.mode-console .mode-strip { margin: 6px 0 0; display: block; }
+.mode-row { display: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 5px; }
+/* The one piece of state this stylesheet owns. */
+#fam-view:checked    ~ .family-tabs .family-tab[for="fam-view"],
+#fam-motion:checked  ~ .family-tabs .family-tab[for="fam-motion"],
+#fam-time:checked    ~ .family-tabs .family-tab[for="fam-time"],
+#fam-night:checked   ~ .family-tabs .family-tab[for="fam-night"],
+#fam-custom:checked  ~ .family-tabs .family-tab[for="fam-custom"] {
+  color: #eaffff;
+  border-color: rgba(118, 209, 255, .55);
+  background: rgba(28, 99, 132, .35);
+}
+#fam-view:checked    ~ .mode-strip .mode-row[data-family="view"],
+#fam-motion:checked  ~ .mode-strip .mode-row[data-family="motion"],
+#fam-time:checked    ~ .mode-strip .mode-row[data-family="time"],
+#fam-night:checked   ~ .mode-strip .mode-row[data-family="night"],
+#fam-custom:checked  ~ .mode-strip .mode-row[data-family="custom"] { display: grid; }
+/* Keyboard focus has to be visible when the input itself is off-screen. */
+.family-radio:focus-visible ~ .family-tabs .family-tab { outline: 1px dashed rgba(118, 209, 255, .5); }
+.mode-console .mode-strip .segmented { font-size: .78rem; padding: 0 6px; }
+
+/* --- The drawer ---------------------------------------------------------- */
+/*
+ * Everything that is not needed while aiming. The app already hides the panels
+ * that do not belong to the active mode (#motionPanel, #layerPanel,
+ * #nightPanel, #lensPanel, #displayDetailRow), so grouping them here is enough
+ * to make the drawer contextual — no new show/hide logic was added, and none
+ * should be.
+ */
+.tool-drawer {
+  min-width: 0;
+  overflow-x: clip;
+  padding-top: 10px;
+}
+.tool-drawer > .metric-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+/* --- The dock ------------------------------------------------------------ */
+/* See the .tabbar rule above: it IS the dock now. */
+.app-shell { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
+
+@media (max-width: 380px) {
+  .family-tab { font-size: .74rem; }
+  .capture-cluster { justify-content: center; }
+  .command-strip { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* --- Landscape and tablets: camera beside its controls -------------------
+ *
+ * The tripod case. The picture takes the left, everything else the right, and
+ * the head stops being sticky because it no longer needs to be — it is always
+ * on screen.
+ */
+/* A phone on its side is not a tablet: at 430px tall a two-column split leaves
+   a picture the size of a stamp and no room for the controls beside it. The
+   split needs real height as well as width. */
+@media (max-height: 560px) {
+  .workbench-head .vision-stage { max-height: 42dvh; }
+  .workbench-head { padding-top: 4px; }
+  .command-strip { margin-top: 6px; }
+}
+
+@media (min-width: 760px) and (min-height: 480px) and (orientation: landscape) {
+  .vision-panel {
+    display: grid;
+    grid-template-columns: minmax(0, 1.25fr) minmax(320px, .75fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    column-gap: 16px;
+    align-items: start;
+  }
+  .vision-panel > .panel-heading { grid-column: 1 / -1; }
+  /* Still sticky: the controls column can be taller than the screen, and the
+     picture has to stay put while it is scrolled. */
+  .workbench-head {
+    grid-column: 1;
+    padding: 0;
+    background: none;
+    backdrop-filter: none;
+  }
+  .workbench-head .vision-stage { max-height: none; }
+  .tool-drawer { grid-column: 2; grid-row: 2; padding-top: 0; }
+}
+
+/*
+ * Long explanations fold away.
+ *
+ * "Minimal unnecessary explanatory text during active camera use" — but none
+ * of it is deleted, because every sentence in there was written to stop a
+ * particular wrong assumption. A disclosure keeps the answer one tap from the
+ * question instead of in the way of it.
+ */
+.explainer {
+  margin: 6px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(9, 17, 26, .55);
+}
+.explainer > summary {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  color: rgba(190, 212, 232, .9);
+  font-size: .8rem;
+  cursor: pointer;
+  list-style: none;
+}
+.explainer > summary::-webkit-details-marker { display: none; }
+.explainer > summary::after { content: ' ▾'; margin-left: auto; opacity: .6; }
+.explainer[open] > summary::after { content: ' ▴'; }
+.explainer > *:not(summary) { padding: 0 12px; }
+.explainer > *:last-child { padding-bottom: 10px; }
