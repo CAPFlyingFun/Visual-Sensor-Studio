@@ -62,20 +62,23 @@ test('all fourteen modes survive, grouped but unchanged', () => {
   }
 });
 
-test('the camera and its everyday controls are one block that stays put', () => {
-  // The requirement the whole redesign exists for: the picture stays visible
-  // while the controls are used.
+test('the camera and its everyday controls are rows, not an overlay', () => {
   for (const id of ['visionStage', 'zoomSlider', 'captureStillButton', 'recordButton',
-    'expandViewButton', 'mode-console'.replace('mode-console', 'visionModeLabel')]) {
+    'expandViewButton', 'visionModeLabel']) {
     assert.ok(head.includes(`id="${id}"`), `#${id} should be in the workbench head`);
   }
-  assert.match(css, /\.workbench-head \{[\s\S]{0,200}position: sticky;/);
 
-  // And this is the line that makes sticky work: .panel sets overflow:hidden,
-  // which makes the panel a scroll container and pins the head to a box that
-  // never scrolls. Measured before the fix: scrolling 900px on a 430x932 screen
-  // put the picture 518px above the top of the screen.
-  assert.match(css, /\.vision-panel \{ overflow: clip; \}/);
+  // NOT STICKY, and structurally so. v0.39.0 made the head sticky and let the
+  // page scroll under it; on the device the controls slid behind a large fixed
+  // block and left a small window to hunt in. `display: contents` makes the
+  // three head rows into rows of the workspace grid, so there is no box left to
+  // give a position of its own.
+  assert.ok(!/position:\s*sticky/.test(css), 'nothing in Camera Lab may be sticky');
+  assert.match(css, /\.workbench-head \{ display: contents; \}/);
+
+  // The workspace is the viewport, and the drawer takes what is left.
+  assert.match(css, /\.app-shell \{[\s\S]{0,200}height: 100dvh;/);
+  assert.match(css, /grid-template-rows: minmax\(\d+px, \d+%\) auto auto minmax\(0, 1fr\);/);
 });
 
 test('mode panels and clip management are in the drawer, below the controls', () => {
@@ -117,11 +120,16 @@ test('the redesign did not touch application logic', () => {
   assert.ok(!main.includes('fam-view'));
 });
 
-test('nothing in the camera tab can widen the page', () => {
-  // The failure this project has already shipped once: one oversized element
-  // set the document's width and mobile Safari rescaled the whole app.
-  assert.match(css, /\.tool-drawer \{[\s\S]{0,120}overflow-x: clip;/);
-  assert.match(css, /\.tab-panel \{ min-width: 0; overflow-x: clip; \}/);
+test('the tool drawer is the only scrolling surface in Camera Lab', () => {
+  // One scroller. A drawer inside a scrolling page is the nested-scroll
+  // arrangement that makes iOS momentum and rubber-banding fight each other.
+  const drawer = css.slice(css.indexOf('.tool-drawer {'), css.indexOf('}', css.indexOf('.tool-drawer {')));
+  assert.match(drawer, /overflow-y: auto;/);
+  assert.match(drawer, /min-height: 0;/);
+  assert.match(drawer, /-webkit-overflow-scrolling: touch;/);
+  assert.match(drawer, /overscroll-behavior: contain;/);
+  assert.match(drawer, /overflow-x: clip;/);
+  assert.match(css, /body \{ overflow: hidden;/, 'the page itself must not scroll');
   assert.match(css, /text-size-adjust: 100%;/);
 });
 
@@ -132,5 +140,8 @@ test('the dock sits under the full-screen viewer, not over it', () => {
   const viewer = css.slice(css.indexOf('.viewer {'), css.indexOf('}', css.indexOf('.viewer {')));
   assert.ok(z < Number(/z-index: (\d+)/.exec(viewer)[1]), 'the dock must not cover the viewer');
   // And the page has to end above the dock, or the last control is unreachable.
-  assert.match(css, /\.app-shell \{ padding-bottom: calc\(96px \+ env\(safe-area-inset-bottom\)\); \}/);
+  // The shell reserves exactly the dock's height. A guessed 96px against a dock
+  // that measures 55 wasted 41px of the workspace.
+  assert.match(css, /--dock-height: calc\(\d+px \+ env\(safe-area-inset-bottom\)\);/);
+  assert.match(css, /padding-bottom: var\(--dock-height\);/);
 });

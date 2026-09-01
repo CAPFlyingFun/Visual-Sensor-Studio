@@ -1,4 +1,4 @@
-# The camera workbench (v0.39.0)
+# The camera workbench (v0.39.2)
 
 A UI refactor of the Camera Lab, from the approved prototype. **HTML and CSS
 only** — `src/main.ts` was not touched, and no vision, sensor, camera,
@@ -10,28 +10,42 @@ recording or encoding code changed.
 > view should remain visible. Controls should come to the camera rather than
 > forcing the user to leave the camera to find controls."
 
-## How it is built, and one thing it deliberately is not
+## How it is built
 
-The prototype implies a fixed-height app shell with its own scrolling drawer.
-That is a scroll container inside a scroll container, and on iOS it is where
-momentum scrolling, rubber-banding and sticky elements start fighting. A
-**sticky head** gets the same result from the page's own scroll: the picture,
-its readouts, the shutter and the mode choice stay pinned while the controls
-move underneath. One scroller, no nested-scroll chaos, no magic height
-arithmetic to break on an untested device.
+A fixed app workspace, as the mockup specifies:
 
-Measured at 430×932 after scrolling 1400px: the viewfinder is still on screen
-at `top: 8px`, 391px tall — 42% of the screen, inside the 40–55% the brief
-asks for.
+    compact top bar
+    live camera / filter        always visible, never scrolled
+    zoom + photo + record
+    family + submode controls
+    TOOL DRAWER                 the only thing that scrolls
+    bottom navigation
 
-## What made it work
+The shell is `100dvh`, the workspace is a grid, and `minmax(0, 1fr)` gives the
+drawer whatever height is left. The page itself does not scroll while Camera
+Lab is open, so there is no scroller inside an active scroller.
 
-`.panel { overflow: hidden }` was the blocker. `overflow: hidden` makes an
-element a **scroll container**, so a sticky descendant sticks to *that* box
-rather than to the viewport — and the panel never scrolls, so the head never
-moved. Measured before the fix: scrolling 900px put the picture 518px above the
-top of the screen. `.vision-panel { overflow: clip }` clips the same rounded
-corners without becoming a scrollport.
+`.workbench-head` is `display: contents`, so its three rows *are* rows of the
+workspace grid. That makes "not sticky" structural rather than a declaration
+someone could re-add.
+
+### What v0.39.0 got wrong
+
+v0.39.0 substituted a sticky head over a scrolling page. On the device that did
+exactly what a sticky overlay does: the controls slid behind a large fixed
+block and left a small usable window to hunt in. Rejected and removed — this is
+the approved layout, not an interpretation of it.
+
+### Four things that were quietly eating the workspace
+
+Measured at 430×932, each found by reading rectangles rather than CSS:
+
+| | before | after |
+|---|---|---|
+| top bar (title, subtitle, four chips, button — stacked) | 120px | 50px |
+| footer inside the shell | 33px, below a 110px gap | one 20px line |
+| shell padding reserved for the dock | 96px guessed | 64px measured |
+| tool drawer | **36px** | **232px** |
 
 ## Mapping
 
@@ -62,13 +76,27 @@ checks the matching family. It reads; it never sets a mode. It lives in
 logic at all. Verified: with the person browsing the Time family, the app
 setting Lens moved the selection to Custom.
 
-## Not done in this pass
+## Measured geometry
 
-- **The five-item dock** (Camera / Sensors / World / Data / More). The existing
-  six tabs are `data-tab` values that `main.ts` owns, and regrouping Rig and
-  Burst under a More sheet is a navigation change, not a style change. The six
-  tabs are styled as the dock instead; say the word and it can be a separate
-  pass.
-- **A sticky filtered preview inside the lens editor.** The main viewfinder
-  stays visible while editing a lens, which is what the requirement asks for,
-  and a second preview would need a second render target.
+Rectangles at 430×932, none overlapping, in the order the design specifies:
+
+| row | top | bottom | height |
+|---|---|---|---|
+| top bar | 18 | 68 | 50 |
+| camera | 77 | 376 | 299 |
+| command strip | 384 | 485 | 101 |
+| mode controls | 493 | 593 | 100 |
+| tool drawer | 593 | 825 | 232 |
+| bottom dock | 877 | 932 | 55 |
+
+The camera is 39% of the usable height (viewport less top bar and dock), inside
+the 35–45% asked for. At 320×568 the same layout gives a 101px camera and a
+107px drawer — the picture gives up height first so the drawer stays usable.
+
+`tests/layout-geometry.test.mjs` drives a real browser and asserts on those
+rectangles: nothing sticky, no overlaps, the drawer scrolls while the camera
+does not move, the page does not scroll, no horizontal overflow, 14 modes, no
+duplicate ids. It skips loudly where no browser is available rather than
+passing silently.
+
+## Not done in this pass

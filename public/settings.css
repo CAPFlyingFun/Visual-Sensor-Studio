@@ -138,3 +138,29 @@
     width: 100%;
   }
 }
+
+/*
+ * COMPACT TOP BAR — here rather than in styles.css because this file loads
+ * second and owns .topbar-actions.
+ *
+ * Measured at 430x932 with the old rules: the bar was 120px of the workspace
+ * and the tool drawer got 36. In a scrolling page that was merely generous; in
+ * a fixed workspace it was the whole problem.
+ */
+.topbar-actions {
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  min-width: 0;
+  /* Takes the room the title does not need, and the chips scroll inside it —
+     but the gear is a sibling of the scroller, so it can never scroll away. */
+  flex: 1 1 auto;
+  justify-content: flex-end;
+}
+.settings-button { min-height: 36px; padding: 0 10px; white-space: nowrap; }
+@media (max-width: 700px) {
+  .topbar-actions { width: auto; align-items: center; justify-content: flex-end; }
+  /* The gear alone: the word costs a third of the bar on a phone. */
+  .settings-button { font-size: 0; padding: 0 12px; }
+  .settings-button::before { content: '⚙️'; font-size: 1rem; }
+}
