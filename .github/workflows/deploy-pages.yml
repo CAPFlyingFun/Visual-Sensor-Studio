@@ -2,7 +2,7 @@ name: Build and deploy Visual Sensor Studio
 
 on:
   push:
-    branches: [main]
+    branches: [main, Version2]
   workflow_dispatch:
 
 permissions:
@@ -18,8 +18,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      # The production site is ALWAYS main, whichever branch triggered the
+      # run — a Version2 push must refresh the preview, never replace the app.
+      - name: Checkout main (production site)
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -34,6 +38,28 @@ jobs:
 
       - name: Build TypeScript
         run: npm run build
+
+      # The V2 preview rides along under /v2/ so the experimental branch is
+      # reachable on a real phone without replacing the production app. A
+      # failing Version2 build fails the whole run and deploys nothing, so it
+      # can never take the live site down with it.
+      - name: Checkout Version2 (preview)
+        uses: actions/checkout@v4
+        with:
+          ref: Version2
+          path: v2preview
+
+      - name: Test and build the V2 preview
+        working-directory: v2preview
+        run: |
+          npm install --no-audit --no-fund
+          npm test
+          npm run build
+
+      - name: Publish the preview under /v2/
+        run: |
+          rm -rf public/v2
+          cp -R v2preview/public public/v2
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
