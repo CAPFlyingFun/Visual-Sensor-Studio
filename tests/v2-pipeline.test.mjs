@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import {
   DEFAULT_GEOMETRY_INPUTS, fitShortSide, resolveGeometry
 } from '../.test-build/v2/camera/geometry.js';
+import { belowCapability } from '../.test-build/v2/camera/policy.js';
 import { FILTERS, filterById, ironbowLut } from '../.test-build/v2/filters/registry.js';
 import { ironbowColor } from '../.test-build/vision/motion-ironbow.js';
 
@@ -112,6 +113,29 @@ test('a numeric photo policy caps the short side and names itself', () => {
   });
   assert.deepEqual({ width: uncapped.photo.width, height: uncapped.photo.height }, { width: 960, height: 720 });
   assert.match(uncapped.photo.reason, /negotiated stream/);
+});
+
+/* --- Source policy: advertised vs negotiated ------------------------------ */
+
+test('belowCapability separates "cannot do more" from "did not ask"', () => {
+  // The device case that raised this: a 720×960 default stream on a camera
+  // advertising the full sensor.
+  assert.equal(belowCapability(size(720, 960), size(4032, 3024)), true);
+
+  // Orientation-free: the capability reports landscape maxima while a
+  // portrait stream transposes them. Same pixels, no gap.
+  assert.equal(belowCapability(size(3024, 4032), size(4032, 3024)), false);
+  assert.equal(belowCapability(size(4032, 3024), size(4032, 3024)), false);
+
+  // Mode quantisation inside the 2% slack is rounding, not refusal…
+  assert.equal(belowCapability(size(3018, 4026), size(4032, 3024)), false);
+  // …and just past it is a real gap again.
+  assert.equal(belowCapability(size(2880, 2160), size(4032, 3024)), true);
+
+  // Missing facts mean "no evidence", never "escalate on faith".
+  assert.equal(belowCapability(null, size(4032, 3024)), false);
+  assert.equal(belowCapability(size(720, 960), null), false);
+  assert.equal(belowCapability(null, null), false);
 });
 
 /* --- The filter registry (Rules 4–5) -------------------------------------- */

@@ -141,14 +141,20 @@ test('the camera goes live and the HUD carries measured truth (fake device)',
         source: document.getElementById('v2HudSource').textContent,
         fps: document.getElementById('v2HudFps').textContent,
         diag: document.getElementById('v2DiagSource').textContent,
+        capability: document.getElementById('v2DiagCapability').textContent,
         enableHidden: document.getElementById('v2EnableCamera').hidden,
         switchEnabled: !document.getElementById('v2SwitchCamera').disabled
       }));
       assert.equal(hud.state, 'LIVE');
       assert.match(hud.source, /^\d+×\d+$/, `the negotiated size should be numbers, got "${hud.source}"`);
       assert.match(hud.fps, /^\d+(\.\d+)? fps$/, `delivered fps should be measured, got "${hud.fps}"`);
-      assert.match(hud.diag, /^\d+×\d+ · \d+(\.\d+)? delivered fps$/,
+      assert.match(hud.diag, /^\d+×\d+ · \d+(\.\d+)? delivered fps/,
         'the SOURCE row carries size and measured rate together');
+      // CAPABILITY is a fact of its own: numbers where the browser exposes
+      // them, an honest "not exposed" where it does not — never a dash once
+      // the camera is live.
+      assert.match(hud.capability, /advertised maximum|not exposed/,
+        `the CAPABILITY row must commit, got "${hud.capability}"`);
       assert.equal(hud.enableHidden, true, 'the enable overlay hides once live');
       assert.equal(hud.switchEnabled, true);
       await page.close();

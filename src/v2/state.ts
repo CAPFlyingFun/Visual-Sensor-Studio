@@ -30,6 +30,13 @@ export interface V2State {
    * those are different facts and arrive with the geometry authority.
    */
   source: FrameSize | null;
+  /**
+   * CAPABILITY: the largest stream the track ADVERTISES, orientation as
+   * reported. Null where WebKit does not expose it — which is "unknown", not
+   * "equal to source". A different fact from SOURCE on purpose: the gap
+   * between them is the difference between "cannot do more" and "did not ask".
+   */
+  capability: FrameSize | null;
   /** Measured from presented frames. 0 until enough frames have arrived. */
   deliveredFps: number;
   zoom: CameraZoomState | null;
@@ -55,6 +62,7 @@ type Listener = (state: Readonly<V2State>) => void;
 const state: V2State = {
   camera: null,
   source: null,
+  capability: null,
   deliveredFps: 0,
   zoom: null,
   geometry: null,

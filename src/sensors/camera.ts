@@ -164,6 +164,8 @@ interface CameraEngine {
   permissionState(): Promise<string>;
   setPreferredCaptureHeight(height: number): number;
   setCaptureHeight(height: number): Promise<{ applied: boolean; reason?: string }>;
+  preferMaxCaptureSize(): void;
+  applyMaxCaptureSize(): Promise<{ applied: boolean; reason?: string }>;
   selectDevice(deviceId: string | null): Promise<CameraFacing>;
   readonly selectedDeviceId: string | null;
   setFrameRate(requested: 'auto' | number): Promise<{ applied: boolean; reason?: string; reported: number }>;
@@ -300,6 +302,16 @@ export class CameraController {
 
   async setCaptureHeight(height: number): Promise<{ applied: boolean; reason?: string }> {
     return engine().setCaptureHeight(height);
+  }
+
+  /** Ask the next request for the camera's largest mode. Synchronous by design. */
+  preferMaxCaptureSize(): void {
+    engine().preferMaxCaptureSize();
+  }
+
+  /** Ask a live track for the largest mode. The negotiated result must be read back. */
+  async applyMaxCaptureSize(): Promise<{ applied: boolean; reason?: string }> {
+    return engine().applyMaxCaptureSize();
   }
 
   async benchmarkFrameRates(

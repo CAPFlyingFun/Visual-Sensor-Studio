@@ -103,8 +103,9 @@ test('the state store is the one owner, and flow is one-directional', () => {
     'previewBoxShortSide() is the only place V2 may read the display');
   assert.match(appTs, /previewBoxShortSide: previewBoxShortSide\(\)/,
     'and its only consumer is the geometry authority');
-  assert.match(appTs, /frameSize\(camera\.diagnostics\.videoWidth, camera\.diagnostics\.videoHeight\)/);
-  assert.match(appTs, /frameSize\(d\.videoWidth, d\.videoHeight\)/);
+  const streamReads = appTs.match(/frameSize\(d\.videoWidth, d\.videoHeight\)/g) ?? [];
+  assert.ok(streamReads.length >= 2,
+    'both the status and delivery paths read SOURCE from the stream diagnostics');
 });
 
 test('frameSize keeps the convention and refuses nonsense', () => {

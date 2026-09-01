@@ -22,6 +22,7 @@ import { FrameRateMeter } from '../vision/frame-rate.js';
 import { zoomPresetStops } from '../sensors/zoom.js';
 import { NAV_ROUTES } from './routes.js';
 import { readState, subscribe, updateState, frameSize } from './state.js';
+import { belowCapability } from './camera/policy.js';
 import { resolveGeometry, DEFAULT_GEOMETRY_INPUTS } from './camera/geometry.js';
 import { FILTERS, filterById } from './filters/registry.js';
 import { GlRenderer } from './render/gl-renderer.js';
@@ -102,9 +103,28 @@ camera.subscribe((status: CameraStatus) => {
   updateState({
     camera: status,
     zoom: status.zoom,
-    source: frameSize(d.videoWidth, d.videoHeight)
+    source: frameSize(d.videoWidth, d.videoHeight),
+    capability: frameSize(d.capabilityWidth, d.capabilityHeight)
   });
+  escalateToCapability();
 });
+
+/**
+ * V2's source policy is THE MAXIMUM: the opening request already asks for the
+ * camera's largest mode (preferMaxCaptureSize before start), and this safety
+ * net covers a stream that nonetheless opened smaller while the track
+ * advertises more — once per page load, and only on evidence. The outcome is
+ * never assumed: SOURCE keeps reporting whatever the stream actually is, and
+ * the CAPABILITY row shows any gap that remains.
+ */
+let escalationTried = false;
+function escalateToCapability(): void {
+  const { camera: status, source, capability } = readState();
+  if (escalationTried || status?.state !== 'live') return;
+  if (!belowCapability(source, capability)) return;
+  escalationTried = true;
+  void camera.applyMaxCaptureSize();
+}
 
 /**
  * Delivered FPS is measured from PRESENTED frames, not assumed from the
@@ -117,12 +137,16 @@ function startDeliveryMeter(): void {
   if (deliveryRunning) return;
   deliveryRunning = camera.startFrameDelivery((frame) => {
     meter.recordDelivered(frame);
+    const d = camera.diagnostics;
     updateState({
       deliveredFps: meter.report.deliveredFps,
       // The negotiated size can settle a beat after `live`; re-read it on
-      // frames so SOURCE is the stream's own answer, not a stale one.
-      source: frameSize(camera.diagnostics.videoWidth, camera.diagnostics.videoHeight)
+      // frames so SOURCE is the stream's own answer, not a stale one. The
+      // capability rides along — WebKit fills it in once the track is real.
+      source: frameSize(d.videoWidth, d.videoHeight),
+      capability: frameSize(d.capabilityWidth, d.capabilityHeight)
     });
+    escalateToCapability();
     renderPreview(frame.now);
   });
 }
@@ -132,6 +156,11 @@ function startDeliveryMeter(): void {
 async function startCamera(): Promise<void> {
   setText('v2Stage', 'Requesting camera…');
   try {
+    // Ask for the camera's LARGEST mode, not a preset size. Synchronous, so
+    // the tap's transient activation still covers the getUserMedia call. The
+    // engine shapes the request from the capability it remembered; what
+    // actually arrives is read back from the stream, never assumed.
+    camera.preferMaxCaptureSize();
     await camera.start();
     startDeliveryMeter();
   } catch (error) {
@@ -187,14 +216,18 @@ function renderHud(): void {
 }
 
 function renderDiagnostics(): void {
-  const { camera: status, source, deliveredFps } = readState();
+  const { camera: status, source, capability, deliveredFps } = readState();
   const d = camera.diagnostics;
-  // The compact truth table starts with its first row. ANALYSIS, PREVIEW,
-  // PHOTO, RECORD IN and ENCODED join it in later milestones, each from the
-  // geometry authority — SOURCE is deliberately the only row A can claim.
+  // The gap between advertised and negotiated is the difference between
+  // "cannot do more" and "did not ask for more" — the legacy bug class this
+  // row exists to make visible. SOURCE stays the measurement either way.
+  const gap = belowCapability(source, capability) ? ' · below the advertised max' : '';
   setText('v2DiagSource', source
-    ? `${source.width}×${source.height} · ${deliveredFps > 0 ? deliveredFps.toFixed(1) : '—'} delivered fps`
+    ? `${source.width}×${source.height} · ${deliveredFps > 0 ? deliveredFps.toFixed(1) : '—'} delivered fps${gap}`
     : 'not started');
+  setText('v2DiagCapability', capability
+    ? `${capability.width}×${capability.height} · the track's advertised maximum`
+    : 'not exposed by this browser');
   const { geometry, previewFps } = readState();
   const row = (entry: { width: number; height: number; reason?: string } | null | undefined, extra = '') =>
     entry ? `${entry.width}×${entry.height}${extra}` : '—';

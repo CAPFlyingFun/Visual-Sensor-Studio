@@ -1349,6 +1349,21 @@
       return requestedHeight;
     },
 
+    /**
+     * Ask the NEXT request for this camera's largest mode, whatever its size
+     * turns out to be. Synchronous for the same transient-activation reason as
+     * setPreferredCaptureHeight. The sentinel stays private to the engine —
+     * callers state the intent, not a number.
+     */
+    preferMaxCaptureSize() {
+      requestedHeight = MAX_SIZE_SENTINEL;
+    },
+
+    /** Ask a LIVE track for the largest mode. The result must be read back. */
+    async applyMaxCaptureSize() {
+      return this.setCaptureHeight(MAX_SIZE_SENTINEL);
+    },
+
     async setCaptureHeight(height) {
       requestedHeight = Number(height) || 720;
       const track = videoTrack;
