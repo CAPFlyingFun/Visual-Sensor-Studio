@@ -264,5 +264,9 @@ test('the screen bound reads the screen, not the viewport', () => {
   // Browser chrome comes and goes; a render budget that resized with it would
   // rebuild every buffer when a toolbar hid.
   assert.match(mainSource, /window\.screen\?\.width \?\? window\.innerWidth/);
-  assert.match(mainSource, /budgetedShortSide\(devicePixels, sourceAspect, logicalScreenPixels\(\)\)/);
+  // Through renderPixelBudget() since v0.39.5, which returns the screen's
+  // logical count for the preview and raises it only while recording — the
+  // budget's SOURCE is what this test is about, and it is unchanged.
+  assert.match(mainSource, /budgetedShortSide\(devicePixels, sourceAspect, renderPixelBudget\(\)\)/);
+  assert.match(mainSource, /function renderPixelBudget\(\): number \{\n  const base = logicalScreenPixels\(\);/);
 });

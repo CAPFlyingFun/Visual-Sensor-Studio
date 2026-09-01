@@ -205,7 +205,9 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.39.4';
+type RecordDetail = 'preview' | 'higher' | 'full';
+
+const APP_VERSION = '0.39.5';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -229,6 +231,16 @@ interface AppSettings {
   qualityPreference: QualityPreference;
   visionRatePreference: VisionRatePreference;
   lensDetail: LensDetail;
+  /**
+   * How much detail a FILTER renders while recording.
+   *
+   * The preview's budget is the screen's logical pixel count, which caps a
+   * filtered recording at about 0.4 megapixels on a phone. That cap is right
+   * for a preview — rendering more than the screen can show is what made the
+   * preview lag — and wrong for a file, which will be watched full screen
+   * later. This raises it while recording only, and it costs frame rate.
+   */
+  recordDetail: RecordDetail;
   saveAspect: SaveAspect;
   saveFormat: SaveFormat;
   saveQuality: number;
@@ -283,6 +295,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   // climbs far above it when something actually moves, which is the whole point.
   visionRatePreference: 'adaptive',
   lensDetail: 'auto',
+  // The preview's own size by default: a setting that costs frame rate should
+  // be chosen, not inherited.
+  recordDetail: 'preview',
   saveAspect: 'sensor',
   // JPEG by default: the first full-resolution saves were 22-23MB of
   // lossless PNG, which is a share sheet nobody wants to wait for.
@@ -381,6 +396,9 @@ function loadSettings(): AppSettings {
         ? parsed.lensDetail as LensDetail
         : DEFAULT_SETTINGS.lensDetail,
       lensDetailChosen: parsed.lensDetailChosen === true,
+      recordDetail: ['preview', 'higher', 'full'].includes(String(parsed.recordDetail))
+        ? parsed.recordDetail as RecordDetail
+        : DEFAULT_SETTINGS.recordDetail,
       saveAspect: ['sensor', 'wide'].includes(String(parsed.saveAspect))
         ? parsed.saveAspect as SaveAspect
         : DEFAULT_SETTINGS.saveAspect,
@@ -3544,8 +3562,38 @@ function displayedShortSide(sourceAspect: number, now: number): number {
   // 1290 on the short side and 2.2 megapixels a frame. The budget caps the
   // extravagant case without touching the panel, which a flat ratio could not
   // do — see budgetedShortSide.
-  displayedShort = budgetedShortSide(devicePixels, sourceAspect, logicalScreenPixels());
+  displayedShort = budgetedShortSide(devicePixels, sourceAspect, renderPixelBudget());
   return displayedShort;
+}
+
+/**
+ * The pixel budget a rendered frame is allowed, which is not the same question
+ * while recording.
+ *
+ * The screen's logical pixel count is the right budget for a PREVIEW: drawing
+ * more than the screen can show costs frame rate and shows nothing, which is
+ * the measurement that fixed the lag. It is the wrong budget for a FILE, which
+ * will be watched full screen, zoomed and shared long after the preview is
+ * gone — and it is why a filtered clip tops out near 0.4 megapixels on a phone
+ * however it is saved.
+ *
+ * So while recording, and only while recording, the budget can be raised. The
+ * cost is frame rate and it is stated plainly: at `full` the render is bounded
+ * by the screen's REAL pixels rather than its logical ones, which on a 3x
+ * display is nine times the work per frame.
+ */
+function renderPixelBudget(): number {
+  const base = logicalScreenPixels();
+  // `arming` as well as recording: the pipeline has to be drawing at the larger
+  // size BEFORE the recorder captures the canvas, or the first clip is sized
+  // from the preview and every later one from the recording.
+  if ((!rolling.recording && !armingDetail) || settings.recordDetail === 'preview') return base;
+  // 'higher' doubles the budget, which is 1.41x on each side — enough to be
+  // visible in a file without the frame rate falling through the floor.
+  if (settings.recordDetail === 'higher') return base * 2;
+  // 'full' removes the cap. What remains is the display box measured in real
+  // device pixels, which is the most the app ever had reason to draw.
+  return Number.POSITIVE_INFINITY;
 }
 
 /** The width that produces this short side, in the source's own orientation. */
@@ -6759,6 +6807,8 @@ let recordStreamIsOurs = false;
 let segmentFrames = 0;
 /** The last clip's measured rate, or 0 before one exists. */
 let recordedFps = 0;
+/** True between pressing Record and the pipeline drawing at the record size. */
+let armingDetail = false;
 let clipLimits: RetentionLimits = { maxClips: 0, maxBytes: 0 };
 let lastElapsedPaint = 0;
 
@@ -7083,8 +7133,38 @@ async function exportClip(clip: StoredClip, how: 'save' | 'share'): Promise<void
   await renderClips();
 }
 
-function startRecording(): void {
-  if (!recordingSupported() || rolling.recording) return;
+/**
+ * Wait for the pipeline to actually redraw at the recording size.
+ *
+ * Raising the budget only changes what the NEXT analysed frame renders at, and
+ * a heavy filter analyses a few times a second. Capturing the canvas before
+ * that lands would record the preview's size and quietly ignore the setting.
+ */
+async function awaitRecordDetail(): Promise<void> {
+  if (settings.recordDetail === 'preview') return;
+  const was = visionCanvas.width;
+  const until = performance.now() + 1500;
+  while (performance.now() < until) {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    if (visionCanvas.width !== was && visionCanvas.width > 0) return;
+  }
+  // Timed out: record anyway, at whatever size the pipeline is drawing. A
+  // recording that does not start is worse than one at the preview's size.
+}
+
+async function startRecording(): Promise<void> {
+  if (!recordingSupported() || rolling.recording || armingDetail) return;
+  if (settings.recordDetail !== 'preview') {
+    armingDetail = true;
+    lastDisplayMeasure = 0;
+    setText('recordMessage', 'Raising the render size for recording…');
+    try {
+      await awaitRecordDetail();
+    } finally {
+      armingDetail = false;
+    }
+    if (!camera.active) { setText('recordMessage', 'The camera stopped.'); return; }
+  }
   const source = recordSource();
   if (!source) {
     setText('recordMessage', 'There is nothing to record until the camera is live.');
@@ -7094,18 +7174,24 @@ function startRecording(): void {
   recordStreamIsOurs = source.ours;
   segmentLabel = source.label;
   const track = source.stream.getVideoTracks()[0];
-  const settings = track?.getSettings?.() ?? {};
+  // Named apart from the app's own `settings`: this function reads both, and a
+  // shadowing `const settings` here put the module-level one in its temporal
+  // dead zone for the whole function.
+  const trackSettings = track?.getSettings?.() ?? {};
   // The RECORDING canvas, not the overlay: falling back to the overlay's size
   // would aim the bit rate at the 166x221 analysis frame while encoding a
   // frame several times that, and starve it.
   const fallbackWidth = recordStreamIsOurs && recordCanvas ? recordCanvas.width : 1280;
   const fallbackHeight = recordStreamIsOurs && recordCanvas ? recordCanvas.height : 720;
   clipBitrate = suggestedBitrate(
-    settings.width ?? fallbackWidth,
-    settings.height ?? fallbackHeight,
-    settings.frameRate ?? 30
+    trackSettings.width ?? fallbackWidth,
+    trackSettings.height ?? fallbackHeight,
+    trackSettings.frameRate ?? 30
   );
   rolling.start(performance.now());
+  // The display size is memoised for 400ms; recording changes the budget it was
+  // measured under, so the old answer is stale the instant recording starts.
+  lastDisplayMeasure = 0;
   syncRecordButton();
   const upscaled = recordStreamIsOurs
     && recordCanvas
@@ -7121,6 +7207,7 @@ function startRecording(): void {
 function stopRecording(): void {
   if (!rolling.recording) return;
   rolling.stop(performance.now());
+  lastDisplayMeasure = 0;
   // Only tracks this code created. Stopping the camera's own tracks here would
   // switch the camera off as a side effect of stopping a recording.
   if (recordStreamIsOurs) recordStream?.getTracks().forEach((t) => t.stop());
@@ -7130,6 +7217,30 @@ function stopRecording(): void {
   syncRecordButton();
   setText('recordElapsed', '');
   setText('recordMessage', 'Stopped. Clips are held below until you export them.');
+}
+
+/**
+ * Say what the choice costs in this device's numbers, not in adjectives.
+ *
+ * "Higher" and "full" both mean more pixels per frame, and pixels per frame is
+ * exactly what the frame rate is spent on. A person can only weigh that if the
+ * app shows the arithmetic.
+ */
+function syncRecordDetailNote(): void {
+  // The control follows the stored choice as well as describing it, so a
+  // reload does not show "match the preview" while recording at full detail.
+  const control = document.getElementById('recordDetail') as HTMLSelectElement | null;
+  if (control && control.value !== settings.recordDetail) control.value = settings.recordDetail;
+  const screen = logicalScreenPixels();
+  if (!(screen > 0)) return;
+  const factor = settings.recordDetail === 'preview' ? 1
+    : settings.recordDetail === 'higher' ? 2
+      : Math.max(1, (window.devicePixelRatio || 1) ** 2);
+  setText('recordDetailNote', settings.recordDetail === 'preview'
+    ? 'Records the picture at the size the preview draws it.'
+    : `About ${factor.toFixed(factor < 10 ? 1 : 0)}× the pixels per frame while recording, `
+      + 'so expect the frame rate to fall by roughly the same factor. It stops '
+      + 'when the recording stops.');
 }
 
 function syncRecordButton(): void {
@@ -7391,7 +7502,15 @@ function on<K extends keyof HTMLElementEventMap>(
 on('cameraButton', 'click', () => void startCamera());
 on('recordButton', 'click', () => {
   if (rolling.recording) stopRecording();
-  else startRecording();
+  else void startRecording();
+});
+on('recordDetail', 'change', (event) => {
+  const value = (event.target as HTMLSelectElement).value;
+  settings.recordDetail = ['preview', 'higher', 'full'].includes(value)
+    ? value as RecordDetail
+    : 'preview';
+  saveSettings();
+  syncRecordDetailNote();
 });
 on('clipClearButton', 'click', () => {
   void clearClips().then(() => renderClips()).then(() => pruneClips());
@@ -8839,6 +8958,7 @@ on('burstClearLog', 'click', () => {
  */
 detectClipFormat();
 syncRecordButton();
+syncRecordDetailNote();
 syncGifEstimate();
 void renderClips().then(() => pruneClips()).catch(() => {
   setText('clipStorage', 'Held clips could not be read from this device.');

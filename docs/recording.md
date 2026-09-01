@@ -170,9 +170,30 @@ display budget. That budget is the screen's *logical* pixel count — 430×932 o
 his phone, so a 4:3 frame caps at 548×732 ≈ 0.4 MP. It exists because rendering
 more than the screen can show is what made the preview lag, and it was added at
 his request. Recording a bigger file from the same render would be empty
-upscaling. **The lever is Live detail**, which raises what the filter computes
-and costs frame rate. An *unfiltered* recording bypasses all of this: the camera
-track is recorded directly at its own full resolution.
+upscaling. An *unfiltered* recording bypasses all of this: the camera track is
+recorded directly at its own full resolution.
+
+**v0.39.5 makes that ceiling a choice**, applied while recording only, because
+the budget that is right for a preview is wrong for a file. Measured for a
+430×932 screen at 3×, with the viewfinder box 373pt tall:
+
+| Recording detail | budget | 4:3 | 16:9 |
+|---|---|---|---|
+| Match the preview | screen's logical pixels | 731×548 (0.40 MP) | 843×474 (0.40 MP) |
+| Higher | ×2 | 1033×775 (0.80 MP) | 1193×671 (0.80 MP) |
+| Full | uncapped | 1492×1119 (1.67 MP) | 1989×1119 (2.23 MP) |
+
+Pixels per frame is exactly what frame rate is spent on, so Full costs about the
+pixel ratio squared — the note under the control says so in the device's own
+numbers rather than in adjectives. The default stays at Match: a setting that
+costs frame rate should be chosen, not inherited.
+
+One ordering detail that matters: raising the budget only changes what the
+*next analysed frame* renders at, and a heavy filter analyses a few times a
+second. So pressing Record arms the larger size, waits (up to 1.5s) for the
+pipeline to actually redraw at it, and only then captures the canvas —
+otherwise the first clip would be sized from the preview and quietly ignore the
+setting.
 
 **Frame rate.** Main-thread bound, measured, and not fixable by any recorder —
 see the table above.

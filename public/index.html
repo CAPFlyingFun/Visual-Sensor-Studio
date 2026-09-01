@@ -541,6 +541,16 @@
               <strong>Record</strong>
               <span class="small-badge" id="recordFormat">checking…</span>
             </div>
+            <div class="night-grid">
+              <label>Recording detail
+                <select id="recordDetail">
+                  <option value="preview">Match the preview &mdash; fastest</option>
+                  <option value="higher">Higher &mdash; 2&times; the pixels</option>
+                  <option value="full">Full &mdash; the screen's real pixels</option>
+                </select>
+              </label>
+            </div>
+            <p class="helper" id="recordDetailNote"></p>
             <details class="explainer">
               <summary>How recording works, and what its frame rate means</summary>
               <p class="helper">
@@ -556,12 +566,13 @@
               full resolution with no scaling.
             </p>
             <p class="helper">
-              <strong>There is a ceiling, and it is deliberate.</strong> Even at Full, a filter
-              renders no larger than this screen's own pixel count &mdash; the cap that stopped
-              the preview lagging. So a filtered recording tops out near 0.4 megapixels on this
-              phone however it is saved, while an unfiltered one is limited only by the camera.
-              Raising that ceiling is possible and would cost frame rate; it is not something a
-              different recorder can give you.
+              <strong>Recording detail lifts the preview's ceiling.</strong> A filter normally
+              renders no larger than this screen's own logical pixel count &mdash; the cap that
+              stopped the preview lagging &mdash; which is right for something you are watching
+              live and wrong for a file you will watch full screen later. Raising it applies
+              while recording only, and it costs frame rate in proportion: roughly 0.4 megapixels
+              a frame at Match, 0.8 at Higher, and up to about 2 at Full on this phone. An
+              unfiltered recording ignores all of this and uses the camera's own resolution.
             </p>
             <p class="helper">
               <strong>Three rates, and they are three different things.</strong> The camera
@@ -1041,7 +1052,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.39.4</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.39.5</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">
