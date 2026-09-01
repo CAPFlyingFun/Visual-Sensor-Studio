@@ -326,6 +326,18 @@ function applyStreamTier(id: string): void {
   }
 }
 
+/** Transient explanation, self-dismissing — shown when a tap needs a why. */
+let toastTimer = 0;
+function showToast(message: string): void {
+  const toast = byId('v2Toast');
+  toast.textContent = message;
+  toast.hidden = false;
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => {
+    toast.hidden = true;
+  }, 5000);
+}
+
 function buildStreamTiers(): void {
   const holder = byId('v2StreamTiers');
   for (const tier of STREAM_TIERS) {
@@ -334,7 +346,18 @@ function buildStreamTiers(): void {
     button.textContent = tier.label;
     button.dataset.streamTier = tier.id;
     if (tier.id === readState().streamTier) button.classList.add('active');
-    button.addEventListener('click', () => applyStreamTier(tier.id));
+    // An unavailable tier stays TAPPABLE — the tap answers with a toast
+    // instead of applying (Joshua, 2026-09-01: no standing text under the
+    // options; red is the state, the tap explains it for ~5 s).
+    button.addEventListener('click', () => {
+      if (!tierAvailable(tier, capabilityShortSide())) {
+        const cap = readState().capability;
+        showToast(`${tier.label} is not available — this camera's output tops out at `
+          + `${cap ? `${cap.width}×${cap.height}` : 'a smaller size'}. MAX is already its largest.`);
+        return;
+      }
+      applyStreamTier(tier.id);
+    });
     holder.appendChild(button);
   }
 }
@@ -347,29 +370,18 @@ function renderStreamTiers(): void {
   const key = `${streamTier}|${busy}|${capShort ?? 'unknown'}`;
   if (key === renderedTierKey) return;
   renderedTierKey = key;
-  // A class this camera cannot fill greys out with the reason (Joshua,
-  // 2026-09-01) — offering it would promise pixels the sensor lacks. Only
-  // properties change here; the buttons themselves stay stable under fingers.
-  const greyed: string[] = [];
+  // A class this camera cannot fill shows RED (Joshua, 2026-09-01) — the
+  // color is the state, and the tap explains itself via toast, so the button
+  // stays enabled and no standing text crowds the strip. Only properties
+  // change here; the buttons themselves stay stable under fingers.
   for (const button of byId('v2StreamTiers').querySelectorAll<HTMLButtonElement>('[data-stream-tier]')) {
     const tier = tierById(button.dataset.streamTier ?? '');
     const available = tier !== null && tierAvailable(tier, capShort);
-    if (tier && !available) greyed.push(tier.label);
     button.classList.toggle('active', button.dataset.streamTier === streamTier);
+    button.classList.toggle('unavailable', !available);
     // A tier change renegotiates the camera mode — it waits for the clip or
     // the shutter, exactly like the other mode-changing controls.
-    button.disabled = busy || !available;
-  }
-  const note = byId('v2TierNote');
-  if (greyed.length > 0) {
-    const chosenGreyed = greyed.includes(tierById(streamTier)?.label ?? '');
-    note.hidden = false;
-    note.textContent = `${greyed.join(' & ')} greyed out — this camera's output is not big enough `
-      + 'for the class. MAX is already this camera\'s largest.'
-      + (chosenGreyed ? ' The chosen tier exceeds this camera, so the stream runs at its largest.' : '');
-  } else {
-    note.hidden = true;
-    note.textContent = '';
+    button.disabled = busy;
   }
 }
 
@@ -801,13 +813,16 @@ async function toggleRecording(): Promise<void> {
     // Say that, instead of printing 0×0 as if it were a resolution.
     const dimsText = result && result.encodedWidth > 0
       ? `${result.encodedWidth}×${result.encodedHeight} measured in the file`
-      : result?.finalizeTimedOut
-        ? 'file DID NOT DECODE — the encoder never finished finalising (60s guard fired)'
-        : 'file DID NOT DECODE — truncated container, likely killed mid-encode';
+      : result?.encoderDied
+        ? 'file DID NOT DECODE — the encoder died mid-clip, no index was ever written'
+        : result?.finalizeTimedOut
+          ? 'file DID NOT DECODE — the encoder never finished finalising (60s guard fired)'
+          : 'file DID NOT DECODE — truncated container, likely killed mid-encode';
     const finalizeText = result
-      ? result.finalizeTimedOut
+      ? (result.finalizeTimedOut
         ? 'finalise GAVE UP at 60s'
-        : `finalised in ${(result.finalizeMs / 1000).toFixed(1)}s`
+        : `finalised in ${(result.finalizeMs / 1000).toFixed(1)}s`)
+        + (result.encoderDied ? ` · ENCODER DIED: ${result.encoderDied}` : '')
       : '';
     // The 1 s timeslice is a REQUEST. Whether this browser actually delivered
     // chunks is the fact that decides if a killed encoder loses a second or

@@ -49,6 +49,14 @@ export interface ClipResult {
   finalizeMs: number;
   /** The guard fired before onstop — the file is likely missing its index. */
   finalizeTimedOut: boolean;
+  /**
+   * Non-null when the recorder died BEFORE stop was pressed — an error event,
+   * a self-stop, or a recorder already inactive when asked to stop. Measured
+   * on device (2026-09-01): a MAX clip reported "finalised in 0.0s" on a file
+   * that would not decode, the signature of an encoder that was already dead
+   * — and nothing was listening.
+   */
+  encoderDied: string | null;
 }
 
 /**
@@ -115,9 +123,16 @@ export class ClipRecorder {
   private mime = '';
   private bitrate = 0;
   private label = 'clip';
+  private diedReason: string | null = null;
 
   get active(): boolean {
     return this.recorder !== null;
+  }
+
+  private markDied(reason: string): void {
+    if (this.diedReason) return;
+    const at = Math.max(0, (performance.now() - this.startedAt) / 1000);
+    this.diedReason = `${reason} at ${at.toFixed(1)}s`;
   }
 
   /**
@@ -149,8 +164,20 @@ export class ClipRecorder {
     this.mime = this.recorder.mimeType || mime;
     this.label = label;
     this.chunks = [];
+    this.diedReason = null;
     this.recorder.ondataavailable = (event) => {
       if (event.data && event.data.size > 0) this.chunks.push(event.data);
+    };
+    // A dying encoder announces itself — listen, so a dead recorder at stop
+    // time is a measured fact with a timestamp instead of a mystery.
+    this.recorder.onerror = (event) => {
+      const error = (event as Event & { error?: DOMException }).error;
+      this.markDied(`recorder error (${error?.name ?? 'unnamed'})`);
+    };
+    this.recorder.onstop = () => {
+      // stop() replaces this handler; reaching it here means the recorder
+      // stopped ITSELF while we still considered the clip live.
+      this.markDied('the recorder stopped itself');
     };
     // CHUNKED delivery, one second at a time — restored after the one-blob
     // experiment failed on device. Measured: a chunked 12 MP clip decoded
@@ -183,6 +210,7 @@ export class ClipRecorder {
     // of letting the truncation masquerade as an encoder crash.
     const finalizeStart = performance.now();
     let finalizeTimedOut = false;
+    if (recorder.state === 'inactive') this.markDied('the recorder was already inactive');
     await new Promise<void>((resolve) => {
       let settled = false;
       const finish = () => {
@@ -224,7 +252,8 @@ export class ClipRecorder {
       fileName,
       chunkCount,
       finalizeMs,
-      finalizeTimedOut
+      finalizeTimedOut,
+      encoderDied: this.diedReason
     };
   }
 }

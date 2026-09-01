@@ -426,38 +426,44 @@ test('the stream tier renegotiates the LIVE stream and the row measures it (fake
         /responsive live stream/.test(document.getElementById('v2DiagSource')?.textContent ?? ''),
         null, { timeout: 3000 });
 
-      // A class the camera cannot fill greys out with the reason; MAX never
-      // greys. Read the CAPABILITY row the app itself reads, so the check
-      // holds whether or not this browser exposes capability.
+      // A class the camera cannot fill shows RED and answers a tap with a
+      // 5 s toast instead of applying; no standing text under the strip.
+      // Read the CAPABILITY row the app itself reads, so the check holds
+      // whether or not this browser exposes capability.
       const availability = await page.evaluate(() => {
         const cap = document.getElementById('v2DiagCapability')?.textContent ?? '';
         const m = cap.match(/^(\d+)×(\d+)/);
-        const disabled = (id) =>
-          document.querySelector(`[data-stream-tier="${id}"]`)?.disabled ?? null;
-        const note = document.getElementById('v2TierNote');
+        const button = (id) => document.querySelector(`[data-stream-tier="${id}"]`);
         return {
           capShort: m ? Math.min(Number(m[1]), Number(m[2])) : null,
-          fourK: disabled('4k'),
-          max: disabled('maximum'),
-          noteHidden: note?.hidden ?? null,
-          noteText: note?.textContent ?? ''
+          fourKRed: button('4k')?.classList.contains('unavailable') ?? null,
+          fourKDisabled: button('4k')?.disabled ?? null,
+          maxRed: button('maximum')?.classList.contains('unavailable') ?? null,
+          toastHidden: document.getElementById('v2Toast')?.hidden ?? null
         };
       });
-      assert.equal(availability.max, false, 'MAX is always this camera\'s own largest');
+      assert.equal(availability.maxRed, false, 'MAX is always this camera\'s own largest');
+      assert.equal(availability.fourKDisabled, false,
+        'unavailable tiers stay tappable — the tap explains via toast');
+      assert.equal(availability.toastHidden, true, 'no toast until someone taps');
       if (availability.capShort !== null) {
-        const expectGrey = availability.capShort < 3240;
-        assert.equal(availability.fourK, expectGrey,
+        const expectRed = availability.capShort < 3240;
+        assert.equal(availability.fourKRed, expectRed,
           `capability short side ${availability.capShort} vs the 4K class (3240)`);
-        assert.equal(availability.noteHidden, !expectGrey,
-          'the note shows exactly when a tier is greyed');
-        if (expectGrey) {
-          assert.match(availability.noteText, /not big enough/,
-            'the grey-out names its reason');
+        if (expectRed) {
+          await page.click('[data-stream-tier="4k"]');
+          const toast = await page.evaluate(() => ({
+            hidden: document.getElementById('v2Toast')?.hidden ?? null,
+            text: document.getElementById('v2Toast')?.textContent ?? '',
+            active: document.querySelector('#v2StreamTiers .active')?.dataset.streamTier ?? null
+          }));
+          assert.equal(toast.hidden, false, 'a tap on a red tier answers with the toast');
+          assert.match(toast.text, /not available/, 'the toast names the reason');
+          assert.equal(toast.active, '720', 'a refused tier is never applied');
         }
       } else {
-        assert.equal(availability.fourK, false,
-          'unknown capability greys nothing — that would state an unmeasured fact');
-        assert.equal(availability.noteHidden, true);
+        assert.equal(availability.fourKRed, false,
+          'unknown capability flags nothing — that would state an unmeasured fact');
       }
 
       // Up to 1080: a deliberate choice, applied to the RUNNING track, and
