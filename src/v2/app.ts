@@ -25,6 +25,7 @@ import { readState, subscribe, updateState, frameSize } from './state.js';
 import { resolveGeometry, DEFAULT_GEOMETRY_INPUTS } from './camera/geometry.js';
 import { captureAtMaxStream, type Escalation, type ShutterStream } from './capture/shutter.js';
 import { ClipRecorder } from './capture/record.js';
+import { STREAM_TIERS, tierById } from './camera/stream-tiers.js';
 import { FILTERS, filterById } from './filters/registry.js';
 import { GlRenderer } from './render/gl-renderer.js';
 import { capturePhoto } from './capture/photo.js';
@@ -173,6 +174,55 @@ function isStandalone(): boolean {
     || Boolean((navigator as Navigator & { standalone?: boolean }).standalone);
 }
 
+/* --- The stream tier: a deliberate trade, applied and then measured ------- */
+
+/**
+ * Ask the engine for the chosen tier — before start and, when live, on the
+ * running track (WebKit granting a live raise is device-verified). What
+ * actually arrives is read back from the stream per frame, never assumed;
+ * a tier the camera declines simply shows its refusal in the SOURCE row.
+ */
+function applyStreamTier(id: string): void {
+  const tier = tierById(id);
+  if (!tier || readState().recording || readState().captureActive) return;
+  updateState({ streamTier: id });
+  if (tier.shortSide === 'max') {
+    camera.preferMaxCaptureSize();
+    if (camera.active) void camera.applyMaxCaptureSize();
+  } else {
+    camera.setPreferredCaptureHeight(tier.shortSide);
+    if (camera.active) void camera.setCaptureHeight(tier.shortSide);
+  }
+}
+
+function buildStreamTiers(): void {
+  const holder = byId('v2StreamTiers');
+  for (const tier of STREAM_TIERS) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = tier.label;
+    button.dataset.streamTier = tier.id;
+    if (tier.id === readState().streamTier) button.classList.add('active');
+    button.addEventListener('click', () => applyStreamTier(tier.id));
+    holder.appendChild(button);
+  }
+}
+
+let renderedTierKey = '';
+function renderStreamTiers(): void {
+  const { streamTier, recording, captureActive } = readState();
+  const busy = recording !== null || captureActive;
+  const key = `${streamTier}|${busy}`;
+  if (key === renderedTierKey) return;
+  renderedTierKey = key;
+  for (const button of byId('v2StreamTiers').querySelectorAll<HTMLButtonElement>('[data-stream-tier]')) {
+    button.classList.toggle('active', button.dataset.streamTier === streamTier);
+    // A tier change renegotiates the camera mode — it waits for the clip or
+    // the shutter, exactly like the other mode-changing controls.
+    button.disabled = busy;
+  }
+}
+
 /* --- Zoom: presets derived from the engine's own reported range ---------- */
 
 /**
@@ -242,7 +292,9 @@ function renderDiagnostics(): void {
   // while frames arrive — a suspended camera keeps no frozen numbers.
   setText('v2DiagSource', source
     ? `${source.width}×${source.height} · ${live && deliveredFps > 0 ? deliveredFps.toFixed(1) : '—'} delivered fps · `
-      + (captureActive ? 'maximum stream for this shot' : 'responsive live stream')
+      + (captureActive
+        ? 'maximum stream for this shot'
+        : tierById(readState().streamTier)?.streamLabel ?? 'live stream')
     : 'not started');
   setText('v2DiagCapability', capability
     ? `${capability.width}×${capability.height} · the track's advertised maximum`
@@ -387,6 +439,7 @@ subscribe(() => {
   renderControls();
   renderZoomStops();
   renderFilterStrip();
+  renderStreamTiers();
   const now = performance.now();
   if (now - lastTextRender >= TEXT_RENDER_INTERVAL_MS) {
     lastTextRender = now;
@@ -694,6 +747,7 @@ byId('v2LegacyLink').addEventListener('click', () => {
 });
 
 buildFilterStrip();
+buildStreamTiers();
 buildDock();
 showRoute('camera');
 

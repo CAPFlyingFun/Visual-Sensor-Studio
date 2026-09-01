@@ -94,6 +94,8 @@ export interface V2State {
   lastPhoto: SavedPhoto | null;
   /** True only inside the shutter's temporary maximum-stream window. */
   captureActive: boolean;
+  /** The chosen CAMERA STREAM tier id; the registry defines what it means. */
+  streamTier: string;
   /** Non-null while a clip is being recorded. */
   recording: ActiveRecording | null;
   /** ENCODED: what the last clip's file really contained. */
@@ -119,6 +121,7 @@ const state: V2State = {
   viewfinder: null,
   lastPhoto: null,
   captureActive: false,
+  streamTier: 'speed',
   recording: null,
   lastClip: null
 };

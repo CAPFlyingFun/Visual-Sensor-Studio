@@ -9,6 +9,8 @@ import {
 } from '../.test-build/v2/camera/geometry.js';
 import { captureAtMaxStream } from '../.test-build/v2/capture/shutter.js';
 import { pickContainer } from '../.test-build/v2/capture/record.js';
+import { STREAM_TIERS, DEFAULT_STREAM_TIER, tierById } from '../.test-build/v2/camera/stream-tiers.js';
+import { readState } from '../.test-build/v2/state.js';
 import { FILTERS, filterById, ironbowLut } from '../.test-build/v2/filters/registry.js';
 import { ironbowColor } from '../.test-build/vision/motion-ironbow.js';
 
@@ -75,6 +77,25 @@ test('RECORD IN follows the responsive stream and ignores the display', () => {
   assert.deepEqual({ width: capped.recordInput.width, height: capped.recordInput.height },
     { width: 548, height: 730 });
   assert.match(capped.recordInput.reason, /548/);
+});
+
+test('stream tiers are one registry: deliberate, labelled, defaulting responsive', () => {
+  assert.ok(STREAM_TIERS.length >= 3, '720, 1080 and MAX at least');
+  assert.equal(new Set(STREAM_TIERS.map((t) => t.id)).size, STREAM_TIERS.length, 'unique ids');
+  for (const tier of STREAM_TIERS) {
+    assert.ok(tier.label.length > 0 && tier.streamLabel.length > 0,
+      `${tier.id} needs a button label and a SOURCE-row description`);
+    assert.ok(tier.shortSide === 'max' || tier.shortSide > 0);
+  }
+  assert.equal(STREAM_TIERS.filter((t) => t.shortSide === 'max').length, 1,
+    'exactly one tier asks for the largest mode');
+  const fallback = tierById(DEFAULT_STREAM_TIER);
+  assert.ok(fallback && fallback.shortSide === 720,
+    'the default tier is the responsive one — the maximum never arrives by accident');
+  assert.match(fallback.streamLabel, /responsive/);
+  assert.equal(readState().streamTier, DEFAULT_STREAM_TIER,
+    'the state boots on the registry default — one owner for the default');
+  assert.equal(tierById('nope'), null);
 });
 
 test('the container ladder prefers mp4, falls back honestly, never pins a level', () => {
@@ -355,9 +376,13 @@ test('the camera rule document and the code speak the same language', () => {
   }
 
   const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
-  assert.match(appTs, /responsive live stream/, 'the live-source policy names itself');
-  assert.ok(!/preferMaxCaptureSize/.test(appTs),
-    'normal V2 startup never asks the live stream for the maximum');
+  assert.match(appTs, /streamLabel/, 'the SOURCE row reads its description from the tier registry');
+  assert.match(tierById(DEFAULT_STREAM_TIER)?.streamLabel ?? '', /responsive live stream/,
+    'the default policy names itself');
+  // The maximum is reachable ONLY through a deliberate tier choice or the
+  // shutter — never on ordinary startup.
+  assert.ok(!/^\s*camera\.preferMaxCaptureSize/m.test(appTs.split('async function startCamera')[1]?.split('}')[0] ?? ''),
+    'startCamera never asks for the maximum');
 });
 
 /* --- The filter registry (Rules 4–5) -------------------------------------- */

@@ -332,6 +332,61 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
     });
   });
 
+test('the stream tier renegotiates the LIVE stream and the row measures it (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({
+        viewport: { width: 430, height: 932 },
+        permissions: ['camera']
+      });
+      const page = await context.newPage();
+      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.waitForTimeout(400);
+      await page.click('#v2EnableCamera');
+      await page.waitForFunction(() =>
+        /\d+(\.\d+)? rendered fps/.test(document.getElementById('v2DiagPreview')?.textContent ?? ''),
+        null, { timeout: 8000 });
+
+      const tiers = await page.evaluate(() =>
+        [...document.querySelectorAll('#v2StreamTiers [data-stream-tier]')]
+          .map((b) => b.dataset.streamTier));
+      assert.deepEqual(tiers, ['speed', 'detail', 'maximum'],
+        'the tier strip mirrors STREAM_TIERS, in order');
+      await page.waitForFunction(() =>
+        /responsive live stream/.test(document.getElementById('v2DiagSource')?.textContent ?? ''),
+        null, { timeout: 3000 });
+
+      // Up to 1080: a deliberate choice, applied to the RUNNING track, and
+      // the SOURCE row reports the measured stream — never the request.
+      await page.click('[data-stream-tier="detail"]');
+      await page.waitForFunction(() => {
+        const text = document.getElementById('v2DiagSource')?.textContent ?? '';
+        const m = text.match(/^(\d+)×(\d+)/);
+        return m !== null
+          && Math.min(Number(m[1]), Number(m[2])) === 1080
+          && /detail live stream/.test(text);
+      }, null, { timeout: 8000 });
+
+      // And back down — responsive is one tap away, and the preview follows
+      // the stream through both changes via the one geometry owner.
+      await page.click('[data-stream-tier="speed"]');
+      await page.waitForFunction(() => {
+        const text = document.getElementById('v2DiagSource')?.textContent ?? '';
+        const m = text.match(/^(\d+)×(\d+)/);
+        return m !== null
+          && Math.min(Number(m[1]), Number(m[2])) === 720
+          && /responsive live stream/.test(text);
+      }, null, { timeout: 8000 });
+      await page.waitForTimeout(600);
+      const canvas = await page.evaluate(() => document.getElementById('v2PreviewCanvas').width);
+      const preview = Number((await page.textContent('#v2DiagPreview')).match(/^(\d+)×/)[1]);
+      assert.equal(canvas, preview, 'the preview tracks the geometry through tier changes');
+
+      await page.close();
+      await context.close();
+    });
+  });
+
 test('recording truth: native and filtered clips measured from their files (fake device)',
   { skip: runnable ? false : 'no browser available' }, async () => {
     await withBrowser(async (browser, base) => {
