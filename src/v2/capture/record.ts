@@ -140,12 +140,16 @@ export class ClipRecorder {
     this.recorder.ondataavailable = (event) => {
       if (event.data && event.data.size > 0) this.chunks.push(event.data);
     };
-    // ONE blob at stop, no timeslice. Chunked delivery produces a fragmented
-    // container that iOS Photos refuses to import even though Files plays it
-    // (measured on device); a single coherent file is what "Save Video"
-    // accepts. The trade — a crash loses the whole short clip — returns when
-    // rolling 30-second clips arrive with a proper remux.
-    this.recorder.start();
+    // CHUNKED delivery, one second at a time — restored after the one-blob
+    // experiment failed on device. Measured: a chunked 12 MP clip decoded
+    // fine even under encoder distress (fragments carry their index as they
+    // go, so a dying encoder loses a second, not the clip), while one-blob
+    // 12 MP clips truncated on BOTH paths — an MP4's index is written at
+    // finalisation, and a killed encoder never writes it. The one-blob
+    // switch had chased a Photos-import theory that turned out to be the
+    // browser's download sandbox instead. If the share sheet ever refuses a
+    // fragmented file, the fix is a remux, not losing crash-resilience.
+    this.recorder.start(1000);
     this.startedAt = performance.now();
     return { ok: true };
   }
