@@ -18,7 +18,24 @@
 }
 
 * { box-sizing: border-box; }
-html { background: var(--bg); }
+/*
+ * TWO THINGS THAT CHANGE THE APP'S SIZE WITHOUT ANYONE ASKING.
+ *
+ * iOS decides the page's zoom scale from how wide the DOCUMENT turns out to be,
+ * and it inflates text inside blocks that are wider than the viewport. So a
+ * single oversized element does not merely overflow — it rescales the whole app
+ * around itself, and the change persists after you scroll away from it. That is
+ * what the 2060px comparison canvas did in v0.36.1: "It works, but the size
+ * changes... it shouldn't."
+ *
+ * text-size-adjust off stops the second half of that at the root. The first
+ * half is stopped where it starts, on `.tab-panel` below.
+ */
+html {
+  background: var(--bg);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
 body {
   margin: 0;
   min-width: 320px;
@@ -1041,6 +1058,21 @@ footer strong { color: #9fb2c3; }
    the vision overlay. Off-screen keeps the element rendered and the stream
    alive, at the cost of some layout work that a handful of panels can afford.
 */
+/*
+ * THE SAFETY NET, at the widest thing a tab can be.
+ *
+ * `clip`, not `hidden` or `auto`: it stops a runaway element from setting the
+ * document's width without turning every panel into a scroll container (which
+ * would swallow the sticky tab bar's scrollport) and without offering a
+ * sideways scrollbar as if the overflow were intended. Anything inside a panel
+ * that genuinely needs to scroll sideways still does — it carries its own
+ * overflow, and clipping the panel does not reach into it.
+ *
+ * This should never fire. Elements are sized to fit on their own; this is here
+ * so that when one is not, the failure is a clipped element rather than a
+ * rescaled app.
+ */
+.tab-panel { min-width: 0; overflow-x: clip; }
 .tab-panel[hidden] {
   display: block;
   position: absolute;

@@ -215,6 +215,16 @@ test('the comparison figure can never be wider than the screen', () => {
   assert.match(rule, /image-rendering: pixelated;/);
 });
 
+test('nothing in a tab can rescale the app by being too wide', () => {
+  // iOS derives the page's zoom scale from the document's width and inflates
+  // text inside blocks wider than the viewport, so one oversized element
+  // rescales the whole app — and it stays rescaled after you scroll away.
+  // Joshua, on v0.36.1: "It works, but the size changes... it shouldn't."
+  const css = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+  assert.match(css, /text-size-adjust: 100%;/);
+  assert.match(css, /\.tab-panel \{ min-width: 0; overflow-x: clip; \}/);
+});
+
 test('the figure is shown at one output pixel per device pixel', () => {
   // A canvas with no CSS width is laid out one backing-store pixel to one CSS
   // pixel, which on a 3x display magnifies it threefold — that is what "zoomed

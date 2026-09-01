@@ -49,10 +49,22 @@ test('service worker accepts immediate activation request', () => {
   assert.match(swSource, /skipWaiting\(\)/);
 });
 
-test('settings version is 0.36.1 everywhere it is stated', () => {
-  assert.match(htmlSource, /Visual Sensor Studio v0\.36\.1/);
-  assert.match(mainSource, /APP_VERSION\s*=\s*['"]0\.36\.1['"]/);
-  assert.match(swSource, /visual-sensor-studio-v0\.36\.1/);
+test('the version agrees everywhere it is stated', () => {
+  // Read from package.json rather than written in here as a literal. The
+  // literal version of this test had to be edited by hand on every bump, and
+  // v0.36.2 shipped with it red because that edit was forgotten — a guard that
+  // fails for being out of date teaches people to ignore it.
+  //
+  // The service worker's cache name is the one that matters most: an unchanged
+  // cache name means an installed PWA keeps serving the old build, so a fixed
+  // bug appears not to be fixed.
+  const version = JSON.parse(
+    readFileSync(new URL('../package.json', import.meta.url), 'utf8')
+  ).version;
+  const literal = version.replace(/\./g, '\\.');
+  assert.match(htmlSource, new RegExp(`Visual Sensor Studio v${literal}`));
+  assert.match(mainSource, new RegExp(`APP_VERSION\\s*=\\s*['"]${literal}['"]`));
+  assert.match(swSource, new RegExp(`visual-sensor-studio-v${literal}`));
 });
 
 test('the service worker update check bypasses the HTTP cache', () => {
