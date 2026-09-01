@@ -513,3 +513,60 @@ test('what a recording actually did is reported, not inferred', () => {
   assert.match(fn, /full-resolution version of it to save/);
   assert.match(fn, /scaled up to/);
 });
+
+/* --- The codec question -------------------------------------------------- */
+
+test('the level-pinned candidate can be skipped, for an A/B', () => {
+  // avc1.42E01E is Constrained Baseline LEVEL 3.0, whose frame ceiling is 1620
+  // macroblocks. 548x732 is 35x46 = 1610 — ten short — and every larger
+  // setting this app offers is over it. If an encoder honours the level it is
+  // handed, that one string caps recordings at almost exactly the size that
+  // kept appearing.
+  const auto = fmt.candidatesFor('auto');
+  const noLevel = fmt.candidatesFor('no-level');
+  const browser = fmt.candidatesFor('default');
+  assert.ok(auto.some((f) => /avc1\.42E01E/.test(f.mime)), 'auto keeps the shipped order');
+  assert.ok(!noLevel.some((f) => /avc1\.[0-9a-f]{6}/i.test(f.mime)),
+    'no-level must drop every codec-parameterised string');
+  assert.ok(noLevel.some((f) => f.mime === 'video/mp4'), 'and keep plain MP4');
+  assert.deepEqual(browser, [], 'default asks for nothing at all');
+
+  // The switch changes what is offered, so the answer has to be re-asked.
+  assert.match(main, /candidatesFor\(settings\.recordCodec\)/);
+  assert.match(main, /settings\.recordCodec = \[/);
+});
+
+test('the macroblock arithmetic behind the suspicion', () => {
+  // Level 3.0: MaxFS = 1620 macroblocks. Kept as a test because it is the
+  // whole reason the switch above exists, and it is checkable.
+  const mbs = (w, h) => Math.ceil(w / 16) * Math.ceil(h / 16);
+  assert.equal(mbs(548, 732), 1610);
+  assert.ok(mbs(548, 732) <= 1620, 'the size that keeps appearing just fits Level 3.0');
+  for (const [w, h] of [[1033, 775], [1119, 1492], [1280, 720], [1920, 1080], [2880, 2160]]) {
+    assert.ok(mbs(w, h) > 1620, `${w}x${h} exceeds Level 3.0 and would have to be refused or resized`);
+  }
+});
+
+test('what the encoder actually wrote is measured, not assumed', () => {
+  // Everything else in the app knows the size it ASKED for. Only the file
+  // knows the size it got, and an encoder that downscales to fit the level it
+  // was handed would be invisible to every other readout here.
+  const fn = main.slice(main.indexOf('function measureEncodedSize'), main.indexOf('async function finishSegment'));
+  assert.match(fn, /probe\.videoWidth, probe\.videoHeight/);
+  assert.match(fn, /setTimeout\(\(\) => done/, 'a file that never reports metadata must not stall a recording');
+  assert.match(main, /encodedWidth: encoded\.width \|\| undefined/);
+  assert.match(main, /recorderMime: mediaRecorder\?\.mimeType/);
+});
+
+test('the diagnostic line carries every ceiling, including the camera stream', () => {
+  // Five ceilings are in play and each is invisible from the others. The
+  // camera stream is the one nobody had counted: Capture resolution defaults
+  // to 1080 on the short side, so no recording can exceed that whatever the
+  // recording detail says.
+  const fn = main.slice(main.indexOf('function recordDiagnosticLine'), main.indexOf('function appendRecordLog'));
+  for (const part of ['stream ', 'render ', 'canvas ', 'encoded ', 'asked ', 'detail ', 'codec ']) {
+    assert.ok(fn.includes(part), `the line should carry "${part}"`);
+  }
+  assert.match(fn, /ENCODER RESIZED/, 'a downscale by the encoder must be called out');
+  assert.match(main, /captureResolution: '1080'/, 'the default this line exists to expose');
+});

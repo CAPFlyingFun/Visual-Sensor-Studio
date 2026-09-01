@@ -28,7 +28,8 @@ import {
 } from './vision/burst-merge.js';
 import {
   supportedClipFormats, preferredClipFormat, suggestedBitrate, clipFileName,
-  formatFromMime, fitLongSide, BROWSER_DEFAULT, type ClipFormat
+  formatFromMime, fitLongSide, candidatesFor, BROWSER_DEFAULT,
+  type ClipFormat, type CodecPreference
 } from './vision/clip-format.js';
 import { RollingRecorder, MAX_CLIP_SECONDS } from './vision/clip-recorder.js';
 import {
@@ -207,7 +208,7 @@ import {
 
 type RecordDetail = 'preview' | 'higher' | 'full' | 'sensor';
 
-const APP_VERSION = '0.39.6';
+const APP_VERSION = '0.39.7';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -241,6 +242,8 @@ interface AppSettings {
    * later. This raises it while recording only, and it costs frame rate.
    */
   recordDetail: RecordDetail;
+  /** Which codec candidates to offer the recorder — a diagnostic switch. */
+  recordCodec: CodecPreference;
   saveAspect: SaveAspect;
   saveFormat: SaveFormat;
   saveQuality: number;
@@ -298,6 +301,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   // The preview's own size by default: a setting that costs frame rate should
   // be chosen, not inherited.
   recordDetail: 'preview',
+  // The shipped order, unchanged, so an A/B against it means something.
+  recordCodec: 'auto',
   saveAspect: 'sensor',
   // JPEG by default: the first full-resolution saves were 22-23MB of
   // lossless PNG, which is a share sheet nobody wants to wait for.
@@ -399,6 +404,9 @@ function loadSettings(): AppSettings {
       recordDetail: ['preview', 'higher', 'full', 'sensor'].includes(String(parsed.recordDetail))
         ? parsed.recordDetail as RecordDetail
         : DEFAULT_SETTINGS.recordDetail,
+      recordCodec: ['auto', 'no-level', 'default'].includes(String(parsed.recordCodec))
+        ? parsed.recordCodec as CodecPreference
+        : DEFAULT_SETTINGS.recordCodec,
       saveAspect: ['sensor', 'wide'].includes(String(parsed.saveAspect))
         ? parsed.saveAspect as SaveAspect
         : DEFAULT_SETTINGS.saveAspect,
@@ -6842,7 +6850,10 @@ function detectClipFormat(): void {
     return;
   }
   const named = typeof MediaRecorder.isTypeSupported === 'function'
-    ? preferredClipFormat(supportedClipFormats((mime) => MediaRecorder.isTypeSupported(mime)))
+    ? preferredClipFormat(supportedClipFormats(
+      (mime) => MediaRecorder.isTypeSupported(mime),
+      candidatesFor(settings.recordCodec)
+    ))
     : null;
   // ASKING IS NOT THE ONLY WAY TO FIND OUT. On Joshua's iPhone isTypeSupported
   // matched nothing, and the app told a phone that records video perfectly well
@@ -7111,6 +7122,32 @@ function endSegment(): void {
   if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
 }
 
+/**
+ * Read back what the encoder ACTUALLY produced, by decoding the file.
+ *
+ * This is the measurement the whole codec question turns on. Everything else
+ * in the app knows the size it ASKED for; only the file knows the size it got,
+ * and an encoder that downscales to fit the level it was handed would be
+ * invisible to every other readout here.
+ */
+function measureEncodedSize(blob: Blob): Promise<{ width: number; height: number }> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const probe = document.createElement('video');
+    const done = (width: number, height: number) => {
+      URL.revokeObjectURL(url);
+      resolve({ width, height });
+    };
+    probe.preload = 'metadata';
+    probe.muted = true;
+    probe.onloadedmetadata = () => done(probe.videoWidth, probe.videoHeight);
+    probe.onerror = () => done(0, 0);
+    // A file that never reports metadata must not hold up the recording.
+    window.setTimeout(() => done(probe.videoWidth, probe.videoHeight), 3000);
+    probe.src = url;
+  });
+}
+
 async function finishSegment(): Promise<void> {
   const chunks = segmentChunks;
   segmentChunks = [];
@@ -7120,6 +7157,7 @@ async function finishSegment(): Promise<void> {
   const frames = segmentFrames;
   recordedFps = seconds > 0 ? frames / seconds : 0;
   const blob = new Blob(chunks, { type: format.mime });
+  const encoded = await measureEncodedSize(blob);
   const clip: StoredClip = {
     id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     startedAt: Date.now() - Math.round(seconds * 1000),
@@ -7128,10 +7166,14 @@ async function finishSegment(): Promise<void> {
     label: segmentLabel,
     savedAt: null,
     fps: recordedFps,
+    encodedWidth: encoded.width || undefined,
+    encodedHeight: encoded.height || undefined,
+    recorderMime: mediaRecorder?.mimeType || format.mime || undefined,
     blob,
     mime: format.mime,
     extension: format.extension
   };
+  appendRecordLog(recordDiagnosticLine(clip, encoded));
   try {
     await putClip(clip);
   } catch {
@@ -7142,6 +7184,52 @@ async function finishSegment(): Promise<void> {
   }
   await pruneClips();
   await renderClips();
+}
+
+/**
+ * Everything that decides how big a recording came out, on one line.
+ *
+ * Five separate ceilings are in play and each is invisible from the others:
+ * the camera stream's own size (Capture resolution in Settings, which defaults
+ * to 1080 on the short side), the render budget, the recording canvas, the bit
+ * rate, and whatever the encoder decided to do with the frames it was handed.
+ * "It is still 548x732" cannot be diagnosed without all five, so here they are
+ * in one copyable line.
+ */
+function recordDiagnosticLine(
+  clip: StoredClip,
+  encoded: { width: number; height: number }
+): string {
+  const stamp = new Date(clip.startedAt).toLocaleTimeString();
+  const stream = `${camera.diagnostics.videoWidth || 0}x${camera.diagnostics.videoHeight || 0}`;
+  const render = `${visionCanvas.width}x${visionCanvas.height}`;
+  const canvas = recordCanvas ? `${recordCanvas.width}x${recordCanvas.height}` : 'camera track';
+  const got = encoded.width ? `${encoded.width}x${encoded.height}` : 'unreadable';
+  const shrank = encoded.width && recordCanvas && encoded.width !== recordCanvas.width
+    ? ' <-- ENCODER RESIZED'
+    : '';
+  return [
+    stamp,
+    `stream ${stream}`,
+    `render ${render}`,
+    `canvas ${canvas}`,
+    `encoded ${got}${shrank}`,
+    `${clip.seconds.toFixed(1)}s`,
+    `${(clip.fps ?? 0).toFixed(1)}fps`,
+    `asked ${(clipBitrate / 1e6).toFixed(1)}Mb/s`,
+    describeSize(clip.bytes),
+    `detail ${settings.recordDetail}`,
+    `codec ${settings.recordCodec}`,
+    clip.recorderMime || 'no mime',
+    `v${APP_VERSION}`
+  ].join(' · ');
+}
+
+function appendRecordLog(line: string): void {
+  const log = document.getElementById('recordLog') as HTMLTextAreaElement | null;
+  if (!log) return;
+  log.value = log.value ? `${log.value}\n${line}` : line;
+  log.scrollTop = log.scrollHeight;
 }
 
 /**
@@ -7189,7 +7277,10 @@ async function renderClips(): Promise<void> {
 
     const name = document.createElement('span');
     name.className = 'clip-name';
-    name.textContent = describeClip(clip);
+    const encoded = clip.encodedWidth
+      ? ` · ${clip.encodedWidth}×${clip.encodedHeight} encoded`
+      : '';
+    name.textContent = describeClip(clip) + encoded;
     row.appendChild(name);
 
     const save = document.createElement('button');
@@ -7364,6 +7455,8 @@ function syncRecordDetailNote(): void {
   // reload does not show "match the preview" while recording at full detail.
   const control = document.getElementById('recordDetail') as HTMLSelectElement | null;
   if (control && control.value !== settings.recordDetail) control.value = settings.recordDetail;
+  const codec = document.getElementById('recordCodec') as HTMLSelectElement | null;
+  if (codec && codec.value !== settings.recordCodec) codec.value = settings.recordCodec;
   const screen = logicalScreenPixels();
   if (!(screen > 0)) return;
   if (settings.recordDetail === 'sensor') {
@@ -7652,6 +7745,23 @@ on('cameraButton', 'click', () => void startCamera());
 on('recordButton', 'click', () => {
   if (rolling.recording) stopRecording();
   else void startRecording();
+});
+on('recordCodec', 'change', (event) => {
+  const value = (event.target as HTMLSelectElement).value;
+  settings.recordCodec = ['auto', 'no-level', 'default'].includes(value)
+    ? value as CodecPreference
+    : 'auto';
+  saveSettings();
+  // Re-ask: the answer depends on which candidates are offered.
+  detectClipFormat();
+});
+on('recordCopyLog', 'click', () => {
+  const log = document.getElementById('recordLog') as HTMLTextAreaElement | null;
+  if (!log) return;
+  void navigator.clipboard?.writeText(log.value).then(
+    () => setText('recordMessage', 'Diagnostics copied.'),
+    () => { log.select(); }
+  );
 });
 on('recordDetail', 'change', (event) => {
   const value = (event.target as HTMLSelectElement).value;

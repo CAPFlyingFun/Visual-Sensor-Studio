@@ -552,6 +552,26 @@
               </label>
             </div>
             <p class="helper" id="recordDetailNote"></p>
+            <div class="night-grid">
+              <label>Codec request <span class="helper">diagnostic</span>
+                <select id="recordCodec">
+                  <option value="auto">Automatic &mdash; ask for H.264 Level 3.0 first</option>
+                  <option value="no-level">MP4 without naming a level</option>
+                  <option value="default">Let the browser choose everything</option>
+                </select>
+              </label>
+            </div>
+            <p class="helper">
+              <strong>avc1.42E01E is H.264 Level 3.0</strong>, whose frame ceiling is 1620
+              macroblocks. A 548&times;732 frame is 1610 &mdash; ten short of the limit &mdash;
+              and every larger setting here is over it (1033&times;775 is 3185, even 720p is
+              3600). If an encoder honours the level it is handed, that one string would cap
+              recordings at almost exactly the size that keeps appearing. Chromium refuses every
+              codec-parameterised string outright and takes only plain MP4; what Safari does is
+              not known from here. Record the same scene on each setting and compare the
+              <strong>encoded</strong> size in the log below &mdash; that is the number that
+              settles it.
+            </p>
             <details class="explainer">
               <summary>How recording works, and what its frame rate means</summary>
               <p class="helper">
@@ -589,6 +609,13 @@
             </div>
             <p class="helper" id="recordMessage">Enable the camera to record.</p>
             <div class="clip-list" id="clipList"></div>
+            <label class="burst-log-label">Recording diagnostics
+              <textarea id="recordLog" rows="6" readonly
+                        placeholder="One line per clip: the camera stream, the render size, the recording canvas, and what the encoder actually wrote."></textarea>
+            </label>
+            <div class="button-row">
+              <button class="secondary-button" id="recordCopyLog" type="button">Copy Diagnostics</button>
+            </div>
             <p class="helper" id="clipStorage"></p>
             <p class="helper">
               Held clips live on this device only and are never uploaded. They are also
@@ -1053,7 +1080,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.39.6</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.39.7</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">

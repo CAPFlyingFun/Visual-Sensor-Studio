@@ -40,6 +40,17 @@ export interface ClipRecord {
    * measured do not carry it.
    */
   fps?: number;
+  /**
+   * What the encoder ACTUALLY wrote, read back by decoding the file.
+   *
+   * Not the canvas size and not what was asked for: an encoder may downscale
+   * to fit the level it was given, and nothing else in the app would notice.
+   * Absent on clips recorded before this was measured.
+   */
+  encodedWidth?: number;
+  encodedHeight?: number;
+  /** The mimeType the recorder chose, which may not be the one requested. */
+  recorderMime?: string;
 }
 
 export interface RetentionLimits {

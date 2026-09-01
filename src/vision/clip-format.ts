@@ -31,9 +31,39 @@ export const CLIP_CANDIDATES: readonly ClipFormat[] = [
   { id: 'webm', mime: 'video/webm', extension: 'webm', label: 'WebM' }
 ];
 
+/**
+ * Which candidates to offer, and in what order — a DIAGNOSTIC control.
+ *
+ * `avc1.42E01E` is Constrained Baseline **Level 3.0**, and Level 3.0's frame
+ * ceiling is 1620 macroblocks. A 548x732 frame is 35x46 = 1610. Ten to spare,
+ * and every larger setting this app offers is over it: 1033x775 is 3185,
+ * 1119x1492 is 6580, even 720p is 3600. If an encoder honours the level it is
+ * asked for, that string caps recordings at almost exactly the size Joshua
+ * keeps getting.
+ *
+ * Whether Safari honours it is unknown from here — Chromium refuses every
+ * codec-parameterised string outright and only takes plain `video/mp4`. So
+ * this is a switch to MEASURE with rather than a fix: 'auto' is the shipped
+ * order, 'no-level' skips the level-pinned candidate, and 'default' asks for
+ * nothing and lets the browser choose. The encoded size of the resulting file
+ * is what settles it.
+ */
+export type CodecPreference = 'auto' | 'no-level' | 'default';
+
+export function candidatesFor(preference: CodecPreference): readonly ClipFormat[] {
+  if (preference === 'default') return [];
+  if (preference === 'no-level') {
+    return CLIP_CANDIDATES.filter((format) => !/avc1\.[0-9a-f]{6}/i.test(format.mime));
+  }
+  return CLIP_CANDIDATES;
+}
+
 /** Every candidate this browser says it can encode, in usability order. */
-export function supportedClipFormats(isTypeSupported: (mime: string) => boolean): ClipFormat[] {
-  return CLIP_CANDIDATES.filter((format) => {
+export function supportedClipFormats(
+  isTypeSupported: (mime: string) => boolean,
+  candidates: readonly ClipFormat[] = CLIP_CANDIDATES
+): ClipFormat[] {
+  return candidates.filter((format) => {
     try {
       return isTypeSupported(format.mime);
     } catch {

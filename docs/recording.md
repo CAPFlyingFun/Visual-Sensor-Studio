@@ -274,3 +274,50 @@ v0.39.5 raised the display budget while recording and the recordings stayed
 The record message now states which of the three paths applied — stills,
 scaled-up, or native — because "it is still 548×732" cannot be diagnosed from
 outside otherwise.
+
+
+## Five ceilings, and the codec suspicion (v0.39.7)
+
+Joshua, reading main: *"I found a potentially bigger bug in the H.264 choice."*
+
+He is right that it is suspicious, and the arithmetic is worth writing down.
+
+`avc1.42E01E` decodes as profile_idc 0x42 (Baseline), constraint bits 0xE0
+(Constrained Baseline), level_idc 0x1E = **Level 3.0**. Level 3.0's frame
+ceiling is **1620 macroblocks**:
+
+| frame | macroblocks | vs 1620 | lowest level that fits |
+|---|---|---|---|
+| 548×732 (what keeps appearing) | **1610** | fits, by 10 | 3.0 |
+| 1033×775 (Higher) | 3185 | exceeds | 3.1 |
+| 1280×720 | 3600 | exceeds | 3.1 |
+| 1119×1492 (Full) | 6580 | exceeds | 4.0 |
+| 1920×1080 | 8160 | exceeds | 4.0 |
+| 2880×2160 (Sensor cap) | 24300 | exceeds | 5.1 |
+
+Ten macroblocks of headroom is not the kind of coincidence to wave away.
+
+**What Chromium does**, measured: it refuses *every* codec-parameterised string
+— `avc1.42E01E`, `avc1.42E01F`, `avc1.640028`, even bare `avc1` — and accepts
+only plain `video/mp4`, which then encodes 1119×1492 correctly at that size.
+What Safari does is not knowable from here.
+
+So v0.39.7 ships an **instrument, not a fix**, at Joshua's explicit request:
+
+- **Codec request** — `auto` (the shipped order, unchanged), `no-level` (drop
+  every codec-parameterised candidate), or `default` (ask for nothing).
+- **The encoded size is now measured** by decoding the finished file and
+  reading `videoWidth`/`videoHeight`. Every other readout in the app knows the
+  size it *asked for*; only the file knows the size it *got*, and an encoder
+  that quietly downscales to fit its level would be invisible to all of them.
+  A mismatch is flagged `<-- ENCODER RESIZED`.
+- **A copyable diagnostic line per clip**, carrying all five ceilings.
+
+### The fifth ceiling nobody had counted
+
+`captureResolution` defaults to **'1080'** — the preferred capture *height*.
+So the camera stream itself is likely ~1080 on the short side, and **no**
+recording setting can exceed that: "Sensor" would give 1080×1440 (1.55 MP), not
+2160×2880 (6.2 MP), and the 2160 cap never binds. Raising Capture resolution in
+Settings is a precondition for any of the rest to matter. The diagnostic line
+now leads with the stream size for exactly this reason.

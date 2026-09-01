@@ -1941,3 +1941,16 @@ button.ghost.danger {
 .explainer > *:last-child { padding-bottom: 10px; }
 
 }
+
+/* The recording diagnostics read like the burst log, for the same reason: they
+   are meant to be selected, copied and pasted, and a proportional font with
+   soft wrapping turns aligned columns into something nobody can read. */
+#recordLog {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .7rem;
+  line-height: 1.5;
+  white-space: pre;
+  overflow-x: auto;
+  resize: vertical;
+}
