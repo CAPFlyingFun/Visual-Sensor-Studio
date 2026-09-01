@@ -543,11 +543,12 @@ test('recording truth: native and filtered clips measured from their files (fake
     });
   });
 
-test('a maximum-tier filtered clip records the CHOSEN stream, risk stated up front (fake device)',
+test('a maximum-tier filtered clip records at the capped RECORD IN, never 12 MP (fake device)',
   { skip: runnable ? false : 'no browser available' }, async () => {
-    // Joshua's decision: MAX means MAX for filtered clips too — the measured
-    // crash risk is announced beside the filter strip before the button, and
-    // the file records at the stream the user deliberately picked.
+    // The device crash this guards: MAX-tier Edges/Ironbow clips died with an
+    // unfinalised 0×0 file while RGB-at-MAX (native path) was fine. The
+    // filtered path now records at the policy cap while the live stream and
+    // the photo keep the sensor.
     await withBrowser(async (browser, base) => {
       const context = await browser.newContext({
         viewport: { width: 430, height: 932 },
@@ -570,15 +571,13 @@ test('a maximum-tier filtered clip records the CHOSEN stream, risk stated up fro
       await page.click('[data-filter="ironbow"]');
       await page.waitForTimeout(300);
 
-      // The RISK announces itself BEFORE the button, beside the filter
-      // choice — and the RECORD IN row carries no cap, because there is none.
+      // The cap announces itself, reason and all, BEFORE the button: in the
+      // RECORD IN row and beside the filter choice that triggers it.
       await page.waitForFunction(() =>
-        /can crash the recording/.test(document.getElementById('v2FilterNote')?.textContent ?? ''),
+        /capped at a 1080/.test(document.getElementById('v2DiagRecordIn')?.textContent ?? ''),
         null, { timeout: 3000 });
-      assert.match(await page.textContent('#v2FilterNote'), /Photos always stay at MAX/,
-        'the warning says stills are exempt');
-      assert.ok(!/capped/.test(await page.textContent('#v2DiagRecordIn')),
-        'no cap pretends to exist');
+      assert.match(await page.textContent('#v2FilterNote'), /memory envelope/,
+        'the filter note warns about the cap before recording, not after the file');
 
       await page.click('#v2RecordButton');
       await page.waitForFunction(() =>
@@ -586,38 +585,21 @@ test('a maximum-tier filtered clip records the CHOSEN stream, risk stated up fro
         null, { timeout: 3000 });
       const during = await page.evaluate(() => ({
         row: document.getElementById('v2DiagRecordIn').textContent,
-        previewRow: document.getElementById('v2DiagPreview').textContent,
         canvasW: document.getElementById('v2PreviewCanvas').width,
-        canvasH: document.getElementById('v2PreviewCanvas').height,
-        displayHidden: document.getElementById('v2DisplayCanvas').hidden,
-        displayW: document.getElementById('v2DisplayCanvas').width,
-        displayH: document.getElementById('v2DisplayCanvas').height
+        canvasH: document.getElementById('v2PreviewCanvas').height
       }));
-      assert.match(during.row, /^3840×2160 ·/,
-        `RECORD IN is the chosen stream itself, got "${during.row}"`);
-      assert.equal(Math.min(during.canvasW, during.canvasH), 2160,
-        'the GL canvas belongs to the encoder, frozen at the chosen stream');
-      // PREVIEW stays its own product: what you SEE renders at the PREVIEW
-      // geometry on the display canvas, exactly as the row reports it.
-      assert.equal(during.displayHidden, false, 'the display blit covers the encoder canvas');
-      const dims = (text) => text.match(/(\d+)×(\d+)/).slice(1, 3).map(Number);
-      const [dpw, dph] = dims(during.previewRow);
-      assert.equal(during.displayW, dpw,
-        'what you see stays at PREVIEW geometry while the file records bigger');
-      assert.equal(during.displayH, dph);
+      assert.match(during.row, /^1920×1080 ·/,
+        `RECORD IN is the capped policy size, got "${during.row}"`);
+      assert.equal(Math.min(during.canvasW, during.canvasH), 1080,
+        'the render target is frozen at the cap, not the 4K stream');
       await page.waitForTimeout(1500);
       await page.click('#v2RecordButton');
       await page.waitForFunction(() =>
         (document.getElementById('v2RecordResult')?.textContent ?? '').startsWith('Saved'),
-        null, { timeout: 15000 });
+        null, { timeout: 10000 });
       const line = await page.textContent('#v2RecordResult');
-      assert.match(line, /3840×2160 measured in the file/,
-        `the file carries the chosen size, got "${line}"`);
-      // After stop the display blit retires and the GL canvas is the preview again.
-      await page.waitForTimeout(700);
-      assert.equal(await page.evaluate(() =>
-        document.getElementById('v2DisplayCanvas').hidden), true,
-        'the display canvas retires once the encoder lets go');
+      assert.match(line, /1920×1080 measured in the file/,
+        `the file carries the capped size, got "${line}"`);
 
       await page.close();
       await context.close();

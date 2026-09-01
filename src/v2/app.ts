@@ -63,16 +63,13 @@ function measureViewfinder(): { width: number; height: number; shortSide: number
 
 function refreshGeometry(): void {
   const viewfinder = measureViewfinder();
-  const { source, streamTier } = readState();
+  const { source } = readState();
   updateState({
     viewfinder: { width: viewfinder.width, height: viewfinder.height },
     geometry: source
       ? resolveGeometry(source, {
         ...DEFAULT_GEOMETRY_INPUTS,
-        previewBoxShortSide: viewfinder.shortSide,
-        // The chosen tier is the eyes-open trade; its record policy rides
-        // along rather than a second opinion being formed here.
-        recordPolicy: tierById(streamTier)?.recordPolicy ?? 'source'
+        previewBoxShortSide: viewfinder.shortSide
       })
       : null
   });
@@ -96,27 +93,13 @@ function renderPreview(now: number): void {
   const resolved = readState().geometry;
   if (!resolved) return;
   if (!renderer.uploadFrame(video)) return;
-  // A filtered recording FREEZES the GL render target at the RECORD IN size
-  // the encoder was promised — resizing a canvas mid-recording corrupts the
-  // clip. PREVIEW stays its own product (Joshua's rule: what you SEE never
-  // changes size because of what the file needs): while the GL canvas
-  // belongs to the encoder, the viewfinder shows a scaled blit of it at the
-  // PREVIEW geometry on a separate display canvas.
-  const recordingFiltered = recording?.path === 'filtered';
-  const target = recordingFiltered ? recording.input : resolved.preview;
+  // A filtered recording FREEZES the render target at the RECORD IN size the
+  // encoder was promised — resizing a canvas mid-recording corrupts the clip.
+  // The viewfinder shows this render scaled by CSS, so the preview stays
+  // honest: what you see is what the file receives.
+  const target = recording?.path === 'filtered' ? recording.input : resolved.preview;
   if (renderer.render(activeFilter, target)) {
     byId('v2PreviewCanvas').hidden = false;
-    const display = byId<HTMLCanvasElement>('v2DisplayCanvas');
-    if (recordingFiltered) {
-      const pw = resolved.preview.width;
-      const ph = resolved.preview.height;
-      if (display.width !== pw) display.width = pw;
-      if (display.height !== ph) display.height = ph;
-      display.getContext('2d')?.drawImage(renderer.targetCanvas, 0, 0, pw, ph);
-      display.hidden = false;
-    } else if (!display.hidden) {
-      display.hidden = true;
-    }
     previewMeter.recordProcessed(now, 0);
     updateState({ previewFps: previewMeter.report.processingFps });
     // Temporal filters compare against the PREVIOUS frame: store this one as
@@ -212,9 +195,6 @@ function applyStreamTier(id: string): void {
   const tier = tierById(id);
   if (!tier || readState().recording || readState().captureActive) return;
   updateState({ streamTier: id });
-  // The tier's record policy applies immediately, even if the camera later
-  // declines the stream change itself.
-  refreshGeometry();
   if (tier.shortSide === 'max') {
     camera.preferMaxCaptureSize();
     if (camera.active) void camera.applyMaxCaptureSize();
@@ -440,20 +420,17 @@ function buildFilterStrip(): void {
 
 let renderedFilterKey = '';
 function renderFilterStrip(): void {
-  const { activeFilter, recording, geometry, streamTier } = readState();
+  const { activeFilter, recording, geometry } = readState();
   const rec = recording !== null;
-  // Recording risk and caps surface HERE, next to the choice that triggers
-  // them — before the shutter, never as an explanation after the file. A
-  // numeric policy shows its cap; the MAX tier shows its measured warning.
+  // The record cap surfaces HERE, next to the choice that triggers it: a
+  // filter selected on a large stream means capped clips, and saying so
+  // before the shutter beats explaining a "small" file after it.
   const cap = geometry !== null
     && Math.min(geometry.recordInput.width, geometry.recordInput.height)
       < Math.min(geometry.source.width, geometry.source.height)
     ? `${geometry.recordInput.width}×${geometry.recordInput.height}`
     : '';
-  const warning = !cap && activeFilter !== 'rgb'
-    ? tierById(streamTier)?.clipWarning ?? ''
-    : '';
-  const key = `${activeFilter}|${rec}|${cap}|${warning}`;
+  const key = `${activeFilter}|${rec}|${cap}`;
   if (key === renderedFilterKey) return;
   renderedFilterKey = key;
   for (const button of byId('v2FilterStrip').querySelectorAll<HTMLButtonElement>('[data-filter]')) {
@@ -468,12 +445,12 @@ function renderFilterStrip(): void {
       + 'Video is this filter’s product; stills are declined rather than upscaled.'
   };
   const capNote = cap && activeFilter !== 'rgb'
-    ? `Filtered clips at this stream size record at ${cap} — the record policy's cap. `
+    ? `Filtered clips at this stream size record at ${cap} — the measured memory envelope. `
       + 'RGB clips keep the full stream.'
     : '';
   setText('v2FilterNote', rec
     ? 'Recording — stop to change filters.'
-    : `${FILTER_NOTES[activeFilter] ?? ''} ${capNote || warning}`.trim());
+    : `${FILTER_NOTES[activeFilter] ?? ''} ${capNote}`.trim());
 }
 
 /**

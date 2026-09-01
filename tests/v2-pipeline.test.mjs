@@ -98,28 +98,24 @@ test('stream tiers are one registry: deliberate, labelled, defaulting responsive
   assert.equal(tierById('nope'), null);
 });
 
-test('the record policy follows the chosen tier; MAX warns instead of capping', () => {
-  // Joshua's decision (2026-09-01): the tier IS the eyes-open trade — MAX
-  // means MAX for filtered clips too, with the measured crash risk STATED
-  // beside the filter strip rather than a cap second-guessing the choice.
-  // Photos always keep the full sensor either way.
-  assert.equal(DEFAULT_GEOMETRY_INPUTS.recordPolicy, 'source');
+test('the default record policy caps the FILTERED path at the measured envelope', () => {
+  // Device measurement, 2026-09-01: a 12 MP filtered clip (framebuffer +
+  // canvas capture + encode + RAM buffering) killed the GPU context and left
+  // an unfinalised file, while the native path took 12 MP fine and 720
+  // recorded at 58–60 fps. The default policy caps the render the encoder
+  // receives — never the stream, never the photo.
   const g = resolveGeometry(size(3024, 4032), { ...DEFAULT_GEOMETRY_INPUTS, previewBoxShortSide: 0 });
   assert.deepEqual({ width: g.recordInput.width, height: g.recordInput.height },
-    { width: 3024, height: 4032 }, 'the chosen stream is what records');
+    { width: 1080, height: 1440 });
+  assert.match(g.recordInput.reason, /1080/);
   assert.deepEqual({ width: g.photo.width, height: g.photo.height },
     { width: 3024, height: 4032 }, 'the photo keeps the full sensor');
 
-  for (const tier of STREAM_TIERS) {
-    assert.ok(tier.recordPolicy === 'source' || tier.recordPolicy > 0,
-      `${tier.id} declares its record policy`);
-  }
-  const max = tierById('maximum');
-  assert.equal(max?.recordPolicy, 'source', 'MAX records the stream the user chose');
-  assert.match(max?.clipWarning ?? '', /crash/i, 'the measured risk is stated, not hidden');
-  assert.match(max?.clipWarning ?? '', /Photos always stay at MAX/,
-    'stills are exempt from the risk and say so');
-  assert.ok(!tierById('speed')?.clipWarning, 'the responsive tier carries no scare copy');
+  // At or below the cap the responsive stream passes through untouched.
+  const small = resolveGeometry(size(720, 960), DEFAULT_GEOMETRY_INPUTS);
+  assert.deepEqual({ width: small.recordInput.width, height: small.recordInput.height },
+    { width: 720, height: 960 });
+  assert.match(small.recordInput.reason, /responsive stream/);
 });
 
 test('the container ladder prefers mp4, falls back honestly, never pins a level', () => {
