@@ -40,6 +40,9 @@ import {
   type StoredClip
 } from './vision/clip-store.js';
 import {
+  encodeGifAsync, estimateGifBytes, MIN_DELAY_CENTISECONDS, type GifFrame
+} from './vision/gif.js';
+import {
   CAPTURE_CANDIDATES, KEEP_FRAMES, MIN_CONFIDENCE, SPREAD_FLOOR,
   estimateShift, judgeBurst, rotationToPixels, type ShiftEstimate
 } from './vision/burst-capture.js';
@@ -202,7 +205,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.37.0';
+const APP_VERSION = '0.38.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -7017,6 +7020,7 @@ function tickRecording(now: number): void {
     lastCameraLive = live;
     if (!live) stopRecording();
     syncRecordButton();
+    syncGifEstimate();
   }
   if (!rolling.recording) return;
   rolling.tick(now);
@@ -7037,6 +7041,181 @@ function canShareFile(type: string): boolean {
   } catch {
     return false;
   }
+}
+
+
+/* --- GIF ----------------------------------------------------------------
+ *
+ * Frames are grabbed live rather than decoded back out of a recorded clip.
+ * Decoding would mean playing the video through and reading it frame by frame,
+ * which depends on seek accuracy and autoplay rules that differ between
+ * browsers — a lot of machinery to arrive at pictures the camera can simply be
+ * asked for directly.
+ *
+ * MEMORY IS THE LIMIT, and it is why the controls are three fixed lists rather
+ * than free numbers. Frames are held as raw RGBA while capturing: 320x240 is
+ * 300kB each, so six seconds at twelve and a half a second is 23MB. The
+ * combinations offered stay inside a budget; one that would not is refused with
+ * the reason rather than quietly shortened.
+ */
+
+const GIF_MEMORY_BUDGET = 40 * 1024 * 1024;
+
+let gifFrames: GifFrame[] = [];
+let gifBlob: Blob | null = null;
+let gifCapturing = false;
+let gifCanvas: HTMLCanvasElement | null = null;
+
+function gifChoice(): { seconds: number; fps: number; width: number } {
+  const read = (id: string, fallback: number) => {
+    const el = document.getElementById(id) as HTMLSelectElement | null;
+    const value = Number(el?.value);
+    return Number.isFinite(value) && value > 0 ? value : fallback;
+  };
+  return { seconds: read('gifSeconds', 4), fps: read('gifFps', 10), width: read('gifWidth', 320) };
+}
+
+function gifSize(width: number): { width: number; height: number } {
+  const source = !visionCanvas.hidden && visionCanvas.width > 0
+    ? { w: visionCanvas.width, h: visionCanvas.height }
+    : { w: video.videoWidth || 4, h: video.videoHeight || 3 };
+  // Even heights only: some decoders and more players dislike odd dimensions,
+  // and rounding here costs at most one row.
+  const height = Math.max(2, Math.round((width * source.h) / Math.max(1, source.w) / 2) * 2);
+  return { width, height };
+}
+
+function syncGifEstimate(): void {
+  const choice = gifChoice();
+  const { width, height } = gifSize(choice.width);
+  const frames = Math.max(1, Math.round(choice.seconds * choice.fps));
+  const held = width * height * 4 * frames;
+  const bytes = estimateGifBytes(width, height, frames);
+  const overBudget = held > GIF_MEMORY_BUDGET;
+  setText('gifEstimate',
+    `${frames} frames at ${width}×${height} · roughly ${describeSize(bytes)} `
+    + `· ${describeSize(held)} of memory while capturing`
+    + (overBudget ? ' — too much to hold, choose fewer or smaller frames.' : ''));
+  const button = document.getElementById('gifButton') as HTMLButtonElement | null;
+  if (button && !gifCapturing) {
+    button.disabled = overBudget || !(camera.active && Boolean(video.srcObject));
+  }
+}
+
+/** One frame, drawn from whatever is on screen, at the GIF's own size. */
+function grabGifFrame(width: number, height: number, delay: number): GifFrame | null {
+  gifCanvas ??= document.createElement('canvas');
+  if (gifCanvas.width !== width) gifCanvas.width = width;
+  if (gifCanvas.height !== height) gifCanvas.height = height;
+  const context = gifCanvas.getContext('2d', { willReadFrequently: true });
+  if (!context) return null;
+
+  const painting = !visionCanvas.hidden && overlayPainted && visionCanvas.width > 0;
+  const source: CanvasImageSource = painting ? visionCanvas : video;
+  const sw = painting ? visionCanvas.width : video.videoWidth;
+  const sh = painting ? visionCanvas.height : video.videoHeight;
+  if (!sw || !sh) return null;
+
+  context.drawImage(source, 0, 0, sw, sh, 0, 0, width, height);
+  const image = context.getImageData(0, 0, width, height);
+  return { data: image.data, width, height, delayCentiseconds: delay };
+}
+
+async function captureGif(): Promise<void> {
+  if (gifCapturing) return;
+  if (!camera.active || !video.srcObject) {
+    setText('gifMessage', 'Enable the camera first.');
+    return;
+  }
+  const choice = gifChoice();
+  const { width, height } = gifSize(choice.width);
+  const wanted = Math.max(1, Math.round(choice.seconds * choice.fps));
+  if (width * height * 4 * wanted > GIF_MEMORY_BUDGET) {
+    setText('gifMessage', 'That combination needs more memory than is safe to hold. '
+      + 'Choose a shorter length or a smaller width.');
+    return;
+  }
+
+  gifCapturing = true;
+  gifFrames = [];
+  gifBlob = null;
+  byId('gifPreviewFigure').hidden = true;
+  byId('gifSaveButton').hidden = true;
+  byId('gifShareButton').hidden = true;
+  const button = byId<HTMLButtonElement>('gifButton');
+  button.disabled = true;
+
+  // Delays are hundredths of a second, so 12.5 a second is 8 exactly while 30
+  // would be 3.33 and cannot be written. The delay is what is REAL — the frame
+  // rate asked for is only how often frames are grabbed — so the interval is
+  // taken from the delay and the two cannot drift apart.
+  const delay = Math.max(MIN_DELAY_CENTISECONDS, Math.round(100 / choice.fps));
+  const intervalMs = delay * 10;
+
+  try {
+    let next = performance.now();
+    while (gifFrames.length < wanted) {
+      const frame = grabGifFrame(width, height, delay);
+      if (frame) gifFrames.push(frame);
+      setText('gifMessage', `Capturing ${gifFrames.length} of ${wanted}…`);
+      next += intervalMs;
+      const wait = Math.max(0, next - performance.now());
+      await new Promise((resolve) => setTimeout(resolve, wait));
+      if (!camera.active) break;
+    }
+
+    if (gifFrames.length < 2) {
+      setText('gifMessage', 'The camera stopped before there was anything to make a GIF from.');
+      return;
+    }
+
+    setText('gifMessage', `Encoding ${gifFrames.length} frames…`);
+    const bytes = await encodeGifAsync(gifFrames, { dither: true }, async (done, total) => {
+      setText('gifMessage', `Encoding ${done} of ${total} frames…`);
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+    gifBlob = new Blob([bytes as unknown as BlobPart], { type: 'image/gif' });
+
+    const preview = byId<HTMLImageElement>('gifPreview');
+    if (preview.src.startsWith('blob:')) URL.revokeObjectURL(preview.src);
+    preview.src = URL.createObjectURL(gifBlob);
+    byId('gifPreviewFigure').hidden = false;
+    setText('gifCaption',
+      `${width}×${height} · ${gifFrames.length} frames at ${(100 / delay).toFixed(1)} a second `
+      + `· ${describeSize(gifBlob.size)}`);
+    setText('gifMessage', '');
+    byId('gifSaveButton').hidden = false;
+    byId('gifShareButton').hidden = !canShareFile('image/gif');
+  } finally {
+    // The frames are the largest thing this app ever holds. Dropping them the
+    // moment the file exists matters more than keeping them for a re-encode.
+    gifFrames = [];
+    gifCapturing = false;
+    syncGifEstimate();
+  }
+}
+
+async function exportGif(how: 'save' | 'share'): Promise<void> {
+  if (!gifBlob) return;
+  const name = clipFileName('gif', new Date(), 'gif');
+  if (how === 'share') {
+    try {
+      await navigator.share({ files: [new File([gifBlob], name, { type: 'image/gif' })] });
+    } catch (error) {
+      const kind = error instanceof Error ? error.name : '';
+      if (kind !== 'AbortError') setText('gifMessage', 'The share sheet could not open.');
+    }
+    return;
+  }
+  const url = URL.createObjectURL(gifBlob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = name;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setText('gifMessage', `${name} · ${describeSize(gifBlob.size)}`);
 }
 
 function on<K extends keyof HTMLElementEventMap>(
@@ -7060,6 +7239,12 @@ on('recordButton', 'click', () => {
 on('clipClearButton', 'click', () => {
   void clearClips().then(() => renderClips()).then(() => pruneClips());
 });
+on('gifButton', 'click', () => void captureGif());
+on('gifSaveButton', 'click', () => void exportGif('save'));
+on('gifShareButton', 'click', () => void exportGif('share'));
+for (const id of ['gifSeconds', 'gifFps', 'gifWidth']) {
+  on(id, 'change', () => syncGifEstimate());
+}
 on('cameraOverlayButton', 'click', () => void startCamera());
 on('cameraBrowserFallback', 'click', openCameraInBrowser);
 on('switchCameraButton', 'click', () => void switchCamera());
@@ -7288,6 +7473,7 @@ on('autoStartCamera', 'change', (event) => {
 // Recording: ask what this browser can write, then show what is already held.
 detectClipFormat();
 syncRecordButton();
+syncGifEstimate();
 void renderClips().then(() => pruneClips()).catch(() => {
   setText('clipStorage', 'Held clips could not be read from this device.');
 });

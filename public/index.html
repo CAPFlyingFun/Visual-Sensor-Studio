@@ -520,6 +520,52 @@
             <div class="button-row">
               <button class="secondary-button" id="clipClearButton" type="button" hidden>Delete All Held Clips</button>
             </div>
+
+            <div class="night-heading" style="margin-top:.8rem">
+              <strong>GIF</strong>
+              <span class="small-badge warning">256 colours, and large</span>
+            </div>
+            <p class="helper">
+              No browser can encode a GIF, so this app writes the file itself. The format holds
+              256 colours and compresses each frame on its own, so a few seconds of camera can
+              outweigh a thirty-second video &mdash; keep them short and small. What it buys is
+              that a GIF plays inline anywhere, in any message, with no player and no codec
+              question.
+            </p>
+            <div class="night-grid">
+              <label>Length
+                <select id="gifSeconds">
+                  <option value="2">2 seconds</option>
+                  <option value="4" selected>4 seconds</option>
+                  <option value="6">6 seconds</option>
+                </select>
+              </label>
+              <label>Frame rate
+                <select id="gifFps">
+                  <option value="8">8 per second</option>
+                  <option value="10" selected>10 per second</option>
+                  <option value="12.5">12.5 per second</option>
+                </select>
+              </label>
+              <label>Width
+                <select id="gifWidth">
+                  <option value="240">240 px</option>
+                  <option value="320" selected>320 px</option>
+                  <option value="480">480 px</option>
+                </select>
+              </label>
+            </div>
+            <div class="button-row">
+              <button class="primary-button" id="gifButton" type="button" disabled>Capture GIF</button>
+              <button class="secondary-button" id="gifSaveButton" type="button" hidden>Save</button>
+              <button class="secondary-button" id="gifShareButton" type="button" hidden>Share</button>
+            </div>
+            <p class="helper" id="gifEstimate"></p>
+            <p class="helper" id="gifMessage" aria-live="polite"></p>
+            <figure class="gif-preview" id="gifPreviewFigure" hidden>
+              <img id="gifPreview" alt="The GIF just captured" />
+              <figcaption id="gifCaption"></figcaption>
+            </figure>
           </section>
           <p class="helper" id="cameraMessage">Tap Enable Camera for live video. Pinch the preview or use the zoom slider once the camera is live.</p>
           <p class="stage-trace" id="cameraStage" hidden>stage: idle</p>
@@ -925,7 +971,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.37.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.38.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">

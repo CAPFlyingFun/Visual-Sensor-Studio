@@ -1,0 +1,88 @@
+# Recording, clips and GIFs
+
+Two capabilities with very different constraints, built together in v0.37.0 and
+v0.38.0.
+
+## Video
+
+The browser encodes this itself, through `MediaRecorder`. Three decisions are
+worth recording.
+
+**The format is asked for, never assumed.** `MediaRecorder.isTypeSupported` is
+the only honest way to find out what a phone will write. MP4 is preferred
+wherever both are offered — not taste: a WebM saved to an iPhone opens in
+nothing the phone ships with, so recording one produces a file its owner cannot
+watch.
+
+**Thirty-second clips, cut by a stop and a start.** A MediaRecorder's container
+is only finished when it stops, so an interrupted recording can leave an
+unplayable file and the longer the recording the more there is to lose. Cutting
+means what is already on the phone is always complete. The seam costs a frame or
+two — this is not the way to record something that must not have a gap in it.
+
+**The cut is driven from the animation loop, not a timer.** A `setTimeout` in a
+backgrounded tab is throttled or deferred, and a clip that ran long because the
+phone was in a pocket is exactly the oversized file the limit exists to prevent.
+
+Clips are held in IndexedDB — they survive a reload or a discarded tab, are
+never uploaded, and the browser may still evict them. When room is needed,
+already-exported clips go first (a copy exists elsewhere), then the oldest, and
+never the newest.
+
+## GIF
+
+No browser has a GIF encoder. There is no API for it on any platform, and
+`canvas.toBlob('image/gif')` silently returns a PNG. So `src/vision/gif.ts`
+writes the format byte by byte: median cut (Heckbert 1982) over a 15-bit
+histogram, Floyd–Steinberg diffusion, GIF's variable-width LZW, and the
+NETSCAPE2.0 looping extension.
+
+### Verified against an independent decoder
+
+A decoder written by the same hand as the encoder proves nothing — this project
+has already shipped two confident wrong findings that way. So the output was
+checked with **Pillow**, which has never seen this code. It read every file
+correctly: dimensions, frame count, loop flag, 100 ms delays, and pixels within
+the quantiser's expected error. The decoder in `tests/gif.test.mjs` is a
+regression guard, not an authority.
+
+### Three things that measurement decided
+
+**Palette entries are averaged from the true colours, not from histogram bin
+centres.** Bin centres put every colour out by up to four levels per channel: a
+pure black and white image came back as `(4,4,4)` and `(252,252,252)`. Summing
+the originals alongside the counts removes the bias entirely, and dropped the
+error on a test gradient from 8.42 to 6.67.
+
+**Dithering is on by default, despite being pointwise worse.** On a 128×96
+gradient at 32 colours:
+
+| | per-pixel error | 8×8 block error |
+|---|---|---|
+| no dithering | 6.67 | 6.22 |
+| Floyd–Steinberg | 8.17 | **1.56** |
+
+Dithering trades pointwise accuracy for local accuracy. Banding is what a person
+sees on a gradient, and the block figure is the one that tracks it. The Ironbow
+and relief ramps this app draws are gradients almost everywhere.
+
+**A nearest-colour lookup table over the whole 15-bit cube is what makes it run
+on a phone.** Searching 256 palette entries per pixel is ~800 million
+comparisons for six seconds of 320×240 — minutes of frozen interface. The cube
+has 32,768 cells, so the same search done once up front is 8 million
+comparisons and every pixel afterwards is one array read. Measured: 60 frames of
+320×240 encode in 770 ms on a desktop, and the block error was 1.58 against
+1.56 for an exact search — the approximation costs nothing measurable.
+
+The LZW dictionary is a flat `Int32Array` keyed arithmetically rather than a
+`Map` with string keys, which allocated one short-lived string per pixel.
+
+### What a GIF costs
+
+Roughly 4.1–4.4 bits per pixel on camera-like content — worse than PNG on the
+same picture, because the palette has already thrown away the colour that would
+have made it compress well. Five seconds of 320×240 at 12/s is about 2.5 MB. A
+thirty-second MP4 of the same scene is smaller than that.
+
+It is still worth having: a GIF plays inline anywhere, in any message, with no
+player and no codec question.
