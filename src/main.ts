@@ -23,7 +23,8 @@ import { createPlane, type Plane } from './vision/super-resolution.js';
 import { readCapabilities, capabilityLogLine } from './vision/camera-capabilities.js';
 import { fitFocalLength, type FocalSample } from './vision/focal-fit.js';
 import {
-  mergeAndCompare, comparisonStrip, comparisonLayout, type MergeReport, type PanelKey
+  mergeAndCompare, comparisonStrip, comparisonLayout, pickBest,
+  type MergeReport, type PanelKey
 } from './vision/burst-merge.js';
 import {
   CAPTURE_CANDIDATES, KEEP_FRAMES, MIN_CONFIDENCE, SPREAD_FLOOR,
@@ -188,7 +189,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.36.3';
+const APP_VERSION = '0.36.4';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -7877,6 +7878,7 @@ function readCameraCapabilities(): void {
 /* --- Phase 2: merge the frames that were just measured ------------------ */
 
 let lastBurst: { planes: Plane[]; shifts: ShiftEstimate[] } | null = null;
+let lastMerge: MergeReport | null = null;
 let merging = false;
 
 /** Paint a single-channel plane into a canvas, scaled to fit its box. */
@@ -7931,7 +7933,16 @@ async function runBurstMerge(): Promise<void> {
 }
 
 function renderMergeReport(report: MergeReport): void {
+  lastMerge = report;
   byId('burstCompareFigure').hidden = false;
+  byId('burstSaveRow').hidden = false;
+  // Sharing a FILE is a narrower capability than sharing a link, and Safari is
+  // the only mobile browser that has it — so the button appears when the
+  // browser says it can take this file, not when a version table says it
+  // should. A share sheet is what puts the result in Photos; a download puts it
+  // in Files, which is not where a picture is looked for.
+  byId('burstShareMerged').hidden = !canShareImages();
+  setText('burstSaveStatus', '');
   const canvas = byId<HTMLCanvasElement>('burstCompare');
   paintPlane(canvas, comparisonStrip(report));
   labelPanels(canvas, report);
@@ -8007,6 +8018,102 @@ function labelPanels(canvas: HTMLCanvasElement, report: MergeReport): void {
   }
 }
 
+/* --- Saving and sharing the merged result -------------------------------- */
+
+/**
+ * PNG, always, and not the save format chosen for camera frames.
+ *
+ * This picture exists to be compared against another picture at the pixel
+ * level. A lossy codec adds its own ringing to exactly the edges the merge is
+ * being judged on, and someone looking at a saved JPEG later would be reading
+ * the encoder as much as the merge. The file is a few hundred kilobytes at this
+ * size, so there is nothing to trade away.
+ */
+function planeToCanvas(plane: Plane): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  paintPlane(canvas, plane);
+  return canvas;
+}
+
+function canShareImages(): boolean {
+  const probe = new File([new Uint8Array(1)], 'probe.png', { type: 'image/png' });
+  return typeof navigator.canShare === 'function'
+    && typeof navigator.share === 'function'
+    && navigator.canShare({ files: [probe] });
+}
+
+function mergeStamp(): string {
+  return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+async function encodePng(canvas: HTMLCanvasElement): Promise<Blob | null> {
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+}
+
+/**
+ * What the saved file IS, written into its name.
+ *
+ * Four of these end up in a camera roll together and none of them is
+ * self-describing — the merged output and the plain upscale are the same size,
+ * the same scene and the same grey. `merged-x1.34` and `comparison` are the
+ * difference between a file that can be checked later and one that can only be
+ * guessed at.
+ */
+function mergedFileName(report: MergeReport): string {
+  const gain = report.gain === null ? 'unmeasured' : `x${report.gain.toFixed(2)}`;
+  return `visual-sensor-${report.best}-${gain}-${mergeStamp()}.png`;
+}
+
+async function saveMergedImage(which: 'result' | 'comparison'): Promise<void> {
+  if (!lastMerge) return;
+  const canvas = planeToCanvas(
+    which === 'result' ? pickBest(lastMerge) : comparisonStrip(lastMerge)
+  );
+  if (which === 'comparison') labelPanels(canvas, lastMerge);
+  const blob = await encodePng(canvas);
+  if (!blob) {
+    setText('burstSaveStatus', 'The image could not be encoded.');
+    return;
+  }
+  const name = which === 'result'
+    ? mergedFileName(lastMerge)
+    : `visual-sensor-comparison-${mergeStamp()}.png`;
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = name;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setText('burstSaveStatus',
+    `Saved ${canvas.width}\u00d7${canvas.height} PNG \u00b7 ${describeBytes(blob.size)} \u00b7 ${name}`);
+}
+
+async function shareMergedImage(): Promise<void> {
+  if (!lastMerge) return;
+  const blob = await encodePng(planeToCanvas(pickBest(lastMerge)));
+  if (!blob) {
+    setText('burstSaveStatus', 'The image could not be encoded.');
+    return;
+  }
+  const file = new File([blob], mergedFileName(lastMerge), { type: 'image/png' });
+  try {
+    await navigator.share({
+      files: [file],
+      // The verdict travels with the picture. A merged frame on its own says
+      // nothing about whether merging helped, and that is the whole claim.
+      text: lastMerge.verdict
+    });
+    setText('burstSaveStatus', 'Shared.');
+  } catch (error) {
+    // Dismissing the share sheet rejects, and a cancelled share is not a
+    // failure to report as one.
+    const name = error instanceof Error ? error.name : '';
+    setText('burstSaveStatus', name === 'AbortError' ? '' : 'The share sheet could not open.');
+  }
+}
+
 function mergeLogLine(report: MergeReport): string {
   const mtf = (value: number | null) => value === null ? '  n/a' : value.toFixed(3);
   return [
@@ -8029,6 +8136,9 @@ function mergeLogLine(report: MergeReport): string {
 on('burstMergeButton', 'click', () => void runBurstMerge());
 
 on('burstReadCaps', 'click', readCameraCapabilities);
+on('burstSaveMerged', 'click', () => void saveMergedImage('result'));
+on('burstSaveFigure', 'click', () => void saveMergedImage('comparison'));
+on('burstShareMerged', 'click', () => void shareMergedImage());
 on('burstCopyLog', 'click', () => void copyBurstLog());
 on('burstClearLog', 'click', () => {
   const log = document.getElementById('burstLog') as HTMLTextAreaElement | null;

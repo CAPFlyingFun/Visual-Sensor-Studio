@@ -247,3 +247,59 @@ test('each panel is named on the picture, not only in a caption', () => {
   // A plate behind the text: it sits over whatever the camera saw.
   assert.match(fn, /context\.fillRect\(x - 4, y - 3,/);
 });
+
+test('nothing sits between the preview and the shutter', () => {
+  // Joshua: "there is a large black gap between the camera and where you
+  // capture — you can't see what you're taking." The scatter plot and two rows
+  // of readouts were in that gap, which put the button off the bottom of the
+  // screen whenever the preview was on it.
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const stage = html.indexOf('id="burstStage"');
+  const shutter = html.indexOf('id="burstCaptureButton"');
+  assert.ok(stage > 0 && shutter > stage, 'the shutter should follow the preview');
+
+  const between = html.slice(html.indexOf('</div>', html.indexOf('id="burstStage"')), shutter);
+  for (const intruder of ['metric-strip', 'burstScatter', 'figcaption']) {
+    assert.ok(!between.includes(intruder),
+      `${intruder} is between the preview and the shutter`);
+  }
+  // And the readouts still exist — they moved below, they were not dropped.
+  for (const id of ['burstScatter', 'burstFrames', 'burstAgreement', 'burstFov']) {
+    assert.ok(html.includes(`id="${id}"`), `${id} was lost in the rearrangement`);
+  }
+  // The scatter is capped rather than filling the column, or it becomes the
+  // black gap again lower down the page.
+  const css = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+  assert.match(css, /\.burst-scatter-figure \{ max-width: \d+px; \}/);
+});
+
+test('the merged result can be saved, and as PNG', () => {
+  // A lossy codec adds its own ringing to exactly the edges the merge is being
+  // judged on. At this size there is nothing to trade away for it.
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const fn = main.slice(main.indexOf('async function saveMergedImage'),
+    main.indexOf('async function shareMergedImage'));
+  assert.match(fn, /pickBest\(lastMerge\)/, 'the result saved should be the chosen output');
+  assert.match(fn, /comparisonStrip\(lastMerge\)/, 'the comparison should be savable too');
+  assert.match(main, /canvas\.toBlob\(resolve, 'image\/png'\)/);
+  assert.ok(!/burstSave[\s\S]{0,400}image\/jpeg/.test(main), 'the merge must not be saved lossy');
+
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.match(html, /id="burstSaveRow"[^>]*hidden/, 'saving should appear only after a merge');
+  assert.match(main, /byId\('burstSaveRow'\)\.hidden = false;/);
+});
+
+test('sharing is offered only where the browser can actually take the file', () => {
+  // canShare with a file is narrower than share, and narrower than a version
+  // table would suggest. Asking is the only honest test, and the share sheet is
+  // what reaches Photos — a download reaches Files, which is not where a
+  // picture is looked for.
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  assert.match(main, /navigator\.canShare\(\{ files: \[probe\] \}\)/);
+  assert.match(main, /byId\('burstShareMerged'\)\.hidden = !canShareImages\(\);/);
+  // The verdict travels with the picture: a merged frame alone says nothing
+  // about whether merging helped, which is the whole claim.
+  assert.match(main, /text: lastMerge\.verdict/);
+  // A dismissed share sheet rejects, and that is not a failure to report.
+  assert.match(main, /AbortError/);
+});

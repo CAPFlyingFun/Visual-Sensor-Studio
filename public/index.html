@@ -709,45 +709,46 @@
       <section class="panel">
         <div class="panel-heading">
           <div><p class="section-kicker">MULTI-FRAME</p><h2>Burst Detail Probe</h2></div>
-          <span class="small-badge warning">Measures only — merges nothing</span>
+          <span class="small-badge warning">Measured, then merged</span>
         </div>
         <p class="lead-copy">
           Hold the phone as still as you can and press Capture. This records a burst, measures
           where your hand actually put each frame to a fraction of a pixel, and reports whether
-          those frames between them carry more detail than any one of them does.
-          It does not produce a picture. It answers whether producing one is worth doing.
-        </p>
-        <p class="lead-copy">
-          <strong>Holding still beats moving deliberately</strong>, which is the opposite of what
-          it sounds like. Detail is recovered from where the camera sits <em>within</em> a pixel,
-          so a shift of seven pixels and a shift of a fifth of a pixel count the same &mdash;
-          travelling further adds nothing and blurs each frame while it does it. Ordinary tremor
-          is already the right size.
-        </p>
-
-        <div class="burst-stage" id="burstStage">
-          <video id="burstVideo" autoplay muted playsinline></video>
-          <div class="burst-target" aria-hidden="true"><span></span></div>
-        </div>
-        <p class="helper">
-          Only what is inside the box is measured &mdash; the centre of the sensor at full
-          resolution, not the whole frame. Fill it with texture: gravel, foliage, brickwork,
-          fabric weave. A blank wall or a flat sky inside the box leaves nothing to measure
-          movement against, however detailed the rest of the view is.
+          those frames between them carry more detail than any one of them does. Merge then
+          builds the picture and puts it beside the single frame it has to beat.
         </p>
 
         <div class="burst-enable" id="burstEnableRow">
           <button class="secondary-button" id="burstEnableCamera" type="button">Enable Camera</button>
           <button class="secondary-button" id="burstEnableMotion" type="button">Enable Motion</button>
-          <label class="burst-fov">Lens FOV
-            <input id="burstFov" type="number" min="0" max="180" step="0.1" placeholder="measured" />
-          </label>
         </div>
         <p class="helper" id="burstReadiness">Camera and motion can both be started from here.</p>
-        <p class="helper" id="burstFovMeasured">
-          The field of view is measured from the burst, not looked up &mdash; no browser reports
-          it. Turning the phone a little while capturing is what makes it measurable. Type a
-          value only to override.
+
+        <!--
+          THE CONTROLS SIT DIRECTLY UNDER THE PREVIEW, and everything else is
+          below them.
+
+          Joshua: "the layout of the tab is still not optimal as there is a
+          large black gap between the camera and where you capture — you can't
+          see what you're taking." The scatter plot and two rows of readouts
+          used to sit between the two, which put the shutter off the bottom of
+          the screen while the preview was on it. Every readout here describes
+          a burst that has already been taken; none of them is needed while
+          aiming, so none of them belongs between the view and the button.
+        -->
+        <div class="burst-stage" id="burstStage">
+          <video id="burstVideo" autoplay muted playsinline></video>
+          <div class="burst-target" aria-hidden="true"><span></span></div>
+        </div>
+        <div class="button-row burst-actions">
+          <button class="primary-button" id="burstCaptureButton" type="button">Capture Burst</button>
+          <button class="secondary-button" id="burstMergeButton" type="button" disabled>Merge Frames</button>
+        </div>
+        <p class="helper" id="burstProgress" aria-live="polite"></p>
+        <p class="value" id="burstVerdict">Not captured yet.</p>
+        <p class="helper" id="burstReason">
+          Point at something with texture &mdash; ground, foliage, brickwork. A blank wall has
+          nothing to measure movement against.
         </p>
 
         <div class="metric-strip">
@@ -758,29 +759,34 @@
           <div class="metric"><span>Grid coverage</span><strong id="burstSpread">&mdash;</strong></div>
         </div>
 
-        <div class="burst-layout">
-          <figure class="burst-figure">
-            <canvas id="burstScatter" width="320" height="320" aria-label="Sub-pixel offsets of each captured frame"></canvas>
-            <figcaption>
-              Where each frame landed inside one pixel. Filled marks are the frames that would be
-              kept; hollow ones duplicate an offset already held. Detail is recovered by
-              <em>covering</em> this square &mdash; frames stacked in one spot are copies of the
-              same measurement.
-            </figcaption>
-          </figure>
-          <div class="burst-side">
-            <p class="value" id="burstVerdict">Not captured yet.</p>
-            <p class="helper" id="burstReason">
-              Point at something with texture &mdash; ground, foliage, brickwork. A blank wall has
-              nothing to measure movement against.
-            </p>
-            <div class="button-row">
-              <button class="primary-button" id="burstCaptureButton" type="button">Capture Burst</button>
-              <button class="secondary-button" id="burstMergeButton" type="button" disabled>Merge Frames</button>
-            </div>
-            <p class="helper" id="burstProgress" aria-live="polite"></p>
-          </div>
+        <figure class="burst-figure" id="burstCompareFigure" hidden>
+          <canvas id="burstCompare" aria-label="Upscaled, sharpened and merged versions side by side"></canvas>
+          <figcaption id="burstCompareCaption"></figcaption>
+        </figure>
+        <p class="helper" id="burstMergeVerdict"></p>
+        <div class="button-row" id="burstSaveRow" hidden>
+          <button class="secondary-button" id="burstSaveMerged" type="button">Save Result</button>
+          <button class="secondary-button" id="burstSaveFigure" type="button">Save Comparison</button>
+          <button class="secondary-button" id="burstShareMerged" type="button" hidden>Share</button>
         </div>
+        <p class="helper" id="burstSaveStatus" aria-live="polite"></p>
+        <p class="helper">
+          A number only appears when the box contains <strong>one straight edge tilted a few
+          degrees</strong> &mdash; a door frame, a book, a sign. Grass and brickwork give you the
+          pictures to compare by eye but nothing to measure, and the report says so rather than
+          inventing a figure. Brightness only: colour would come from the reference frame and is
+          not part of what is being compared.
+        </p>
+
+        <figure class="burst-figure burst-scatter-figure">
+          <canvas id="burstScatter" width="320" height="320" aria-label="Sub-pixel offsets of each captured frame"></canvas>
+          <figcaption>
+            Where each frame landed inside one pixel. Filled marks are the frames that would be
+            kept; hollow ones duplicate an offset already held. Detail is recovered by
+            <em>covering</em> this square &mdash; frames stacked in one spot are copies of the
+            same measurement.
+          </figcaption>
+        </figure>
 
         <p class="helper">
           Both sources are shown because they are checked against each other: the gyroscope
@@ -793,17 +799,29 @@
           <div class="metric"><span>Agreement</span><strong id="burstAgreement">&mdash;</strong></div>
         </div>
 
-        <figure class="burst-figure" id="burstCompareFigure" hidden>
-          <canvas id="burstCompare" aria-label="Upscaled, sharpened and merged versions side by side"></canvas>
-          <figcaption id="burstCompareCaption"></figcaption>
-        </figure>
-        <p class="helper" id="burstMergeVerdict"></p>
         <p class="helper">
-          A number only appears when the box contains <strong>one straight edge tilted a few
-          degrees</strong> &mdash; a door frame, a book, a sign. Grass and brickwork give you the
-          pictures to compare by eye but nothing to measure, and the report says so rather than
-          inventing a figure. Brightness only: colour would come from the reference frame and is
-          not part of what is being compared.
+          Only what is inside the box is measured &mdash; the centre of the sensor at full
+          resolution, not the whole frame. Fill it with texture: gravel, foliage, brickwork,
+          fabric weave. A blank wall or a flat sky inside the box leaves nothing to measure
+          movement against, however detailed the rest of the view is.
+        </p>
+        <p class="helper">
+          <strong>Holding still beats moving deliberately</strong>, which is the opposite of what
+          it sounds like. Detail is recovered from where the camera sits <em>within</em> a pixel,
+          so a shift of seven pixels and a shift of a fifth of a pixel count the same &mdash;
+          travelling further adds nothing and blurs each frame while it does it. Ordinary tremor
+          is already the right size.
+        </p>
+
+        <div class="burst-enable">
+          <label class="burst-fov">Lens FOV
+            <input id="burstFov" type="number" min="0" max="180" step="0.1" placeholder="measured" />
+          </label>
+        </div>
+        <p class="helper" id="burstFovMeasured">
+          The field of view is measured from the burst, not looked up &mdash; no browser reports
+          it. Turning the phone a little while capturing is what makes it measurable. Type a
+          value only to override.
         </p>
 
         <div class="panel-heading" style="margin-top:.6rem">
@@ -880,7 +898,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.36.3</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.36.4</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">

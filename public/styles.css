@@ -1355,15 +1355,22 @@ button.ghost.danger {
 }
 
 /* --- Burst detail probe ------------------------------------------------- */
-.burst-layout {
-  display: grid;
-  gap: 1rem;
-  grid-template-columns: 1fr;
-  align-items: start;
-}
-@media (min-width: 620px) {
-  .burst-layout { grid-template-columns: minmax(0, 320px) minmax(0, 1fr); }
-}
+/*
+ * The shutter goes DIRECTLY under the preview, and nothing sits between them.
+ *
+ * Joshua: "there is a large black gap between the camera and where you capture
+ * — you can't see what you're taking." The scatter plot and two rows of
+ * readouts were in that gap, which put the button off the bottom of the screen
+ * whenever the preview was on it. Every one of those readouts describes a burst
+ * that has already been taken, so they belong below the control, not above it.
+ */
+.burst-actions { margin-top: .6rem; }
+/*
+ * And the scatter is capped rather than filling the column. It is drawn at
+ * 320px and a unit square carrying at most 32 marks gains nothing from being
+ * blown up to the width of a phone — it just becomes the black gap again.
+ */
+.burst-scatter-figure { max-width: 340px; }
 .burst-figure { margin: 0; display: flex; flex-direction: column; gap: .5rem; }
 /*
  * The scatter is a UNIT SQUARE, so it must stay square at every width or the
@@ -1378,7 +1385,6 @@ button.ghost.danger {
   background: rgba(4, 12, 20, .55);
   border: 1px solid rgba(120, 190, 255, .18);
 }
-.burst-side { display: flex; flex-direction: column; gap: .6rem; }
 
 .burst-enable {
   display: flex;
