@@ -95,14 +95,14 @@ test('the state store is the one owner, and flow is one-directional', () => {
   // sanctioned layout read — previewBoxShortSide(), the display fact that
   // feeds the geometry authority's PREVIEW row — and nothing else in V2 may
   // measure the display, so no second module can grow a size opinion.
-  const fn = appTs.match(/function previewBoxShortSide\(\): number \{[^]*?\n\}/);
-  assert.ok(fn, 'the one display read lives in previewBoxShortSide()');
+  const fn = appTs.match(/function measureViewfinder\(\)[^]*?\n\}/);
+  assert.ok(fn, 'the one display read lives in measureViewfinder()');
   assert.match(fn[0], /getBoundingClientRect/);
   const outside = appTs.replace(fn[0], '');
   assert.ok(!/getBoundingClientRect|innerWidth|innerHeight|devicePixelRatio/.test(outside),
-    'previewBoxShortSide() is the only place V2 may read the display');
-  assert.match(appTs, /previewBoxShortSide: previewBoxShortSide\(\)/,
-    'and its only consumer is the geometry authority');
+    'measureViewfinder() is the only place V2 may read the display');
+  assert.match(appTs, /previewBoxShortSide: viewfinder\.shortSide/,
+    'and it feeds the geometry authority');
   const streamReads = appTs.match(/frameSize\(d\.videoWidth, d\.videoHeight\)/g) ?? [];
   assert.ok(streamReads.length >= 2,
     'both the status and delivery paths read SOURCE from the stream diagnostics');

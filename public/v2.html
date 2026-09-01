@@ -48,6 +48,10 @@
     /* The filtered preview sits over the raw video; when WebGL is unavailable
        it stays hidden and the honest raw feed shows instead. */
     .viewfinder canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 2; }
+    /* The capture flash: the mode renegotiation happens behind it, so the
+       shutter pause reads as intentional rather than a hiccup. */
+    #v2ShutterFlash { position: absolute; inset: 0; z-index: 4; background: #fff; opacity: 0; pointer-events: none; transition: opacity .18s ease; }
+    #v2ShutterFlash.firing { opacity: .85; }
     .enable-overlay {
       position: absolute; z-index: 6; left: 50%; top: 50%; transform: translate(-50%, -50%);
       min-height: 52px; padding: 0 22px; border-radius: 999px;
@@ -87,6 +91,7 @@
     .btn { min-height: 42px; padding: 0 14px; border: 1px solid var(--line2); background: #0d1a26; border-radius: 11px; cursor: pointer; }
     .btn[disabled] { opacity: .45; }
     .stage-note { font-size: 11px; color: #ffc46b; min-height: 1.2em; margin: 8px 0 0; }
+    .stage-note.timing { color: #9fb0bf; font-family: ui-monospace, 'SF Mono', Menlo, monospace; white-space: pre-line; min-height: 0; }
 
     .diagnostics { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.7; color: #c9d8e4; overflow-x: auto; }
     .diagnostics b { color: #fff; font-weight: 650; }
@@ -139,6 +144,7 @@
       <div class="viewfinder" id="v2Viewfinder">
         <video id="cameraVideo" autoplay muted playsinline></video>
         <canvas id="v2PreviewCanvas" hidden></canvas>
+        <div id="v2ShutterFlash" aria-hidden="true"></div>
         <button class="enable-overlay" id="v2EnableCamera" type="button">Enable Camera</button>
         <div class="hud" aria-label="Live readouts">
           <span><i class="dot" id="v2HudDot"></i><span id="v2HudState">IDLE</span></span>
@@ -168,11 +174,14 @@
         <div class="card">
           <h3>Photo</h3>
           <p>
-            The shutter renders the ACTIVE filter once at the photo geometry &mdash; the
-            negotiated stream size &mdash; through the same shader the preview uses, and reports
-            the exact saved dimensions. The preview's size never decides the photo's.
+            The live stream stays responsive; the shutter briefly asks the SAME camera track
+            for its maximum mode, waits for a real decoded frame at the new size, renders the
+            ACTIVE filter once at that measured size, saves the JPEG, then restores the
+            responsive stream. A short pause during capture is the trade. Saved dimensions are
+            what the camera actually granted &mdash; never the request, never upscaled.
           </p>
           <p class="stage-note" id="v2PhotoResult"></p>
+          <p class="stage-note timing" id="v2PhotoTiming"></p>
         </div>
 
         <div class="card">
@@ -180,9 +189,11 @@
           <div class="diagnostics" aria-label="Frame truth table">
             <div><span class="k">SOURCE</span><b id="v2DiagSource">not started</b></div>
             <div><span class="k">CAPABILITY</span><span id="v2DiagCapability">—</span></div>
-            <div><span class="k">ANALYSIS</span><span id="v2DiagAnalysis">—</span></div>
+            <div><span class="k">VIEWFINDER</span><span id="v2DiagViewfinder">—</span></div>
             <div><span class="k">PREVIEW</span><span id="v2DiagPreview">—</span></div>
-            <div><span class="k">PHOTO</span><span id="v2DiagPhoto">—</span></div>
+            <div><span class="k">ANALYSIS</span><span id="v2DiagAnalysis">—</span></div>
+            <div><span class="k">PHOTO POLICY</span><span id="v2DiagPhotoPolicy">maximum available stream on shutter</span></div>
+            <div><span class="k">LAST PHOTO</span><span id="v2DiagLastPhoto">none yet</span></div>
             <div><span class="k">STATE</span><span id="v2DiagState">idle</span></div>
             <div><span class="k">TRACK</span><span id="v2DiagTrack">—</span></div>
           </div>
@@ -193,9 +204,10 @@
           <h3>What this build is</h3>
           <p>
             V2 Milestones A–B: the camera shell, the frame-geometry authority and the GPU
-            render contract. Preview and photo are ONE fragment shader at two sizes — the
-            preview fitted to this screen's pixels, the photo at the stream's own — and the
-            truth table above is the authority's live output, reasons and all.
+            render contract. The live stream is a performance decision (responsive, smooth);
+            the photo is a quality decision (the camera's maximum, fetched only for the shot).
+            Preview and photo are ONE fragment shader at two sizes, and the truth table above
+            is the authority's live output — every row a separate fact with its own policy.
           </p>
           <p>
             Recording (C), temporal tools (D) and the lens workbench (E) come next. The

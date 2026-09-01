@@ -150,6 +150,8 @@ test('the camera goes live and the HUD carries measured truth (fake device)',
       assert.match(hud.fps, /^\d+(\.\d+)? fps$/, `delivered fps should be measured, got "${hud.fps}"`);
       assert.match(hud.diag, /^\d+×\d+ · \d+(\.\d+)? delivered fps/,
         'the SOURCE row carries size and measured rate together');
+      assert.match(hud.diag, /responsive live stream/,
+        'the live-source policy names itself — a SOURCE below CAPABILITY is healthy, not flagged');
       // CAPABILITY is a fact of its own: numbers where the browser exposes
       // them, an honest "not exposed" where it does not — never a dash once
       // the camera is live.
@@ -235,17 +237,19 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
       const rows = await page.evaluate(() => ({
         source: document.getElementById('v2DiagSource').textContent,
         preview: document.getElementById('v2DiagPreview').textContent,
-        photo: document.getElementById('v2DiagPhoto').textContent
+        policy: document.getElementById('v2DiagPhotoPolicy').textContent,
+        viewfinder: document.getElementById('v2DiagViewfinder').textContent
       }));
       const dims = (text) => text.match(/^(\d+)×(\d+)/).slice(1, 3).map(Number);
       const [sw, sh] = dims(rows.source);
       const [pw, ph] = dims(rows.preview);
-      const [photoW, photoH] = dims(rows.photo);
       assert.equal(rgb.width, pw, 'the canvas width is the PREVIEW geometry, no private size');
       assert.equal(rgb.height, ph);
       assert.ok(pw <= sw && ph <= sh, `preview ${pw}×${ph} never exceeds the stream ${sw}×${sh}`);
-      assert.equal(photoW, sw, 'the PHOTO row promises the negotiated stream');
-      assert.equal(photoH, sh);
+      assert.equal(rows.policy, 'maximum available stream on shutter',
+        'PHOTO POLICY is a policy, not a size — the live SOURCE owes it nothing');
+      assert.match(rows.viewfinder, /^\d+×\d+ device px/,
+        'the VIEWFINDER row is display geometry, stated as such');
 
       // Edges: the Sobel shader writes vec3(g) — every pixel exactly grey.
       await page.click('[data-filter="edges"]');
@@ -273,23 +277,54 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
       assert.equal(offRamp.length, 0,
         `every ironbow pixel sits on the legacy ramp, off-ramp: ${JSON.stringify(offRamp.slice(0, 3))}`);
 
-      // Photo: the same shader at the PHOTO geometry — the report must carry
-      // EXACTLY the source dimensions, the whole point of Milestone B.
+      // Photo: the shutter's temporary maximum-stream window. The saved size
+      // is whatever the camera actually granted — never less than the live
+      // stream had, never a request taken on faith — and the whole timeline
+      // is measured.
       await page.click('#v2PhotoButton');
       await page.waitForFunction(() =>
         (document.getElementById('v2PhotoResult')?.textContent ?? '').startsWith('Saved'),
-        null, { timeout: 8000 });
+        null, { timeout: 20000 });
       const line = await page.textContent('#v2PhotoResult');
+      const [savedW, savedH] = dims(line.replace(/^Saved /, ''));
+      assert.ok(
+        Math.min(savedW, savedH) >= Math.min(sw, sh) && Math.max(savedW, savedH) >= Math.max(sw, sh),
+        `the shutter never saves less than the live stream had, got "${line}" against ${sw}×${sh}`);
       assert.match(line,
-        new RegExp(`^Saved ${sw}×${sh} · \\d+\\.\\d{2} MB JPEG · the negotiated stream`),
-        `the photo reports the exact SOURCE size, got "${line}"`);
+        /the (largest stream the camera granted for this shot|camera kept its current mode|camera declined a larger mode)/,
+        `the escalation outcome is reported honestly, got "${line}"`);
+      const timing = await page.textContent('#v2PhotoTiming');
+      assert.match(timing, /Max frame ready \+\d+ ms/, 'the shutter timeline is instrumented');
+      assert.match(timing, /Total \d+ ms/);
+      const lastPhoto = await page.textContent('#v2DiagLastPhoto');
+      assert.ok(lastPhoto.startsWith(`${savedW}×${savedH}`),
+        `LAST PHOTO carries what was actually saved, got "${lastPhoto}"`);
 
-      // And the very next preview frame takes the canvas back — photo size
-      // never leaks into the preview product.
+      // The live stream comes back RESPONSIVE: the engine restores the
+      // remembered SHORT SIDE (the exact mode is the browser's choice — the
+      // fake device comes back 1280×720 for a 960×720 start, measured), and
+      // the stream must have left the capture mode when one was entered.
+      const escalated = savedW !== sw || savedH !== sh;
+      await page.waitForFunction(([shortSide, wasEscalated, capW, capH]) => {
+        const text = document.getElementById('v2DiagSource')?.textContent ?? '';
+        const m = text.match(/^(\d+)×(\d+)/);
+        if (!m) return false;
+        const w = Number(m[1]);
+        const h = Number(m[2]);
+        if (Math.min(w, h) !== shortSide) return false;
+        if (wasEscalated && w === capW && h === capH) return false;
+        return /responsive live stream/.test(text);
+      }, [Math.min(sw, sh), escalated, savedW, savedH], { timeout: 10000 });
+
+      // And the preview follows the RESTORED stream through the one owner:
+      // the canvas matches the PREVIEW row exactly, at the same short side.
       await page.waitForTimeout(600);
       const after = await sampleCanvas();
-      assert.equal(after.width, pw, 'the preview reclaims its own geometry after a photo');
-      assert.equal(after.height, ph);
+      const [rpw, rph] = dims(await page.textContent('#v2DiagPreview'));
+      assert.equal(after.width, rpw, 'the canvas tracks the PREVIEW geometry after a photo');
+      assert.equal(after.height, rph);
+      assert.equal(Math.min(after.width, after.height), Math.min(pw, ph),
+        'the preview short side comes back with the responsive stream');
 
       await page.close();
       await context.close();

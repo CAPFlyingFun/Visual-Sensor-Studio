@@ -157,18 +157,23 @@
   // configuration claims to support; a number requests that rate specifically.
   let requestedFrameRate = 'auto';
   /**
-   * Requested capture resolution, as a target height in pixels.
+   * Requested CAMERA STREAM size, as a target height in pixels.
    *
-   * A higher resolution usually costs frame rate — the sensor cannot read out
-   * 4032x3024 as fast as 1280x720 — so this is a deliberate trade the user
-   * makes, and the negotiated result is always reported rather than assumed.
+   * Terminology (docs/camera_rule.md): this shapes what getUserMedia /
+   * applyConstraints ask the LIVE STREAM to be. It is not the viewfinder
+   * (display geometry), not the preview render, and not the photo output —
+   * those are downstream policies with their own owners. A larger stream
+   * usually costs frame rate — the sensor cannot read out 4032x3024 as fast
+   * as 1280x720 — so this is a deliberate trade the caller makes, and the
+   * negotiated result is always reported rather than assumed.
    */
   let requestedHeight = 720;
   /**
-   * Requesting this asks for the camera's largest mode rather than a size.
+   * Requesting this asks for the camera's largest STREAM mode rather than a
+   * particular size.
    *
    * Expressed as a sentinel rather than a boolean so it travels through the
-   * same one number every other part of the resolution path already carries.
+   * same one number every other part of the stream-size path already carries.
    */
   const MAX_SIZE_SENTINEL = 10000;
   /**
@@ -741,8 +746,8 @@
       return { audio: false, video };
     };
 
-    // `ideal` for resolution throughout, so a size the device cannot provide is
-    // negotiated down rather than failing the request outright.
+    // `ideal` for the stream size throughout, so a size the device cannot
+    // provide is negotiated down rather than failing the request outright.
     //
     // THE REQUEST MUST NOT IMPOSE AN ORIENTATION, AND MUST NOT ASK FOR A
     // SQUARE. Three attempts, three different ways of getting this wrong.
@@ -1330,15 +1335,18 @@
     },
 
     /**
-     * Record the wanted capture height WITHOUT touching a live track.
+     * Record the wanted CAMERA STREAM height WITHOUT touching a live track.
+     * (The name says "capture height" for compatibility; what it alters is
+     * the live stream request, nothing downstream of it.)
      *
-     * This exists to be called before `start()`. A resolution asked for after
-     * the stream is open goes through `applyConstraints`, and WebKit will
+     * This exists to be called before `start()`. A larger stream asked for
+     * after it is open goes through `applyConstraints`, and WebKit will
      * happily negotiate a live track DOWN but routinely ignores a request to
      * raise it — the format is already chosen. So a stream opened at the 720
      * default stayed at 720 for the session no matter what the setting said,
      * and the only reliable place to ask for more is the getUserMedia call
-     * itself.
+     * itself. Anything that raises a live stream must therefore verify the
+     * outcome with a decoded frame, never trust the request.
      *
      * Synchronous on purpose: the start path must not await anything before
      * getUserMedia or the tap's transient activation is gone and WebKit stops
@@ -1350,20 +1358,30 @@
     },
 
     /**
-     * Ask the NEXT request for this camera's largest mode, whatever its size
-     * turns out to be. Synchronous for the same transient-activation reason as
-     * setPreferredCaptureHeight. The sentinel stays private to the engine —
-     * callers state the intent, not a number.
+     * Ask the NEXT stream request for this camera's largest STREAM mode,
+     * whatever its size turns out to be. Synchronous for the same
+     * transient-activation reason as setPreferredCaptureHeight. The sentinel
+     * stays private to the engine — callers state the intent, not a number.
      */
     preferMaxCaptureSize() {
       requestedHeight = MAX_SIZE_SENTINEL;
     },
 
-    /** Ask a LIVE track for the largest mode. The result must be read back. */
+    /**
+     * Ask a LIVE track for its largest STREAM mode. WebKit may keep the mode
+     * it already chose (see setPreferredCaptureHeight), so the caller must
+     * confirm the outcome with a decoded frame — this resolving is not it.
+     */
     async applyMaxCaptureSize() {
       return this.setCaptureHeight(MAX_SIZE_SENTINEL);
     },
 
+    /**
+     * Re-constrain the LIVE CAMERA STREAM toward the given height. (The name
+     * says "capture height" for compatibility; it alters the stream request,
+     * nothing downstream.) WebKit negotiates down readily and may ignore a
+     * raise — read the stream back; this resolving proves nothing by itself.
+     */
     async setCaptureHeight(height) {
       requestedHeight = Number(height) || 720;
       const track = videoTrack;
@@ -1398,19 +1416,22 @@
         return { applied: false, reason: 'no live track', reported: negotiatedFrameRate };
       }
 
-      // AUTO DOES NOT RE-CONSTRAIN A LIVE TRACK, and this is the whole fix for
-      // a resolution that collapsed half a second after the camera opened.
+      // AUTO DOES NOT RE-CONSTRAIN A LIVE TRACK. Auto means "whatever this
+      // camera negotiated", and it has already negotiated — so there is
+      // nothing to apply.
       //
-      // Frame rate and resolution are not independent: a camera has a set of
-      // modes, and asking for 60 fps on a track that opened at 3024x4032 makes
-      // WebKit re-select a mode that can actually sustain 60 — which at twelve
-      // megapixels it cannot, so it drops to a much smaller one. The opening
-      // request already asked for a rate, so applying it again here buys
-      // nothing and silently spends the resolution to pay for it.
+      // The caution behind that: stream size and frame rate are properties of
+      // ONE camera mode, not independent dials. A second frame-rate
+      // constraint on a live track can trigger another mode negotiation and
+      // may change the stream's characteristics, its dimensions included.
+      // (Observed once as a large stream shrinking shortly after opening; the
+      // dimensions were not measured immediately before AND after that exact
+      // operation, so treat this as the working explanation, not a proven
+      // mechanism.)
       //
       // An explicitly chosen rate still applies: that is the user asking for
-      // the trade with their eyes open. Auto means "whatever this camera is
-      // comfortable with", which is exactly what it already negotiated.
+      // the trade with their eyes open, and the result is read back rather
+      // than assumed.
       if (requestedFrameRate === 'auto') {
         if (!explicitRateApplied) {
           readFrameRateCapability();

@@ -22,8 +22,8 @@ import { FrameRateMeter } from '../vision/frame-rate.js';
 import { zoomPresetStops } from '../sensors/zoom.js';
 import { NAV_ROUTES } from './routes.js';
 import { readState, subscribe, updateState, frameSize } from './state.js';
-import { belowCapability } from './camera/policy.js';
 import { resolveGeometry, DEFAULT_GEOMETRY_INPUTS } from './camera/geometry.js';
+import { captureAtMaxStream, type Escalation, type ShutterStream } from './capture/shutter.js';
 import { FILTERS, filterById } from './filters/registry.js';
 import { GlRenderer } from './render/gl-renderer.js';
 import { capturePhoto } from './capture/photo.js';
@@ -47,27 +47,29 @@ if (renderer.unavailableReason) setText('v2Stage', renderer.unavailableReason);
 /* --- Geometry: resolved by the one authority, stored in the one state ----- */
 
 /**
- * The viewfinder's box in device pixels — a DISPLAY fact, measured from
- * layout, and the only layout number in V2. It feeds the PREVIEW row only;
- * the authority is what guarantees it can never touch PHOTO.
+ * The VIEWFINDER's rectangle in device pixels — display geometry, measured
+ * from layout, and the only layout read in V2 (docs/camera_rule.md). It feeds
+ * PREVIEW only; the authority is what guarantees it can never touch PHOTO.
  */
-function previewBoxShortSide(): number {
+function measureViewfinder(): { width: number; height: number; shortSide: number } {
   const box = byId('v2Viewfinder').getBoundingClientRect();
   const ratio = Math.min(Math.max(window.devicePixelRatio || 1, 1), 4);
-  return Math.round(Math.min(box.width, box.height) * ratio);
+  const width = Math.round(box.width * ratio);
+  const height = Math.round(box.height * ratio);
+  return { width, height, shortSide: Math.min(width, height) };
 }
 
 function refreshGeometry(): void {
+  const viewfinder = measureViewfinder();
   const { source } = readState();
-  if (!source) {
-    updateState({ geometry: null });
-    return;
-  }
   updateState({
-    geometry: resolveGeometry(source, {
-      ...DEFAULT_GEOMETRY_INPUTS,
-      previewBoxShortSide: previewBoxShortSide()
-    })
+    viewfinder: { width: viewfinder.width, height: viewfinder.height },
+    geometry: source
+      ? resolveGeometry(source, {
+        ...DEFAULT_GEOMETRY_INPUTS,
+        previewBoxShortSide: viewfinder.shortSide
+      })
+      : null
   });
 }
 window.addEventListener('resize', refreshGeometry);
@@ -98,6 +100,14 @@ function renderPreview(now: number): void {
 
 /* --- Camera events flow INTO the state; the UI renders FROM it (Rule 7). -- */
 
+/**
+ * V2's LIVE-SOURCE policy is RESPONSIVE (docs/camera_rule.md): the engine's
+ * default stream request stands, because the live stream is a performance
+ * decision — on the reference device it negotiates ~720×960 at ~60 delivered
+ * fps. A SOURCE smaller than CAPABILITY is a healthy state, not an error;
+ * maximum resolution exists only inside the shutter's temporary window. The
+ * negotiated size and measured rate below stay authoritative either way.
+ */
 camera.subscribe((status: CameraStatus) => {
   const d = camera.diagnostics;
   updateState({
@@ -106,25 +116,7 @@ camera.subscribe((status: CameraStatus) => {
     source: frameSize(d.videoWidth, d.videoHeight),
     capability: frameSize(d.capabilityWidth, d.capabilityHeight)
   });
-  escalateToCapability();
 });
-
-/**
- * V2's source policy is THE MAXIMUM: the opening request already asks for the
- * camera's largest mode (preferMaxCaptureSize before start), and this safety
- * net covers a stream that nonetheless opened smaller while the track
- * advertises more — once per page load, and only on evidence. The outcome is
- * never assumed: SOURCE keeps reporting whatever the stream actually is, and
- * the CAPABILITY row shows any gap that remains.
- */
-let escalationTried = false;
-function escalateToCapability(): void {
-  const { camera: status, source, capability } = readState();
-  if (escalationTried || status?.state !== 'live') return;
-  if (!belowCapability(source, capability)) return;
-  escalationTried = true;
-  void camera.applyMaxCaptureSize();
-}
 
 /**
  * Delivered FPS is measured from PRESENTED frames, not assumed from the
@@ -146,7 +138,6 @@ function startDeliveryMeter(): void {
       source: frameSize(d.videoWidth, d.videoHeight),
       capability: frameSize(d.capabilityWidth, d.capabilityHeight)
     });
-    escalateToCapability();
     renderPreview(frame.now);
   });
 }
@@ -156,11 +147,6 @@ function startDeliveryMeter(): void {
 async function startCamera(): Promise<void> {
   setText('v2Stage', 'Requesting camera…');
   try {
-    // Ask for the camera's LARGEST mode, not a preset size. Synchronous, so
-    // the tap's transient activation still covers the getUserMedia call. The
-    // engine shapes the request from the capability it remembered; what
-    // actually arrives is read back from the stream, never assumed.
-    camera.preferMaxCaptureSize();
     await camera.start();
     startDeliveryMeter();
   } catch (error) {
@@ -216,28 +202,36 @@ function renderHud(): void {
 }
 
 function renderDiagnostics(): void {
-  const { camera: status, source, capability, deliveredFps } = readState();
+  const {
+    camera: status, source, capability, deliveredFps,
+    geometry, previewFps, viewfinder, lastPhoto, captureActive
+  } = readState();
   const d = camera.diagnostics;
-  // The gap between advertised and negotiated is the difference between
-  // "cannot do more" and "did not ask for more" — the legacy bug class this
-  // row exists to make visible. SOURCE stays the measurement either way.
-  const gap = belowCapability(source, capability) ? ' · below the advertised max' : '';
+  // Each row is its own fact with its own policy label (docs/camera_rule.md).
+  // SOURCE below CAPABILITY is the healthy responsive state, never flagged;
+  // the maximum belongs to the shutter's window alone.
   setText('v2DiagSource', source
-    ? `${source.width}×${source.height} · ${deliveredFps > 0 ? deliveredFps.toFixed(1) : '—'} delivered fps${gap}`
+    ? `${source.width}×${source.height} · ${deliveredFps > 0 ? deliveredFps.toFixed(1) : '—'} delivered fps · `
+      + (captureActive ? 'maximum stream for this shot' : 'responsive live stream')
     : 'not started');
   setText('v2DiagCapability', capability
     ? `${capability.width}×${capability.height} · the track's advertised maximum`
     : 'not exposed by this browser');
-  const { geometry, previewFps } = readState();
-  const row = (entry: { width: number; height: number; reason?: string } | null | undefined, extra = '') =>
-    entry ? `${entry.width}×${entry.height}${extra}` : '—';
+  setText('v2DiagViewfinder', viewfinder
+    ? `${viewfinder.width}×${viewfinder.height} device px · display geometry, PREVIEW’s only input`
+    : '—');
+  const row = (entry: { width: number; height: number } | null | undefined) =>
+    entry ? `${entry.width}×${entry.height}` : '—';
   setText('v2DiagAnalysis', geometry
-    ? `${row(geometry.analysis)} · resolved, unused until Milestone D`
+    ? `${row(geometry.analysis)} · independent vision buffer (unused until Milestone D)`
     : '—');
   setText('v2DiagPreview', geometry
-    ? `${row(geometry.preview)} · ${previewFps > 0 ? previewFps.toFixed(1) : '—'} rendered fps`
+    ? `${row(geometry.preview)} · ${previewFps > 0 ? previewFps.toFixed(1) : '—'} rendered fps · sized for the viewfinder`
     : '—');
-  setText('v2DiagPhoto', geometry ? `${row(geometry.photo)} · JPEG on capture` : '—');
+  setText('v2DiagPhotoPolicy', 'maximum available stream on shutter');
+  setText('v2DiagLastPhoto', lastPhoto
+    ? `${lastPhoto.width}×${lastPhoto.height} · ${(lastPhoto.bytes / 1e6).toFixed(2)} MB JPEG · as saved`
+    : 'none yet');
   setText('v2DiagState', status ? `${status.state} · ${status.stage}` : 'idle');
   setText('v2DiagTrack', d.trackLabel
     ? `${d.trackLabel}${d.trackMuted ? ' · muted' : ''}`
@@ -302,24 +296,147 @@ function renderFilterStrip(): void {
     : '');
 }
 
-/* --- Photo: the same shader, at the PHOTO geometry ------------------------ */
+/* --- Photo: the shutter's temporary maximum-stream window ----------------- */
+
+/**
+ * The EXISTING track and the EXISTING renderer, adapted for the shutter
+ * choreography. No second getUserMedia anywhere near this: requestMax and
+ * restore both re-constrain the one live track through the engine, and
+ * nextFrame proves changes with decoded frames rather than trusting a
+ * constraint promise.
+ */
+function shutterStream(): ShutterStream {
+  const withFrames = video as HTMLVideoElement & {
+    requestVideoFrameCallback?: (callback: () => void) => number;
+  };
+  return {
+    measure: () => ({ width: video.videoWidth, height: video.videoHeight }),
+    requestMax: async () => {
+      try {
+        return await camera.applyMaxCaptureSize();
+      } catch {
+        return { applied: false, reason: 'engine unavailable' };
+      }
+    },
+    restore: async (shortSide: number) => {
+      try {
+        return await camera.setCaptureHeight(shortSide);
+      } catch {
+        return { applied: false, reason: 'engine unavailable' };
+      }
+    },
+    nextFrame: (timeoutMs: number) => new Promise((resolve) => {
+      let settled = false;
+      const finish = (dims: { width: number; height: number } | null) => {
+        if (!settled) {
+          settled = true;
+          resolve(dims);
+        }
+      };
+      if (typeof withFrames.requestVideoFrameCallback === 'function') {
+        withFrames.requestVideoFrameCallback(() =>
+          finish({ width: video.videoWidth, height: video.videoHeight }));
+      } else {
+        // Honest fallback: a timer tick is not proof of a presented frame,
+        // so it only samples the decoded size; the timeout stays the backstop.
+        window.setTimeout(() =>
+          finish({ width: video.videoWidth, height: video.videoHeight }), 120);
+      }
+      window.setTimeout(() => finish(null), timeoutMs);
+    })
+  };
+}
+
+const CAPTURE_REASONS: Record<Escalation, string> = {
+  granted: 'the largest stream the camera granted for this shot',
+  unchanged: 'the camera kept its current mode',
+  declined: 'the camera declined a larger mode'
+};
 
 let capturing = false;
 async function takePhoto(): Promise<void> {
-  const { geometry, activeFilter } = readState();
-  if (capturing || !geometry || !camera.active) return;
+  const { camera: status } = readState();
+  if (capturing || !camera.active || status?.state !== 'live') return;
   capturing = true;
+  updateState({ captureActive: true });
   const button = byId<HTMLButtonElement>('v2PhotoButton');
   button.disabled = true;
+  byId('v2ShutterFlash').classList.add('firing');
+  setText('v2PhotoResult', 'Capturing at the camera’s maximum…');
+  setText('v2PhotoTiming', '');
   try {
-    const result = await capturePhoto(renderer, video, activeFilter, geometry.photo);
-    setText('v2PhotoResult', result
-      ? `Saved ${result.width}×${result.height} · ${(result.bytes / 1e6).toFixed(2)} MB JPEG · ${result.reason}`
+    const outcome = await captureAtMaxStream(shutterStream(), async (dims, escalation) => {
+      const source = frameSize(dims.width, dims.height);
+      if (!source) return null;
+      // The same authority, evaluated on the stream ACTUALLY delivering right
+      // now — requested numbers never reach the render or the file name.
+      const photo = resolveGeometry(source, DEFAULT_GEOMETRY_INPUTS).photo;
+      return capturePhoto(renderer, video, readState().activeFilter, {
+        ...photo,
+        reason: CAPTURE_REASONS[escalation]
+      });
+    }, { now: () => performance.now() });
+    if (outcome.still) {
+      updateState({
+        lastPhoto: {
+          width: outcome.still.width,
+          height: outcome.still.height,
+          bytes: outcome.still.bytes
+        }
+      });
+    }
+    const restoreNote = outcome.restoration === 'refused' || outcome.restoration === 'unconfirmed'
+      ? ` · live stream not confirmed back (${outcome.restoration})`
+      : '';
+    setText('v2PhotoResult', outcome.still
+      ? `Saved ${outcome.still.width}×${outcome.still.height} · `
+        + `${(outcome.still.bytes / 1e6).toFixed(2)} MB JPEG · ${outcome.still.reason}${restoreNote}`
       : 'The photo could not be rendered.');
+    setText('v2PhotoTiming', shutterTimingReport(outcome));
   } finally {
     capturing = false;
+    updateState({ captureActive: false });
+    byId('v2ShutterFlash').classList.remove('firing');
     button.disabled = !camera.active;
   }
+}
+
+/**
+ * The measured shutter timeline, in Joshua's requested shape — so "it seems
+ * fast" becomes "switching took 146 ms, rendering 38, JPEG 91, restore 122".
+ */
+function shutterTimingReport(outcome: {
+  still: { timing: { renderMs: number; encodeMs: number } } | null;
+  restoration: string;
+  timing: {
+    maxFrameReadyMs: number; stillDoneMs: number;
+    restoreRequestedMs: number; liveRestoredMs: number | null; totalMs: number;
+  };
+}): string {
+  const t = outcome.timing;
+  const ms = (value: number) => `+${Math.round(value)} ms`;
+  const lines = [
+    'Shutter timing',
+    'Max request 0 ms',
+    `Max frame ready ${ms(t.maxFrameReadyMs)}`
+  ];
+  if (outcome.still) {
+    const renderDone = t.stillDoneMs - outcome.still.timing.encodeMs;
+    lines.push(`GPU render done ${ms(renderDone)}`);
+    lines.push(`JPEG ready ${ms(t.stillDoneMs)}`);
+  } else {
+    lines.push(`Render failed ${ms(t.stillDoneMs)}`);
+  }
+  lines.push(`Restore requested ${ms(t.restoreRequestedMs)}`);
+  if (t.liveRestoredMs !== null) {
+    lines.push(`Live frame restored ${ms(t.liveRestoredMs)}`);
+  } else if (outcome.restoration === 'not needed') {
+    lines.push('Live stream unchanged — nothing to restore');
+  } else {
+    lines.push(`Live frame restored — not confirmed (${outcome.restoration})`);
+  }
+  lines.push(`Total ${Math.round(t.totalMs)} ms`);
+  return lines.join('\n');
 }
 
 /* --- The dock, built from NAV_ROUTES (Rule 5) ---------------------------- */

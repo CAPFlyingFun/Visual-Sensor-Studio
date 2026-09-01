@@ -17,6 +17,8 @@ export interface PhotoResult {
   bytes: number;
   fileName: string;
   reason: string;
+  /** Measured stage costs: GPU render + copy-out, then JPEG encoding. */
+  timing: { renderMs: number; encodeMs: number };
 }
 
 /** Copy target, reused across captures; photo sizes dwarf preview sizes. */
@@ -28,6 +30,7 @@ export async function capturePhoto(
   filterId: string,
   photo: SizedWithReason
 ): Promise<PhotoResult | null> {
+  const t0 = performance.now();
   if (!renderer.uploadFrame(video)) return null;
   if (!renderer.render(filterId, { width: photo.width, height: photo.height })) return null;
 
@@ -36,11 +39,15 @@ export async function capturePhoto(
   photoCanvas.height = photo.height;
   const context = photoCanvas.getContext('2d');
   if (!context) return null;
+  // The copy-out forces the GL work to complete, so the render stage is
+  // honestly bounded here rather than at the (asynchronous) draw call.
   context.drawImage(renderer.targetCanvas, 0, 0);
+  const renderDone = performance.now();
 
   const blob = await new Promise<Blob | null>((resolve) =>
     photoCanvas!.toBlob(resolve, 'image/jpeg', 0.92));
   if (!blob) return null;
+  const encodeDone = performance.now();
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const fileName = `visual-sensor-v2-${filterId}-${photo.width}x${photo.height}-${stamp}.jpg`;
@@ -58,6 +65,7 @@ export async function capturePhoto(
     height: photo.height,
     bytes: blob.size,
     fileName,
-    reason: photo.reason
+    reason: photo.reason,
+    timing: { renderMs: renderDone - t0, encodeMs: encodeDone - renderDone }
   };
 }

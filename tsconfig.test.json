@@ -56,7 +56,7 @@
     "src/v2/state.ts",
     "src/v2/routes.ts",
     "src/v2/camera/geometry.ts",
-    "src/v2/camera/policy.ts",
+    "src/v2/capture/shutter.ts",
     "src/v2/filters/registry.ts"
   ]
 }

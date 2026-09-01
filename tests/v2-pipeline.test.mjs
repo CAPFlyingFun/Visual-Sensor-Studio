@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import {
   DEFAULT_GEOMETRY_INPUTS, fitShortSide, resolveGeometry
 } from '../.test-build/v2/camera/geometry.js';
-import { belowCapability } from '../.test-build/v2/camera/policy.js';
+import { captureAtMaxStream } from '../.test-build/v2/capture/shutter.js';
 import { FILTERS, filterById, ironbowLut } from '../.test-build/v2/filters/registry.js';
 import { ironbowColor } from '../.test-build/vision/motion-ironbow.js';
 
@@ -115,27 +115,166 @@ test('a numeric photo policy caps the short side and names itself', () => {
   assert.match(uncapped.photo.reason, /negotiated stream/);
 });
 
-/* --- Source policy: advertised vs negotiated ------------------------------ */
+/* --- The shutter: LIVE SOURCE != PHOTO OUTPUT ----------------------------- */
 
-test('belowCapability separates "cannot do more" from "did not ask"', () => {
-  // The device case that raised this: a 720×960 default stream on a camera
-  // advertising the full sensor.
-  assert.equal(belowCapability(size(720, 960), size(4032, 3024)), true);
+/**
+ * A scripted stream: `frames` is what successive decoded frames report (and
+ * what measure() then returns — a decoded frame IS the stream's state); an
+ * empty queue behaves like a stalled stream (nextFrame times out).
+ */
+function scriptedStream({ start, frames = [], applyMax = true, applyRestore = true, throwOnMax = false }) {
+  let current = start;
+  const queue = [...frames];
+  const calls = { requestMax: 0, restore: [], framesServed: 0 };
+  const stream = {
+    measure: () => current,
+    requestMax: async () => {
+      calls.requestMax += 1;
+      if (throwOnMax) throw new Error('engine gone');
+      return { applied: applyMax };
+    },
+    restore: async (shortSide) => {
+      calls.restore.push(shortSide);
+      return { applied: applyRestore };
+    },
+    nextFrame: async () => {
+      const next = queue.shift();
+      if (!next) return null;
+      calls.framesServed += 1;
+      current = next;
+      return next;
+    }
+  };
+  return { stream, calls };
+}
 
-  // Orientation-free: the capability reports landscape maxima while a
-  // portrait stream transposes them. Same pixels, no gap.
-  assert.equal(belowCapability(size(3024, 4032), size(4032, 3024)), false);
-  assert.equal(belowCapability(size(4032, 3024), size(4032, 3024)), false);
+const FAST = { confirmTimeoutMs: 300, settleFrames: 2, settleMs: 0 };
 
-  // Mode quantisation inside the 2% slack is rounding, not refusal…
-  assert.equal(belowCapability(size(3018, 4026), size(4032, 3024)), false);
-  // …and just past it is a real gap again.
-  assert.equal(belowCapability(size(2880, 2160), size(4032, 3024)), true);
+test('shutter: max granted, rendered at MEASURED size, walked back and confirmed', async () => {
+  const { stream, calls } = scriptedStream({
+    start: { width: 720, height: 960 },
+    frames: [{ width: 3024, height: 4032 }, { width: 720, height: 960 }]
+  });
+  const rendered = [];
+  const outcome = await captureAtMaxStream(stream, async (dims, escalation) => {
+    rendered.push({ dims, escalation });
+    return { saved: true };
+  }, FAST);
 
-  // Missing facts mean "no evidence", never "escalate on faith".
-  assert.equal(belowCapability(null, size(4032, 3024)), false);
-  assert.equal(belowCapability(size(720, 960), null), false);
-  assert.equal(belowCapability(null, null), false);
+  assert.equal(outcome.escalation, 'granted');
+  assert.equal(outcome.restoration, 'restored');
+  assert.deepEqual(outcome.captureSource, { width: 3024, height: 4032 });
+  assert.equal(rendered.length, 1, 'the shader runs exactly once per shutter');
+  assert.deepEqual(rendered[0].dims, { width: 3024, height: 4032 },
+    'the render uses what the camera GRANTED, never what was requested');
+  assert.deepEqual(calls.restore, [720], 'restore aims at the remembered short side');
+  assert.ok(outcome.timing.totalMs >= 0 && outcome.timing.maxFrameReadyMs >= 0);
+  assert.ok(outcome.timing.liveRestoredMs !== null, 'a confirmed restore carries its time');
+});
+
+test('shutter: a stream already at maximum settles quickly as "unchanged"', async () => {
+  // Joshua's nuance: what matters is a confirmed frame AFTER the request,
+  // then using whatever dimensions arrived — no dimension change exists to
+  // wait for here, and that must not cost the whole timeout.
+  const max = { width: 3024, height: 4032 };
+  const { stream, calls } = scriptedStream({ start: max, frames: [max, max, max, max, max] });
+  const outcome = await captureAtMaxStream(stream, async (dims) => ({ dims }), FAST);
+
+  assert.equal(outcome.escalation, 'unchanged');
+  assert.deepEqual(outcome.captureSource, max, 'saved from the stream as it really is');
+  assert.ok(calls.framesServed <= 3, `settled after a couple of frames, served ${calls.framesServed}`);
+  assert.deepEqual(calls.restore, [3024],
+    'the walk-back still runs — asking stored the max request in the engine');
+  assert.equal(outcome.restoration, 'not needed');
+});
+
+test('shutter: a declined request saves the honest current frame', async () => {
+  const { stream, calls } = scriptedStream({ start: { width: 720, height: 960 }, applyMax: false });
+  const rendered = [];
+  const outcome = await captureAtMaxStream(stream, async (dims, escalation) => {
+    rendered.push(escalation);
+    return { ok: true };
+  }, FAST);
+
+  assert.equal(outcome.escalation, 'declined');
+  assert.deepEqual(outcome.captureSource, { width: 720, height: 960 });
+  assert.deepEqual(rendered, ['declined'], 'the outcome is reported, not faked');
+  assert.equal(calls.restore.length, 1, 'the stored stream request is still reset');
+  assert.equal(outcome.restoration, 'not needed');
+});
+
+test('shutter: a refused restore is reported, never retried in a loop', async () => {
+  const { stream, calls } = scriptedStream({
+    start: { width: 720, height: 960 },
+    frames: [{ width: 3024, height: 4032 }],
+    applyRestore: false
+  });
+  const outcome = await captureAtMaxStream(stream, async () => ({ ok: true }), FAST);
+
+  assert.equal(outcome.escalation, 'granted');
+  assert.equal(outcome.restoration, 'refused');
+  assert.equal(calls.restore.length, 1, 'exactly one restore attempt — no restart loop');
+  assert.ok(outcome.still, 'the photo still comes out');
+  assert.equal(outcome.timing.liveRestoredMs, null);
+});
+
+test('shutter: an unconfirmed restore says so', async () => {
+  const big = { width: 3024, height: 4032 };
+  const { stream } = scriptedStream({
+    start: { width: 720, height: 960 },
+    // The escalation frame arrives; after restore, frames keep reporting the
+    // capture mode until the settle concludes nothing changed.
+    frames: [big, big, big, big]
+  });
+  const outcome = await captureAtMaxStream(stream, async () => ({ ok: true }), FAST);
+  assert.equal(outcome.escalation, 'granted');
+  assert.equal(outcome.restoration, 'unconfirmed');
+});
+
+test('shutter: a failed render never skips the walk-back', async () => {
+  const { stream, calls } = scriptedStream({
+    start: { width: 720, height: 960 },
+    frames: [{ width: 3024, height: 4032 }, { width: 720, height: 960 }]
+  });
+  const outcome = await captureAtMaxStream(stream, async () => {
+    throw new Error('encoder exploded');
+  }, FAST);
+
+  assert.equal(outcome.still, null);
+  assert.equal(calls.restore.length, 1, 'the live stream is walked back regardless');
+  assert.equal(outcome.restoration, 'restored');
+});
+
+test('shutter: a throwing engine bridge is a declined request, not a crash', async () => {
+  const { stream, calls } = scriptedStream({ start: { width: 720, height: 960 }, throwOnMax: true });
+  const outcome = await captureAtMaxStream(stream, async () => ({ ok: true }), FAST);
+  assert.equal(outcome.escalation, 'declined');
+  assert.ok(outcome.still, 'the shot is still saved from the live stream');
+  assert.equal(calls.restore.length, 1);
+});
+
+/* --- Terminology stays consistent with docs/camera_rule.md ---------------- */
+
+test('the camera rule document and the code speak the same language', () => {
+  const rule = readFileSync(new URL('../docs/camera_rule.md', import.meta.url), 'utf8');
+  for (const term of [
+    'Camera Capability', 'Camera Stream / Source', 'Viewfinder', 'Preview Render',
+    'Analysis', 'Photo Output', 'Recording Render', 'Encoded Output'
+  ]) {
+    assert.ok(rule.includes(term), `camera_rule.md must define "${term}"`);
+  }
+  assert.match(rule, /MAXIMUM SAVED OUTPUT DOES NOT MEAN MAXIMUM LIVE CAMERA STREAM/);
+  assert.match(rule, /No downstream output may silently inherit/i);
+
+  const html = readFileSync(new URL('../public/v2.html', import.meta.url), 'utf8');
+  for (const label of ['SOURCE', 'CAPABILITY', 'VIEWFINDER', 'PREVIEW', 'ANALYSIS', 'PHOTO POLICY', 'LAST PHOTO']) {
+    assert.ok(html.includes(`>${label}<`), `the truth table needs a ${label} row`);
+  }
+
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+  assert.match(appTs, /responsive live stream/, 'the live-source policy names itself');
+  assert.ok(!/preferMaxCaptureSize/.test(appTs),
+    'normal V2 startup never asks the live stream for the maximum');
 });
 
 /* --- The filter registry (Rules 4–5) -------------------------------------- */

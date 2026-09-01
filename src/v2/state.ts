@@ -22,6 +22,19 @@ export interface FrameSize {
   aspect: number;
 }
 
+/** The VIEWFINDER's rectangle in device pixels — display geometry, not camera. */
+export interface DevicePixelBox {
+  width: number;
+  height: number;
+}
+
+/** What the last shutter press actually saved — measured, never assumed. */
+export interface SavedPhoto {
+  width: number;
+  height: number;
+  bytes: number;
+}
+
 export interface V2State {
   camera: CameraStatus | null;
   /**
@@ -50,6 +63,15 @@ export interface V2State {
   activeFilter: string;
   /** Preview renders per second, measured — the GPU's own delivery rate. */
   previewFps: number;
+  /**
+   * VIEWFINDER: the on-screen rectangle in device pixels. Measured by the one
+   * sanctioned layout read; PREVIEW derives from it and nothing else does.
+   */
+  viewfinder: DevicePixelBox | null;
+  /** LAST PHOTO: what the most recent shutter press really saved. */
+  lastPhoto: SavedPhoto | null;
+  /** True only inside the shutter's temporary maximum-stream window. */
+  captureActive: boolean;
 }
 
 export function frameSize(width: number, height: number): FrameSize | null {
@@ -67,7 +89,10 @@ const state: V2State = {
   zoom: null,
   geometry: null,
   activeFilter: 'rgb',
-  previewFps: 0
+  previewFps: 0,
+  viewfinder: null,
+  lastPhoto: null,
+  captureActive: false
 };
 
 const listeners = new Set<Listener>();
