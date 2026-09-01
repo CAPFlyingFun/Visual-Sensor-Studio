@@ -37,6 +37,14 @@ export interface ClipResult {
   /** bytes × 8 / seconds — the rate the file actually carries. */
   measuredBitsPerSecond: number;
   fileName: string;
+  /**
+   * How many non-empty dataavailable deliveries built the file. The 1 s
+   * timeslice is a REQUEST: a browser that holds everything until stop
+   * delivers one chunk for the whole clip, and then a killed encoder still
+   * loses the file — so whether chunking actually protects anything on a
+   * given device is this number, not the request.
+   */
+  chunkCount: number;
 }
 
 /**
@@ -178,6 +186,7 @@ export class ClipRecorder {
     });
     const type = this.mime || this.chunks[0]?.type || '';
     const blob = new Blob(this.chunks, type ? { type } : undefined);
+    const chunkCount = this.chunks.length;
     this.chunks = [];
     if (blob.size === 0) return null;
 
@@ -193,7 +202,8 @@ export class ClipRecorder {
       mimeType: type || blob.type,
       requestedBitsPerSecond: this.bitrate,
       measuredBitsPerSecond: seconds > 0 ? (blob.size * 8) / seconds : 0,
-      fileName
+      fileName,
+      chunkCount
     };
   }
 }

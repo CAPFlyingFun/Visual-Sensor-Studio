@@ -55,6 +55,9 @@ export interface SavedClip {
   mimeType: string;
   /** The encoder wrote different dimensions than it was handed — flagged. */
   resizedFromInput: boolean;
+  /** dataavailable deliveries that built the file — 1 means the timeslice
+   * request was not honored and a killed encoder loses the whole clip. */
+  chunkCount: number;
 }
 
 export interface V2State {

@@ -377,7 +377,9 @@ function renderDiagnostics(): void {
     ? lastClip.width > 0
       ? `${lastClip.width}×${lastClip.height} · ${lastClip.measuredMbps.toFixed(1)} Mb/s measured · `
         + `${lastClip.mimeType || 'container unreported'}${lastClip.resizedFromInput ? ' · ENCODER RESIZED' : ''}`
+        + ` · ${lastClip.chunkCount} chunk${lastClip.chunkCount === 1 ? '' : 's'}`
       : `truncated file — did not decode · ${lastClip.mimeType || 'container unreported'}`
+        + ` · delivered as ${lastClip.chunkCount} chunk${lastClip.chunkCount === 1 ? '' : 's'}`
     : 'none yet');
   setText('v2DiagState', status ? `${status.state} · ${status.stage}` : 'idle');
   setText('v2DiagTrack', d.trackLabel
@@ -611,7 +613,7 @@ function shutterStream(): ShutterStream {
  * offers a button. `onclick` assignment on purpose: a new result replaces
  * the old handler instead of stacking listeners.
  */
-function offerShare(buttonId: string, file: File): void {
+function offerShare(buttonId: string, file: File, reportTo?: string): void {
   const button = byId<HTMLButtonElement>(buttonId);
   const nav = navigator as Navigator & {
     canShare?: (data: { files: File[] }) => boolean;
@@ -623,8 +625,18 @@ function offerShare(buttonId: string, file: File): void {
   }
   button.hidden = false;
   button.onclick = () => {
-    // A dismissed sheet is a choice, not an error.
-    void nav.share?.({ files: [file] }).catch(() => undefined);
+    void nav.share?.({ files: [file] }).catch((error: unknown) => {
+      // A dismissed sheet is a choice, not an error — WebKit reports that as
+      // AbortError. Anything ELSE is the share itself refusing the file, and
+      // that refusal is exactly the measurement a "didn't save" report
+      // needs, so it goes on screen instead of vanishing.
+      const name = error instanceof DOMException ? error.name : 'error';
+      if (name === 'AbortError' || !reportTo) return;
+      const message = error instanceof Error ? error.message : String(error);
+      const target = byId(reportTo);
+      const base = (target.textContent ?? '').split(' · SHARE FAILED')[0];
+      setText(reportTo, `${base} · SHARE FAILED: ${name} — ${message}`);
+    });
   };
 }
 
@@ -647,7 +659,8 @@ async function toggleRecording(): Promise<void> {
           measuredMbps: result.measuredBitsPerSecond / 1e6,
           mimeType: result.mimeType,
           resizedFromInput: result.encodedWidth !== recording.input.width
-            || result.encodedHeight !== recording.input.height
+            || result.encodedHeight !== recording.input.height,
+          chunkCount: result.chunkCount
         }
         : readState().lastClip
     });
@@ -657,14 +670,24 @@ async function toggleRecording(): Promise<void> {
     const dimsText = result && result.encodedWidth > 0
       ? `${result.encodedWidth}×${result.encodedHeight} measured in the file`
       : 'file DID NOT DECODE — truncated container, likely killed mid-encode';
+    // The 1 s timeslice is a REQUEST. Whether this browser actually delivered
+    // chunks is the fact that decides if a killed encoder loses a second or
+    // the whole clip — measure and print it instead of assuming it.
+    const chunkText = result
+      ? result.chunkCount <= 1 && result.seconds >= 2.5
+        ? '1 chunk — this browser held the whole clip to the end (timeslice not honored)'
+        : `${result.chunkCount} chunk${result.chunkCount === 1 ? '' : 's'}`
+      : '';
     setText('v2RecordResult', result
       ? `Saved ${result.seconds.toFixed(1)}s · ${dimsText} · `
         + `${(result.bytes / 1e6).toFixed(2)} MB · ${(result.measuredBitsPerSecond / 1e6).toFixed(1)} Mb/s measured `
         + `(asked ${(result.requestedBitsPerSecond / 1e6).toFixed(1)}) · ${result.mimeType || 'container unreported'}`
+        + ` · ${chunkText}`
       : 'The recording produced no data.');
     if (result) {
       offerShare('v2ShareClip',
-        new File([result.blob], result.fileName, { type: result.mimeType || 'video/mp4' }));
+        new File([result.blob], result.fileName, { type: result.mimeType || 'video/mp4' }),
+        'v2RecordResult');
     }
     return;
   }
@@ -752,7 +775,8 @@ async function takePhoto(): Promise<void> {
         }
       });
       offerShare('v2SharePhoto',
-        new File([outcome.still.blob], outcome.still.fileName, { type: 'image/jpeg' }));
+        new File([outcome.still.blob], outcome.still.fileName, { type: 'image/jpeg' }),
+        'v2PhotoResult');
     }
     const restoreNote = outcome.restoration === 'refused' || outcome.restoration === 'unconfirmed'
       ? ` · live stream not confirmed back (${outcome.restoration})`

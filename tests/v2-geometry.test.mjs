@@ -536,6 +536,8 @@ test('recording truth: native and filtered clips measured from their files (fake
       const native = await page.textContent('#v2RecordResult');
       assert.match(native, /^Saved \d+\.\ds · \d+×\d+ measured in the file/,
         `the clip reports measured truth, got "${native}"`);
+      assert.match(native, / · \d+ chunks?/,
+        `the delivery pattern is measured, not assumed, got "${native}"`);
       const [nw, nh] = dims(native.replace(/^Saved [\d.]+s · /, ''));
       assert.equal(nw, sw, 'the native path records the SOURCE, measured in the file');
       assert.equal(nh, sh);
