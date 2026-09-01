@@ -329,10 +329,17 @@ function renderDiagnostics(): void {
   const path = (recording ? recording.path === 'native' : activeFilter === 'rgb')
     ? 'camera stream direct'
     : 'filtered render';
+  // When the record policy binds, its REASON belongs on screen before the
+  // button is pressed — a 12 MP view with a 1080 file must never read as a
+  // silent shortfall (it read exactly that way on device, twice).
+  const recordCapped = geometry !== null
+    && Math.min(geometry.recordInput.width, geometry.recordInput.height)
+      < Math.min(geometry.source.width, geometry.source.height);
   setText('v2DiagRecordIn', recording
     ? `${recording.input.width}×${recording.input.height} · RECORDING · ${path}`
     : geometry
       ? `${row(geometry.recordInput)} · ${path} on record`
+        + (recordCapped ? ` · ${geometry.recordInput.reason}` : '')
       : '—');
   setText('v2DiagEncoded', lastClip
     ? lastClip.width > 0
@@ -413,9 +420,17 @@ function buildFilterStrip(): void {
 
 let renderedFilterKey = '';
 function renderFilterStrip(): void {
-  const { activeFilter, recording } = readState();
+  const { activeFilter, recording, geometry } = readState();
   const rec = recording !== null;
-  const key = `${activeFilter}|${rec}`;
+  // The record cap surfaces HERE, next to the choice that triggers it: a
+  // filter selected on a large stream means capped clips, and saying so
+  // before the shutter beats explaining a "small" file after it.
+  const cap = geometry !== null
+    && Math.min(geometry.recordInput.width, geometry.recordInput.height)
+      < Math.min(geometry.source.width, geometry.source.height)
+    ? `${geometry.recordInput.width}×${geometry.recordInput.height}`
+    : '';
+  const key = `${activeFilter}|${rec}|${cap}`;
   if (key === renderedFilterKey) return;
   renderedFilterKey = key;
   for (const button of byId('v2FilterStrip').querySelectorAll<HTMLButtonElement>('[data-filter]')) {
@@ -429,9 +444,13 @@ function renderFilterStrip(): void {
     difference: 'Change between frames through the ramp — history held at ANALYSIS resolution. '
       + 'Video is this filter’s product; stills are declined rather than upscaled.'
   };
+  const capNote = cap && activeFilter !== 'rgb'
+    ? `Filtered clips at this stream size record at ${cap} — the measured memory envelope. `
+      + 'RGB clips keep the full stream.'
+    : '';
   setText('v2FilterNote', rec
     ? 'Recording — stop to change filters.'
-    : FILTER_NOTES[activeFilter] ?? '');
+    : `${FILTER_NOTES[activeFilter] ?? ''} ${capNote}`.trim());
 }
 
 /**

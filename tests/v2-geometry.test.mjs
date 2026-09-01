@@ -571,6 +571,14 @@ test('a maximum-tier filtered clip records at the capped RECORD IN, never 12 MP 
       await page.click('[data-filter="ironbow"]');
       await page.waitForTimeout(300);
 
+      // The cap announces itself, reason and all, BEFORE the button: in the
+      // RECORD IN row and beside the filter choice that triggers it.
+      await page.waitForFunction(() =>
+        /capped at a 1080/.test(document.getElementById('v2DiagRecordIn')?.textContent ?? ''),
+        null, { timeout: 3000 });
+      assert.match(await page.textContent('#v2FilterNote'), /memory envelope/,
+        'the filter note warns about the cap before recording, not after the file');
+
       await page.click('#v2RecordButton');
       await page.waitForFunction(() =>
         /RECORDING · filtered render/.test(document.getElementById('v2DiagRecordIn')?.textContent ?? ''),
