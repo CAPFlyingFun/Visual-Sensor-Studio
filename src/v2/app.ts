@@ -875,9 +875,9 @@ async function toggleRecording(): Promise<void> {
     // sizes — show the drain instead of looking hung, and count it up so a
     // slow finish and a dead one look different on screen.
     const finalizeStarted = performance.now();
-    setText('v2RecordResult', 'Finalizing — the encoder is draining and writing the file…');
+    setText('v2RecordSummary', 'Finalizing — the encoder is draining and writing the file…');
     const ticker = window.setInterval(() => {
-      setText('v2RecordResult', 'Finalizing — the encoder is draining and writing the file… '
+      setText('v2RecordSummary', 'Finalizing — the encoder is draining and writing the file… '
         + `${((performance.now() - finalizeStarted) / 1000).toFixed(0)}s`);
     }, 1000);
     let result: ClipResult | null = null;
@@ -958,6 +958,14 @@ async function toggleRecording(): Promise<void> {
         ? '1 chunk — this browser held the whole clip to the end (timeslice not honored)'
         : `${result.chunkCount} chunk${result.chunkCount === 1 ? '' : 's'}`
       : '';
+    // Main screen: the result. More: every measurement behind it.
+    setText('v2RecordSummary', result
+      ? result.encodedWidth > 0
+        ? `Saved ${result.seconds.toFixed(1)}s · ${result.encodedWidth}×${result.encodedHeight}`
+          + (fileFps !== null ? ` · ${fileFps.toFixed(0)} fps` : '')
+          + ` · ${(result.bytes / 1e6).toFixed(1)} MB`
+        : `Clip did not decode — see More for why`
+      : 'The recording produced no data.');
     setText('v2RecordResult', result
       ? `Saved ${result.seconds.toFixed(1)}s · ${dimsText} · `
         + `${(result.bytes / 1e6).toFixed(2)} MB · ${(result.measuredBitsPerSecond / 1e6).toFixed(1)} Mb/s measured `
@@ -967,7 +975,7 @@ async function toggleRecording(): Promise<void> {
     if (result) {
       offerShare('v2ShareClip',
         new File([result.blob], result.fileName, { type: result.mimeType || 'video/mp4' }),
-        'v2RecordResult');
+        'v2RecordSummary');
     }
     return;
   }
@@ -984,7 +992,7 @@ async function toggleRecording(): Promise<void> {
     || geometry.recordInput.height !== geometry.source.height;
   const viaRender = filtered || heldUnderEnvelope;
   if (viaRender && renderer.unavailableReason) {
-    setText('v2RecordResult', renderer.unavailableReason);
+    setText('v2RecordSummary', renderer.unavailableReason);
     return;
   }
   const input = viaRender ? geometry.recordInput : geometry.source;
@@ -993,23 +1001,24 @@ async function toggleRecording(): Promise<void> {
     // Size the canvas to RECORD IN before the encoder ever sees it; the
     // preview loop holds this target until stop.
     if (!renderer.uploadFrame(video) || !renderer.render(activeFilter, geometry.recordInput)) {
-      setText('v2RecordResult', 'No frame to start the recording from.');
+      setText('v2RecordSummary', 'No frame to start the recording from.');
       return;
     }
     stream = renderer.targetCanvas.captureStream();
   } else {
     const source = video.srcObject;
     if (!(source instanceof MediaStream)) {
-      setText('v2RecordResult', 'The camera stream is not available to record.');
+      setText('v2RecordSummary', 'The camera stream is not available to record.');
       return;
     }
     stream = source;
   }
   const started = clipRecorder.start(stream, input, deliveredFps, activeFilter);
   if (!started.ok) {
-    setText('v2RecordResult', started.reason ?? 'The recorder refused to start.');
+    setText('v2RecordSummary', started.reason ?? 'The recorder refused to start.');
     return;
   }
+  setText('v2RecordSummary', '');
   setText('v2RecordResult', '');
   framesFedThisClip = 0;
   fedPerSecond = [];
@@ -1156,8 +1165,9 @@ function showRoute(id: string): void {
   activeRoute = id;
   const route = NAV_ROUTES.find((r) => r.id === id);
   byId('v2CameraRoute').hidden = id !== 'camera';
+  byId('v2MoreRoute').hidden = id !== 'more';
   const placeholder = byId('v2RoutePlaceholder');
-  placeholder.hidden = id === 'camera';
+  placeholder.hidden = route?.implemented ?? false;
   if (route && !route.implemented) {
     setText('v2PlaceholderTitle', route.label);
     setText('v2PlaceholderPlan', route.plan);

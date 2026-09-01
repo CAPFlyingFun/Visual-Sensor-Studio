@@ -97,6 +97,10 @@ for (const [label, width, height] of [['430x932', 430, 932], ['320x568', 320, 56
         assert.deepEqual(seen.dockButtons, ['camera', 'sensors', 'world', 'data', 'more'],
           'the dock is generated from NAV_ROUTES, in order');
 
+        const before = await page.evaluate(() => ({
+          top: Math.round(document.getElementById('v2Viewfinder').getBoundingClientRect().top),
+          scrollable: document.documentElement.scrollHeight - innerHeight
+        }));
         await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
         await page.waitForTimeout(150);
         const after = await page.evaluate(() => {
@@ -106,13 +110,33 @@ for (const [label, width, height] of [['430x932', 430, 932], ['320x568', 320, 56
             dockTop: Math.round(dock.top), overlap: vf.bottom > dock.top + 1 };
         });
         assert.ok(after.visible, 'the viewfinder left the screen');
-        assert.ok(after.top <= 0 || after.top < 40, 'the viewfinder should be pinned near the top');
+        // The main screen is deliberately lean now, so the page may not scroll
+        // far: the viewfinder must ride up by whatever scroll exists and then
+        // PIN — never leave, never drift below where the scroll would put it.
+        const expectedTop = Math.max(0, before.top - Math.max(0, before.scrollable));
+        assert.ok(after.top <= expectedTop + 1,
+          `the viewfinder should be pinned: top ${after.top}, expected ≤ ${expectedTop} (scrollable ${before.scrollable})`);
 
         // The unimplemented routes are honest placeholders, not fake features.
         await page.click('[data-route="world"]');
         await page.waitForTimeout(100);
         assert.equal(await page.isHidden('#v2CameraRoute'), true);
         assert.match(await page.textContent('#v2PlaceholderPlan'), /legacy app/);
+        // More is where the instruments live: the truth table and the probe
+        // are off the main screen, never gone.
+        await page.click('[data-route="more"]');
+        await page.waitForTimeout(100);
+        assert.equal(await page.isHidden('#v2CameraRoute'), true);
+        assert.equal(await page.isHidden('#v2RoutePlaceholder'), true, 'More is real, not a placeholder');
+        assert.equal(await page.isVisible('#v2DiagSource'), true, 'the truth table lives under More');
+        assert.equal(await page.isVisible('#v2EncoderProbe'), true, 'the probe lives under More');
+        await page.click('[data-route="camera"]');
+        await page.waitForTimeout(100);
+        assert.equal(await page.isHidden('#v2MoreRoute'), true);
+        assert.equal(await page.isVisible('#v2StreamTiers'), true);
+        const mainScreen = await page.evaluate(() =>
+          document.getElementById('v2CameraRoute').contains(document.getElementById('v2DiagSource')));
+        assert.equal(mainScreen, false, 'no truth table on the main screen');
         await page.close();
       });
     });
@@ -652,6 +676,9 @@ test('recording truth: native and filtered clips measured from their files (fake
         `the delivery pattern is measured, not assumed, got "${native}"`);
       assert.match(native, / · finalised in \d+\.\ds · fed [\d.]+ fps → file /,
         `the fed rate and the file's own rate are both reported, got "${native}"`);
+      const summary = await page.textContent('#v2RecordSummary');
+      assert.match(summary, /^Saved \d+\.\ds · \d+×\d+( · \d+ fps)? · [\d.]+ MB$/,
+        `the main screen gets the result, not the instruments, got "${summary}"`);
       if (/video\/mp4/.test(native)) {
         assert.match(native, /file [\d.]+ fps \(\d+ frames\)/,
           `an MP4's frames are counted from its tables, got "${native}"`);

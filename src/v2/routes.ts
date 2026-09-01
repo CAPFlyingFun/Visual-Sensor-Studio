@@ -34,8 +34,10 @@ export const NAV_ROUTES: readonly NavRoute[] = [
     plan: 'Depth scan and export stay in the legacy app for now.'
   },
   {
-    id: 'more', label: 'More', icon: '⋯', implemented: false,
-    plan: 'Rig, Burst and diagnostics stay in the legacy app for now.'
+    // Settings & diagnostics: the truth table, capture measurements and the
+    // encoder probe live here, off the main screen (Joshua, 2026-09-01).
+    id: 'more', label: 'More', icon: '⋯', implemented: true,
+    plan: ''
   }
 ];
 

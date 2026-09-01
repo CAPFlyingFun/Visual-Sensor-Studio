@@ -66,8 +66,11 @@ test('the dock is generated from NAV_ROUTES, not written twice', () => {
   assert.equal(NAV_ROUTES[0].id, 'camera');
   assert.equal(NAV_ROUTES[0].implemented, true);
   assert.equal(new Set(NAV_ROUTES.map((r) => r.id)).size, 5, 'route ids must be unique');
-  for (const route of NAV_ROUTES.slice(1)) {
-    assert.equal(route.implemented, false, `${route.id} is not built in Milestone A`);
+  // More is the settings & diagnostics home (Joshua, 2026-09-01: instruments
+  // off the main screen); the other three remain honest placeholders.
+  assert.equal(routeById('more')?.implemented, true);
+  for (const route of NAV_ROUTES.slice(1, 4)) {
+    assert.equal(route.implemented, false, `${route.id} is not built yet`);
     assert.ok(route.plan.length > 0, `${route.id} needs an honest placeholder plan`);
   }
   assert.equal(routeById('camera')?.label, 'Camera');

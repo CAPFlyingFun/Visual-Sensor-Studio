@@ -94,7 +94,7 @@ export function pickContainer(isSupported: (mime: string) => boolean): string {
  * own instrument, carried over: when an encoder resizes, the file is the
  * only witness that tells the truth.
  */
-function measureEncodedSize(blob: Blob): Promise<{ width: number; height: number }> {
+function measureEncodedSize(blob: Blob): Promise<{ width: number; height: number; seconds: number | null }> {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(blob);
     const probe = document.createElement('video');
@@ -103,7 +103,12 @@ function measureEncodedSize(blob: Blob): Promise<{ width: number; height: number
       if (settled) return;
       settled = true;
       URL.revokeObjectURL(url);
-      resolve({ width, height });
+      // The file's OWN duration, as the decoder reads it. Measured on device
+      // (2026-09-01): a clip timed 10.7 s tap-to-tap held 9.5 s of video —
+      // the encoder's spin-up is not in the file — so dividing frames by the
+      // wall clock understated the kept rate (26.8 vs the file's true 29.97).
+      const seconds = Number.isFinite(probe.duration) && probe.duration > 0 ? probe.duration : null;
+      resolve({ width, height, seconds });
     };
     probe.preload = 'metadata';
     probe.muted = true;
@@ -279,7 +284,9 @@ export class ClipRecorder {
       finalizeTimedOut,
       encoderDied: this.diedReason,
       encodedFrames: counted?.frames ?? null,
-      encodedSeconds: counted?.seconds ?? null
+      // The decoder's duration first (it reads fragmented files too), the
+      // sample tables' second, the wall clock only as the caller's fallback.
+      encodedSeconds: encoded.seconds ?? counted?.seconds ?? null
     };
   }
 }

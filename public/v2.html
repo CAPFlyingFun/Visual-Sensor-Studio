@@ -187,7 +187,7 @@
     <main class="content">
       <div id="v2CameraRoute">
         <section class="section">
-          <div class="section-title"><h2>Camera Stream</h2><span class="hint">a bigger stream costs delivered fps &mdash; the truth table measures the trade</span></div>
+          <div class="section-title"><h2>Camera Stream</h2><span class="hint">a bigger stream costs delivered fps</span></div>
           <div class="zoom tiers" id="v2StreamTiers" aria-label="Stream tiers"></div>
           <div class="toast" id="v2Toast" hidden></div>
         </section>
@@ -198,6 +198,21 @@
           <p class="hint" id="v2FilterNote"></p>
         </section>
 
+        <!-- The main screen shows RESULTS, not instruments (Joshua, 2026-09-01:
+             "hide all the diagnostics in settings, not in the main app"). The
+             full measurements live under More. -->
+        <div class="card">
+          <h3>Captures</h3>
+          <p class="stage-note" id="v2Stage"></p>
+          <p class="stage-note" id="v2PhotoResult"></p>
+          <button type="button" class="share-save" id="v2SharePhoto" hidden>Share &middot; Save to Photos</button>
+          <p class="stage-note" id="v2RecordSummary"></p>
+          <button type="button" class="share-save" id="v2ShareClip" hidden>Share &middot; Save to Photos</button>
+          <p class="hint">Full measurements for every capture are under More.</p>
+        </div>
+      </div>
+
+      <div id="v2MoreRoute" hidden>
         <div class="card">
           <h3>Photo</h3>
           <p>
@@ -207,26 +222,24 @@
             responsive stream. A short pause during capture is the trade. Saved dimensions are
             what the camera actually granted &mdash; never the request, never upscaled.
           </p>
-          <p class="stage-note" id="v2PhotoResult"></p>
           <p class="stage-note timing" id="v2PhotoTiming"></p>
-          <button type="button" class="share-save" id="v2SharePhoto" hidden>Share &middot; Save to Photos</button>
         </div>
 
         <div class="card">
           <h3>Recording</h3>
           <p>
-            RGB records the camera stream directly &mdash; no render in the path, the
-            stream's own size. A filter records the same GPU render the preview shows,
-            at the RECORD IN size. The container is the browser's own choice, and the
-            ENCODED row is measured from the finished file &mdash; never from what was asked.
+            RGB records the camera stream directly while the stream fits the encoder's
+            frame limit; above it, and for every filter, the clip is the same GPU render the
+            preview shows, at the RECORD IN size. The container is the browser's own choice,
+            and every number below is measured from the finished file &mdash; never from
+            what was asked.
           </p>
           <p class="stage-note" id="v2RecordResult"></p>
-          <button type="button" class="share-save" id="v2ShareClip" hidden>Share &middot; Save to Photos</button>
           <p>
             <strong>Encoder envelope probe.</strong> Records a synthetic moving-noise canvas
             through the same recorder at 4:3 sizes bracketing the H.264 Level 5.2 frame limit
             (36,864 macroblocks), then MAX at 30 / 15 / 10 / 5 fed fps &mdash; each file decoded.
-            About 30 s; nothing is saved.
+            About 30 s; nothing is saved. Its verdict becomes this device's ENCODER capability.
           </p>
           <div class="button-row"><button type="button" class="btn" id="v2EncoderProbe">Probe encoder envelope</button></div>
           <pre class="probe-out" id="v2EncoderProbeOut" hidden></pre>
@@ -248,7 +261,6 @@
             <div><span class="k">STATE</span><span id="v2DiagState">idle</span></div>
             <div><span class="k">TRACK</span><span id="v2DiagTrack">—</span></div>
           </div>
-          <p class="stage-note" id="v2Stage"></p>
         </div>
 
         <div class="card">
@@ -257,9 +269,10 @@
             V2 Milestones A–C: the camera shell, the frame-geometry authority, the GPU
             render contract and recording truth. The live stream is a performance decision;
             the photo is a quality decision (the camera's maximum, fetched only for the shot);
-            a clip is measured from its own file. Preview, photo and filtered recording are
-            ONE fragment shader at explicit sizes, and the truth table above is the
-            authority's live output — every row a separate fact with its own policy.
+            a clip is measured from its own file and held under the encoder's measured frame
+            limit. Preview, photo and filtered recording are ONE fragment shader at explicit
+            sizes, and the truth table above is the authority's live output &mdash; every row
+            a separate fact with its own policy.
           </p>
           <p>
             Milestone D has begun: Motion is the first temporal tool, its frame history held
