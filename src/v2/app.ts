@@ -376,12 +376,33 @@ subscribe(() => {
  * nextFrame proves changes with decoded frames rather than trusting a
  * constraint promise.
  */
+/** Tiny reusable frame for exposure sampling — 48×64 is plenty for a mean. */
+let lumaCanvas: HTMLCanvasElement | null = null;
+function sampleStreamLuma(): number | null {
+  if (video.videoWidth === 0) return null;
+  lumaCanvas ??= document.createElement('canvas');
+  lumaCanvas.width = 48;
+  lumaCanvas.height = 64;
+  const context = lumaCanvas.getContext('2d', { willReadFrequently: true });
+  if (!context) return null;
+  try {
+    context.drawImage(video, 0, 0, 48, 64);
+    const data = context.getImageData(0, 0, 48, 64).data;
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 4) sum += data[i] + data[i + 1] + data[i + 2];
+    return sum / ((data.length / 4) * 3 * 255);
+  } catch {
+    return null;
+  }
+}
+
 function shutterStream(): ShutterStream {
   const withFrames = video as HTMLVideoElement & {
     requestVideoFrameCallback?: (callback: () => void) => number;
   };
   return {
     measure: () => ({ width: video.videoWidth, height: video.videoHeight }),
+    sampleLuma: sampleStreamLuma,
     requestMax: async () => {
       try {
         return await camera.applyMaxCaptureSize();
@@ -477,9 +498,10 @@ async function takePhoto(): Promise<void> {
  */
 function shutterTimingReport(outcome: {
   still: { timing: { renderMs: number; encodeMs: number } } | null;
+  escalation: string;
   restoration: string;
   timing: {
-    maxFrameReadyMs: number; stillDoneMs: number;
+    maxFrameReadyMs: number; exposureSettledMs: number | null; stillDoneMs: number;
     restoreRequestedMs: number; liveRestoredMs: number | null; totalMs: number;
   };
 }): string {
@@ -490,6 +512,13 @@ function shutterTimingReport(outcome: {
     'Max request 0 ms',
     `Max frame ready ${ms(t.maxFrameReadyMs)}`
   ];
+  // Only a granted mode change resets auto-exposure, so only then is there
+  // a convergence to wait for and report.
+  if (outcome.escalation === 'granted') {
+    lines.push(t.exposureSettledMs !== null
+      ? `Exposure settled ${ms(t.exposureSettledMs)}`
+      : 'Exposure settled — not confirmed (timeout)');
+  }
   if (outcome.still) {
     const renderDone = t.stillDoneMs - outcome.still.timing.encodeMs;
     lines.push(`GPU render done ${ms(renderDone)}`);

@@ -122,12 +122,21 @@ test('a numeric photo policy caps the short side and names itself', () => {
  * what measure() then returns — a decoded frame IS the stream's state); an
  * empty queue behaves like a stalled stream (nextFrame times out).
  */
-function scriptedStream({ start, frames = [], applyMax = true, applyRestore = true, throwOnMax = false }) {
+function scriptedStream({
+  start, frames = [], lumas = [], applyMax = true, applyRestore = true, throwOnMax = false
+}) {
   let current = start;
   const queue = [...frames];
-  const calls = { requestMax: 0, restore: [], framesServed: 0 };
+  let lumaIndex = 0;
+  const calls = { requestMax: 0, restore: [], framesServed: 0, lumaSamples: 0 };
   const stream = {
     measure: () => current,
+    // A steady 0.3 when no script is given — an already-converged exposure.
+    // A script CYCLES, so an oscillating pair keeps oscillating forever.
+    sampleLuma: () => {
+      calls.lumaSamples += 1;
+      return lumas.length ? lumas[(lumaIndex++) % lumas.length] : 0.3;
+    },
     requestMax: async () => {
       calls.requestMax += 1;
       if (throwOnMax) throw new Error('engine gone');
@@ -148,12 +157,20 @@ function scriptedStream({ start, frames = [], applyMax = true, applyRestore = tr
   return { stream, calls };
 }
 
-const FAST = { confirmTimeoutMs: 300, settleFrames: 2, settleMs: 0 };
+const FAST = {
+  confirmTimeoutMs: 300, settleFrames: 2, settleMs: 0,
+  exposureStableFrames: 2, exposureTimeoutMs: 200, exposureDeltaMax: 0.02
+};
+
+const BIG = { width: 3024, height: 4032 };
+const SMALL = { width: 720, height: 960 };
 
 test('shutter: max granted, rendered at MEASURED size, walked back and confirmed', async () => {
   const { stream, calls } = scriptedStream({
-    start: { width: 720, height: 960 },
-    frames: [{ width: 3024, height: 4032 }, { width: 720, height: 960 }]
+    start: SMALL,
+    // One frame confirms the grant, two settle the (steady) exposure, one
+    // confirms the restore.
+    frames: [BIG, BIG, BIG, SMALL]
   });
   const rendered = [];
   const outcome = await captureAtMaxStream(stream, async (dims, escalation) => {
@@ -163,13 +180,51 @@ test('shutter: max granted, rendered at MEASURED size, walked back and confirmed
 
   assert.equal(outcome.escalation, 'granted');
   assert.equal(outcome.restoration, 'restored');
-  assert.deepEqual(outcome.captureSource, { width: 3024, height: 4032 });
+  assert.deepEqual(outcome.captureSource, BIG);
   assert.equal(rendered.length, 1, 'the shader runs exactly once per shutter');
-  assert.deepEqual(rendered[0].dims, { width: 3024, height: 4032 },
+  assert.deepEqual(rendered[0].dims, BIG,
     'the render uses what the camera GRANTED, never what was requested');
   assert.deepEqual(calls.restore, [720], 'restore aims at the remembered short side');
   assert.ok(outcome.timing.totalMs >= 0 && outcome.timing.maxFrameReadyMs >= 0);
+  assert.ok(outcome.timing.exposureSettledMs !== null,
+    'a steady exposure is confirmed, not assumed');
   assert.ok(outcome.timing.liveRestoredMs !== null, 'a confirmed restore carries its time');
+});
+
+test('shutter: capture waits for the exposure to CONVERGE after the mode switch', async () => {
+  // The dark-photo device finding: a granted mode change resets AE, and the
+  // first 12 MP frame saved a bright room at mean luma 16/255. The shutter
+  // must watch the measured luminance climb and only render once it stops
+  // moving — never grab frame one, never fix it in the shader afterwards.
+  const { stream, calls } = scriptedStream({
+    start: SMALL,
+    frames: [BIG, BIG, BIG, BIG, BIG, BIG, BIG, SMALL],
+    lumas: [0.14, 0.19, 0.25, 0.28, 0.29, 0.295, 0.297]
+  });
+  let framesWhenRendered = 0;
+  const outcome = await captureAtMaxStream(stream, async () => {
+    framesWhenRendered = calls.framesServed;
+    return { saved: true };
+  }, FAST);
+
+  assert.equal(outcome.escalation, 'granted');
+  assert.ok(outcome.timing.exposureSettledMs !== null, 'convergence was detected');
+  assert.ok(framesWhenRendered >= 5,
+    `the render waited through the AE ramp, not frame one (rendered after ${framesWhenRendered} frames)`);
+  assert.ok(calls.lumaSamples >= 5, 'stability was measured, not assumed');
+});
+
+test('shutter: a hunting exposure times out honestly and still captures', async () => {
+  const { stream } = scriptedStream({
+    start: SMALL,
+    frames: Array.from({ length: 200 }, () => BIG),
+    lumas: [0.1, 0.4]
+  });
+  const outcome = await captureAtMaxStream(stream, async () => ({ saved: true }), FAST);
+  assert.equal(outcome.escalation, 'granted');
+  assert.equal(outcome.timing.exposureSettledMs, null,
+    'an exposure that never stabilised is reported as unconfirmed, not papered over');
+  assert.ok(outcome.still, 'the shot is still taken with whatever exposure exists');
 });
 
 test('shutter: a stream already at maximum settles quickly as "unchanged"', async () => {
@@ -183,6 +238,8 @@ test('shutter: a stream already at maximum settles quickly as "unchanged"', asyn
   assert.equal(outcome.escalation, 'unchanged');
   assert.deepEqual(outcome.captureSource, max, 'saved from the stream as it really is');
   assert.ok(calls.framesServed <= 3, `settled after a couple of frames, served ${calls.framesServed}`);
+  assert.equal(calls.lumaSamples, 0,
+    'an unchanged mode kept its converged exposure — no wait, no sampling');
   assert.deepEqual(calls.restore, [3024],
     'the walk-back still runs — asking stored the max request in the engine');
   assert.equal(outcome.restoration, 'not needed');
@@ -205,8 +262,8 @@ test('shutter: a declined request saves the honest current frame', async () => {
 
 test('shutter: a refused restore is reported, never retried in a loop', async () => {
   const { stream, calls } = scriptedStream({
-    start: { width: 720, height: 960 },
-    frames: [{ width: 3024, height: 4032 }],
+    start: SMALL,
+    frames: [BIG, BIG, BIG],
     applyRestore: false
   });
   const outcome = await captureAtMaxStream(stream, async () => ({ ok: true }), FAST);
@@ -219,12 +276,11 @@ test('shutter: a refused restore is reported, never retried in a loop', async ()
 });
 
 test('shutter: an unconfirmed restore says so', async () => {
-  const big = { width: 3024, height: 4032 };
   const { stream } = scriptedStream({
-    start: { width: 720, height: 960 },
-    // The escalation frame arrives; after restore, frames keep reporting the
-    // capture mode until the settle concludes nothing changed.
-    frames: [big, big, big, big]
+    start: SMALL,
+    // Grant, two settle frames, then frames keep reporting the capture mode
+    // until the restore confirmation concludes nothing changed.
+    frames: [BIG, BIG, BIG, BIG]
   });
   const outcome = await captureAtMaxStream(stream, async () => ({ ok: true }), FAST);
   assert.equal(outcome.escalation, 'granted');
@@ -233,8 +289,8 @@ test('shutter: an unconfirmed restore says so', async () => {
 
 test('shutter: a failed render never skips the walk-back', async () => {
   const { stream, calls } = scriptedStream({
-    start: { width: 720, height: 960 },
-    frames: [{ width: 3024, height: 4032 }, { width: 720, height: 960 }]
+    start: SMALL,
+    frames: [BIG, BIG, BIG, SMALL]
   });
   const outcome = await captureAtMaxStream(stream, async () => {
     throw new Error('encoder exploded');

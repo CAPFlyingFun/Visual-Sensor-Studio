@@ -48,6 +48,14 @@ export interface ShutterStream {
    * arrives within the timeout.
    */
   nextFrame(timeoutMs: number): Promise<StreamDims | null>;
+  /**
+   * Mean luma of the CURRENT decoded frame, 0..1, or null when unmeasurable.
+   * The shutter uses it to detect auto-exposure convergence: a camera-mode
+   * renegotiation resets AE, and the first frames of the new mode are
+   * severely underexposed (measured on iPhone: a bright preview scene saved
+   * at mean luma 16/255 when the first post-switch frame was grabbed).
+   */
+  sampleLuma(): number | null;
 }
 
 /**
@@ -71,6 +79,13 @@ export type Restoration = 'restored' | 'not needed' | 'refused' | 'unconfirmed';
 export interface ShutterTiming {
   /** First confirmed decoded frame after the request settled the question. */
   maxFrameReadyMs: number;
+  /**
+   * Auto-exposure judged converged after a mode change (measured luma stable
+   * across consecutive frames); null when it never stabilised in time or no
+   * mode change happened. The capture proceeds either way — reported, not
+   * hidden.
+   */
+  exposureSettledMs: number | null;
   /** renderStill finished (GPU render + encode; the split lives in R). */
   stillDoneMs: number;
   restoreRequestedMs: number;
@@ -98,6 +113,11 @@ export interface ShutterOptions {
    */
   settleFrames?: number;
   settleMs?: number;
+  /** Exposure convergence after a mode change: stable when consecutive
+   *  frames' mean luma moves less than exposureDeltaMax, this many times. */
+  exposureDeltaMax?: number;
+  exposureStableFrames?: number;
+  exposureTimeoutMs?: number;
   now?: () => number;
 }
 
@@ -135,6 +155,35 @@ async function confirmAfterRequest(
   }
 }
 
+/**
+ * Wait for auto-exposure to converge after a mode change: stable once the
+ * mean luma of consecutive frames stops moving. An unmeasurable frame counts
+ * as stable so a broken sampler degrades to a few-frame pause, and the hard
+ * timeout keeps a hunting AE from stalling the shutter — the capture then
+ * proceeds with whatever exposure exists, and the timing says so.
+ */
+async function awaitExposureSettled(
+  stream: ShutterStream,
+  options: { deltaMax: number; stableFrames: number; timeoutMs: number },
+  now: () => number
+): Promise<boolean> {
+  const deadline = now() + options.timeoutMs;
+  let previous = stream.sampleLuma();
+  let stable = 0;
+  for (;;) {
+    const left = deadline - now();
+    if (left <= 0) return false;
+    if (!(await stream.nextFrame(left))) return false;
+    const luma = stream.sampleLuma();
+    const measurable = luma !== null && previous !== null;
+    stable = !measurable || Math.abs((luma as number) - (previous as number)) <= options.deltaMax
+      ? stable + 1
+      : 0;
+    previous = luma;
+    if (stable >= options.stableFrames) return true;
+  }
+}
+
 export async function captureAtMaxStream<R>(
   stream: ShutterStream,
   renderStill: (source: StreamDims, escalation: Escalation) => Promise<R | null>,
@@ -144,6 +193,11 @@ export async function captureAtMaxStream<R>(
     confirmTimeoutMs: options.confirmTimeoutMs ?? 3500,
     settleFrames: options.settleFrames ?? 6,
     settleMs: options.settleMs ?? 600
+  };
+  const exposure = {
+    deltaMax: options.exposureDeltaMax ?? 0.02,
+    stableFrames: options.exposureStableFrames ?? 3,
+    timeoutMs: options.exposureTimeoutMs ?? 1600
   };
   const now = options.now ?? (() => Date.now());
   const t0 = now();
@@ -162,6 +216,17 @@ export async function captureAtMaxStream<R>(
       : 'unchanged';
   }
   const maxFrameReadyMs = now() - t0;
+
+  // A granted mode change resets the camera's auto-exposure; grabbing the
+  // first frame saved a bright room at mean luma 16/255 (measured, iPhone).
+  // Wait for the exposure to stop moving before the one render. An unchanged
+  // mode kept its converged exposure, so there is nothing to wait for.
+  let exposureSettledMs: number | null = null;
+  if (escalation === 'granted') {
+    if (await awaitExposureSettled(stream, exposure, now)) {
+      exposureSettledMs = now() - t0;
+    }
+  }
 
   // Render from what is REALLY there right now, whatever was requested.
   const captureSource = stream.measure();
@@ -205,6 +270,7 @@ export async function captureAtMaxStream<R>(
     restoration,
     timing: {
       maxFrameReadyMs,
+      exposureSettledMs,
       stillDoneMs,
       restoreRequestedMs,
       liveRestoredMs,
