@@ -466,8 +466,20 @@ function renderZoomStops(): void {
 /* --- Rendering: everything below reads the state, never the engine ------- */
 
 function renderHud(): void {
-  const { camera: status, source, deliveredFps, zoom } = readState();
+  const { camera: status, source, deliveredFps, zoom, recording, capability } = readState();
   const live = status?.state === 'live';
+  // While a clip runs, the viewfinder says what the FILE is receiving — in
+  // the stream's own orientation — beside what a photo would be, because
+  // on a device with an encoder ceiling those two numbers differ and the
+  // difference should be visible while it is happening (Joshua, 2026-09-01).
+  const recHud = byId('v2RecHud');
+  if (recording) {
+    recHud.hidden = false;
+    recHud.textContent = `🔴 Recording in ${recording.input.width}×${recording.input.height}`
+      + (capability ? ` · Photo ${capability.width}×${capability.height}` : '');
+  } else {
+    recHud.hidden = true;
+  }
   byId('v2HudDot').dataset.state = status?.state ?? 'idle';
   setText('v2HudState', live ? 'LIVE' : (status?.state ?? 'idle').toUpperCase());
   setText('v2HudSource', source ? `${source.width}×${source.height}` : '—');
@@ -654,9 +666,12 @@ function renderFilterStrip(): void {
     difference: 'Change between frames through the ramp — history held at ANALYSIS resolution. '
       + 'Video is this filter’s product; stills are declined rather than upscaled.'
   };
-  const capNote = cap && activeFilter !== 'rgb'
-    ? `Filtered clips at this stream size record at ${cap} — the record policy's cap. `
-      + 'RGB clips keep the full stream.'
+  // RECORD IN below SOURCE now has one cause on every path, RGB included:
+  // the encoder's frame limit (measured 2026-09-01) — so the note names it
+  // for every filter, and photos are exempt because JPEG has no such level.
+  const capNote = cap
+    ? `Clips at this stream size record at ${cap} — held under the encoder's frame limit `
+      + '(RECORD IN names why). Photos stay at the full sensor.'
     : '';
   setText('v2FilterNote', rec
     ? 'Recording — stop to change filters.'

@@ -572,9 +572,21 @@ test('a stream above the encoder envelope records through the render, held under
       const [rw, rh] = dims(before.recordIn);
       assert.ok(rw < sw && rh < sh, `RECORD IN ${rw}×${rh} held under SOURCE ${sw}×${sh}`);
       assert.ok(Math.ceil(rw / 16) * Math.ceil(rh / 16) <= 1000, 'inside the envelope');
+      assert.match(await page.textContent('#v2FilterNote'), /record at \d+×\d+ — held under the encoder's frame limit/,
+        'the note names the ceiling for RGB too — no "RGB keeps the full stream" fiction');
+      assert.equal(await page.evaluate(() => document.getElementById('v2RecHud').hidden), true,
+        'no recording strip before a clip');
 
       await page.click('#v2RecordButton');
-      await page.waitForTimeout(1800);
+      await page.waitForTimeout(900);
+      const strip = await page.evaluate(() => ({
+        hidden: document.getElementById('v2RecHud').hidden,
+        text: document.getElementById('v2RecHud').textContent
+      }));
+      assert.equal(strip.hidden, false, 'the strip shows while the clip runs');
+      assert.match(strip.text, new RegExp(`^🔴 Recording in ${rw}×${rh}`),
+        `the strip names the size the file receives, got "${strip.text}"`);
+      await page.waitForTimeout(900);
       await page.click('#v2RecordButton');
       await page.waitForFunction(() =>
         (document.getElementById('v2RecordResult')?.textContent ?? '').startsWith('Saved'),
@@ -583,6 +595,9 @@ test('a stream above the encoder envelope records through the render, held under
       const [fw, fh] = dims(line.replace(/^Saved [\d.]+s · /, ''));
       assert.equal(fw, rw, `the file carries RECORD IN, not the stream, got "${line}"`);
       assert.equal(fh, rh);
+      await page.waitForTimeout(300);
+      assert.equal(await page.evaluate(() => document.getElementById('v2RecHud').hidden), true,
+        'the strip leaves with the clip');
       await page.close();
       await context.close();
     });

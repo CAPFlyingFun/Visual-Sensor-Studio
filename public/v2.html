@@ -68,6 +68,15 @@
       font-size: 11px; pointer-events: none;
     }
     .hud span { white-space: nowrap; }
+    /* Shown only while a clip runs: the size the FILE receives, beside the
+       size a photo would be — they differ wherever the encoder has a ceiling. */
+    .rec-hud {
+      position: absolute; left: 10px; right: 10px; bottom: 50px; z-index: 5; text-align: center;
+      padding: 5px 8px; border: 1px solid rgba(255, 92, 92, .6); border-radius: 9px;
+      background: rgba(110, 8, 18, .74); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      pointer-events: none;
+    }
     .hud .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #627080; margin-right: 4px; }
     .hud .dot[data-state="live"] { background: var(--green); box-shadow: 0 0 6px var(--green); }
     .hud .dot[data-state="requesting"] { background: var(--blue); }
@@ -157,6 +166,7 @@
         <canvas id="v2PreviewCanvas" hidden></canvas>
         <div id="v2ShutterFlash" aria-hidden="true"></div>
         <button class="enable-overlay" id="v2EnableCamera" type="button">Enable Camera</button>
+        <div class="rec-hud" id="v2RecHud" hidden></div>
         <div class="hud" aria-label="Live readouts">
           <span><i class="dot" id="v2HudDot"></i><span id="v2HudState">IDLE</span></span>
           <span id="v2HudSource">—</span>
