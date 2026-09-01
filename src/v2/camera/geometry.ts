@@ -55,7 +55,15 @@ export const DEFAULT_GEOMETRY_INPUTS: GeometryInputs = {
   // temporal tools consume this. Nothing renders from it yet in B.
   analysisShortSide: 384,
   photoPolicy: 'source',
-  recordPolicy: 'source'
+  // 1080 is a DEVICE MEASUREMENT, not a taste (2026-09-01): filtered
+  // recording at the full 12 MP stream — 12 MP framebuffer + canvas capture
+  // + 12 MP H.264 encode + the clip buffering in RAM — killed the GPU
+  // context and left an unfinalized file, while 720 recorded at 58–60 fps
+  // and the NATIVE path handled 12 MP fine (it skips all of the above).
+  // Only the filtered path reads RECORD IN, so streams at or below 1080
+  // are untouched; a maximum-tier stream records its filtered clip at
+  // 1080 while the photo path keeps the full sensor.
+  recordPolicy: 1080
 };
 
 /** Even numbers survive encoders and texture copies; the cost is one row. */

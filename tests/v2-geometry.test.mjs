@@ -473,6 +473,61 @@ test('recording truth: native and filtered clips measured from their files (fake
     });
   });
 
+test('a maximum-tier filtered clip records at the capped RECORD IN, never 12 MP (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    // The device crash this guards: MAX-tier Edges/Ironbow clips died with an
+    // unfinalised 0×0 file while RGB-at-MAX (native path) was fine. The
+    // filtered path now records at the policy cap while the live stream and
+    // the photo keep the sensor.
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({
+        viewport: { width: 430, height: 932 },
+        permissions: ['camera']
+      });
+      const page = await context.newPage();
+      page.on('download', () => {});
+      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.waitForTimeout(400);
+      await page.click('#v2EnableCamera');
+      await page.waitForFunction(() =>
+        /\d+(\.\d+)? rendered fps/.test(document.getElementById('v2DiagPreview')?.textContent ?? ''),
+        null, { timeout: 8000 });
+
+      await page.click('[data-stream-tier="maximum"]');
+      await page.waitForFunction(() => {
+        const m = (document.getElementById('v2DiagSource')?.textContent ?? '').match(/^(\d+)×(\d+)/);
+        return m !== null && Math.min(Number(m[1]), Number(m[2])) > 1080;
+      }, null, { timeout: 8000 });
+      await page.click('[data-filter="ironbow"]');
+      await page.waitForTimeout(300);
+
+      await page.click('#v2RecordButton');
+      await page.waitForFunction(() =>
+        /RECORDING · filtered render/.test(document.getElementById('v2DiagRecordIn')?.textContent ?? ''),
+        null, { timeout: 3000 });
+      const during = await page.evaluate(() => ({
+        row: document.getElementById('v2DiagRecordIn').textContent,
+        canvasW: document.getElementById('v2PreviewCanvas').width,
+        canvasH: document.getElementById('v2PreviewCanvas').height
+      }));
+      assert.match(during.row, /^1920×1080 ·/,
+        `RECORD IN is the capped policy size, got "${during.row}"`);
+      assert.equal(Math.min(during.canvasW, during.canvasH), 1080,
+        'the render target is frozen at the cap, not the 4K stream');
+      await page.waitForTimeout(1500);
+      await page.click('#v2RecordButton');
+      await page.waitForFunction(() =>
+        (document.getElementById('v2RecordResult')?.textContent ?? '').startsWith('Saved'),
+        null, { timeout: 10000 });
+      const line = await page.textContent('#v2RecordResult');
+      assert.match(line, /1920×1080 measured in the file/,
+        `the file carries the capped size, got "${line}"`);
+
+      await page.close();
+      await context.close();
+    });
+  });
+
 test('a lost GPU context is reported and recovered — never a silent black camera (fake device)',
   { skip: runnable ? false : 'no browser available' }, async () => {
     // The device measurement this guards: a 12 MP filtered recording put

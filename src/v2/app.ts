@@ -324,8 +324,10 @@ function renderDiagnostics(): void {
       ? `${row(geometry.recordInput)} · ${path} on record`
       : '—');
   setText('v2DiagEncoded', lastClip
-    ? `${lastClip.width}×${lastClip.height} · ${lastClip.measuredMbps.toFixed(1)} Mb/s measured · `
-      + `${lastClip.mimeType || 'container unreported'}${lastClip.resizedFromInput ? ' · ENCODER RESIZED' : ''}`
+    ? lastClip.width > 0
+      ? `${lastClip.width}×${lastClip.height} · ${lastClip.measuredMbps.toFixed(1)} Mb/s measured · `
+        + `${lastClip.mimeType || 'container unreported'}${lastClip.resizedFromInput ? ' · ENCODER RESIZED' : ''}`
+      : `truncated file — did not decode · ${lastClip.mimeType || 'container unreported'}`
     : 'none yet');
   setText('v2DiagState', status ? `${status.state} · ${status.stage}` : 'idle');
   setText('v2DiagTrack', d.trackLabel
@@ -576,8 +578,14 @@ async function toggleRecording(): Promise<void> {
         }
         : readState().lastClip
     });
+    // 0×0 from the decoder means the container never finalised — bytes exist
+    // but the index does not, the signature of a process killed mid-encode.
+    // Say that, instead of printing 0×0 as if it were a resolution.
+    const dimsText = result && result.encodedWidth > 0
+      ? `${result.encodedWidth}×${result.encodedHeight} measured in the file`
+      : 'file DID NOT DECODE — truncated container, likely killed mid-encode';
     setText('v2RecordResult', result
-      ? `Saved ${result.seconds.toFixed(1)}s · ${result.encodedWidth}×${result.encodedHeight} measured in the file · `
+      ? `Saved ${result.seconds.toFixed(1)}s · ${dimsText} · `
         + `${(result.bytes / 1e6).toFixed(2)} MB · ${(result.measuredBitsPerSecond / 1e6).toFixed(1)} Mb/s measured `
         + `(asked ${(result.requestedBitsPerSecond / 1e6).toFixed(1)}) · ${result.mimeType || 'container unreported'}`
       : 'The recording produced no data.');
