@@ -24,7 +24,7 @@ import { NAV_ROUTES } from './routes.js';
 import { readState, subscribe, updateState, frameSize } from './state.js';
 import { resolveGeometry, DEFAULT_GEOMETRY_INPUTS } from './camera/geometry.js';
 import { captureAtMaxStream, type Escalation, type ShutterStream } from './capture/shutter.js';
-import { ClipRecorder } from './capture/record.js';
+import { ClipRecorder, type ClipResult } from './capture/record.js';
 import { STREAM_TIERS, tierAvailable, tierById } from './camera/stream-tiers.js';
 import { FILTERS, filterById } from './filters/registry.js';
 import { GlRenderer } from './render/gl-renderer.js';
@@ -83,6 +83,13 @@ window.addEventListener('resize', refreshGeometry);
 
 const previewMeter = new FrameRateMeter();
 
+/**
+ * True while a stopped recording is still finalising — the encoder draining
+ * its backlog and writing the file's index. Declared up here because
+ * renderPreview reads it every frame to stop feeding a draining encoder.
+ */
+let stoppingClip = false;
+
 function renderPreview(now: number): void {
   const { source, geometry, activeFilter, recording } = readState();
   if (!source) return;
@@ -100,6 +107,11 @@ function renderPreview(now: number): void {
   // encoder was promised — resizing a canvas mid-recording corrupts the clip.
   // The viewfinder shows this render scaled by CSS, so the preview stays
   // honest: what you see is what the file receives.
+  //
+  // While the encoder is DRAINING after stop, feeding it more frames only
+  // deepens the backlog it is trying to flush — hold the last frame (and the
+  // canvas size the encoder was promised) until finalisation completes.
+  if (recording?.path === 'filtered' && stoppingClip) return;
   const target = recording?.path === 'filtered' ? recording.input : resolved.preview;
   if (renderer.render(activeFilter, target)) {
     byId('v2PreviewCanvas').hidden = false;
@@ -647,7 +659,24 @@ const clipRecorder = new ClipRecorder();
 async function toggleRecording(): Promise<void> {
   const { camera: status, geometry, recording, activeFilter, deliveredFps } = readState();
   if (recording) {
-    const result = await clipRecorder.stop();
+    if (stoppingClip) return;
+    stoppingClip = true;
+    // Finalisation can take the encoder many seconds at very large frame
+    // sizes — show the drain instead of looking hung, and count it up so a
+    // slow finish and a dead one look different on screen.
+    const finalizeStarted = performance.now();
+    setText('v2RecordResult', 'Finalizing — the encoder is draining and writing the file…');
+    const ticker = window.setInterval(() => {
+      setText('v2RecordResult', 'Finalizing — the encoder is draining and writing the file… '
+        + `${((performance.now() - finalizeStarted) / 1000).toFixed(0)}s`);
+    }, 1000);
+    let result: ClipResult | null = null;
+    try {
+      result = await clipRecorder.stop();
+    } finally {
+      window.clearInterval(ticker);
+      stoppingClip = false;
+    }
     updateState({
       recording: null,
       lastClip: result
@@ -669,7 +698,14 @@ async function toggleRecording(): Promise<void> {
     // Say that, instead of printing 0×0 as if it were a resolution.
     const dimsText = result && result.encodedWidth > 0
       ? `${result.encodedWidth}×${result.encodedHeight} measured in the file`
-      : 'file DID NOT DECODE — truncated container, likely killed mid-encode';
+      : result?.finalizeTimedOut
+        ? 'file DID NOT DECODE — the encoder never finished finalising (60s guard fired)'
+        : 'file DID NOT DECODE — truncated container, likely killed mid-encode';
+    const finalizeText = result
+      ? result.finalizeTimedOut
+        ? 'finalise GAVE UP at 60s'
+        : `finalised in ${(result.finalizeMs / 1000).toFixed(1)}s`
+      : '';
     // The 1 s timeslice is a REQUEST. Whether this browser actually delivered
     // chunks is the fact that decides if a killed encoder loses a second or
     // the whole clip — measure and print it instead of assuming it.
@@ -682,7 +718,7 @@ async function toggleRecording(): Promise<void> {
       ? `Saved ${result.seconds.toFixed(1)}s · ${dimsText} · `
         + `${(result.bytes / 1e6).toFixed(2)} MB · ${(result.measuredBitsPerSecond / 1e6).toFixed(1)} Mb/s measured `
         + `(asked ${(result.requestedBitsPerSecond / 1e6).toFixed(1)}) · ${result.mimeType || 'container unreported'}`
-        + ` · ${chunkText}`
+        + ` · ${chunkText} · ${finalizeText}`
       : 'The recording produced no data.');
     if (result) {
       offerShare('v2ShareClip',

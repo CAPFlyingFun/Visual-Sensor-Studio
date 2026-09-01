@@ -538,6 +538,8 @@ test('recording truth: native and filtered clips measured from their files (fake
         `the clip reports measured truth, got "${native}"`);
       assert.match(native, / · \d+ chunks?/,
         `the delivery pattern is measured, not assumed, got "${native}"`);
+      assert.match(native, / · finalised in \d+\.\ds$/,
+        `finalisation is timed — a slow drain and a dead encoder must read differently, got "${native}"`);
       const [nw, nh] = dims(native.replace(/^Saved [\d.]+s · /, ''));
       assert.equal(nw, sw, 'the native path records the SOURCE, measured in the file');
       assert.equal(nh, sh);

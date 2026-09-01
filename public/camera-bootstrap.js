@@ -219,7 +219,34 @@
   };
 
   /** Fold one presented frame into the counters. Returns true when it is new. */
+  /**
+   * Some WebKit builds populate getCapabilities() width/height only after
+   * the stream has actually presented frames, so the read taken right after
+   * getUserMedia comes back empty. Measured on device (2026-09-01): the 4K
+   * tier that should have greyed out against the capability stayed live at
+   * boot, and the capability only appeared after a tap forced a re-read.
+   * Retry on delivered frames — roughly once a second, for the first several
+   * seconds — until numbers arrive or the budget is spent.
+   */
+  let capabilityRetriesLeft = 0;
+  let capabilityRetryCountdown = 0;
+
+  function armCapabilityRetry() {
+    capabilityRetriesLeft = 12;
+    capabilityRetryCountdown = 5;
+  }
+
+  function maybeRefreshCapability() {
+    if (resolutionCapability || capabilityRetriesLeft <= 0) return;
+    capabilityRetryCountdown -= 1;
+    if (capabilityRetryCountdown > 0) return;
+    capabilityRetriesLeft -= 1;
+    capabilityRetryCountdown = 30;
+    readFrameRateCapability();
+  }
+
   function countDeliveredFrame(now, mediaTime, presentedFrames) {
+    maybeRefreshCapability();
     const presented = typeof presentedFrames === 'number' && Number.isFinite(presentedFrames)
       ? presentedFrames
       : Number.NaN;
@@ -1092,6 +1119,9 @@
         await attempt(profiles[i], i, token);
         readZoomCapabilities();
         readFrameRateCapability();
+        // The read above can legitimately find nothing yet — see
+        // maybeRefreshCapability(). Delivered frames retry it.
+        armCapabilityRetry();
         applyDigitalZoomPreview();
         // Re-arm the standing subscription: releaseStream() stopped it at the
         // top of this call, and nothing else is going to put it back.

@@ -45,6 +45,10 @@ export interface ClipResult {
    * given device is this number, not the request.
    */
   chunkCount: number;
+  /** How long the encoder took to drain and write the file after stop. */
+  finalizeMs: number;
+  /** The guard fired before onstop — the file is likely missing its index. */
+  finalizeTimedOut: boolean;
 }
 
 /**
@@ -168,6 +172,17 @@ export class ClipRecorder {
     if (!recorder) return null;
     this.recorder = null;
     const seconds = Math.max(0, (performance.now() - this.startedAt) / 1000);
+    // FINALISATION IS PART OF THE RECORDING. After stop() the encoder drains
+    // its backlog and writes the MP4 index, and at very large frame sizes
+    // that drain can take many seconds. Measured on device (2026-09-01): a
+    // 12 MP clip arrived as ONE chunk — the browser held everything to the
+    // end — and the old 3 s guard here walked away before the index was
+    // written, assembling a truncated file that read as "killed mid-encode".
+    // The guard now exists only for a genuinely hung recorder, waits far
+    // longer than any plausible drain, and confesses when it fires instead
+    // of letting the truncation masquerade as an encoder crash.
+    const finalizeStart = performance.now();
+    let finalizeTimedOut = false;
     await new Promise<void>((resolve) => {
       let settled = false;
       const finish = () => {
@@ -177,13 +192,17 @@ export class ClipRecorder {
         }
       };
       recorder.onstop = finish;
-      window.setTimeout(finish, 3000);
+      window.setTimeout(() => {
+        finalizeTimedOut = !settled;
+        finish();
+      }, 60000);
       try {
         recorder.stop();
       } catch {
         finish();
       }
     });
+    const finalizeMs = performance.now() - finalizeStart;
     const type = this.mime || this.chunks[0]?.type || '';
     const blob = new Blob(this.chunks, type ? { type } : undefined);
     const chunkCount = this.chunks.length;
@@ -203,7 +222,9 @@ export class ClipRecorder {
       requestedBitsPerSecond: this.bitrate,
       measuredBitsPerSecond: seconds > 0 ? (blob.size * 8) / seconds : 0,
       fileName,
-      chunkCount
+      chunkCount,
+      finalizeMs,
+      finalizeTimedOut
     };
   }
 }
