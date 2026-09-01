@@ -8,11 +8,21 @@ v0.38.0.
 The browser encodes this itself, through `MediaRecorder`. Three decisions are
 worth recording.
 
-**The format is asked for, never assumed.** `MediaRecorder.isTypeSupported` is
-the only honest way to find out what a phone will write. MP4 is preferred
-wherever both are offered — not taste: a WebM saved to an iPhone opens in
-nothing the phone ships with, so recording one produces a file its owner cannot
-watch.
+**The format is asked for, never assumed** — but asking is not the only way to
+find out, and on an iPhone it was the wrong one. `isTypeSupported` matched
+nothing at all, and v0.38.0 told a phone that records video perfectly well that
+it "cannot record video from a web page".
+
+A MediaRecorder constructed with **no** `mimeType` uses the browser's own
+default and reports it back on `.mimeType`. That is strictly better than a
+support query: a browser cannot be wrong about the format it just chose for
+itself. So a browser that names nothing still records, and the file is named
+from what the recorder actually produced — a `.mp4` holding WebM would be the
+file lying about what it is.
+
+Where formats *are* named, MP4 is preferred — not taste: a WebM saved to an
+iPhone opens in nothing the phone ships with, so recording one produces a file
+its owner cannot watch.
 
 **Thirty-second clips, cut by a stop and a start.** A MediaRecorder's container
 is only finished when it stops, so an interrupted recording can leave an
@@ -76,6 +86,14 @@ comparisons and every pixel afterwards is one array read. Measured: 60 frames of
 
 The LZW dictionary is a flat `Int32Array` keyed arithmetically rather than a
 `Map` with string keys, which allocated one short-lived string per pixel.
+
+### Size means the long side, not the width
+
+Choosing "480" in portrait produced a 480×640 frame — 92 MB of held frames and
+a refusal. In portrait a fixed *width* makes the frame taller rather than
+smaller, so the memory followed how the phone was held rather than what was
+chosen. Sizing to the long side gives the same pixel count either way, and every
+combination the interface offers now fits inside the memory budget.
 
 ### What a GIF costs
 

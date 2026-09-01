@@ -44,9 +44,61 @@ export function supportedClipFormats(isTypeSupported: (mime: string) => boolean)
   });
 }
 
-/** The one to use, or null where the browser records nothing. */
+/**
+ * The format to ASK for when the browser is willing to name one.
+ *
+ * Null does not mean the browser cannot record — see BROWSER_DEFAULT.
+ */
 export function preferredClipFormat(available: ReadonlyArray<ClipFormat>): ClipFormat | null {
   return available.length > 0 ? available[0] : null;
+}
+
+/**
+ * ASKING IS NOT THE ONLY WAY TO FIND OUT, and on Joshua's iPhone it was the
+ * wrong one: `isTypeSupported` matched nothing at all and the app concluded
+ * "this browser cannot record video from a web page" on a phone that records
+ * video perfectly well.
+ *
+ * A MediaRecorder constructed with NO mimeType uses the browser's own default
+ * and then reports it back on `.mimeType`. That is the same principle the save
+ * formats already work on — check what actually came back rather than what a
+ * table claims — and it is strictly better here, because a browser cannot be
+ * wrong about the format it just chose for itself.
+ *
+ * So this is the fallback: record with no request, read the answer, name the
+ * file from it.
+ */
+export const BROWSER_DEFAULT: ClipFormat = {
+  id: 'default',
+  mime: '',
+  extension: 'mp4',
+  label: 'the browser’s own format'
+};
+
+/** The file extension a container should carry, from what the recorder said. */
+export function extensionForMime(mime: string): string {
+  const base = (mime || '').split(';')[0].trim().toLowerCase();
+  if (base.includes('mp4')) return 'mp4';
+  if (base.includes('webm')) return 'webm';
+  if (base.includes('quicktime')) return 'mov';
+  if (base.includes('matroska')) return 'mkv';
+  // Fall back to the subtype itself — `video/ogg` is a .ogg — rather than to a
+  // generic extension, which would produce a file nothing offers to open.
+  const subtype = base.split('/')[1]?.replace(/^x-/, '') ?? '';
+  return /^[a-z0-9]{2,5}$/.test(subtype) ? subtype : 'mp4';
+}
+
+/** What a recorder actually produced, as a format record. */
+export function formatFromMime(mime: string): ClipFormat {
+  const base = (mime || '').split(';')[0].trim().toLowerCase();
+  const known = CLIP_CANDIDATES.find((c) => c.mime.split(';')[0] === base);
+  if (known) return { ...known, mime: mime || known.mime };
+  return {
+    id: 'reported',
+    mime,
+    extension: extensionForMime(mime),
+    label: mime || BROWSER_DEFAULT.label
+  };
 }
 
 /**
@@ -81,4 +133,28 @@ export function clipFileName(label: string, when: Date, extension: string): stri
   const stamp = when.toISOString().replace(/[:.]/g, '-');
   const safe = label.replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-|-$/g, '');
   return `visual-sensor-${safe || 'clip'}-${stamp}.${extension}`;
+}
+
+/**
+ * Fit a frame to a LONG SIDE rather than to a width.
+ *
+ * Joshua chose "480" in portrait and got 480x640 — 92MB of held frames and a
+ * refusal, because in portrait a fixed WIDTH makes the frame taller rather than
+ * smaller. The long side means the same number of pixels whichever way the
+ * phone is held, so memory and file size follow the choice instead of the grip.
+ *
+ * Both dimensions are rounded to even numbers: odd sizes upset some players,
+ * and the rounding costs at most one row.
+ */
+export function fitLongSide(
+  sourceWidth: number,
+  sourceHeight: number,
+  longSide: number
+): { width: number; height: number } {
+  const w = Math.max(1, sourceWidth);
+  const h = Math.max(1, sourceHeight);
+  const even = (value: number) => Math.max(2, Math.round(value / 2) * 2);
+  const long = even(longSide);
+  const short = even((long * Math.min(w, h)) / Math.max(w, h));
+  return w >= h ? { width: long, height: short } : { width: short, height: long };
 }

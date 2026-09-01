@@ -28,7 +28,7 @@ import {
 } from './vision/burst-merge.js';
 import {
   supportedClipFormats, preferredClipFormat, suggestedBitrate, clipFileName,
-  type ClipFormat
+  formatFromMime, fitLongSide, BROWSER_DEFAULT, type ClipFormat
 } from './vision/clip-format.js';
 import { RollingRecorder, MAX_CLIP_SECONDS } from './vision/clip-recorder.js';
 import {
@@ -205,7 +205,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.38.0';
+const APP_VERSION = '0.38.1';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -6767,17 +6767,23 @@ function recordingSupported(): boolean {
   return typeof MediaRecorder !== 'undefined' && clipFormat !== null;
 }
 
+
 function detectClipFormat(): void {
-  if (typeof MediaRecorder === 'undefined'
-      || typeof MediaRecorder.isTypeSupported !== 'function') {
+  if (typeof MediaRecorder === 'undefined') {
     clipFormat = null;
     setText('recordFormat', 'not available in this browser');
     return;
   }
-  clipFormat = preferredClipFormat(
-    supportedClipFormats((mime) => MediaRecorder.isTypeSupported(mime))
-  );
-  setText('recordFormat', clipFormat ? clipFormat.label : 'no format this browser can write');
+  const named = typeof MediaRecorder.isTypeSupported === 'function'
+    ? preferredClipFormat(supportedClipFormats((mime) => MediaRecorder.isTypeSupported(mime)))
+    : null;
+  // ASKING IS NOT THE ONLY WAY TO FIND OUT. On Joshua's iPhone isTypeSupported
+  // matched nothing, and the app told a phone that records video perfectly well
+  // that it could not record video. A MediaRecorder built with no mimeType uses
+  // the browser's own default and reports it back — so a browser that names
+  // nothing still records, and the format is read off the recorder afterwards.
+  clipFormat = named ?? BROWSER_DEFAULT;
+  setText('recordFormat', clipFormat.label);
 }
 
 /**
@@ -6804,14 +6810,23 @@ function beginSegment(): void {
   segmentChunks = [];
   segmentStartedAt = performance.now();
   try {
-    mediaRecorder = new MediaRecorder(recordStream, {
-      mimeType: clipFormat.mime,
-      videoBitsPerSecond: clipBitrate
-    });
+    mediaRecorder = clipFormat.mime
+      ? new MediaRecorder(recordStream, {
+        mimeType: clipFormat.mime,
+        videoBitsPerSecond: clipBitrate
+      })
+      : new MediaRecorder(recordStream, { videoBitsPerSecond: clipBitrate });
   } catch {
     setText('recordMessage', 'This browser refused to start a recorder for that format.');
     stopRecording();
     return;
+  }
+  // What it actually chose, which is the only reliable answer. The file is
+  // named from this rather than from what was asked for — a .mp4 holding WebM
+  // would be the file lying about what it is.
+  if (mediaRecorder.mimeType && mediaRecorder.mimeType !== clipFormat.mime) {
+    clipFormat = formatFromMime(mediaRecorder.mimeType);
+    setText('recordFormat', clipFormat.label);
   }
   mediaRecorder.ondataavailable = (event) => {
     if (event.data && event.data.size > 0) segmentChunks.push(event.data);
@@ -7059,7 +7074,15 @@ function canShareFile(type: string): boolean {
  * the reason rather than quietly shortened.
  */
 
-const GIF_MEMORY_BUDGET = 40 * 1024 * 1024;
+/*
+ * Frames are held as raw RGBA while capturing, so this is the real ceiling on
+ * what can be offered. Sized so that every combination in the three lists fits
+ * once the long side rather than the width is what is chosen: the largest is
+ * six seconds at twelve and a half a second at a 480 long side, which is 75
+ * frames of 480x360 — about 52MB. The check stays as a guard rather than as a
+ * routine refusal.
+ */
+const GIF_MEMORY_BUDGET = 72 * 1024 * 1024;
 
 let gifFrames: GifFrame[] = [];
 let gifBlob: Blob | null = null;
@@ -7075,14 +7098,11 @@ function gifChoice(): { seconds: number; fps: number; width: number } {
   return { seconds: read('gifSeconds', 4), fps: read('gifFps', 10), width: read('gifWidth', 320) };
 }
 
-function gifSize(width: number): { width: number; height: number } {
+function gifSize(longSide: number): { width: number; height: number } {
   const source = !visionCanvas.hidden && visionCanvas.width > 0
     ? { w: visionCanvas.width, h: visionCanvas.height }
     : { w: video.videoWidth || 4, h: video.videoHeight || 3 };
-  // Even heights only: some decoders and more players dislike odd dimensions,
-  // and rounding here costs at most one row.
-  const height = Math.max(2, Math.round((width * source.h) / Math.max(1, source.w) / 2) * 2);
-  return { width, height };
+  return fitLongSide(source.w, source.h, longSide);
 }
 
 function syncGifEstimate(): void {

@@ -224,3 +224,76 @@ test('held clips are described as temporary, because they are', () => {
   assert.match(html, /never uploaded/i);
   assert.match(html, /Export anything worth keeping/i);
 });
+
+/* --- The iPhone that "could not record" ---------------------------------- */
+
+test('a browser that names no format can still record', () => {
+  // Joshua's iPhone: isTypeSupported matched nothing at all, and the app told a
+  // phone that records video perfectly well that it could not. A MediaRecorder
+  // built with NO mimeType uses the browser's own default and reports it back —
+  // a browser cannot be wrong about the format it just chose for itself.
+  const named = fmt.preferredClipFormat(fmt.supportedClipFormats(() => false));
+  assert.equal(named, null, 'nothing is named in this case');
+  assert.ok(fmt.BROWSER_DEFAULT, 'and there has to be something to fall back to');
+
+  assert.match(main, /clipFormat = named \?\? BROWSER_DEFAULT;/);
+  // Asking for an empty mimeType is not the same as asking for none.
+  assert.match(main, /new MediaRecorder\(recordStream, \{ videoBitsPerSecond: clipBitrate \}\)/);
+  // And "cannot record" is now reachable only when MediaRecorder is absent.
+  const detect = main.slice(main.indexOf('function detectClipFormat'), main.indexOf('function recordSource'));
+  assert.match(detect, /typeof MediaRecorder === 'undefined'/);
+  assert.ok(!/isTypeSupported[\s\S]{0,200}clipFormat = null/.test(detect),
+    'a browser that names nothing must not be written off');
+});
+
+test('the file is named from what the recorder produced, not what was asked for', () => {
+  // A .mp4 holding WebM would be the file lying about what it is.
+  assert.equal(fmt.formatFromMime('video/mp4;codecs=avc1.42E01E').extension, 'mp4');
+  assert.equal(fmt.formatFromMime('video/webm;codecs=vp8').extension, 'webm');
+  assert.equal(fmt.formatFromMime('video/quicktime').extension, 'mov');
+  assert.equal(fmt.formatFromMime('video/x-matroska;codecs=avc1').extension, 'mkv');
+  // An unfamiliar container keeps its own subtype rather than a generic
+  // extension that nothing would offer to open.
+  assert.equal(fmt.formatFromMime('video/ogg').extension, 'ogg');
+  assert.equal(fmt.formatFromMime('').extension, 'mp4');
+
+  assert.match(main, /clipFormat = formatFromMime\(mediaRecorder\.mimeType\)/);
+});
+
+/* --- Long side, not width ------------------------------------------------ */
+
+test('a size choice means the same pixels however the phone is held', () => {
+  // "480" in portrait gave 480x640: in portrait a fixed WIDTH makes the frame
+  // TALLER rather than smaller, so the memory followed the grip instead of the
+  // choice.
+  const landscape = fmt.fitLongSide(1280, 960, 480);
+  const portrait = fmt.fitLongSide(960, 1280, 480);
+  assert.deepEqual(landscape, { width: 480, height: 360 });
+  assert.deepEqual(portrait, { width: 360, height: 480 });
+  assert.equal(landscape.width * landscape.height, portrait.width * portrait.height);
+
+  // Even dimensions both ways: odd sizes upset some players.
+  const odd = fmt.fitLongSide(1000, 563, 321);
+  assert.equal(odd.width % 2, 0);
+  assert.equal(odd.height % 2, 0);
+  // A square source stays square, and nothing collapses to zero.
+  assert.deepEqual(fmt.fitLongSide(720, 720, 240), { width: 240, height: 240 });
+  const sliver = fmt.fitLongSide(1000, 1, 240);
+  assert.ok(sliver.height >= 2, 'a dimension must never round away to nothing');
+});
+
+test('every size the interface offers actually fits in memory', () => {
+  // Frames are raw RGBA while capturing. The refusal should be a guard against
+  // something unforeseen, not the routine answer to a normal choice.
+  const budget = Number(/GIF_MEMORY_BUDGET = (\d+) \* 1024 \* 1024/.exec(main)[1]) * 1024 * 1024;
+  for (const longSide of [240, 320, 480]) {
+    for (const seconds of [2, 4, 6]) {
+      for (const fps of [8, 10, 12.5]) {
+        const { width, height } = fmt.fitLongSide(1280, 960, longSide);
+        const held = width * height * 4 * Math.round(seconds * fps);
+        assert.ok(held <= budget,
+          `${longSide}px ${seconds}s at ${fps}/s needs ${(held / 1e6).toFixed(0)}MB`);
+      }
+    }
+  }
+});
