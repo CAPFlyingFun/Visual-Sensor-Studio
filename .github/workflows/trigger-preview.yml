@@ -1,0 +1,29 @@
+name: Refresh the V2 preview
+
+# A push to Version2 cannot deploy directly: the github-pages environment
+# rejects any ref but main (measured — the deploy job fails before its first
+# step). So this workflow dispatches the main deploy instead. That run checks
+# out main as the production site and Version2 as the /v2/ preview, and its
+# deploy job carries a ref the environment accepts.
+#
+# GITHUB_TOKEN cannot trigger most workflows, but workflow_dispatch is a
+# documented exception; it needs actions: write, requested here explicitly.
+
+on:
+  push:
+    branches: [Version2]
+
+permissions:
+  actions: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch the Pages deploy on main
+        run: |
+          curl -sS -f -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/deploy-pages.yml/dispatches" \
+            -d '{"ref":"main"}'

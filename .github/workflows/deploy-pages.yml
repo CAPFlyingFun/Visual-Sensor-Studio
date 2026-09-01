@@ -1,8 +1,12 @@
 name: Build and deploy Visual Sensor Studio
 
+# Runs only from main's ref: the github-pages environment rejects deployments
+# from any other branch (measured: a Version2-triggered run failed in the
+# deploy job before its first step). Version2 pushes refresh the preview by
+# DISPATCHING this workflow instead — see trigger-preview.yml on Version2.
 on:
   push:
-    branches: [main, Version2]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
