@@ -1510,3 +1510,38 @@ button.ghost.danger {
      than the browser's own resampling of it. */
   image-rendering: pixelated;
 }
+
+/* --- Recording ----------------------------------------------------------- */
+.record-elapsed {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .85rem;
+  color: var(--amber);
+  align-self: center;
+}
+#recordButton[data-recording="yes"] {
+  background: linear-gradient(180deg, #d8443f, #a52a26);
+  border-color: rgba(255, 140, 140, .5);
+}
+.clip-list { display: grid; gap: .4rem; margin: .6rem 0; }
+.clip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+  align-items: center;
+  padding: .45rem .55rem;
+  border-radius: 8px;
+  background: rgba(10, 22, 34, .55);
+  border: 1px solid var(--border);
+}
+.clip-row .clip-name {
+  flex: 1 1 12rem;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .74rem;
+  overflow-wrap: anywhere;
+}
+/* An unexported clip is the ONLY copy, and the row says so at a glance. */
+.clip-row[data-saved="no"] { border-left: 3px solid var(--amber); }
+.clip-row[data-saved="yes"] { opacity: .72; }
+.clip-row button { padding: .3rem .55rem; font-size: .76rem; }
+.clip-row video { flex: 0 0 auto; width: 92px; border-radius: 6px; background: #04080d; }

@@ -27,6 +27,19 @@ import {
   type MergeReport, type PanelKey
 } from './vision/burst-merge.js';
 import {
+  supportedClipFormats, preferredClipFormat, suggestedBitrate, clipFileName,
+  type ClipFormat
+} from './vision/clip-format.js';
+import { RollingRecorder, MAX_CLIP_SECONDS } from './vision/clip-recorder.js';
+import {
+  budgetFromQuota, planRetention, describeSize, describeClip, budgetSeconds,
+  type ClipRecord, type RetentionLimits
+} from './vision/clip-library.js';
+import {
+  putClip, listClips, deleteClip, clearClips, markExported, readQuota,
+  type StoredClip
+} from './vision/clip-store.js';
+import {
   CAPTURE_CANDIDATES, KEEP_FRAMES, MIN_CONFIDENCE, SPREAD_FLOOR,
   estimateShift, judgeBurst, rotationToPixels, type ShiftEstimate
 } from './vision/burst-capture.js';
@@ -189,7 +202,7 @@ import {
   type BaselineEstimate
 } from './vision/baseline.js';
 
-const APP_VERSION = '0.36.4';
+const APP_VERSION = '0.37.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -4034,6 +4047,9 @@ function onFrameDelivered(frame: PresentedFrame): void {
  */
 function fallbackVisionLoop(timestamp: number): void {
   requestAnimationFrame(fallbackVisionLoop);
+  // Recording is driven from here rather than from a timer, so a clip cannot
+  // run long while the phone is in a pocket — see RollingRecorder.tick.
+  tickRecording(timestamp);
 
   // A stale overlay is worse than none: if nothing has been painted for a
   // while, uncover the live video rather than leaving a frozen frame — or a
@@ -6713,6 +6729,316 @@ async function clearAppCache(): Promise<void> {
  * that appears to do nothing, with no error anywhere the user can see. One
  * missing id should cost one control, not the whole panel.
  */
+
+/* --- Recording ----------------------------------------------------------
+ *
+ * Joshua: "Is it possible to make GIF and videos? Maybe have it record
+ * continuously but in 30s max clips for size, and temporary hold on the user's
+ * phone until you save it."
+ *
+ * WHAT IS RECORDED is what is on screen, filter included — a recording of the
+ * raw camera would be a worse copy of what the phone's own camera app already
+ * does, and the reason to record here is the processing. When no filter is
+ * painting, the camera's own track is recorded directly instead, because
+ * re-encoding a canvas copy of an untouched frame only loses quality.
+ */
+
+let clipFormat: ClipFormat | null = null;
+let clipBitrate = 0;
+let mediaRecorder: MediaRecorder | null = null;
+let segmentChunks: Blob[] = [];
+let segmentStartedAt = 0;
+let segmentLabel = 'camera';
+let recordStream: MediaStream | null = null;
+/** True when recordStream is ours to stop — never the camera's own tracks. */
+let recordStreamIsOurs = false;
+let clipLimits: RetentionLimits = { maxClips: 0, maxBytes: 0 };
+let lastElapsedPaint = 0;
+
+const rolling = new RollingRecorder({
+  beginSegment: () => beginSegment(),
+  endSegment: () => endSegment()
+});
+
+function recordingSupported(): boolean {
+  return typeof MediaRecorder !== 'undefined' && clipFormat !== null;
+}
+
+function detectClipFormat(): void {
+  if (typeof MediaRecorder === 'undefined'
+      || typeof MediaRecorder.isTypeSupported !== 'function') {
+    clipFormat = null;
+    setText('recordFormat', 'not available in this browser');
+    return;
+  }
+  clipFormat = preferredClipFormat(
+    supportedClipFormats((mime) => MediaRecorder.isTypeSupported(mime))
+  );
+  setText('recordFormat', clipFormat ? clipFormat.label : 'no format this browser can write');
+}
+
+/**
+ * The surface to record, and what to call it.
+ *
+ * The overlay canvas is only the source while it is actually painting: a
+ * hidden or stale canvas would record a black rectangle, which is the failure
+ * this returns the camera track to avoid.
+ */
+function recordSource(): { stream: MediaStream; ours: boolean; label: string } | null {
+  const painting = !visionCanvas.hidden && overlayPainted && visionCanvas.width > 0;
+  if (painting && typeof visionCanvas.captureStream === 'function') {
+    return { stream: visionCanvas.captureStream(30), ours: true, label: visionMode };
+  }
+  const live = video.srcObject as MediaStream | null;
+  if (live && live.getVideoTracks().length > 0) {
+    return { stream: live, ours: false, label: 'camera' };
+  }
+  return null;
+}
+
+function beginSegment(): void {
+  if (!recordStream || !clipFormat) return;
+  segmentChunks = [];
+  segmentStartedAt = performance.now();
+  try {
+    mediaRecorder = new MediaRecorder(recordStream, {
+      mimeType: clipFormat.mime,
+      videoBitsPerSecond: clipBitrate
+    });
+  } catch {
+    setText('recordMessage', 'This browser refused to start a recorder for that format.');
+    stopRecording();
+    return;
+  }
+  mediaRecorder.ondataavailable = (event) => {
+    if (event.data && event.data.size > 0) segmentChunks.push(event.data);
+  };
+  mediaRecorder.onstop = () => { void finishSegment(); };
+  mediaRecorder.start();
+}
+
+function endSegment(): void {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+}
+
+async function finishSegment(): Promise<void> {
+  const chunks = segmentChunks;
+  segmentChunks = [];
+  const format = clipFormat;
+  if (!format || chunks.length === 0) return;
+  const seconds = Math.max(0, (performance.now() - segmentStartedAt) / 1000);
+  const blob = new Blob(chunks, { type: format.mime });
+  const clip: StoredClip = {
+    id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    startedAt: Date.now() - Math.round(seconds * 1000),
+    seconds,
+    bytes: blob.size,
+    label: segmentLabel,
+    savedAt: null,
+    blob,
+    mime: format.mime,
+    extension: format.extension
+  };
+  try {
+    await putClip(clip);
+  } catch {
+    setText('recordMessage',
+      'The clip could not be held on this device — storage refused it. Recording stopped.');
+    stopRecording();
+    return;
+  }
+  await pruneClips();
+  await renderClips();
+}
+
+/**
+ * Drop what will not fit, and say which — never silently.
+ *
+ * A recorder that quietly deletes yesterday's clip to make room for this one
+ * is indistinguishable from a bug, so the count and the reason are always on
+ * screen after a prune.
+ */
+async function pruneClips(): Promise<void> {
+  const quota = await readQuota();
+  clipLimits = quota
+    ? budgetFromQuota(quota.quota, quota.usage)
+    // No estimate means no budget can be justified, so hold a conservative
+    // handful rather than inventing a quota the phone never reported.
+    : { maxClips: 6, maxBytes: 150 * 1024 * 1024 };
+  const held = await listClips();
+  const plan = planRetention(held, clipLimits);
+  for (const clip of plan.evict) await deleteClip(clip.id);
+  const free = quota ? describeSize(Math.max(0, quota.quota - quota.usage)) : 'unknown';
+  const minutes = clipBitrate > 0
+    ? Math.floor(budgetSeconds(clipLimits, clipBitrate) / 60)
+    : 0;
+  setText('clipStorage',
+    `${plan.reason} · budget ${describeSize(clipLimits.maxBytes)}`
+    + (minutes > 0 ? ` (about ${minutes} min)` : '')
+    + ` · ${free} free on this device`);
+}
+
+async function renderClips(): Promise<void> {
+  const list = byId('clipList');
+  const held = await listClips();
+  list.replaceChildren();
+  byId('clipClearButton').hidden = held.length === 0;
+
+  for (const clip of held) {
+    const row = document.createElement('div');
+    row.className = 'clip-row';
+    row.dataset.saved = clip.savedAt === null ? 'no' : 'yes';
+
+    const name = document.createElement('span');
+    name.className = 'clip-name';
+    name.textContent = describeClip(clip);
+    row.appendChild(name);
+
+    const save = document.createElement('button');
+    save.className = 'secondary-button';
+    save.type = 'button';
+    save.textContent = 'Save';
+    save.addEventListener('click', () => void exportClip(clip, 'save'));
+    row.appendChild(save);
+
+    if (canShareFile(clip.mime)) {
+      const share = document.createElement('button');
+      share.className = 'secondary-button';
+      share.type = 'button';
+      share.textContent = 'Share';
+      share.addEventListener('click', () => void exportClip(clip, 'share'));
+      row.appendChild(share);
+    }
+
+    const remove = document.createElement('button');
+    remove.className = 'secondary-button';
+    remove.type = 'button';
+    remove.textContent = 'Delete';
+    remove.addEventListener('click', () => void removeClip(clip.id));
+    row.appendChild(remove);
+
+    list.appendChild(row);
+  }
+}
+
+async function removeClip(id: string): Promise<void> {
+  await deleteClip(id);
+  await renderClips();
+  await pruneClips();
+}
+
+async function exportClip(clip: StoredClip, how: 'save' | 'share'): Promise<void> {
+  const name = clipFileName(clip.label, new Date(clip.startedAt), clip.extension);
+  if (how === 'share') {
+    const file = new File([clip.blob], name, { type: clip.mime });
+    try {
+      await navigator.share({ files: [file] });
+    } catch (error) {
+      const kind = error instanceof Error ? error.name : '';
+      if (kind !== 'AbortError') setText('recordMessage', 'The share sheet could not open.');
+      return;
+    }
+  } else {
+    const url = URL.createObjectURL(clip.blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = name;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  // Exported clips are the first to be dropped when room is needed, so this is
+  // not bookkeeping — it decides what survives.
+  await markExported(clip.id, Date.now());
+  setText('recordMessage', `${name} · ${describeSize(clip.bytes)}`);
+  await renderClips();
+}
+
+function startRecording(): void {
+  if (!recordingSupported() || rolling.recording) return;
+  const source = recordSource();
+  if (!source) {
+    setText('recordMessage', 'There is nothing to record until the camera is live.');
+    return;
+  }
+  recordStream = source.stream;
+  recordStreamIsOurs = source.ours;
+  segmentLabel = source.label;
+  const track = source.stream.getVideoTracks()[0];
+  const settings = track?.getSettings?.() ?? {};
+  clipBitrate = suggestedBitrate(
+    settings.width ?? visionCanvas.width ?? 1280,
+    settings.height ?? visionCanvas.height ?? 720,
+    settings.frameRate ?? 30
+  );
+  rolling.start(performance.now());
+  syncRecordButton();
+  setText('recordMessage',
+    `Recording ${segmentLabel} · cutting a new clip every ${MAX_CLIP_SECONDS}s.`);
+}
+
+function stopRecording(): void {
+  if (!rolling.recording) return;
+  rolling.stop(performance.now());
+  // Only tracks this code created. Stopping the camera's own tracks here would
+  // switch the camera off as a side effect of stopping a recording.
+  if (recordStreamIsOurs) recordStream?.getTracks().forEach((t) => t.stop());
+  recordStream = null;
+  recordStreamIsOurs = false;
+  syncRecordButton();
+  setText('recordElapsed', '');
+  setText('recordMessage', 'Stopped. Clips are held below until you export them.');
+}
+
+function syncRecordButton(): void {
+  const button = byId<HTMLButtonElement>('recordButton');
+  const live = Boolean(video.srcObject) && camera.active;
+  button.disabled = !recordingSupported() || (!live && !rolling.recording);
+  button.textContent = rolling.recording ? 'Stop' : 'Record';
+  button.dataset.recording = rolling.recording ? 'yes' : 'no';
+  if (!recordingSupported()) {
+    setText('recordMessage', 'This browser cannot record video from a web page.');
+  } else if (!live && !rolling.recording) {
+    setText('recordMessage', 'Enable the camera to record.');
+  }
+}
+
+let lastCameraLive = false;
+
+/** Driven from the animation loop, so a backgrounded tab cannot run a clip long. */
+function tickRecording(now: number): void {
+  // The Record button follows the camera without a listener on it, because the
+  // camera can also stop on its own — a permission revoked, a track ended by
+  // the system — and a button that only tracked the deliberate paths would
+  // stay enabled through exactly those cases.
+  const live = camera.active && Boolean(video.srcObject);
+  if (live !== lastCameraLive) {
+    lastCameraLive = live;
+    if (!live) stopRecording();
+    syncRecordButton();
+  }
+  if (!rolling.recording) return;
+  rolling.tick(now);
+  if (now - lastElapsedPaint < 250) return;
+  lastElapsedPaint = now;
+  const total = rolling.totalElapsedMs(now) / 1000;
+  const segment = rolling.segmentElapsedMs(now) / 1000;
+  setText('recordElapsed',
+    `${total.toFixed(0)}s · clip ${rolling.segmentIndex + 1} at ${segment.toFixed(0)}/${MAX_CLIP_SECONDS}s`);
+}
+
+function canShareFile(type: string): boolean {
+  if (typeof navigator.canShare !== 'function' || typeof navigator.share !== 'function') {
+    return false;
+  }
+  try {
+    return navigator.canShare({ files: [new File([new Uint8Array(1)], 'probe', { type })] });
+  } catch {
+    return false;
+  }
+}
+
 function on<K extends keyof HTMLElementEventMap>(
   id: string,
   event: K,
@@ -6727,6 +7053,13 @@ function on<K extends keyof HTMLElementEventMap>(
 }
 
 on('cameraButton', 'click', () => void startCamera());
+on('recordButton', 'click', () => {
+  if (rolling.recording) stopRecording();
+  else startRecording();
+});
+on('clipClearButton', 'click', () => {
+  void clearClips().then(() => renderClips()).then(() => pruneClips());
+});
 on('cameraOverlayButton', 'click', () => void startCamera());
 on('cameraBrowserFallback', 'click', openCameraInBrowser);
 on('switchCameraButton', 'click', () => void switchCamera());
@@ -6951,6 +7284,13 @@ on('autoStartCamera', 'change', (event) => {
   settings.autoStartCamera = (event.target as HTMLInputElement).checked;
   saveSettings();
   void applyAutoStart();
+
+// Recording: ask what this browser can write, then show what is already held.
+detectClipFormat();
+syncRecordButton();
+void renderClips().then(() => pruneClips()).catch(() => {
+  setText('clipStorage', 'Held clips could not be read from this device.');
+});
 });
 on('autoStartGps', 'change', (event) => {
   settings.autoStartGps = (event.target as HTMLInputElement).checked;
@@ -7318,8 +7658,11 @@ void applyAutoStart();
 // the motion listeners did not, so a backgrounded app kept the location
 // subsystem awake — which is what makes starting sensors automatically a fair
 // trade rather than a battery leak.
+// stopRecording() first: the camera suspends on the way out, so a recorder
+// left running would write a clip of nothing. Stopping here also FINISHES the
+// clip in hand rather than losing it — the whole reason recording is segmented.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') suspendSensors();
+  if (document.visibilityState === 'hidden') { stopRecording(); suspendSensors(); }
   else resumeSensors();
 });
 window.addEventListener('pagehide', suspendSensors);

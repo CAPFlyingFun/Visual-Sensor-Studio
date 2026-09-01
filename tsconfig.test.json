@@ -48,6 +48,9 @@
     "src/terrain/mesh.ts",
     "src/rig/one-euro.ts",
     "src/rig/recorder.ts",
-    "src/vision/overlays.ts"
+    "src/vision/overlays.ts",
+    "src/vision/clip-format.ts",
+    "src/vision/clip-recorder.ts",
+    "src/vision/clip-library.ts"
   ]
 }

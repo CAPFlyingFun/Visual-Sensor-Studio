@@ -494,6 +494,33 @@
             <button class="secondary-button" id="switchCameraButton" type="button" disabled>Use Front Camera</button>
             <button class="secondary-button camera-browser-fallback" id="cameraBrowserFallback" type="button" hidden>Open Live Camera in Edge</button>
           </div>
+
+          <section class="night-panel" id="recordPanel" aria-label="Recording">
+            <div class="night-heading">
+              <strong>Record</strong>
+              <span class="small-badge" id="recordFormat">checking…</span>
+            </div>
+            <p class="helper">
+              Records what is on screen &mdash; the filter as well as the camera &mdash; in
+              clips of at most 30 seconds. Each clip is a finished file the moment it is cut, so
+              a call or a lock screen costs the clip in hand and nothing already recorded.
+            </p>
+            <div class="button-row">
+              <button class="primary-button" id="recordButton" type="button" disabled>Record</button>
+              <span class="record-elapsed" id="recordElapsed" aria-live="polite"></span>
+            </div>
+            <p class="helper" id="recordMessage">Enable the camera to record.</p>
+            <div class="clip-list" id="clipList"></div>
+            <p class="helper" id="clipStorage"></p>
+            <p class="helper">
+              Held clips live on this device only and are never uploaded. They are also
+              <strong>temporary</strong>: the browser may clear them when the phone is short of
+              space, or after weeks without opening the app. Export anything worth keeping.
+            </p>
+            <div class="button-row">
+              <button class="secondary-button" id="clipClearButton" type="button" hidden>Delete All Held Clips</button>
+            </div>
+          </section>
           <p class="helper" id="cameraMessage">Tap Enable Camera for live video. Pinch the preview or use the zoom slider once the camera is live.</p>
           <p class="stage-trace" id="cameraStage" hidden>stage: idle</p>
         </article>
@@ -898,7 +925,7 @@
         </article>
     </div>
 
-    <footer><strong>Visual Sensor Studio v0.36.4</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
+    <footer><strong>Visual Sensor Studio v0.37.0</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
 
   <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">
