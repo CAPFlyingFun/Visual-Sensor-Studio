@@ -13,6 +13,7 @@
  */
 
 import type { CameraStatus, CameraZoomState } from '../sensors/camera.js';
+import type { FrameGeometryState } from './camera/geometry.js';
 
 export interface FrameSize {
   width: number;
@@ -32,6 +33,16 @@ export interface V2State {
   /** Measured from presented frames. 0 until enough frames have arrived. */
   deliveredFps: number;
   zoom: CameraZoomState | null;
+  /**
+   * Resolved by the FrameGeometryAuthority whenever source or viewport
+   * change. Null until the first source exists — consumers must not invent a
+   * stand-in.
+   */
+  geometry: FrameGeometryState | null;
+  /** The one active filter id; the registry defines what it means. */
+  activeFilter: string;
+  /** Preview renders per second, measured — the GPU's own delivery rate. */
+  previewFps: number;
 }
 
 export function frameSize(width: number, height: number): FrameSize | null {
@@ -45,7 +56,10 @@ const state: V2State = {
   camera: null,
   source: null,
   deliveredFps: 0,
-  zoom: null
+  zoom: null,
+  geometry: null,
+  activeFilter: 'rgb',
+  previewFps: 0
 };
 
 const listeners = new Set<Listener>();

@@ -91,9 +91,18 @@ test('the state store is the one owner, and flow is one-directional', () => {
   updateState({ deliveredFps: 30 });
   assert.equal(seen.length, 2, 'an unsubscribed listener hears nothing');
 
-  // SOURCE is read from the stream, never from layout.
-  assert.ok(!/getBoundingClientRect|innerWidth|innerHeight|devicePixelRatio/.test(appTs),
-    'Milestone A has no reason to read the display at all');
+  // SOURCE is read from the stream, never from layout. Milestone B adds ONE
+  // sanctioned layout read — previewBoxShortSide(), the display fact that
+  // feeds the geometry authority's PREVIEW row — and nothing else in V2 may
+  // measure the display, so no second module can grow a size opinion.
+  const fn = appTs.match(/function previewBoxShortSide\(\): number \{[^]*?\n\}/);
+  assert.ok(fn, 'the one display read lives in previewBoxShortSide()');
+  assert.match(fn[0], /getBoundingClientRect/);
+  const outside = appTs.replace(fn[0], '');
+  assert.ok(!/getBoundingClientRect|innerWidth|innerHeight|devicePixelRatio/.test(outside),
+    'previewBoxShortSide() is the only place V2 may read the display');
+  assert.match(appTs, /previewBoxShortSide: previewBoxShortSide\(\)/,
+    'and its only consumer is the geometry authority');
   assert.match(appTs, /frameSize\(camera\.diagnostics\.videoWidth, camera\.diagnostics\.videoHeight\)/);
   assert.match(appTs, /frameSize\(d\.videoWidth, d\.videoHeight\)/);
 });

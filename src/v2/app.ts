@@ -22,6 +22,10 @@ import { FrameRateMeter } from '../vision/frame-rate.js';
 import { zoomPresetStops } from '../sensors/zoom.js';
 import { NAV_ROUTES } from './routes.js';
 import { readState, subscribe, updateState, frameSize } from './state.js';
+import { resolveGeometry, DEFAULT_GEOMETRY_INPUTS } from './camera/geometry.js';
+import { FILTERS, filterById } from './filters/registry.js';
+import { GlRenderer } from './render/gl-renderer.js';
+import { capturePhoto } from './capture/photo.js';
 
 function byId<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -36,6 +40,60 @@ function setText(id: string, value: string): void {
 const video = byId<HTMLVideoElement>('cameraVideo');
 const camera = new CameraController(video);
 const meter = new FrameRateMeter();
+const renderer = new GlRenderer(byId<HTMLCanvasElement>('v2PreviewCanvas'));
+if (renderer.unavailableReason) setText('v2Stage', renderer.unavailableReason);
+
+/* --- Geometry: resolved by the one authority, stored in the one state ----- */
+
+/**
+ * The viewfinder's box in device pixels — a DISPLAY fact, measured from
+ * layout, and the only layout number in V2. It feeds the PREVIEW row only;
+ * the authority is what guarantees it can never touch PHOTO.
+ */
+function previewBoxShortSide(): number {
+  const box = byId('v2Viewfinder').getBoundingClientRect();
+  const ratio = Math.min(Math.max(window.devicePixelRatio || 1, 1), 4);
+  return Math.round(Math.min(box.width, box.height) * ratio);
+}
+
+function refreshGeometry(): void {
+  const { source } = readState();
+  if (!source) {
+    updateState({ geometry: null });
+    return;
+  }
+  updateState({
+    geometry: resolveGeometry(source, {
+      ...DEFAULT_GEOMETRY_INPUTS,
+      previewBoxShortSide: previewBoxShortSide()
+    })
+  });
+}
+window.addEventListener('resize', refreshGeometry);
+
+/* --- The pipeline: one frame in, explicit products out -------------------- */
+
+const previewMeter = new FrameRateMeter();
+
+function renderPreview(now: number): void {
+  const { source, geometry, activeFilter } = readState();
+  if (!source) return;
+  // Resolve geometry HERE, for the frame being rendered — not by diffing
+  // source at the delivery site. The status subscription can record the
+  // negotiated size before the first frame arrives, and a "did it change?"
+  // check there would then never fire at all (it didn't; measured).
+  if (!geometry || geometry.source.width !== source.width || geometry.source.height !== source.height) {
+    refreshGeometry();
+  }
+  const resolved = readState().geometry;
+  if (!resolved) return;
+  if (!renderer.uploadFrame(video)) return;
+  if (renderer.render(activeFilter, resolved.preview)) {
+    byId('v2PreviewCanvas').hidden = false;
+    previewMeter.recordProcessed(now, 0);
+    updateState({ previewFps: previewMeter.report.processingFps });
+  }
+}
 
 /* --- Camera events flow INTO the state; the UI renders FROM it (Rule 7). -- */
 
@@ -65,6 +123,7 @@ function startDeliveryMeter(): void {
       // frames so SOURCE is the stream's own answer, not a stale one.
       source: frameSize(camera.diagnostics.videoWidth, camera.diagnostics.videoHeight)
     });
+    renderPreview(frame.now);
   });
 }
 
@@ -136,6 +195,16 @@ function renderDiagnostics(): void {
   setText('v2DiagSource', source
     ? `${source.width}×${source.height} · ${deliveredFps > 0 ? deliveredFps.toFixed(1) : '—'} delivered fps`
     : 'not started');
+  const { geometry, previewFps } = readState();
+  const row = (entry: { width: number; height: number; reason?: string } | null | undefined, extra = '') =>
+    entry ? `${entry.width}×${entry.height}${extra}` : '—';
+  setText('v2DiagAnalysis', geometry
+    ? `${row(geometry.analysis)} · resolved, unused until Milestone D`
+    : '—');
+  setText('v2DiagPreview', geometry
+    ? `${row(geometry.preview)} · ${previewFps > 0 ? previewFps.toFixed(1) : '—'} rendered fps`
+    : '—');
+  setText('v2DiagPhoto', geometry ? `${row(geometry.photo)} · JPEG on capture` : '—');
   setText('v2DiagState', status ? `${status.state} · ${status.stage}` : 'idle');
   setText('v2DiagTrack', d.trackLabel
     ? `${d.trackLabel}${d.trackMuted ? ' · muted' : ''}`
@@ -149,8 +218,11 @@ function renderControls(): void {
   enable.hidden = state === 'live' || state === 'requesting';
   enable.textContent = state === 'suspended' ? 'Resume Camera' : 'Enable Camera';
   byId<HTMLButtonElement>('v2SwitchCamera').disabled = state !== 'live';
+  byId<HTMLButtonElement>('v2PhotoButton').disabled = state !== 'live' || Boolean(renderer.unavailableReason);
   if (status && state === 'error') setText('v2Stage', status.reason || 'Camera error.');
-  else if (state === 'live') setText('v2Stage', '');
+  // Empty when healthy; a shader compile/link failure surfaces here instead
+  // of leaving a black canvas with no explanation.
+  else if (state === 'live') setText('v2Stage', renderer.unavailableReason);
   else if (state === 'suspended') {
     setText('v2Stage', 'The camera was released (backgrounding or a system takeover). Resuming needs a tap.');
   }
@@ -161,7 +233,61 @@ subscribe(() => {
   renderDiagnostics();
   renderControls();
   renderZoomStops();
+  renderFilterStrip();
 });
+
+/* --- The filter strip, built from FILTERS (Rules 4 and 5) ----------------- */
+
+function buildFilterStrip(): void {
+  const strip = byId('v2FilterStrip');
+  for (const filter of FILTERS) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'filter';
+    button.dataset.filter = filter.id;
+    const thumb = document.createElement('div');
+    thumb.className = `thumb thumb-${filter.id}`;
+    const label = document.createElement('small');
+    label.textContent = filter.name;
+    button.append(thumb, label);
+    button.addEventListener('click', () => {
+      updateState({ activeFilter: filter.id });
+      renderPreview(performance.now());
+    });
+    strip.appendChild(button);
+  }
+}
+
+function renderFilterStrip(): void {
+  const { activeFilter } = readState();
+  for (const button of byId('v2FilterStrip').querySelectorAll<HTMLButtonElement>('[data-filter]')) {
+    button.classList.toggle('active', button.dataset.filter === activeFilter);
+  }
+  const filter = filterById(activeFilter);
+  setText('v2FilterNote', filter?.id === 'ironbow'
+    ? 'False colour: visible-light brightness through the Ironbow ramp — not thermal.'
+    : '');
+}
+
+/* --- Photo: the same shader, at the PHOTO geometry ------------------------ */
+
+let capturing = false;
+async function takePhoto(): Promise<void> {
+  const { geometry, activeFilter } = readState();
+  if (capturing || !geometry || !camera.active) return;
+  capturing = true;
+  const button = byId<HTMLButtonElement>('v2PhotoButton');
+  button.disabled = true;
+  try {
+    const result = await capturePhoto(renderer, video, activeFilter, geometry.photo);
+    setText('v2PhotoResult', result
+      ? `Saved ${result.width}×${result.height} · ${(result.bytes / 1e6).toFixed(2)} MB JPEG · ${result.reason}`
+      : 'The photo could not be rendered.');
+  } finally {
+    capturing = false;
+    button.disabled = !camera.active;
+  }
+}
 
 /* --- The dock, built from NAV_ROUTES (Rule 5) ---------------------------- */
 
@@ -202,6 +328,7 @@ function showRoute(id: string): void {
 /* --- Wiring -------------------------------------------------------------- */
 
 byId('v2EnableCamera').addEventListener('click', () => void startCamera());
+byId('v2PhotoButton').addEventListener('click', () => void takePhoto());
 byId('v2SwitchCamera').addEventListener('click', () => void switchCamera());
 byId('v2LegacyLink').addEventListener('click', () => {
   const back = new URL(location.href);
@@ -210,6 +337,7 @@ byId('v2LegacyLink').addEventListener('click', () => {
   location.href = back.toString();
 });
 
+buildFilterStrip();
 buildDock();
 showRoute('camera');
 

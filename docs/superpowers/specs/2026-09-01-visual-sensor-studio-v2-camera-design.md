@@ -329,3 +329,41 @@ The V2 rule is:
 > One camera source. One geometry authority. One filter definition. Multiple explicit outputs.
 
 If a second subsystem starts inventing its own answer to “what size is this frame?”, stop and route that decision back through the geometry authority.
+
+---
+
+## Adopted decisions — 2026-09-01, Milestone B (Joshua, via ChatGPT review)
+
+Recorded here per the handoff rule that design changes are documented rather
+than taken as silent liberties.
+
+**1. The render contract is GPU-first.** Point-wise and small-kernel filters
+(RGB pass-through, brightness false colour, edges, and later colour
+isolate/replace/threshold/zebra) are WebGL fragment shaders. One renderer, one
+shader per filter, and preview/photo/record are the same shader at different
+target sizes — which makes Rule 4 (one filter implementation) structural
+rather than a convention. Where WebGL is unavailable the page says so; there is
+no parallel CPU implementation, because a fallback would be exactly the second
+code path Rule 4 forbids.
+
+Reason, measured on main: the CPU path produced 0.40 MP filtered frames at
+6.0 fps while the camera delivered 12.2 MP — the architecture, not the
+recorder, was the ceiling. The GPU keeps the high-resolution image
+high-resolution and hands ANALYSIS the cheap miniature instead of the other
+way round.
+
+**2. The V2 benchmark.** Measured baseline from main (v0.39.7 diagnostic
+line):
+
+```
+stream 3024x4032 · render 548x731 · encoded 548x732 · 6.0 fps
+```
+
+V2 recording quality is judged against that line, not against "looks better".
+
+**3. Safari's MediaRecorder.mimeType is not evidence.** The same diagnostic
+reported `codecs=avc1.42000a` — nominally Level 1.0, which cannot describe a
+conforming 548×732 stream. The string is untrustworthy in both directions;
+if profile/level ever matters, inspect the MP4's AVC configuration record
+instead. Encoded dimensions measured from the file remain the authoritative
+diagnostic.

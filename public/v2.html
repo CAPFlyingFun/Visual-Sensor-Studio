@@ -45,6 +45,9 @@
     .viewfinder-wrap { position: sticky; top: 0; z-index: 20; background: #03070c; border-bottom: 1px solid var(--line); box-shadow: 0 12px 25px rgba(0, 0, 0, .32); }
     .viewfinder { height: clamp(245px, 38dvh, 390px); position: relative; overflow: hidden; background: #04090f; }
     .viewfinder video { width: 100%; height: 100%; object-fit: cover; display: block; }
+    /* The filtered preview sits over the raw video; when WebGL is unavailable
+       it stays hidden and the honest raw feed shows instead. */
+    .viewfinder canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 2; }
     .enable-overlay {
       position: absolute; z-index: 6; left: 50%; top: 50%; transform: translate(-50%, -50%);
       min-height: 52px; padding: 0 22px; border-radius: 999px;
@@ -89,6 +92,15 @@
     .diagnostics b { color: #fff; font-weight: 650; }
     .diagnostics .k { display: inline-block; min-width: 86px; color: var(--muted); letter-spacing: .04em; }
 
+    .filters { display: flex; gap: 8px; overflow-x: auto; padding: 1px 1px 9px; scroll-snap-type: x proximity; scrollbar-width: none; }
+    .filters::-webkit-scrollbar { display: none; }
+    .filter { flex: 0 0 76px; scroll-snap-align: start; border: 1px solid var(--line); background: #0c1620; border-radius: 12px; padding: 6px; text-align: left; }
+    .filter.active { border-color: var(--blue); box-shadow: 0 0 0 1px rgba(67, 141, 255, .24); }
+    .thumb { height: 53px; border-radius: 8px; background: linear-gradient(135deg, #182838, #07111a); margin-bottom: 6px; }
+    .thumb-ironbow { background: linear-gradient(135deg, #07124a, #51118c, #d52078, #ff5c37, #ffd93d); }
+    .thumb-edges { background: repeating-linear-gradient(135deg, #05080a 0 8px, #e8f2fa 8px 10px, #05080a 10px 18px); }
+    .filter small { display: block; font-size: 10px; color: #d9e3eb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
     .placeholder { margin: 10px 11px 0; padding: 18px 14px; border: 1px dashed #345064; border-radius: 14px; color: #9fb0bf; font-size: 12px; text-align: center; }
     .placeholder h2 { font-size: 14px; margin: 0 0 8px; color: #cfe0ee; }
     .placeholder button { margin-top: 10px; }
@@ -126,6 +138,7 @@
     <div class="viewfinder-wrap">
       <div class="viewfinder" id="v2Viewfinder">
         <video id="cameraVideo" autoplay muted playsinline></video>
+        <canvas id="v2PreviewCanvas" hidden></canvas>
         <button class="enable-overlay" id="v2EnableCamera" type="button">Enable Camera</button>
         <div class="hud" aria-label="Live readouts">
           <span><i class="dot" id="v2HudDot"></i><span id="v2HudState">IDLE</span></span>
@@ -137,7 +150,7 @@
       <div class="quickbar">
         <div class="zoom" id="v2ZoomStops" aria-label="Zoom presets"></div>
         <div class="capture">
-          <button type="button" title="Photo — Milestone B" disabled>◉</button>
+          <button type="button" id="v2PhotoButton" title="Photo" disabled>◉</button>
           <button type="button" title="Record — Milestone C" disabled>⏺</button>
           <button type="button" id="v2SwitchCamera" title="Switch camera" disabled>⟲</button>
         </div>
@@ -147,13 +160,28 @@
     <main class="content">
       <div id="v2CameraRoute">
         <section class="section">
-          <div class="section-title"><h2>Camera</h2><span class="hint">Milestone A — shell only</span></div>
+          <div class="section-title"><h2>Filters &amp; Lenses</h2><span class="hint">Swipe &rarr; · one shader for preview and photo</span></div>
+          <div class="filters" id="v2FilterStrip"></div>
+          <p class="hint" id="v2FilterNote"></p>
         </section>
+
+        <div class="card">
+          <h3>Photo</h3>
+          <p>
+            The shutter renders the ACTIVE filter once at the photo geometry &mdash; the
+            negotiated stream size &mdash; through the same shader the preview uses, and reports
+            the exact saved dimensions. The preview's size never decides the photo's.
+          </p>
+          <p class="stage-note" id="v2PhotoResult"></p>
+        </div>
 
         <div class="card">
           <h3>Source truth</h3>
           <div class="diagnostics" aria-label="Frame truth table">
             <div><span class="k">SOURCE</span><b id="v2DiagSource">not started</b></div>
+            <div><span class="k">ANALYSIS</span><span id="v2DiagAnalysis">—</span></div>
+            <div><span class="k">PREVIEW</span><span id="v2DiagPreview">—</span></div>
+            <div><span class="k">PHOTO</span><span id="v2DiagPhoto">—</span></div>
             <div><span class="k">STATE</span><span id="v2DiagState">idle</span></div>
             <div><span class="k">TRACK</span><span id="v2DiagTrack">—</span></div>
           </div>
@@ -163,14 +191,14 @@
         <div class="card">
           <h3>What this build is</h3>
           <p>
-            V2 Milestone A: the camera shell only. It proves the persistent camera engine,
-            the negotiated stream size and the measured delivered frame rate inside the new
-            architecture before any filter is migrated. The numbers above are read from the
-            stream itself — never from CSS, and never from what was merely requested.
+            V2 Milestones A–B: the camera shell, the frame-geometry authority and the GPU
+            render contract. Preview and photo are ONE fragment shader at two sizes — the
+            preview fitted to this screen's pixels, the photo at the stream's own — and the
+            truth table above is the authority's live output, reasons and all.
           </p>
           <p>
-            Filters, capture, recording and the frame-geometry authority arrive in
-            Milestones B–F. The legacy app is unaffected and remains the default URL.
+            Recording (C), temporal tools (D) and the lens workbench (E) come next. The
+            legacy app is unaffected and remains the default URL.
           </p>
         </div>
       </div>

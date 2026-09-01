@@ -54,6 +54,8 @@
     "src/vision/clip-library.ts",
     "src/vision/gif.ts",
     "src/v2/state.ts",
-    "src/v2/routes.ts"
+    "src/v2/routes.ts",
+    "src/v2/camera/geometry.ts",
+    "src/v2/filters/registry.ts"
   ]
 }
