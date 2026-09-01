@@ -102,6 +102,15 @@ function renderPreview(now: number): void {
     byId('v2PreviewCanvas').hidden = false;
     previewMeter.recordProcessed(now, 0);
     updateState({ previewFps: previewMeter.report.processingFps });
+    // Temporal filters compare against the PREVIOUS frame: store this one as
+    // next frame's history, bounded at the ANALYSIS geometry — the honesty
+    // rule for temporal history, and the memory envelope's requirement alike.
+    if (filterById(activeFilter)?.temporal) {
+      renderer.snapshotHistory({
+        width: resolved.analysis.width,
+        height: resolved.analysis.height
+      });
+    }
   }
 }
 
@@ -305,7 +314,9 @@ function renderDiagnostics(): void {
   const row = (entry: { width: number; height: number } | null | undefined) =>
     entry ? `${entry.width}×${entry.height}` : '—';
   setText('v2DiagAnalysis', geometry
-    ? `${row(geometry.analysis)} · independent vision buffer (unused until Milestone D)`
+    ? `${row(geometry.analysis)} · ${filterById(readState().activeFilter)?.temporal
+      ? 'holding frame history for the active filter'
+      : 'independent vision buffer (idle)'}`
     : '—');
   setText('v2DiagPreview', geometry
     ? `${row(geometry.preview)} · ${live && previewFps > 0 ? previewFps.toFixed(1) : '—'} rendered fps · sized for the viewfinder`
@@ -342,10 +353,16 @@ function renderDiagnostics(): void {
  */
 let renderedControlsKey = '';
 function renderControls(): void {
-  const { camera: status, captureActive, recording } = readState();
+  const { camera: status, captureActive, recording, activeFilter } = readState();
   const state = status?.state ?? 'idle';
   const rec = recording !== null;
-  const key = `${state}|${status?.stage ?? ''}|${status?.reason ?? ''}|${captureActive}|${rec}|${renderer.unavailableReason}`;
+  // Capability comes from the filter's own metadata (Rule 10) — no second
+  // allow/deny list anywhere.
+  const filter = filterById(activeFilter);
+  const photoCapable = filter?.supportsPhoto ?? true;
+  const videoCapable = filter?.supportsVideo ?? true;
+  const key = `${state}|${status?.stage ?? ''}|${status?.reason ?? ''}|${captureActive}|${rec}|`
+    + `${photoCapable}|${videoCapable}|${renderer.unavailableReason}`;
   if (key === renderedControlsKey) return;
   renderedControlsKey = key;
   const enable = byId<HTMLButtonElement>('v2EnableCamera');
@@ -355,9 +372,9 @@ function renderControls(): void {
   // encoder was promised, so both wait until the recording stops.
   byId<HTMLButtonElement>('v2SwitchCamera').disabled = state !== 'live' || captureActive || rec;
   byId<HTMLButtonElement>('v2PhotoButton').disabled =
-    state !== 'live' || captureActive || rec || Boolean(renderer.unavailableReason);
+    state !== 'live' || captureActive || rec || !photoCapable || Boolean(renderer.unavailableReason);
   const record = byId<HTMLButtonElement>('v2RecordButton');
-  record.disabled = state !== 'live' || captureActive;
+  record.disabled = state !== 'live' || captureActive || (!rec && !videoCapable);
   record.classList.toggle('recording', rec);
   record.title = rec ? 'Stop recording' : 'Record';
   if (status && state === 'error') setText('v2Stage', status.reason || 'Camera error.');
@@ -407,12 +424,14 @@ function renderFilterStrip(): void {
     // under the encoder; the strip waits for stop, honestly disabled.
     button.disabled = rec;
   }
-  const filter = filterById(activeFilter);
+  const FILTER_NOTES: Record<string, string> = {
+    ironbow: 'False colour: visible-light brightness through the Ironbow ramp — not thermal.',
+    difference: 'Change between frames through the ramp — history held at ANALYSIS resolution. '
+      + 'Video is this filter’s product; stills are declined rather than upscaled.'
+  };
   setText('v2FilterNote', rec
     ? 'Recording — stop to change filters.'
-    : filter?.id === 'ironbow'
-      ? 'False colour: visible-light brightness through the Ironbow ramp — not thermal.'
-      : '');
+    : FILTER_NOTES[activeFilter] ?? '');
 }
 
 /**
@@ -644,10 +663,13 @@ const CAPTURE_REASONS: Record<Escalation, string> = {
 
 let capturing = false;
 async function takePhoto(): Promise<void> {
-  const { camera: status, recording } = readState();
+  const { camera: status, recording, activeFilter } = readState();
   // The shutter's temporary mode change would resize the stream a recording
-  // is encoding; the button is disabled, and this guard backs it up.
+  // is encoding; the button is disabled, and this guard backs it up. A
+  // filter whose metadata declines stills (temporal history at analysis
+  // resolution cannot honestly fill a 12 MP frame) is refused the same way.
   if (capturing || recording || !camera.active || status?.state !== 'live') return;
+  if (!(filterById(activeFilter)?.supportsPhoto ?? true)) return;
   capturing = true;
   // captureActive drives the button states through renderControls — one
   // direction of flow, no direct disabled-flag fiddling to fight it.

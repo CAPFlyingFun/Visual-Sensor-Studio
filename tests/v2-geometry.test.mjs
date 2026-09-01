@@ -188,7 +188,7 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
         canvasHidden: document.getElementById('v2PreviewCanvas').hidden,
         stage: document.getElementById('v2Stage').textContent
       }));
-      assert.deepEqual(boot.filters, ['rgb', 'ironbow', 'edges'],
+      assert.deepEqual(boot.filters, ['rgb', 'ironbow', 'difference', 'edges'],
         'the strip mirrors the FILTERS registry, in order');
       assert.deepEqual(boot.active, ['rgb'], 'RGB is the default filter');
       assert.equal(boot.photoDisabled, true, 'no photo before the camera is live');
@@ -326,6 +326,76 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
       assert.equal(after.height, rph);
       assert.equal(Math.min(after.width, after.height), Math.min(pw, ph),
         'the preview short side comes back with the responsive stream');
+
+      await page.close();
+      await context.close();
+    });
+  });
+
+test('Milestone D: Motion renders honest frame change on the GPU (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    const { ironbowColor } = await import('../.test-build/vision/motion-ironbow.js');
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({
+        viewport: { width: 430, height: 932 },
+        permissions: ['camera']
+      });
+      const page = await context.newPage();
+      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.waitForTimeout(400);
+      await page.click('#v2EnableCamera');
+      await page.waitForFunction(() =>
+        /\d+(\.\d+)? rendered fps/.test(document.getElementById('v2DiagPreview')?.textContent ?? ''),
+        null, { timeout: 8000 });
+
+      await page.click('[data-filter="difference"]');
+      // Let history warm up past the first-frame artefact and settle.
+      await page.waitForTimeout(900);
+      const seen = await page.evaluate(() => {
+        const canvas = document.getElementById('v2PreviewCanvas');
+        const copy = document.createElement('canvas');
+        copy.width = canvas.width;
+        copy.height = canvas.height;
+        const ctx = copy.getContext('2d');
+        ctx.drawImage(canvas, 0, 0);
+        const pixels = [];
+        for (let y = 0; y < 6; y++) {
+          for (let x = 0; x < 6; x++) {
+            const d = ctx.getImageData(
+              Math.floor((x + 0.5) * copy.width / 6),
+              Math.floor((y + 0.5) * copy.height / 6), 1, 1).data;
+            pixels.push([d[0], d[1], d[2]]);
+          }
+        }
+        return {
+          pixels,
+          photoDisabled: document.getElementById('v2PhotoButton').disabled,
+          analysisRow: document.getElementById('v2DiagAnalysis').textContent
+        };
+      });
+      // Every Motion pixel is a point on the ramp: still regions at its dark
+      // foot, the fake device's moving pattern lighting up — no colour that
+      // is not a measured change.
+      const ramp = [];
+      for (let i = 0; i < 256; i++) ramp.push(ironbowColor(i / 255));
+      const offRamp = seen.pixels.filter(([r, g, b]) => {
+        let best = Infinity;
+        for (const [rr, rg, rb] of ramp) {
+          best = Math.min(best, Math.hypot(r - rr, g - rg, b - rb));
+        }
+        return best > 22;
+      });
+      assert.equal(offRamp.length, 0,
+        `Motion pixels sit on the ramp, off: ${JSON.stringify(offRamp.slice(0, 3))}`);
+      assert.ok(seen.photoDisabled,
+        'stills are declined by metadata — history cannot honestly fill a photo');
+      assert.match(seen.analysisRow, /holding frame history/,
+        'the ANALYSIS row says its buffer is in use');
+
+      // Back to RGB: the photo returns with the capability.
+      await page.click('[data-filter="rgb"]');
+      await page.waitForFunction(() =>
+        document.getElementById('v2PhotoButton').disabled === false, null, { timeout: 3000 });
 
       await page.close();
       await context.close();

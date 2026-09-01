@@ -34,6 +34,7 @@ const HEADER = `precision mediump float;
 varying vec2 vUv;
 uniform sampler2D uFrame;
 uniform sampler2D uRamp;
+uniform sampler2D uPrevious;
 uniform vec2 uTexel;
 float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 `;
@@ -63,6 +64,28 @@ export const FILTERS: readonly FilterDefinition[] = [
     fragment: HEADER + `void main() {
   float y = luma(texture2D(uFrame, vUv).rgb);
   gl_FragColor = vec4(texture2D(uRamp, vec2(y, 0.5)).rgb, 1.0);
+}`
+  },
+  {
+    id: 'difference',
+    name: 'Motion',
+    family: 'motion',
+    temporal: true,
+    // A still of frame-to-frame change would render from history that lives
+    // at ANALYSIS resolution — upscaling it to photo size and calling it
+    // detail is exactly what the camera rule forbids. Video is the honest
+    // product of this filter.
+    supportsPhoto: false,
+    supportsVideo: true,
+    // Change between THIS frame and the PREVIOUS one, through the ramp.
+    // uPrevious is the renderer's history texture — bounded at analysis
+    // resolution, stated in the UI. The 4x gain is a display choice
+    // (tuning, not measurement): small real motion reads as visible warmth.
+    fragment: HEADER + `void main() {
+  float now = luma(texture2D(uFrame, vUv).rgb);
+  float before = luma(texture2D(uPrevious, vUv).rgb);
+  float change = clamp(abs(now - before) * 4.0, 0.0, 1.0);
+  gl_FragColor = vec4(texture2D(uRamp, vec2(change, 0.5)).rgb, 1.0);
 }`
   },
   {

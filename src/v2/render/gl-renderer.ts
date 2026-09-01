@@ -33,6 +33,9 @@ export class GlRenderer {
   private programs = new Map<string, WebGLProgram>();
   private frameTexture: WebGLTexture | null = null;
   private rampTexture: WebGLTexture | null = null;
+  private historyTexture: WebGLTexture | null = null;
+  private historyFramebuffer: WebGLFramebuffer | null = null;
+  private historySize = { width: 0, height: 0 };
   private failure = '';
 
   constructor(private readonly canvas: HTMLCanvasElement) {
@@ -79,6 +82,10 @@ export class GlRenderer {
     this.rampTexture = this.makeTexture(gl);
     gl.bindTexture(gl.TEXTURE_2D, this.rampTexture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, ironbowLut());
+    // History belongs to the old context; forget it so restore reallocates.
+    this.historyTexture = null;
+    this.historyFramebuffer = null;
+    this.historySize = { width: 0, height: 0 };
     this.failure = '';
   }
 
@@ -184,9 +191,55 @@ export class GlRenderer {
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.rampTexture);
     gl.uniform1i(gl.getUniformLocation(program, 'uRamp'), 1);
+    if (this.historyTexture) {
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, this.historyTexture);
+      gl.uniform1i(gl.getUniformLocation(program, 'uPrevious'), 2);
+    }
     gl.uniform2f(gl.getUniformLocation(program, 'uTexel'), 1 / target.width, 1 / target.height);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    return true;
+  }
+
+  /**
+   * Store the CURRENT uploaded frame as the next frame's uPrevious, at the
+   * BOUNDED size the caller resolves (the ANALYSIS geometry) — never at the
+   * stream's own size: a 12 MP history texture is exactly the memory
+   * pressure that killed the context on device, and docs/camera_rule.md
+   * requires temporal history to state its resolution rather than pretend.
+   * Call AFTER render(), so temporal filters always compare against the
+   * previous frame, not the current one.
+   */
+  snapshotHistory(size: RenderTargetSize): boolean {
+    const gl = this.gl;
+    if (!gl || gl.isContextLost() || size.width <= 0 || size.height <= 0) return false;
+    const rgb = FILTERS.find((f) => f.id === 'rgb');
+    if (!rgb) return false;
+    const program = this.program(rgb);
+    if (!program) return false;
+
+    if (!this.historyTexture) this.historyTexture = this.makeTexture(gl);
+    if (!this.historyFramebuffer) this.historyFramebuffer = gl.createFramebuffer();
+    if (this.historySize.width !== size.width || this.historySize.height !== size.height) {
+      this.historySize = { width: size.width, height: size.height };
+      gl.bindTexture(gl.TEXTURE_2D, this.historyTexture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size.width, size.height, 0,
+        gl.RGBA, gl.UNSIGNED_BYTE, null);
+    }
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.historyFramebuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D,
+      this.historyTexture, 0);
+    gl.viewport(0, 0, size.width, size.height);
+    gl.useProgram(program);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.frameTexture);
+    gl.uniform1i(gl.getUniformLocation(program, 'uFrame'), 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     return true;
   }
 }

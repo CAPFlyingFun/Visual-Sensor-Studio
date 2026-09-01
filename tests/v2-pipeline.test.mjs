@@ -408,7 +408,7 @@ test('the camera rule document and the code speak the same language', () => {
 /* --- The filter registry (Rules 4–5) -------------------------------------- */
 
 test('FILTERS is the one list: unique ids, honest metadata, real shaders', () => {
-  assert.ok(FILTERS.length >= 3, 'Milestone B ships rgb, ironbow and edges');
+  assert.ok(FILTERS.length >= 4, 'rgb, ironbow, difference and edges at least');
   assert.equal(new Set(FILTERS.map((f) => f.id)).size, FILTERS.length, 'filter ids must be unique');
   const families = new Set(['view', 'motion', 'time', 'night', 'custom']);
   for (const filter of FILTERS) {
@@ -419,11 +419,21 @@ test('FILTERS is the one list: unique ids, honest metadata, real shaders', () =>
     assert.equal(typeof filter.supportsVideo, 'boolean');
     assert.match(filter.fragment, /void main\(\)/, `${filter.id} must carry a fragment shader`);
     assert.match(filter.fragment, /uFrame/, `${filter.id} must sample the camera frame`);
-    assert.equal(filter.temporal, false, 'nothing in B needs frame history yet');
+    // The metadata and the shader must agree about history: a temporal
+    // filter's BODY samples uPrevious; a non-temporal one never does.
+    const body = filter.fragment.split('void main')[1] ?? '';
+    assert.equal(body.includes('uPrevious'), filter.temporal,
+      `${filter.id}: temporal metadata and shader body must agree`);
   }
-  assert.deepEqual(FILTERS.map((f) => f.id), ['rgb', 'ironbow', 'edges']);
+  assert.deepEqual(FILTERS.map((f) => f.id), ['rgb', 'ironbow', 'difference', 'edges']);
   assert.equal(filterById('rgb')?.name, 'RGB');
   assert.equal(filterById('nope'), null);
+
+  // Motion's honesty contract: history at analysis resolution means video is
+  // its product and stills are declined, in the metadata itself (Rule 10).
+  const motion = filterById('difference');
+  assert.ok(motion && motion.temporal && !motion.supportsPhoto && motion.supportsVideo,
+    'Motion declines stills rather than upscaling analysis-resolution history');
 });
 
 test('one filter implementation: fragment shaders exist only in the registry', () => {
