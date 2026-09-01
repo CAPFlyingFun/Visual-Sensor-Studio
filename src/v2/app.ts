@@ -169,21 +169,41 @@ function isStandalone(): boolean {
 
 /* --- Zoom: presets derived from the engine's own reported range ---------- */
 
+/**
+ * REBUILD ONLY WHEN THE RANGE CHANGES; highlight in place otherwise.
+ *
+ * The root cause of dead controls on iOS (measured on device, DuckDuckGo/
+ * WebKit): this used to replaceChildren() on EVERY state broadcast — twice
+ * per camera frame, ~120 rebuilds a second — so the button under a finger
+ * was routinely deleted between touchstart and the click it would have
+ * produced. Interactive DOM must be stable while a finger may be on it;
+ * only a genuinely new zoom range (a camera switch) may replace the buttons.
+ */
+let builtZoomRange = '';
 function renderZoomStops(): void {
   const holder = byId('v2ZoomStops');
   const zoom = readState().zoom;
-  holder.replaceChildren();
-  if (!zoom || zoom.kind === 'none') return;
-  // zoomPresetStops is the legacy app's own arithmetic, reused rather than
-  // re-derived (Rule 6): the stops come from the range the engine reports.
-  for (const stop of zoomPresetStops(zoom.min, zoom.max)) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = `${stop}×`;
-    button.dataset.zoomStop = String(stop);
-    if (Math.abs(stop - zoom.value) < 0.05) button.classList.add('active');
-    button.addEventListener('click', () => { void camera.setZoom(stop); });
-    holder.appendChild(button);
+  const range = zoom && zoom.kind !== 'none' ? `${zoom.kind}:${zoom.min}:${zoom.max}` : 'none';
+  if (range !== builtZoomRange) {
+    builtZoomRange = range;
+    holder.replaceChildren();
+    if (zoom && zoom.kind !== 'none') {
+      // zoomPresetStops is the legacy app's own arithmetic, reused rather
+      // than re-derived (Rule 6): the stops come from the engine's range.
+      for (const stop of zoomPresetStops(zoom.min, zoom.max)) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = `${stop}×`;
+        button.dataset.zoomStop = String(stop);
+        button.addEventListener('click', () => { void camera.setZoom(stop); });
+        holder.appendChild(button);
+      }
+    }
+  }
+  if (!zoom) return;
+  // classList.toggle to an unchanged state mutates nothing.
+  for (const button of holder.querySelectorAll<HTMLButtonElement>('[data-zoom-stop]')) {
+    button.classList.toggle('active', Math.abs(Number(button.dataset.zoomStop) - zoom.value) < 0.05);
   }
 }
 
@@ -195,7 +215,9 @@ function renderHud(): void {
   byId('v2HudDot').dataset.state = status?.state ?? 'idle';
   setText('v2HudState', live ? 'LIVE' : (status?.state ?? 'idle').toUpperCase());
   setText('v2HudSource', source ? `${source.width}×${source.height}` : '—');
-  setText('v2HudFps', deliveredFps > 0 ? `${deliveredFps.toFixed(1)} fps` : '— fps');
+  // A rate is only a measurement while frames are arriving; a suspended
+  // camera showing its last number would be a frozen claim, not a reading.
+  setText('v2HudFps', live && deliveredFps > 0 ? `${deliveredFps.toFixed(1)} fps` : '— fps');
   setText('v2HudZoom', zoom && zoom.kind !== 'none'
     ? `${zoom.value.toFixed(1)}× ${zoom.kind}`
     : '—');
@@ -207,11 +229,13 @@ function renderDiagnostics(): void {
     geometry, previewFps, viewfinder, lastPhoto, captureActive
   } = readState();
   const d = camera.diagnostics;
+  const live = status?.state === 'live';
   // Each row is its own fact with its own policy label (docs/camera_rule.md).
   // SOURCE below CAPABILITY is the healthy responsive state, never flagged;
-  // the maximum belongs to the shutter's window alone.
+  // the maximum belongs to the shutter's window alone. Rates render only
+  // while frames arrive — a suspended camera keeps no frozen numbers.
   setText('v2DiagSource', source
-    ? `${source.width}×${source.height} · ${deliveredFps > 0 ? deliveredFps.toFixed(1) : '—'} delivered fps · `
+    ? `${source.width}×${source.height} · ${live && deliveredFps > 0 ? deliveredFps.toFixed(1) : '—'} delivered fps · `
       + (captureActive ? 'maximum stream for this shot' : 'responsive live stream')
     : 'not started');
   setText('v2DiagCapability', capability
@@ -226,7 +250,7 @@ function renderDiagnostics(): void {
     ? `${row(geometry.analysis)} · independent vision buffer (unused until Milestone D)`
     : '—');
   setText('v2DiagPreview', geometry
-    ? `${row(geometry.preview)} · ${previewFps > 0 ? previewFps.toFixed(1) : '—'} rendered fps · sized for the viewfinder`
+    ? `${row(geometry.preview)} · ${live && previewFps > 0 ? previewFps.toFixed(1) : '—'} rendered fps · sized for the viewfinder`
     : '—');
   setText('v2DiagPhotoPolicy', 'maximum available stream on shutter');
   setText('v2DiagLastPhoto', lastPhoto
@@ -238,14 +262,24 @@ function renderDiagnostics(): void {
     : '—');
 }
 
+/**
+ * Controls change on TRANSITIONS, not on frames: this runs on every state
+ * broadcast but touches the DOM only when one of its actual inputs changed,
+ * so buttons stay byte-stable under a finger through the 60 fps live loop.
+ */
+let renderedControlsKey = '';
 function renderControls(): void {
-  const { camera: status } = readState();
+  const { camera: status, captureActive } = readState();
   const state = status?.state ?? 'idle';
+  const key = `${state}|${status?.stage ?? ''}|${status?.reason ?? ''}|${captureActive}|${renderer.unavailableReason}`;
+  if (key === renderedControlsKey) return;
+  renderedControlsKey = key;
   const enable = byId<HTMLButtonElement>('v2EnableCamera');
   enable.hidden = state === 'live' || state === 'requesting';
   enable.textContent = state === 'suspended' ? 'Resume Camera' : 'Enable Camera';
-  byId<HTMLButtonElement>('v2SwitchCamera').disabled = state !== 'live';
-  byId<HTMLButtonElement>('v2PhotoButton').disabled = state !== 'live' || Boolean(renderer.unavailableReason);
+  byId<HTMLButtonElement>('v2SwitchCamera').disabled = state !== 'live' || captureActive;
+  byId<HTMLButtonElement>('v2PhotoButton').disabled =
+    state !== 'live' || captureActive || Boolean(renderer.unavailableReason);
   if (status && state === 'error') setText('v2Stage', status.reason || 'Camera error.');
   // Empty when healthy; a shader compile/link failure surfaces here instead
   // of leaving a black canvas with no explanation.
@@ -254,14 +288,6 @@ function renderControls(): void {
     setText('v2Stage', 'The camera was released (backgrounding or a system takeover). Resuming needs a tap.');
   }
 }
-
-subscribe(() => {
-  renderHud();
-  renderDiagnostics();
-  renderControls();
-  renderZoomStops();
-  renderFilterStrip();
-});
 
 /* --- The filter strip, built from FILTERS (Rules 4 and 5) ----------------- */
 
@@ -272,6 +298,9 @@ function buildFilterStrip(): void {
     button.type = 'button';
     button.className = 'filter';
     button.dataset.filter = filter.id;
+    // The strip is built after the first state broadcast, so it carries the
+    // current selection itself rather than waiting for the next change.
+    if (filter.id === readState().activeFilter) button.classList.add('active');
     const thumb = document.createElement('div');
     thumb.className = `thumb thumb-${filter.id}`;
     const label = document.createElement('small');
@@ -285,8 +314,11 @@ function buildFilterStrip(): void {
   }
 }
 
+let renderedFilter = '';
 function renderFilterStrip(): void {
   const { activeFilter } = readState();
+  if (activeFilter === renderedFilter) return;
+  renderedFilter = activeFilter;
   for (const button of byId('v2FilterStrip').querySelectorAll<HTMLButtonElement>('[data-filter]')) {
     button.classList.toggle('active', button.dataset.filter === activeFilter);
   }
@@ -295,6 +327,45 @@ function renderFilterStrip(): void {
     ? 'False colour: visible-light brightness through the Ironbow ramp — not thermal.'
     : '');
 }
+
+/**
+ * One subscriber, two speeds — and it lives BELOW every renderer it calls,
+ * because subscribe() invokes the listener synchronously and a `let` above
+ * would still be in its temporal dead zone (measured: it took the whole
+ * module down at boot).
+ *
+ * Structural/control renderers run on every broadcast but are internally
+ * gated on their real inputs, so they no-op through the frame loop. The
+ * human-readable text panels are throttled: nobody can read 120 rewrites a
+ * second, and — the measured iOS failure this fixes — that much DOM churn
+ * under a live stream left every control effectively dead to touch. A
+ * trailing render always catches the final state.
+ */
+const TEXT_RENDER_INTERVAL_MS = 250;
+let lastTextRender = -Infinity;
+let queuedTextRender = 0;
+
+function renderTextPanels(): void {
+  renderHud();
+  renderDiagnostics();
+}
+
+subscribe(() => {
+  renderControls();
+  renderZoomStops();
+  renderFilterStrip();
+  const now = performance.now();
+  if (now - lastTextRender >= TEXT_RENDER_INTERVAL_MS) {
+    lastTextRender = now;
+    renderTextPanels();
+  } else if (!queuedTextRender) {
+    queuedTextRender = window.setTimeout(() => {
+      queuedTextRender = 0;
+      lastTextRender = performance.now();
+      renderTextPanels();
+    }, TEXT_RENDER_INTERVAL_MS - (now - lastTextRender));
+  }
+});
 
 /* --- Photo: the shutter's temporary maximum-stream window ----------------- */
 
@@ -358,9 +429,9 @@ async function takePhoto(): Promise<void> {
   const { camera: status } = readState();
   if (capturing || !camera.active || status?.state !== 'live') return;
   capturing = true;
+  // captureActive drives the button states through renderControls — one
+  // direction of flow, no direct disabled-flag fiddling to fight it.
   updateState({ captureActive: true });
-  const button = byId<HTMLButtonElement>('v2PhotoButton');
-  button.disabled = true;
   byId('v2ShutterFlash').classList.add('firing');
   setText('v2PhotoResult', 'Capturing at the camera’s maximum…');
   setText('v2PhotoTiming', '');
@@ -397,7 +468,6 @@ async function takePhoto(): Promise<void> {
     capturing = false;
     updateState({ captureActive: false });
     byId('v2ShutterFlash').classList.remove('firing');
-    button.disabled = !camera.active;
   }
 }
 

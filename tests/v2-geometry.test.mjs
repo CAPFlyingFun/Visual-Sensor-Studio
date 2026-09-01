@@ -296,9 +296,10 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
       const timing = await page.textContent('#v2PhotoTiming');
       assert.match(timing, /Max frame ready \+\d+ ms/, 'the shutter timeline is instrumented');
       assert.match(timing, /Total \d+ ms/);
-      const lastPhoto = await page.textContent('#v2DiagLastPhoto');
-      assert.ok(lastPhoto.startsWith(`${savedW}×${savedH}`),
-        `LAST PHOTO carries what was actually saved, got "${lastPhoto}"`);
+      // The truth table renders on a throttle, so give the row its beat.
+      await page.waitForFunction(([w, h]) =>
+        (document.getElementById('v2DiagLastPhoto')?.textContent ?? '').startsWith(`${w}×${h}`),
+        [savedW, savedH], { timeout: 3000 });
 
       // The live stream comes back RESPONSIVE: the engine restores the
       // remembered SHORT SIDE (the exact mode is the browser's choice — the
@@ -325,6 +326,75 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
       assert.equal(after.height, rph);
       assert.equal(Math.min(after.width, after.height), Math.min(pw, ph),
         'the preview short side comes back with the responsive stream');
+
+      await page.close();
+      await context.close();
+    });
+  });
+
+test('controls stay alive under the live frame loop (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    // The measured iOS failure this guards against: every state broadcast —
+    // twice per camera frame — rebuilt the zoom buttons and rewrote the text
+    // panels, so the button under a finger was deleted between touchstart and
+    // click and every control went dead once LIVE. The contract now: no
+    // interactive element is recreated while the stream runs, and the
+    // human-readable panels rewrite a few times a second, not 120.
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({
+        viewport: { width: 430, height: 932 },
+        permissions: ['camera']
+      });
+      const page = await context.newPage();
+      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.waitForTimeout(400);
+      await page.click('#v2EnableCamera');
+      await page.waitForFunction(() =>
+        /\d+(\.\d+)? rendered fps/.test(document.getElementById('v2DiagPreview')?.textContent ?? ''),
+        null, { timeout: 8000 });
+
+      // Pin down the exact elements a finger would rest on, and count how
+      // often the diagnostics text actually mutates, across 1.5 s of frames.
+      await page.evaluate(() => {
+        window.__v2refs = {
+          zoom: document.querySelector('#v2ZoomStops [data-zoom-stop]'),
+          photo: document.getElementById('v2PhotoButton'),
+          filter: document.querySelector('#v2FilterStrip [data-filter="ironbow"]'),
+          switcher: document.getElementById('v2SwitchCamera')
+        };
+        window.__v2mutations = 0;
+        const observer = new MutationObserver((records) => {
+          window.__v2mutations += records.length;
+        });
+        observer.observe(document.getElementById('v2DiagSource'),
+          { childList: true, characterData: true, subtree: true });
+      });
+      await page.waitForTimeout(1500);
+      const churn = await page.evaluate(() => ({
+        zoomAlive: document.contains(window.__v2refs.zoom),
+        photoAlive: document.contains(window.__v2refs.photo),
+        filterAlive: document.contains(window.__v2refs.filter),
+        switcherAlive: document.contains(window.__v2refs.switcher),
+        hadZoom: window.__v2refs.zoom !== null,
+        mutations: window.__v2mutations
+      }));
+      assert.ok(churn.hadZoom, 'the fake device offers digital zoom stops to pin');
+      assert.ok(churn.zoomAlive, 'a zoom button must never be recreated under a live stream');
+      assert.ok(churn.photoAlive && churn.filterAlive && churn.switcherAlive,
+        'no interactive element is replaced by the frame loop');
+      assert.ok(churn.mutations <= 12,
+        `text panels are throttled — ${churn.mutations} mutations in 1.5s is a rewrite storm`);
+      assert.ok(churn.mutations >= 2, 'throttled is not frozen — the readouts still update');
+
+      // And a tap mid-stream actually lands: the listener on those stable
+      // buttons is the original one, and it still works.
+      await page.click('#v2ZoomStops [data-zoom-stop="2"]');
+      await page.waitForFunction(() =>
+        (document.getElementById('v2HudZoom')?.textContent ?? '').startsWith('2.0×'),
+        null, { timeout: 4000 });
+      const active = await page.evaluate(() =>
+        document.querySelector('#v2ZoomStops [data-zoom-stop="2"]').classList.contains('active'));
+      assert.ok(active, 'the tapped stop takes the highlight, in place');
 
       await page.close();
       await context.close();
