@@ -13,7 +13,9 @@ import {
   STREAM_TIERS, DEFAULT_STREAM_TIER, tierAvailable, tierById
 } from '../.test-build/v2/camera/stream-tiers.js';
 import { readState } from '../.test-build/v2/state.js';
-import { FILTERS, SHADER_HEADER, filterById, ironbowLut } from '../.test-build/v2/filters/registry.js';
+import {
+  AGE_STATE, FILTERS, NOVELTY_STATE, SHADER_HEADER, filterById, ironbowLut
+} from '../.test-build/v2/filters/registry.js';
 import { ironbowColor } from '../.test-build/vision/motion-ironbow.js';
 import {
   ENCODER_PROBE_LADDER, H264_LEVEL_5_2_MACROBLOCKS, describeRow, macroblocks
@@ -778,14 +780,19 @@ test('lens channels: temporal ones decline stills, speed reuses the Speed state,
   const lit = compileLens(sanitiseLens({ ...base, id: 'l', brightness: { channel: 'change', low: 0, high: 40, gamma: 1 } }));
   assert.equal(lit.supportsPhoto, false);
   assert.match(lit.fragment, /normBright/);
-  // A channel V2 does not compute compiles to an UNAVAILABLE filter — never a stand-in.
-  for (const id of ['relief', 'age', 'novelty']) {
-    assert.equal(channelAvailability(id).available, false);
-    const missing = compileLens(sanitiseLens({ ...base, id: `m-${id}`, color: { channel: id, low: 0, high: 1, gamma: 1 } }));
-    assert.match(missing.unavailableReason ?? '', /not built in V2 yet/);
-    assert.equal(missing.supportsPhoto, false);
-    assert.equal(missing.supportsVideo, false);
-  }
+  // AN UNAVAILABLE LENS IS NEVER A STAND-IN. relief, age and novelty used to
+  // be the case here — they were the channels V2 had not built, and Joshua
+  // met them as filters saying so on his phone. They are built now, so the
+  // mechanism is shown with the case that remains: two stateful channels in
+  // one lens, which cannot work because there is one state texture.
+  const clash = compileLens(sanitiseLens({
+    ...base, id: 'clash',
+    color: { channel: 'speed', low: 0, high: 3, gamma: 1 },
+    brightness: { channel: 'novelty', low: 0, high: 60, gamma: 1 }
+  }));
+  assert.ok(clash.unavailableReason, 'it refuses rather than painting a wrong answer');
+  assert.equal(clash.supportsPhoto, false);
+  assert.equal(clash.supportsVideo, false);
   // Scene blend and base follow the legacy definition: blend mixes with scene luma.
   const blended = compileLens(sanitiseLens({ ...base, id: 'b', base: 'scene', sceneBlend: 0.5 }));
   assert.match(blended.fragment, /mix\(c, vec3\(sceneY\), 0\.5000\)/);
@@ -1696,4 +1703,109 @@ test('a camera control is never changed mid-recording, and the row is not rebuil
     appTs.indexOf('async function applyCameraControl'));
   assert.match(row, /slider\.addEventListener\('change'/);
   assert.ok(!row.includes("slider.addEventListener('input'"));
+});
+
+test('relief, age and novelty are wired, so no lens reads "not built in V2 yet"', () => {
+  // Joshua saw filters that said they were not wired in: three channels the
+  // lens FORMAT has always had were missing from V2's list, so any lens using
+  // one compiled to an unavailable stub (2026-09-02).
+  for (const id of ['relief', 'age', 'novelty']) {
+    assert.ok(V2_CHANNELS.includes(id), `${id} must be measurable`);
+    assert.equal(channelAvailability(id).available, true);
+  }
+  // Every channel the format defines is now measurable — the gap is closed,
+  // not merely narrowed.
+  for (const channel of CHANNELS) {
+    assert.equal(channelAvailability(channel.id).available, true,
+      `${channel.id} is offered by the editor, so it must render`);
+  }
+
+  const lens = (color, brightness) => sanitiseLens({
+    version: 1, id: 'probe', name: 'Probe', color, brightness,
+    stops: [{ at: 0, color: '#000000' }, { at: 1, color: '#ffffff' }],
+    base: 'black', sceneBlend: 0
+  });
+
+  // RELIEF is shading, not distance, and it is per-pixel — so a still is
+  // honest, unlike the two that live in a state texture at ANALYSIS size.
+  const relief = compileLens(lens({ channel: 'relief', low: 0, high: 255, gamma: 1 }));
+  assert.equal(relief.unavailableReason, undefined);
+  assert.equal(relief.supportsPhoto, true, 'relief is per-pixel, so a still is real');
+  assert.equal(relief.needsLumaRange, true, 'it is a CONTRAST STRETCH, so it needs the range');
+  assert.equal(relief.state, undefined);
+  // It calls ch_edges, which must therefore be DECLARED FIRST: emitted in set
+  // order relief came first and the shader would not compile at all.
+  assert.ok(relief.fragment.indexOf('float ch_edges') < relief.fragment.indexOf('float ch_relief'),
+    'a channel that calls another must be emitted after it');
+  // The legacy weights exactly, so a lens written in V1 paints the same field.
+  assert.match(relief.fragment, /stretched \* 215\.0 \+ \(ch_edges\(uv\) \/ 255\.0\) \* 40\.0/);
+
+  for (const id of ['age', 'novelty']) {
+    const f = compileLens(lens({ channel: id, low: 0, high: 60, gamma: 1 }));
+    assert.equal(f.unavailableReason, undefined);
+    assert.ok(f.state, `${id} carries a state pass`);
+    assert.equal(f.supportsPhoto, false,
+      `${id} lives at ANALYSIS resolution, so a still would be upscaled memory`);
+  }
+});
+
+test('one state texture means one stateful channel, and a clash is refused', () => {
+  // There is exactly ONE state texture per render. A lens binding speed to
+  // colour and age to brightness would hand the second channel the first
+  // one's memory and paint a confident wrong answer, so it is refused with
+  // the two names in the reason rather than rendered.
+  const clash = compileLens(sanitiseLens({
+    version: 1, id: 'clash', name: 'Clash',
+    color: { channel: 'speed', low: 0, high: 3, gamma: 1 },
+    brightness: { channel: 'age', low: 0, high: 6, gamma: 1 },
+    stops: [{ at: 0, color: '#000000' }, { at: 1, color: '#ffffff' }],
+    base: 'black', sceneBlend: 0
+  }));
+  assert.match(clash.unavailableReason ?? '', /only one of speed, age, novelty/);
+  assert.match(clash.unavailableReason ?? '', /speed and age/);
+  assert.equal(clash.supportsVideo, false, 'an unavailable lens offers nothing');
+
+  // The SAME stateful channel on both fields is fine — one memory, one reader.
+  const same = compileLens(sanitiseLens({
+    version: 1, id: 'same', name: 'Same',
+    color: { channel: 'age', low: 0, high: 6, gamma: 1 },
+    brightness: { channel: 'age', low: 0, high: 6, gamma: 1 },
+    stops: [{ at: 0, color: '#000000' }, { at: 1, color: '#ffffff' }],
+    base: 'black', sceneBlend: 0
+  }));
+  assert.equal(same.unavailableReason, undefined);
+});
+
+test('the state passes prime themselves rather than reporting from nothing', () => {
+  // NOVELTY learns a background, and the state clears to BLACK — so without
+  // priming the whole scene reads as maximally novel until it warms up. While
+  // the stored background is still black the frame is adopted whole.
+  assert.match(NOVELTY_STATE, /float learned = step\(0\.004, luma\(background\)\)/);
+  assert.match(NOVELTY_STATE, /mix\(now, mix\(background, now, 0\.02\), learned\)/);
+  // AGE needs the frame rate to count seconds, and the header does not declare
+  // it — the display pass adds it conditionally, so the state pass must too.
+  assert.match(AGE_STATE, /uniform float uFps;/);
+  assert.match(AGE_STATE, /step\(0\.02, abs\(now - before\)\)/,
+    'the same noise floor Speed uses, so "moved" means one thing in this app');
+  // Both compare against uPrevious or their own state, so both are temporal.
+  assert.match(AGE_STATE, /uPrevious/);
+});
+
+test('the frame census measures the range relief stretches against', () => {
+  const frame = (values) => {
+    const d = new Uint8ClampedArray(values.length * 4);
+    values.forEach((v, i) => { d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = v; d[i * 4 + 3] = 255; });
+    return d;
+  };
+  const reading = buildExposure(frame([40, 90, 200, 120]));
+  assert.equal(Math.round(reading.range[0] * 255), 40, 'the darkest luma');
+  assert.equal(Math.round(reading.range[1] * 255), 200, 'and the brightest');
+  // Free: the loop was already reading every pixel's luminance for the bins.
+  assert.deepEqual(emptyExposure().range, [0, 1], 'an unmeasured range stretches nothing');
+
+  // And the shell hands it to the renderer, or relief would stretch against
+  // a range it never measured.
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+  assert.match(appTs, /lumaRange: exposure\.range/);
+  assert.match(appTs, /active\?\.needsLumaRange === true/, 'and measures it when a lens asks');
 });

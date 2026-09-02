@@ -228,8 +228,10 @@ function sampleFrame(): Uint8ClampedArray | null {
  * when the active lens reads it, the match share when a reference lens is
  * running, exposure when an exposure instrument is on screen.
  */
-function measureCensuses(needsColour: boolean, lens: CustomLens | null): void {
-  const wantsExposure = readState().exposureShown;
+function measureCensuses(
+  needsColour: boolean, lens: CustomLens | null, needsRange = false
+): void {
+  const wantsExposure = readState().exposureShown || needsRange;
   if (!needsColour && !lens && !wantsExposure) {
     matchingShare = null;
     return;
@@ -282,14 +284,18 @@ function renderPreview(now: number): void {
   // every ordinary filter — and drew a blank graph reading "mean 0%"
   // (Joshua's device, 2026-09-02).
   const active = filterById(activeFilter);
-  const asking = active?.needsHistogram || active?.lens || readState().exposureShown;
+  const asking = active?.needsHistogram || active?.lens
+    || active?.needsLumaRange || readState().exposureShown;
   if (asking && framesSinceHistogram++ % HISTOGRAM_EVERY === 0) {
     // A reference lens reports what it is currently catching. `active` may
     // be null here now, because the exposure instrument asks for a census on
     // its own account — it is about the CAMERA, not about the filter.
     const reference = active?.lens
       && channelInfo(active.lens.color.channel).needsReference ? active.lens : null;
-    measureCensuses(active?.needsHistogram === true, reference);
+    // Relief's contrast stretch needs the frame's luma range, which the
+    // exposure census already measures on its way past.
+    measureCensuses(active?.needsHistogram === true, reference,
+      active?.needsLumaRange === true);
   }
   // Stateful filters (Speed, Trails) advance their memory at the ANALYSIS
   // size — the same bounded size the frame history uses.
@@ -297,6 +303,7 @@ function renderPreview(now: number): void {
     fps: readState().deliveredFps,
     histogram: { bins: histogram.bins, dominant: histogram.dominant, version: histogramVersion },
     frames: framesForLevel(readState().frameAverage, readState().deliveredFps),
+    lumaRange: exposure.range,
     // VIEWING AIDS reach the preview and nothing else. The photo and clip
     // paths below pass none, so stripes can never be baked into a file.
     aids: {

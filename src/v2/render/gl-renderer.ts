@@ -454,6 +454,8 @@ export class GlRenderer {
     extras: {
       fps?: number;
       histogram?: { bins: Uint8Array; dominant: [number, number, number]; version: number };
+      /** The frame's measured [min, max] luma, 0..1 — relief's stretch. */
+      lumaRange?: [number, number];
       /** Frames to average together — see render/frame-average.ts. 1 = none. */
       frames?: number;
       /**
@@ -506,6 +508,8 @@ export class GlRenderer {
     const frame = this.frameSize.width > 0 ? this.frameSize : target;
     gl.uniform2f(gl.getUniformLocation(program, 'uAidTexel'),
       1 / frame.width, 1 / frame.height);
+    const range = extras.lumaRange ?? [0, 1];
+    gl.uniform2f(gl.getUniformLocation(program, 'uLumaRange'), range[0], range[1]);
     gl.uniform1f(gl.getUniformLocation(program, 'uZebra'), extras.aids?.zebra ?? 0);
     gl.uniform1f(gl.getUniformLocation(program, 'uPeak'), extras.aids?.peaking ?? 0);
     // Unit conversions a lens may need: a missing location is simply ignored.

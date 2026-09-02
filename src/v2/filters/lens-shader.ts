@@ -21,7 +21,9 @@ import {
   type ChannelId, type CustomLens, type LensBinding, type LensStop
 } from '../../vision/lens.js';
 import { COLOUR_GAP_GLSL, rgbToHsvValues } from '../vision/colour-gap.js';
-import { SHADER_HEADER, SPEED_STATE, type FilterDefinition } from './registry.js';
+import {
+  AGE_STATE, NOVELTY_STATE, SHADER_HEADER, SPEED_STATE, type FilterDefinition
+} from './registry.js';
 
 /** Channels V2 computes on the GPU, in legacy units. */
 export const V2_CHANNELS: readonly ChannelId[] = [
@@ -29,8 +31,17 @@ export const V2_CHANNELS: readonly ChannelId[] = [
   // The colour fields — one pass over the frame, no state, no history.
   'hue', 'saturation', 'red', 'green', 'blue', 'colourDistance',
   // Fed by the frame histogram the shell measures each few frames.
-  'rarity', 'backgroundDistance', 'chromaEdge'
+  'rarity', 'backgroundDistance', 'chromaEdge',
+  // Fed by a STATE pass, or by the frame's measured luma range.
+  'relief', 'age', 'novelty'
 ];
+
+/**
+ * The channels that need the renderer's one state texture. A lens can bind
+ * only ONE of them, because there is only one state pass — asking for two
+ * would silently give the second the first one's memory.
+ */
+export const STATEFUL_CHANNELS: readonly ChannelId[] = ['speed', 'age', 'novelty'];
 
 /** A hex colour as HSV, each 0..1 — the shader's own convention. */
 export function rgbToHsv(hex: string): [number, number, number] {
@@ -155,6 +166,31 @@ float ch_chromaEdge(vec2 uv) {
       return `float ch_colourDistance(vec2 uv) {
   return colourGap(rgb2hsv(texture2D(uFrame, uv).rgb), REF_HSV) * 255.0;
 }`;
+    case 'relief':
+      // Contrast-stretched shading with an edge term, matching the legacy
+      // reliefField exactly (215 of stretch + 40 of edge) so a lens written
+      // in V1 paints the same field here. Bright reads as near because that
+      // is how a lit surface usually behaves — it is NOT a distance, and no
+      // depth sensor is available to a web page.
+      return `float ch_relief(vec2 uv) {
+  float y = luma(texture2D(uFrame, uv).rgb);
+  float span = max(0.004, uLumaRange.y - uLumaRange.x);
+  float stretched = clamp((y - uLumaRange.x) / span, 0.0, 1.0);
+  return clamp(stretched * 215.0 + (ch_edges(uv) / 255.0) * 40.0, 0.0, 255.0);
+}`;
+    case 'age':
+      // Seconds since this pixel last moved; the state holds it as a fraction
+      // of the six-second window (see AGE_STATE).
+      return `float ch_age(vec2 uv) { return texture2D(uState, uv).r * 6.0; }`;
+    case 'novelty':
+      // How far this pixel departs from the background the state pass has
+      // learned. A thing that has just arrived reads high; the wall it is
+      // standing against reads nothing, however bright the wall is.
+      return `float ch_novelty(vec2 uv) {
+  float now = luma(texture2D(uFrame, uv).rgb);
+  float background = luma(texture2D(uState, uv).rgb);
+  return abs(now - background) * 255.0;
+}`;
     case 'speed':
       // The Speed state holds normal flow / 8 (texels per frame at analysis
       // size); widths per second = texels/frame × fps / analysis width.
@@ -203,12 +239,36 @@ export function lensRampRgba(lens: CustomLens): Uint8Array {
  * Compile a lens into a filter definition. Pure: the same lens always yields
  * the same shader text, ramp and metadata.
  */
+/**
+ * Two stateful channels in one lens is the one combination that cannot work.
+ *
+ * There is exactly ONE state texture per render, so a lens binding (say)
+ * speed to colour and age to brightness would hand the second channel the
+ * first one's memory and paint a confident wrong answer. Refusing is the only
+ * honest option, and the reason says which two clashed.
+ */
+/** Channels other bodies call must be emitted first; edges is the only one. */
+function channelRank(id: ChannelId): number {
+  return id === 'edges' ? 0 : 1;
+}
+
+function twoStatefulChannels(lens: CustomLens): string {
+  const used = [lens.color.channel, ...(lens.brightness ? [lens.brightness.channel] : [])]
+    .filter((c) => STATEFUL_CHANNELS.includes(c));
+  const distinct = [...new Set(used)];
+  if (distinct.length < 2) return '';
+  return `A lens can use only one of ${STATEFUL_CHANNELS.join(', ')} at a time — `
+    + `this one asks for ${distinct.join(' and ')}, and they would share one memory.`;
+}
+
 export function compileLens(lens: CustomLens): FilterDefinition {
   const id = lensFilterId(lens);
   const revision = lensRevision(lens);
   const colour = channelAvailability(lens.color.channel);
   const bright = lens.brightness ? channelAvailability(lens.brightness.channel) : { available: true, reason: '' };
-  const unavailableReason = !colour.available ? colour.reason : !bright.available ? bright.reason : '';
+  const twoStates = twoStatefulChannels(lens);
+  const unavailableReason = !colour.available ? colour.reason
+    : !bright.available ? bright.reason : twoStates;
   if (unavailableReason) {
     return {
       id, name: lens.name, family: 'custom', temporal: false,
@@ -221,8 +281,13 @@ export function compileLens(lens: CustomLens): FilterDefinition {
 
   const channels = new Set<ChannelId>([lens.color.channel]);
   if (lens.brightness) channels.add(lens.brightness.channel);
+  // Relief is shading PLUS an edge term, so it needs the edges body emitted
+  // alongside it — one definition of the Sobel, not a second copy inside
+  // relief's own function (Rule 6).
+  if (channels.has('relief')) channels.add('edges');
   const temporal = [...channels].some((c) => channelInfo(c).temporal);
-  const needsSpeed = channels.has('speed');
+  const stateful = [...channels].filter((c) => STATEFUL_CHANNELS.includes(c));
+  const needsLumaRange = channels.has('relief');
   const output = lens.output ?? 'paint';
   const needsGap = [...channels].some((c) => c === 'colourDistance' || c === 'backgroundDistance');
   const needsHsv = needsGap || output === 'swap'
@@ -254,7 +319,7 @@ export function compileLens(lens: CustomLens): FilterDefinition {
   }[output];
 
   const fragment = SHADER_HEADER
-    + (needsSpeed ? 'uniform float uFps;\nuniform float uAnalysisWidth;\n' : '')
+    + (channels.has('speed') ? 'uniform float uFps;\nuniform float uAnalysisWidth;\n' : '')
     + (needsHsv ? `vec3 rgb2hsv(vec3 c) {
   vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
   vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
@@ -272,7 +337,11 @@ export function compileLens(lens: CustomLens): FilterDefinition {
     + (needsGap ? `${COLOUR_GAP}\n` : '')
     + (needsReference ? `const vec3 REF_HSV = vec3(${reference.map(glslFloat).join(', ')});\n` : '')
     + (output === 'swap' ? `const vec3 TARGET_HSV = vec3(${target.map(glslFloat).join(', ')});\n` : '')
-    + [...channels].map(channelGlsl).join('\n') + '\n'
+    // DEPENDENCY ORDER, not set order. GLSL wants a function declared before
+    // it is called, and relief calls ch_edges — emitted in insertion order,
+    // relief came first and would not compile.
+    + [...channels].sort((a, b) => channelRank(a) - channelRank(b))
+      .map(channelGlsl).join('\n') + '\n'
     + normaliseGlsl('normColour', lens.color) + '\n'
     + (lens.brightness ? normaliseGlsl('normBright', lens.brightness) + '\n' : '')
     + `void main() {
@@ -298,12 +367,15 @@ ${blend > 0 ? `  c = mix(c, vec3(sceneY), ${glslFloat(blend)});\n` : ''}\
     supportsPhoto: !temporal,
     supportsVideo: true,
     fragment,
-    state: needsSpeed ? SPEED_STATE : undefined,
+    state: stateful[0] === 'speed' ? SPEED_STATE
+      : stateful[0] === 'age' ? AGE_STATE
+        : stateful[0] === 'novelty' ? NOVELTY_STATE : undefined,
     ramp: lensRampRgba(lens),
     rampKey: JSON.stringify(lens.stops),
     lens,
     revision,
     needsHistogram,
+    needsLumaRange,
     note: lens.note
   };
 }

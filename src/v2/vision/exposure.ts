@@ -38,6 +38,12 @@ export interface ExposureReading {
   /** Share of pixels whose luminance is crushed, 0..1. */
   crushed: number;
   /**
+   * The darkest and brightest luma in the frame, 0..1 — the contrast stretch
+   * the relief channel needs. Free here: the loop is already reading every
+   * pixel's luminance to build the bins.
+   */
+  range: [number, number];
+  /**
    * Share clipped in EACH channel, 0..1. A saturated colour can lose one
    * channel while luminance still reads mid-grey, and only this notices.
    */
@@ -48,6 +54,7 @@ export function emptyExposure(): ExposureReading {
   return {
     bins: new Uint8Array(EXPOSURE_BINS),
     mean: 0,
+    range: [0, 1],
     clipped: 0,
     crushed: 0,
     channelClipped: [0, 0, 0]
@@ -62,6 +69,8 @@ export function buildExposure(data: ArrayLike<number>): ExposureReading {
   let total = 0;
   let clipped = 0;
   let crushed = 0;
+  let low = 255;
+  let high = 0;
   const channels: [number, number, number] = [0, 0, 0];
 
   for (let i = 0; i < pixels; i++) {
@@ -71,6 +80,8 @@ export function buildExposure(data: ArrayLike<number>): ExposureReading {
     // Rec. 709, the same weights the shaders' luma() uses.
     const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
     total += y;
+    if (y < low) low = y;
+    if (y > high) high = y;
     counts[Math.min(EXPOSURE_BINS - 1, Math.floor(y / 256 * EXPOSURE_BINS))] += 1;
     if (y >= CLIPPED) clipped += 1;
     if (y <= CRUSHED) crushed += 1;
@@ -89,6 +100,7 @@ export function buildExposure(data: ArrayLike<number>): ExposureReading {
   return {
     bins,
     mean: total / pixels / 255,
+    range: [low / 255, high / 255],
     clipped: clipped / pixels,
     crushed: crushed / pixels,
     channelClipped: [channels[0] / pixels, channels[1] / pixels, channels[2] / pixels]

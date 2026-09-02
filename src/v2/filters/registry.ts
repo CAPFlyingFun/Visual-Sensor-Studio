@@ -53,6 +53,11 @@ export interface FilterDefinition {
   /** Reads the whole frame's colour histogram, so the shell must supply one. */
   needsHistogram?: boolean;
   /**
+   * Reads the frame's measured luma range (relief's contrast stretch), so the
+   * shell must supply one — the same census that feeds the histogram.
+   */
+  needsLumaRange?: boolean;
+  /**
    * What this filter does, in one sentence, for the strip's note.
    *
    * It lives HERE rather than in the shell because the shell's copy was a
@@ -92,6 +97,10 @@ uniform vec3 uDominant;
  * Off costs one uniform comparison per pixel. Peaking's Sobel is eight taps
  * and is paid for only while it is on.
  */
+// The frame's luma range, measured by the shell's census — relief is a
+// CONTRAST-STRETCHED shading, so it needs to know where this frame's darkest
+// and brightest actually sit rather than assuming 0..1.
+uniform vec2 uLumaRange;
 uniform float uZebra;
 uniform float uPeak;
 uniform vec2 uAidTexel;
@@ -165,6 +174,47 @@ void main() {
   vec3 now = texture2D(uFrame, vUv).rgb;
   vec3 before = texture2D(uAverage, vUv).rgb;
   gl_FragColor = vec4(mix(before, now, uWeight), 1.0);
+}`;
+
+/**
+ * AGE — seconds since this pixel last moved, held in the state texture as a
+ * fraction of the six-second window.
+ *
+ * A pixel that has not moved SINCE THE STATE WAS CLEARED reads as the full
+ * window rather than as "never", because a texture cannot hold "no answer".
+ * The state clears to zero on a filter change, so everything begins at "just
+ * moved" and ages up truthfully over the following six seconds; the reading
+ * is honest from then on. Saying so beats inventing a validity channel that
+ * would have to be carried through every pass.
+ */
+export const AGE_STATE = HEADER + `uniform float uFps;
+void main() {
+  float now = luma(texture2D(uFrame, vUv).rgb);
+  float before = luma(texture2D(uPrevious, vUv).rgb);
+  // The same noise floor Speed uses, so "moved" means one thing in this app.
+  float moved = step(0.02, abs(now - before));
+  float dt = 1.0 / max(uFps, 1.0);
+  float previous = texture2D(uState, vUv).r;
+  float next = moved > 0.5 ? 0.0 : min(1.0, previous + dt / 6.0);
+  gl_FragColor = vec4(next, next, next, 1.0);
+}`;
+
+/**
+ * NOVELTY — a slowly learned background, so the display pass can ask how far
+ * this pixel departs from what is normally here.
+ *
+ * SELF-PRIMING. The state clears to black, and a black background would make
+ * the whole scene read as maximally novel for the second or two it took to
+ * learn. So while the stored background is still black the frame is adopted
+ * whole, and only then does it start blending slowly. A genuinely black scene
+ * re-primes every frame, which costs nothing: it has no novelty to report.
+ */
+export const NOVELTY_STATE = HEADER + `void main() {
+  vec3 now = texture2D(uFrame, vUv).rgb;
+  vec3 background = texture2D(uState, vUv).rgb;
+  float learned = step(0.004, luma(background));
+  vec3 next = mix(now, mix(background, now, 0.02), learned);
+  gl_FragColor = vec4(next, 1.0);
 }`;
 
 export const FILTERS: readonly FilterDefinition[] = [
