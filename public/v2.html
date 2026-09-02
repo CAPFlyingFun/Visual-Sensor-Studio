@@ -29,6 +29,13 @@
       font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
     }
     * { box-sizing: border-box; }
+    /* hidden means HIDDEN. The browser's own [hidden] rule is display:none at
+       UA priority, so any author `display` (grid/flex/block) silently beats
+       it — which left the reticle and the lens actions on screen with the
+       attribute dutifully set (Joshua, 2026-09-02: "still visible whether
+       toggled on or off"). One rule, applied to every element that carries
+       the attribute, so it can never be defeated element by element. */
+    [hidden] { display: none !important; }
     html, body { margin: 0; background: #000; color: var(--text); }
     /* The two lessons v1 paid for: no block may inflate text, and no element
        may widen the document. */
@@ -208,7 +215,7 @@
         <!-- Composition guides: percent-space lines stretched to the box, so
              they need no display read. Purely an overlay — nothing captured
              is changed by them. -->
-        <svg id="v2Guides" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true" hidden></svg>
+        <svg id="v2Guides" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"></svg>
         <!-- The reticle: an outer aiming frame, and inside it a ring that is
              the TRUE size of the colour picker's patch. -->
         <div id="v2Reticle" aria-hidden="true" hidden><i id="v2PatchRing"></i></div>

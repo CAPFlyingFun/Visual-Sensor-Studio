@@ -142,6 +142,25 @@ for (const [label, width, height] of [['430x932', 430, 932], ['320x568', 320, 56
     });
 }
 
+test('the hidden attribute really hides — no author display rule may defeat it',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    // The bug this exists for: #v2Reticle carried `display: grid`, which
+    // outranks the UA stylesheet's [hidden] rule, so the box stayed on screen
+    // with the attribute faithfully set. Every hideable element is checked
+    // here rather than one at a time.
+    await withBrowser(async (browser, base) => {
+      const page = await browser.newPage({ viewport: { width: 430, height: 932 } });
+      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.waitForTimeout(300);
+      const showing = await page.evaluate(() =>
+        [...document.querySelectorAll('[hidden]')]
+          .filter((el) => getComputedStyle(el).display !== 'none')
+          .map((el) => el.id || el.className || el.tagName));
+      assert.deepEqual(showing, [], `these are hidden in name only: ${showing.join(', ')}`);
+      await page.close();
+    });
+  });
+
 test('the camera goes live and the HUD carries measured truth (fake device)',
   { skip: runnable ? false : 'no browser available' }, async () => {
     await withBrowser(async (browser, base) => {
@@ -743,12 +762,12 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
       await page.click('[data-lens-new]');
       await page.waitForTimeout(200);
       const opened = await page.evaluate(() => ({
-        shown: !document.getElementById('v2LensWorkbench').hidden,
+        shown: true,
         active: document.querySelector('#v2FilterStrip .active')?.dataset.filter ?? '',
         pairs: document.querySelectorAll('#v2LensWorkbench input[type="range"]').length,
         numbers: document.querySelectorAll('#v2LensWorkbench input[type="number"]').length
       }));
-      assert.equal(opened.shown, true);
+      assert.equal(await page.isVisible('#v2LensWorkbench'), true);
       assert.match(opened.active, /^lens:/, 'the draft previews live as the active filter');
       assert.ok(opened.numbers >= opened.pairs, 'every slider has a paired number field');
       await page.fill('#v2LensName', 'Probe lens');
@@ -787,23 +806,31 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
       const guideIds = await page.evaluate(() =>
         [...document.querySelectorAll('#v2GuideRow [data-guide]')].map((b) => b.dataset.guide));
       assert.deepEqual(guideIds, ['off', 'center', 'thirds', 'phi', 'diagonals', 'grid4', 'square']);
-      assert.equal(await page.evaluate(() => document.getElementById('v2Guides').hidden), true,
-        'Off draws nothing at all');
+      assert.equal(await page.evaluate(() =>
+        document.querySelectorAll('#v2Guides line').length), 0, 'Off draws nothing at all');
       await page.click('[data-guide="thirds"]');
       await page.waitForTimeout(300);
       const thirds = await page.evaluate(() => ({
-        hidden: document.getElementById('v2Guides').hidden,
         lines: [...document.querySelectorAll('#v2Guides line')].map((l) => l.getAttribute('x1')),
         note: document.getElementById('v2GuideNote').textContent
       }));
-      assert.equal(thirds.hidden, false);
+      assert.equal(await page.isVisible('#v2Guides'), true);
       assert.equal(thirds.lines.length, 4, 'four lines make the thirds');
+      // Back to Off and the lines really leave the picture.
+      await page.click('[data-guide="off"]');
+      await page.waitForTimeout(300);
+      assert.equal(await page.evaluate(() =>
+        document.querySelectorAll('#v2Guides line').length), 0, 'Off clears what a guide drew');
+      await page.click('[data-guide="thirds"]');
+      await page.waitForTimeout(300);
       assert.match(thirds.note, /Rule of thirds/);
 
       // A guide alone never puts a marker in the middle of the picture.
       await page.click('[data-guide="center"]');
       await page.waitForTimeout(300);
-      assert.equal(await page.evaluate(() => document.getElementById('v2Reticle').hidden), true,
+      // Rendered visibility, never the attribute: the attribute was set and
+      // ignored once already, and a test that reads it back learns nothing.
+      assert.equal(await page.isVisible('#v2Reticle'), false,
         'choosing a guide must not summon the reticle');
 
       // The reticle is its own toggle, and its ring is the sample patch.
@@ -813,7 +840,6 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
         const ring = document.getElementById('v2PatchRing');
         const box = document.getElementById('v2Viewfinder');
         return {
-          reticle: !document.getElementById('v2Reticle').hidden,
           pressed: document.getElementById('v2ReticleToggle').getAttribute('aria-pressed'),
           ringWidth: ring.getBoundingClientRect().width,
           ringHeight: ring.getBoundingClientRect().height,
@@ -821,7 +847,8 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
           boxH: box.clientHeight
         };
       });
-      assert.equal(centre.reticle, true, 'the toggle shows the reticle');
+      assert.equal(await page.isVisible('#v2Reticle'), true, 'the toggle shows the reticle');
+      assert.equal(await page.isVisible('#v2PatchRing'), true, 'ring and all');
       assert.equal(centre.pressed, 'true', 'and says so to a screen reader');
       assert.ok(Math.abs(centre.ringWidth - centre.ringHeight) < 1.5,
         `the ring is square on screen: ${centre.ringWidth} × ${centre.ringHeight}`);
@@ -831,20 +858,18 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
       // Toggled back off it leaves — but an ARMED PICKER still gets its target.
       await page.click('#v2ReticleToggle');
       await page.waitForTimeout(250);
-      assert.equal(await page.evaluate(() => document.getElementById('v2Reticle').hidden), true,
-        'off means off');
+      assert.equal(await page.isVisible('#v2Reticle'), false, 'off means off — on the screen, not just in an attribute');
 
       // The colour picker reads the CAMERA FRAME through the cover crop.
       await page.click('#v2PickColor');
       await page.waitForTimeout(150);
       const armed = await page.evaluate(() => ({
-        reticle: !document.getElementById('v2Reticle').hidden,
-        cardShown: !document.getElementById('v2PickerCard').hidden,
         picking: document.getElementById('v2Viewfinder').classList.contains('picking'),
         hex: document.getElementById('v2PickerHex').textContent
       }));
-      assert.equal(armed.cardShown, true);
-      assert.equal(armed.reticle, true, 'arming the picker shows its target, toggle or not');
+      assert.equal(await page.isVisible('#v2PickerCard'), true);
+      assert.equal(await page.isVisible('#v2Reticle'), true,
+        'arming the picker shows its target, toggle or not');
       assert.equal(armed.picking, true, 'the viewfinder becomes a target');
       assert.equal(armed.hex, '—', 'nothing is claimed before a tap');
 

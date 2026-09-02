@@ -526,9 +526,12 @@ function renderGuides(): void {
   if (key === renderedGuideKey) return;
   renderedGuideKey = key;
 
+  // NO `hidden` here: `hidden` is an HTML property, and on an <svg> element
+  // assigning it sets a stray JS property while the attribute stays put — so
+  // the switch would be silently one-way. An SVG with no lines paints
+  // nothing, which is the same result with nothing to get wrong.
   const svg = byId('v2Guides');
   const lines = live && guide ? guide.lines(boxAspect) : [];
-  svg.hidden = lines.length === 0;
   svg.replaceChildren(...lines.map(({ x1, y1, x2, y2 }) => {
     const element = document.createElementNS(SVG_NS, 'line');
     element.setAttribute('x1', String(x1));
