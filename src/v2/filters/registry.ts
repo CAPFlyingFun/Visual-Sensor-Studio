@@ -353,8 +353,99 @@ export function setCustomFilters(filters: readonly FilterDefinition[]): void {
   customFilters = filters;
 }
 
+/**
+ * REVERSED RAMPS — a session-only flip, held here and nowhere else.
+ *
+ * Joshua's ask, after making an inverted rainbow by hand and finding it read
+ * better than the forward one: "have an edit to copy or invert colors as a tap
+ * that will reverse for that one time use but won't save it."
+ *
+ * So it lives in memory. It is NOT written to the lens document, not written
+ * to localStorage, and not carried across a reload — a saved lens means what
+ * its author saved, and a look you are trying out is not an edit you made.
+ * "Save as new" is still how a flip becomes permanent.
+ *
+ * It lives in the REGISTRY rather than in the shell because the strip, the
+ * renderer and the capability checks all read this one list (Rule 5). A flip
+ * applied anywhere else would be a second opinion about what a filter is.
+ */
+let reversedIds: ReadonlySet<string> = new Set();
+
+export function setReversedFilters(ids: Iterable<string>): void {
+  reversedIds = new Set(ids);
+}
+
+export function isReversed(id: string): boolean {
+  return reversedIds.has(id);
+}
+
+/**
+ * Reversing means reading the RAMP the other way, so it is offered only where
+ * a ramp is actually read. RGB and Edges paint no ramp at all, and a lens in
+ * mask or swap mode keeps the camera's own colours — flipping their stops
+ * would change nothing, and a control that does nothing is worse than none.
+ */
+export function canReverse(filter: FilterDefinition | null): boolean {
+  if (!filter || filter.unavailableReason) return false;
+  // THE BODY, not the whole shader. SHADER_HEADER declares uRamp for every
+  // filter whether it reads one or not, so testing the full text offered a
+  // chip on RGB, Edges and every mask lens — all of which would have flipped
+  // a ramp nothing samples.
+  const body = filter.fragment.slice(filter.fragment.indexOf('void main'));
+  return body.includes('uRamp');
+}
+
+/** The same 256 texels read back to front; colours untouched, order mirrored. */
+function reverseRamp(ramp: Uint8Array): Uint8Array {
+  const out = new Uint8Array(ramp.length);
+  const texels = ramp.length / 4;
+  for (let i = 0; i < texels; i++) {
+    const from = (texels - 1 - i) * 4;
+    out[i * 4] = ramp[from];
+    out[i * 4 + 1] = ramp[from + 1];
+    out[i * 4 + 2] = ramp[from + 2];
+    out[i * 4 + 3] = ramp[from + 3];
+  }
+  return out;
+}
+
+/**
+ * Reversed copies are MEMOISED, keyed by what they were built from.
+ *
+ * allFilters() runs on every render — filterById goes through it — so without
+ * this a 256-texel ramp would be rebuilt for every reversed filter sixty
+ * times a second, and thrown away each time. The cache is invalidated by the
+ * source's own rampKey, which already moves whenever the ramp changes.
+ */
+const reversedCache = new Map<string, { from: string; filter: FilterDefinition }>();
+
+function reversedFilter(filter: FilterDefinition): FilterDefinition {
+  const from = `${filter.rampKey ?? 'ironbow'}|${filter.revision ?? ''}`;
+  const held = reversedCache.get(filter.id);
+  if (held && held.from === from) return held.filter;
+  const built = buildReversed(filter);
+  reversedCache.set(filter.id, { from, filter: built });
+  return built;
+}
+
+function buildReversed(filter: FilterDefinition): FilterDefinition {
+  // A built-in with no ramp of its own is drawn through the Ironbow LUT, so
+  // that is the ramp being reversed for it.
+  const ramp = reverseRamp(filter.ramp ?? ironbowLut());
+  return {
+    ...filter,
+    ramp,
+    // The rampKey is what makes the renderer re-upload; the SHADER is
+    // untouched, so the revision (its program cache key) must not move.
+    rampKey: `${filter.rampKey ?? 'ironbow'}::reversed`
+  };
+}
+
 export function allFilters(): readonly FilterDefinition[] {
-  return [...FILTERS, ...customFilters];
+  const base = [...FILTERS, ...customFilters];
+  if (reversedIds.size === 0) return base;
+  return base.map((filter) =>
+    reversedIds.has(filter.id) && canReverse(filter) ? reversedFilter(filter) : filter);
 }
 
 export function filterById(id: string): FilterDefinition | null {

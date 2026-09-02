@@ -14,7 +14,8 @@ import {
 } from '../.test-build/v2/camera/stream-tiers.js';
 import { readState } from '../.test-build/v2/state.js';
 import {
-  AGE_STATE, FILTERS, NOVELTY_STATE, SHADER_HEADER, filterById, ironbowLut
+  AGE_STATE, FILTERS, NOVELTY_STATE, SHADER_HEADER, allFilters, canReverse,
+  filterById, ironbowLut, isReversed, setCustomFilters, setReversedFilters
 } from '../.test-build/v2/filters/registry.js';
 import { ironbowColor } from '../.test-build/vision/motion-ironbow.js';
 import {
@@ -53,7 +54,6 @@ import {
 } from '../.test-build/v2/vision/colour-gap.js';
 import { tipFor } from '../.test-build/v2/ui/coach.js';
 import { normaliseBinding } from '../.test-build/vision/lens.js';
-import { allFilters, setCustomFilters } from '../.test-build/v2/filters/registry.js';
 import { STARTER_LENSES, SUPERSEDED_STARTERS } from '../.test-build/v2/filters/starter-lenses.js';
 import { CHANNELS, buildRampLut, channelInfo, describeLens } from '../.test-build/vision/lens.js';
 import { sanitiseLens } from '../.test-build/vision/lens-store.js';
@@ -1808,4 +1808,92 @@ test('the frame census measures the range relief stretches against', () => {
   const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
   assert.match(appTs, /lumaRange: exposure\.range/);
   assert.match(appTs, /active\?\.needsLumaRange === true/, 'and measures it when a lens asks');
+});
+
+test('Reverse is offered only where a ramp is actually read', () => {
+  // THE TRAP: SHADER_HEADER declares uRamp for every filter whether it reads
+  // one or not, so testing the whole shader text offered the chip on RGB,
+  // Edges and every mask lens — all of which would have flipped a ramp
+  // nothing samples. It is the BODY that decides.
+  assert.match(SHADER_HEADER, /uniform sampler2D uRamp;/, 'the header declares it for all');
+  assert.equal(canReverse(filterById('rgb')), false, 'RGB paints no ramp');
+  assert.equal(canReverse(filterById('edges')), false, 'nor does Edges');
+  for (const id of ['ironbow', 'difference', 'speed', 'trails']) {
+    assert.equal(canReverse(filterById(id)), true, `${id} draws through the ramp`);
+  }
+  assert.equal(canReverse(null), false);
+
+  const lens = (extra) => compileLens(sanitiseLens({
+    version: 1, id: 'rev', name: 'Rev',
+    color: { channel: 'luma', low: 0, high: 255, gamma: 1 },
+    stops: [{ at: 0, color: '#000000' }, { at: 1, color: '#ffffff' }],
+    base: 'black', sceneBlend: 0, ...extra
+  }));
+  assert.equal(canReverse(lens({})), true, 'a paint lens reads its ramp');
+  assert.equal(canReverse(lens({ output: 'mask' })), false,
+    'a mask keeps the camera colours — flipping stops would change nothing');
+  assert.equal(canReverse(lens({ output: 'swap', target: '#ff00ff' })), false);
+});
+
+test('a reversed ramp is the same colours, mirrored — and twice is where it started', () => {
+  setReversedFilters([]);
+  const forward = filterById('ironbow');
+  const plain = forward.ramp ?? ironbowLut();
+
+  setReversedFilters(['ironbow']);
+  assert.equal(isReversed('ironbow'), true);
+  const flipped = filterById('ironbow');
+  assert.ok(flipped.ramp, 'a reversed filter carries its own ramp');
+  // Texel i of the flip is texel 255-i of the original: colours untouched,
+  // order mirrored — the same rule reverseStops follows for a lens document.
+  for (const i of [0, 1, 64, 128, 200, 255]) {
+    const from = (255 - i) * 4;
+    assert.equal(flipped.ramp[i * 4], plain[from], `texel ${i} red`);
+    assert.equal(flipped.ramp[i * 4 + 1], plain[from + 1], `texel ${i} green`);
+    assert.equal(flipped.ramp[i * 4 + 2], plain[from + 2], `texel ${i} blue`);
+  }
+  // The rampKey moves so the renderer re-uploads; the REVISION must not,
+  // because the shader is untouched and its program cache is keyed on that.
+  assert.notEqual(flipped.rampKey, forward.rampKey);
+  assert.equal(flipped.revision, forward.revision);
+
+  // Memoised: allFilters() runs on every render, so the same object comes
+  // back rather than a fresh 256-texel build sixty times a second.
+  assert.equal(filterById('ironbow'), filterById('ironbow'));
+
+  setReversedFilters([]);
+  assert.equal(isReversed('ironbow'), false);
+  assert.equal(filterById('ironbow').ramp, forward.ramp, 'and off is exactly where it began');
+});
+
+test('Reverse never writes to the lens document or to storage', () => {
+  // "invert colors as a tap that will reverse for that one time use but won't
+  // save it" (Joshua). A saved lens means what its author saved; a look being
+  // tried out is not an edit. "Save as new" is still how a flip becomes real.
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+  const handler = appTs.slice(appTs.indexOf("byId('v2ReverseRamp').addEventListener"));
+  const block = handler.slice(0, handler.indexOf('\n});'));
+  assert.ok(!/saveLens|localStorage|remember\(/.test(block),
+    'the handler must not persist anything');
+  assert.match(block, /reversed\.delete\(id\)/, 'a second tap is exactly where you started');
+  assert.match(block, /the saved lens is untouched/, 'and it says so');
+
+  // The set itself is memory, never storage.
+  const registry = readFileSync(new URL('../src/v2/filters/registry.ts', import.meta.url), 'utf8');
+  const owner = registry.slice(registry.indexOf('let reversedIds'));
+  assert.ok(!/localStorage/.test(owner.slice(0, 2000)));
+
+  // And a reversed lens's own stops are untouched — the flip is a RAMP, not
+  // an edit to the document the strip and the editor both read.
+  setReversedFilters([]);
+  const source = STARTER_LENSES.find((l) => l.id === 'lens-v2-hue-map');
+  const before = JSON.stringify(source.stops);
+  setCustomFilters([compileLens(sanitiseLens(source))]);
+  setReversedFilters([lensFilterId(source)]);
+  const shown = filterById(lensFilterId(source));
+  assert.ok(shown.ramp, 'the strip shows a flipped ramp');
+  assert.equal(JSON.stringify(shown.lens.stops), before, 'the document is unchanged');
+  assert.equal(JSON.stringify(source.stops), before);
+  setReversedFilters([]);
+  setCustomFilters([]);
 });

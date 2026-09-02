@@ -36,7 +36,10 @@ import {
   envelopeFromMeasurement, measurementFromRows, type EnvelopeMeasurement
 } from './capture/encoder-envelope.js';
 import { STREAM_TIERS, tierAvailable, tierById } from './camera/stream-tiers.js';
-import { FILTERS, allFilters, filterById, setCustomFilters } from './filters/registry.js';
+import {
+  FILTERS, allFilters, canReverse, filterById, isReversed, setCustomFilters,
+  setReversedFilters
+} from './filters/registry.js';
 import {
   compileLens, channelAvailability, lensFilterId, reverseStops, rgbToHsv
 } from './filters/lens-shader.js';
@@ -1192,6 +1195,13 @@ function lensReadsHue(lens: CustomLens): boolean {
     || (lens.brightness ? channelInfo(lens.brightness.channel).hueDerived === true : false);
 }
 
+/**
+ * Filters flipped for THIS SESSION only. Memory, never storage: a saved lens
+ * means what its author saved, and a look being tried out is not an edit.
+ * "Save as new" is still how a flip becomes permanent.
+ */
+const reversed = new Set<string>();
+
 let renderedFilterKey = '';
 function renderFilterStrip(): void {
   const { activeFilter, recording, geometry, streamTier } = readState();
@@ -1211,6 +1221,7 @@ function renderFilterStrip(): void {
   // reference colour the note now names — so a live edit re-renders the note
   // without the id having changed.
   const key = `${activeFilter}|${rec}|${cap}|${warning}|${readState().frameAverage}`
+    + `|${isReversed(activeFilter)}`
     + `|${filterById(activeFilter)?.revision ?? ''}`
     + `|${matchingShare === null ? '-' : Math.round(matchingShare * 100)}`;
   if (key === renderedFilterKey) return;
@@ -1236,7 +1247,17 @@ function renderFilterStrip(): void {
       // detail after it. describeLens stays the technical reading, and lives
       // in the workbench where someone is editing those very numbers.
       : `${lensFilter.lens.note ? `${lensFilter.lens.note}` : `${describeLens(lensFilter.lens)}.`}`
-        + (lensFilter.supportsPhoto ? '' : ' Stills are declined — this channel lives at ANALYSIS resolution.')
+        // WHY a still is declined differs, and the difference matters: a
+        // temporal field's meaning IS its live history, so a saved frame
+        // would be claiming information it never had rather than merely
+        // showing it at the wrong size (ChatGPT's point, 2026-09-02).
+        + (lensFilter.supportsPhoto ? ''
+          : channelInfo(lensFilter.lens.color.channel).temporal
+            || (lensFilter.lens.brightness
+              && channelInfo(lensFilter.lens.brightness.channel).temporal)
+            ? ' Stills are declined: this field is built from live history, so a '
+              + 'single saved frame could not have measured it.'
+            : ' Stills are declined — this channel lives at ANALYSIS resolution.')
         + (lensFilter.needsHistogram
           ? ' Measured against the whole frame’s colours, re-counted a few times a second — point the camera elsewhere and the reading moves.'
           : '')
@@ -1265,6 +1286,12 @@ function renderFilterStrip(): void {
     : `${lensNote || (lensFilter?.note ?? '')} ${capNote || warning}`.trim());
   byId('v2LensActions').hidden = rec;
   byId('v2LensEdit').hidden = !lensFilter?.lens;
+  // Reverse is offered only where a ramp is read — RGB and Edges paint none,
+  // and a mask or swap lens keeps the camera's own colours.
+  const flip = byId<HTMLButtonElement>('v2ReverseRamp');
+  flip.hidden = !canReverse(lensFilter);
+  flip.classList.toggle('active', isReversed(activeFilter));
+  flip.textContent = isReversed(activeFilter) ? '🔄 Reversed' : '🔄 Reverse';
 }
 
 /* --- The coach: what to do with a filter that needs a step --------------- */
@@ -2655,6 +2682,21 @@ byId('v2EncoderProbe').addEventListener('click', () => {
     probing = false;
     button.disabled = false;
   });
+});
+byId('v2ReverseRamp').addEventListener('click', () => {
+  const id = readState().activeFilter;
+  if (!canReverse(filterById(id))) return;
+  // A toggle, so a second tap is exactly where you started — reversing a ramp
+  // twice restores it, and nothing was written down in between.
+  if (reversed.has(id)) reversed.delete(id);
+  else reversed.add(id);
+  setReversedFilters(reversed);
+  renderedFilterKey = '';
+  renderFilterStrip();
+  renderPreview(performance.now());
+  showToast(reversed.has(id)
+    ? 'Ramp reversed for this session — the saved lens is untouched.'
+    : 'Ramp back to normal.');
 });
 byId('v2SwitchCamera').addEventListener('click', () => void switchCamera());
 

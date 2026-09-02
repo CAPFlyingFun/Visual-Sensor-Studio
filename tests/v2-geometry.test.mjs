@@ -2039,3 +2039,86 @@ test('camera controls show only what the browser offers, and report what took (f
       await context.close();
     });
   });
+
+test('Reverse flips the picture for the session and restores it (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({
+        viewport: { width: 430, height: 932 },
+        permissions: ['camera']
+      });
+      const page = await context.newPage();
+      await page.goto(`${base}/index.html`);
+      await page.waitForTimeout(400);
+      await page.click('#v2EnableCamera');
+      await page.waitForFunction(() =>
+        /\d+(\.\d+)? rendered fps/.test(document.getElementById('v2DiagPreview')?.textContent ?? ''),
+        null, { timeout: 8000 });
+
+      const look = () => page.evaluate(() => {
+        const canvas = document.getElementById('v2PreviewCanvas');
+        const copy = document.createElement('canvas');
+        copy.width = canvas.width;
+        copy.height = canvas.height;
+        copy.getContext('2d').drawImage(canvas, 0, 0);
+        const d = copy.getContext('2d').getImageData(0, 0, copy.width, copy.height).data;
+        let r = 0, g = 0, b = 0;
+        for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; }
+        const n = d.length / 4;
+        return { r: r / n, g: g / n, b: b / n, shown: !document.getElementById('v2ReverseRamp').hidden };
+      });
+      const apart = (a, c) => Math.abs(a.r - c.r) + Math.abs(a.g - c.g) + Math.abs(a.b - c.b);
+
+      // Hidden where no ramp is read. The header DECLARES uRamp for every
+      // filter, so this was offered on RGB, Edges and every mask lens until
+      // the check looked at the shader body instead of the whole text.
+      for (const id of ['rgb', 'edges', 'lens:lens-v2-colour-splash']) {
+        await page.click(`[data-filter="${id}"]`);
+        await page.waitForTimeout(600);
+        assert.equal((await look()).shown, false, `${id} paints no ramp, so no chip`);
+      }
+
+      // Offered where one IS read, and it really changes the picture.
+      await page.click('[data-filter="lens:lens-v2-hue-map"]');
+      await page.waitForTimeout(700);
+      const forward = await look();
+      assert.equal(forward.shown, true);
+      await page.click('#v2ReverseRamp');
+      await page.waitForTimeout(700);
+      const flipped = await look();
+      assert.ok(apart(forward, flipped) > 40,
+        `reversing must change the picture: ${apart(forward, flipped)}`);
+      assert.match(await page.textContent('#v2ReverseRamp'), /Reversed/);
+
+      // A second tap is exactly where it started.
+      await page.click('#v2ReverseRamp');
+      await page.waitForTimeout(700);
+      const back = await look();
+      assert.ok(apart(forward, back) < apart(forward, flipped) / 3,
+        `and a second tap restores it: ${apart(forward, back)} vs ${apart(forward, flipped)}`);
+      assert.match(await page.textContent('#v2ReverseRamp'), /Reverse$/);
+
+      // NOTHING WAS WRITTEN DOWN. The saved lens means what its author saved.
+      await page.click('#v2ReverseRamp');
+      await page.waitForTimeout(500);
+      const stored = await page.evaluate(() => {
+        const lens = JSON.parse(localStorage.getItem('vss.lenses.v1'))
+          .find((l) => l.id === 'lens-v2-hue-map');
+        return { stops: lens.stops.map((s) => s.color).join(','), keys: Object.keys(localStorage) };
+      });
+      assert.equal(stored.stops, '#ff2d2d,#ffd93d,#3dff6e,#3dfaff,#3d6eff,#c83dff,#ff2d2d',
+        'the lens document is untouched, in its original order');
+      assert.ok(!stored.keys.some((k) => /revers/i.test(k)), 'and the flip is not stored anywhere');
+
+      // Nor does it survive a reload — a look being tried out is not an edit.
+      await page.reload();
+      await page.waitForTimeout(700);
+      await page.click('[data-filter="lens:lens-v2-hue-map"]');
+      await page.waitForTimeout(600);
+      assert.match(await page.textContent('#v2ReverseRamp'), /Reverse$/,
+        'a reload starts from the saved lens');
+
+      await page.close();
+      await context.close();
+    });
+  });
