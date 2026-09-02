@@ -69,6 +69,8 @@ test('the bare URL is the app, and Version 1 is kept beside it (fake device)',
       assert.equal(await page.evaluate(() =>
         document.getElementById('v2Viewfinder') === null), true, 'legacy.html is still V1');
       assert.ok(!page.url().includes('index.html'), 'and V1 no longer redirects anywhere');
+      // Reachable by address only — and never a dead end when it is reached.
+      assert.match(await page.textContent('a[href="./"]'), /Back to Visual Sensor Studio/);
 
       await page.close();
     });
@@ -126,7 +128,10 @@ for (const [label, width, height] of [['430x932', 430, 932], ['320x568', 320, 56
         await page.click('[data-route="world"]');
         await page.waitForTimeout(100);
         assert.equal(await page.isHidden('#v2CameraRoute'), true);
-        assert.match(await page.textContent('#v2PlaceholderPlan'), /legacy app/);
+        // A placeholder offers nothing to OPEN: it used to hand you Version 1,
+        // which has no way back, so the button was a trap not a feature.
+        assert.match(await page.textContent('#v2PlaceholderPlan'), /rebuilt here/);
+        assert.equal(await page.$('#v2LegacyLink'), null, 'no one-way door out of the app');
         // More is where the instruments live: the truth table and the probe
         // are off the main screen, never gone.
         await page.click('[data-route="more"]');

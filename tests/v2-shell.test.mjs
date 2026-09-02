@@ -22,6 +22,12 @@ test('the app is the root document and Version 1 redirects nowhere', () => {
   assert.ok(!indexHtml.includes("location.replace('./v2.html'"),
     'and its redirect is removed, not merely disabled');
   assert.match(v2Html, /id="v2Viewfinder"/, 'the root document is the camera app');
+  // Nothing in the app links to Version 1: that page cannot get back here, so
+  // a link to it strands whoever follows it.
+  assert.ok(!v2Html.includes('v2LegacyLink'), 'no one-way door out of the app');
+  assert.ok(!/href="\.\/legacy\.html"/.test(v2Html), 'and no link in the chrome either');
+  assert.match(indexHtml, /Back to Visual Sensor Studio/,
+    'Version 1 carries a way back for anyone who arrives by address');
 });
 
 test('the root document carries the PWA layer it needs to be installed', () => {

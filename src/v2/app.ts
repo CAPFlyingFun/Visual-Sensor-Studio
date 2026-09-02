@@ -2401,15 +2401,6 @@ byId('v2EncoderProbe').addEventListener('click', () => {
   });
 });
 byId('v2SwitchCamera').addEventListener('click', () => void switchCamera());
-byId('v2LegacyLink').addEventListener('click', () => {
-  // V1 is kept at its own address rather than at the root: this app is the
-  // root now. The page is a reference while its features are rebuilt here,
-  // and its full history lives on the version_1_legacy branch.
-  const back = new URL(location.href);
-  back.searchParams.delete('scene');
-  back.pathname = back.pathname.replace(/[^/]*$/, 'legacy.html');
-  location.href = back.toString();
-});
 
 // The installed app's update path. Promoting this page to the root document
 // made it the thing people INSTALL, and an installed app that cannot notice a

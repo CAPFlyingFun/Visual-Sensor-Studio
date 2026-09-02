@@ -23,15 +23,15 @@ export const NAV_ROUTES: readonly NavRoute[] = [
   },
   {
     id: 'sensors', label: 'Sensors', icon: '◌', implemented: false,
-    plan: 'Motion, orientation and steadiness move here after Camera V2 is stable.'
+    plan: 'Motion, orientation and steadiness are rebuilt here after the camera is stable.'
   },
   {
     id: 'world', label: 'World', icon: '◎', implemented: false,
-    plan: 'GPS, terrain and the 3D view stay in the legacy app for now.'
+    plan: 'GPS, terrain and the 3D view are rebuilt here. Not started yet.'
   },
   {
     id: 'data', label: 'Data', icon: '▤', implemented: false,
-    plan: 'Depth scan and export stay in the legacy app for now.'
+    plan: 'Depth scan and export are rebuilt here. Not started yet.'
   },
   {
     // Settings & diagnostics: the truth table, capture measurements and the
