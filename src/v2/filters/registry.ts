@@ -52,6 +52,16 @@ export interface FilterDefinition {
   lens?: CustomLens;
   /** Reads the whole frame's colour histogram, so the shell must supply one. */
   needsHistogram?: boolean;
+  /**
+   * What this filter does, in one sentence, for the strip's note.
+   *
+   * It lives HERE rather than in the shell because the shell's copy was a
+   * lookup table keyed by id, and a table like that goes stale silently: RGB
+   * and Edges shipped with no note at all and nothing said so (Joshua,
+   * 2026-09-02). A filter now carries its own sentence, so adding a filter
+   * without one is visible in the same file that adds it.
+   */
+  note?: string;
 }
 
 export const SHADER_HEADER = `precision mediump float;
@@ -92,6 +102,7 @@ export const SPEED_STATE = HEADER + `void main() {
 export const FILTERS: readonly FilterDefinition[] = [
   {
     id: 'rgb',
+    note: 'The camera\'s own picture, unfiltered — the reference every other filter is a departure from.',
     name: 'RGB',
     family: 'view',
     temporal: false,
@@ -103,6 +114,7 @@ export const FILTERS: readonly FilterDefinition[] = [
   },
   {
     id: 'ironbow',
+    note: 'False colour: visible-light brightness through the Ironbow ramp — not thermal.',
     name: 'Ironbow',
     family: 'view',
     temporal: false,
@@ -118,6 +130,7 @@ export const FILTERS: readonly FilterDefinition[] = [
   },
   {
     id: 'difference',
+    note: 'Change between frames through the ramp — history held at ANALYSIS resolution. Video is this filter’s product; stills are declined rather than upscaled.',
     name: 'Motion',
     family: 'motion',
     temporal: true,
@@ -140,6 +153,7 @@ export const FILTERS: readonly FilterDefinition[] = [
   },
   {
     id: 'speed',
+    note: 'Motion along the brightness gradient (normal flow), smoothed over frames — texels per frame at ANALYSIS resolution, not a velocity. Stills are declined.',
     name: 'Speed',
     family: 'motion',
     temporal: true,
@@ -160,6 +174,7 @@ export const FILTERS: readonly FilterDefinition[] = [
   },
   {
     id: 'trails',
+    note: 'Motion that fades over about half a second — the trail lives at ANALYSIS resolution. Stills are declined.',
     name: 'Trails',
     family: 'motion',
     temporal: true,
@@ -184,6 +199,7 @@ export const FILTERS: readonly FilterDefinition[] = [
   },
   {
     id: 'edges',
+    note: 'Brightness boundaries (Sobel on luma), as grey. It finds a light thing against a dark one; two different colours of the same lightness have no brightness edge and it will not see them — Colour Edges will.',
     name: 'Edges',
     family: 'view',
     temporal: false,

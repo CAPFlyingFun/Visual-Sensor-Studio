@@ -34,7 +34,7 @@ import { FILTERS, allFilters, filterById, setCustomFilters } from './filters/reg
 import {
   compileLens, channelAvailability, lensFilterId, reverseStops, rgbToHsv
 } from './filters/lens-shader.js';
-import { STARTER_LENSES } from './filters/starter-lenses.js';
+import { STARTER_LENSES, SUPERSEDED_STARTERS } from './filters/starter-lenses.js';
 import {
   CHANNELS, MAX_STOPS, MIN_STOPS, channelInfo, describeLens, normaliseBinding,
   rampToCss, toHex, type ChannelId, type CustomLens
@@ -868,6 +868,17 @@ function buildFilterStrip(): void {
   }
 }
 
+/**
+ * The picker's state, declared HERE rather than beside the picker's own code
+ * for one reason: the subscriber below calls renderers that read it, and
+ * subscribe() invokes its listener synchronously — a `let` further down the
+ * module is still in its temporal dead zone when that happens, which has
+ * taken this module down at boot twice. The picker's behaviour lives with
+ * the rest of the picker; only these two bindings are hoisted.
+ */
+let pickerActive = false;
+let pickedColor: SampledColor | null = null;
+
 let renderedFilterKey = '';
 function renderFilterStrip(): void {
   const { activeFilter, recording, geometry, streamTier } = readState();
@@ -883,7 +894,11 @@ function renderFilterStrip(): void {
   const warning = !cap && activeFilter !== 'rgb'
     ? tierById(streamTier)?.clipWarning ?? ''
     : '';
+  // The revision moves when a lens's own numbers change — including the
+  // reference colour the note now names — so a live edit re-renders the note
+  // without the id having changed.
   const key = `${activeFilter}|${rec}|${cap}|${warning}`
+    + `|${filterById(activeFilter)?.revision ?? ''}`
     + `|${matchingShare === null ? '-' : Math.round(matchingShare * 100)}`;
   if (key === renderedFilterKey) return;
   renderedFilterKey = key;
@@ -893,15 +908,6 @@ function renderFilterStrip(): void {
     // under the encoder; the strip waits for stop, honestly disabled.
     button.disabled = rec;
   }
-  const FILTER_NOTES: Record<string, string> = {
-    ironbow: 'False colour: visible-light brightness through the Ironbow ramp — not thermal.',
-    difference: 'Change between frames through the ramp — history held at ANALYSIS resolution. '
-      + 'Video is this filter’s product; stills are declined rather than upscaled.',
-    speed: 'Motion along the brightness gradient (normal flow), smoothed over frames — '
-      + 'texels per frame at ANALYSIS resolution, not a velocity. Stills are declined.',
-    trails: 'Motion that fades over about half a second — the trail lives at ANALYSIS '
-      + 'resolution. Stills are declined.'
-  };
   // RECORD IN below SOURCE now has one cause on every path, RGB included:
   // the encoder's frame limit (measured 2026-09-01) — so the note names it
   // for every filter, and photos are exempt because JPEG has no such level.
@@ -921,6 +927,12 @@ function renderFilterStrip(): void {
         + (lensFilter.needsHistogram
           ? ' Measured against the whole frame’s colours, re-counted a few times a second — point the camera elsewhere and the reading moves.'
           : '')
+        // Which colour it is looking for, named — "I picked a colour but it
+        // looked the same" (Joshua, 2026-09-02) is what a lens that never
+        // says what it is measuring against feels like.
+        + (lensFilter.lens.reference && channelInfo(lensFilter.lens.color.channel).needsReference
+          ? ` Looking for ${lensFilter.lens.reference.toUpperCase()} — tap ⊕ Colour to sample a new one from the picture.`
+          : '')
         + (matchingShare !== null
           ? ` Matching ${(matchingShare * 100).toFixed(0)}% of the frame right now`
             + (matchingShare < 0.005 ? ' — nothing in view is that colour yet.' : '.')
@@ -928,7 +940,9 @@ function renderFilterStrip(): void {
     : '';
   setText('v2FilterNote', rec
     ? 'Recording — stop to change filters.'
-    : `${lensNote || (FILTER_NOTES[activeFilter] ?? '')} ${capNote || warning}`.trim());
+    // A filter's sentence is the filter's own (registry.ts): a lookup table
+    // here went stale silently and left RGB and Edges with nothing to say.
+    : `${lensNote || (lensFilter?.note ?? '')} ${capNote || warning}`.trim());
   byId('v2LensActions').hidden = rec;
   byId('v2LensEdit').hidden = !lensFilter?.lens;
 }
@@ -1024,6 +1038,8 @@ function renderTextPanels(): void {
   renderGuides();
   renderCoach();
   renderDiagnostics();
+  // The picker's shortcut names the ACTIVE lens, so it follows the strip.
+  renderPickerLensRow();
 }
 
 subscribe(() => {
@@ -1486,29 +1502,76 @@ let lensDraft: CustomLens | null = null;
 let lensDraftIsNew = false;
 
 /**
+ * A lens document as a comparable string. Sanitising first is what makes it
+ * comparable: a stored lens has already been through sanitiseLens, so the
+ * same document always produces the same text whichever side it came from.
+ */
+function lensFingerprint(lens: CustomLens): string {
+  return JSON.stringify(sanitiseLens(lens));
+}
+
+/** Every form of a starter this app is known to have shipped. */
+function shippedForms(id: string): string[] {
+  const forms: string[] = [];
+  for (const lens of [...STARTER_LENSES, ...SUPERSEDED_STARTERS]) {
+    if (lens.id !== id) continue;
+    forms.push(lensFingerprint(lens));
+    // Notes arrived after the starters did, so the note-less form shipped too.
+    forms.push(lensFingerprint({ ...lens, note: undefined }));
+  }
+  return forms;
+}
+
+/**
  * Seeding is remembered PER STARTER, not as one flag: a device that was
  * seeded before a new starter existed still receives it, and a starter the
- * user deleted stays deleted. The record is the ids ever offered.
+ * user deleted stays deleted. The record is what was OFFERED — the id and
+ * the fingerprint of the document offered under it.
+ *
+ * The fingerprint is what lets a starter be CORRECTED after it has shipped.
+ * Camouflage Breaker went out mistuned (it read as an edge map in a dim
+ * room, 2026-09-02) and the id was already seeded, so nothing would ever
+ * have replaced it. A saved copy that still matches what was offered is
+ * untouched and gets the new version; a copy that differs is the user's own
+ * work and is never overwritten — the same line "Save as new" draws.
  */
 function loadLensList(): void {
   lenses = loadLenses(localStorage);
-  let seeded: string[] = [];
+  let offered = new Map<string, string>();
   try {
     const raw: unknown = JSON.parse(localStorage.getItem(LENSES_SEEDED_KEY) ?? '[]');
-    seeded = Array.isArray(raw) ? raw.filter((id): id is string => typeof id === 'string') : [];
-  } catch {
-    seeded = [];
-  }
-  const offered = new Set(seeded);
-  for (const starter of STARTER_LENSES) {
-    if (offered.has(starter.id)) continue;
-    offered.add(starter.id);
-    if (!lenses.some((lens) => lens.id === starter.id)) {
-      lenses = saveLens(localStorage, lenses, starter).lenses;
+    if (Array.isArray(raw)) {
+      // The original record: ids only, no fingerprints. An id from here is
+      // "offered, document unknown" — shippedForms decides what that means.
+      for (const id of raw) if (typeof id === 'string') offered.set(id, '');
+    } else if (raw && typeof raw === 'object') {
+      for (const [id, mark] of Object.entries(raw as Record<string, unknown>)) {
+        if (typeof mark === 'string') offered.set(id, mark);
+      }
     }
+  } catch {
+    offered = new Map();
+  }
+  for (const starter of STARTER_LENSES) {
+    const mark = lensFingerprint(starter);
+    const saved = lenses.find((lens) => lens.id === starter.id);
+    if (!offered.has(starter.id)) {
+      // Never offered: seed it, unless something already holds the id.
+      if (!saved) lenses = saveLens(localStorage, lenses, starter).lenses;
+    } else if (saved) {
+      const was = offered.get(starter.id) ?? '';
+      const savedMark = lensFingerprint(saved);
+      // Untouched since it was offered — either the record says exactly what
+      // was offered, or (no record) the copy matches a form this app shipped.
+      const untouched = was ? savedMark === was : shippedForms(starter.id).includes(savedMark);
+      if (untouched && savedMark !== mark) {
+        lenses = saveLens(localStorage, lenses, starter).lenses;
+      }
+    }
+    offered.set(starter.id, mark);
   }
   try {
-    localStorage.setItem(LENSES_SEEDED_KEY, JSON.stringify([...offered]));
+    localStorage.setItem(LENSES_SEEDED_KEY, JSON.stringify(Object.fromEntries(offered)));
   } catch {
     // Storage is optional; the starters are in memory for this session.
   }
@@ -1682,6 +1745,12 @@ function renderLensBindings(): void {
     bindingField(brightHolder, 'v2LensBrightGamma', 'Curve', { min: 0.2, max: 3, step: 0.01 },
       () => draft.brightness?.gamma ?? 1,
       (v) => { if (draft.brightness) draft.brightness.gamma = v > 0 ? v : 1; });
+    // How far down the second field may take a pixel. At 0 it multiplies to
+    // black and the colour field's answer goes with it — which is how
+    // Camouflage Breaker came to look like an edge map.
+    bindingField(brightHolder, 'v2LensBrightFloor', 'Never below', { min: 0, max: 1, step: 0.01 },
+      () => draft.brightnessFloor ?? 0,
+      (v) => { draft.brightnessFloor = Math.min(1, Math.max(0, v)) || undefined; });
   } else {
     setText('v2LensBrightUnit', '');
   }
@@ -2044,8 +2113,6 @@ byId<HTMLInputElement>('v2LensImport').addEventListener('change', () => {
  * pixel of a live frame is mostly sensor noise.
  */
 const PICK_PATCH = 9;
-let pickerActive = false;
-let pickedColor: SampledColor | null = null;
 let pickCanvas: HTMLCanvasElement | null = null;
 
 function setPickerActive(on: boolean): void {
@@ -2055,6 +2122,7 @@ function setPickerActive(on: boolean): void {
   byId('v2PickerCard').hidden = !on;
   byId('v2Viewfinder').classList.toggle('picking', on);
   byId<HTMLButtonElement>('v2PickColor').classList.toggle('active', on);
+  renderPickerLensRow();
   if (on) setText('v2PickerHint', readState().camera?.state === 'live'
     ? 'Tap the viewfinder to read a colour from the camera frame.'
     : 'Start the camera first — there is no frame to read yet.');
@@ -2082,6 +2150,37 @@ function renderPickedColor(): void {
   addStop.disabled = !lensDraft || lensDraft.stops.length >= MAX_STOPS;
   const useSample = document.getElementById('v2LensUseSample');
   if (useSample instanceof HTMLButtonElement) useSample.disabled = lensDraft === null;
+  renderPickerLensRow();
+}
+
+/**
+ * The picker's shortcut into the lens that is actually running.
+ *
+ * "I did pick a colour, but it appeared to look the same" (Joshua,
+ * 2026-09-02). Sampling a colour and CHANGING WHAT THE LENS LOOKS FOR were
+ * two separate acts: the sample landed in the picker, and the reference lived
+ * in the workbench, so picking a colour did nothing visible unless you went
+ * and opened the editor. This is the missing half — one button, named after
+ * the lens it will change, and it writes to the saved lens so the change
+ * survives the session.
+ */
+function renderPickerLensRow(): void {
+  const button = byId<HTMLButtonElement>('v2PickerUseInLens');
+  const lens = filterById(readState().activeFilter)?.lens ?? null;
+  const wants = lens !== null && channelInfo(lens.color.channel).needsReference;
+  button.hidden = !wants;
+  if (!wants || !lens) {
+    setText('v2PickerLensNote', lens
+      ? `“${lens.name}” does not measure against a colour — it reads the picture itself.`
+      : 'Pick a lens that looks for a colour (Colour Splash, Colour Hide, Paper → Pink) '
+        + 'and this reading can become the colour it looks for.');
+    return;
+  }
+  button.textContent = `Use in “${lens.name}”`;
+  button.disabled = pickedColor === null;
+  setText('v2PickerLensNote',
+    `“${lens.name}” is looking for ${(lens.reference ?? '#ffffff').toUpperCase()} right now.`
+    + (pickedColor ? ' This button changes it to the reading above.' : ''));
 }
 
 function sampleAtSource(point: Point): void {
@@ -2133,6 +2232,34 @@ byId('v2Viewfinder').addEventListener('pointerdown', (event) => {
   sampleTap(event.offsetX, event.offsetY, target.clientWidth, target.clientHeight);
 });
 byId('v2PickerCentre').addEventListener('click', sampleCentre);
+byId('v2PickerUseInLens').addEventListener('click', () => {
+  const colour = pickedColor;
+  const active = filterById(readState().activeFilter)?.lens ?? null;
+  if (!colour || !active || !channelInfo(active.color.channel).needsReference) return;
+  const hex = toHex([colour.r, colour.g, colour.b]);
+  // The draft, when the workbench happens to be open on this very lens, is
+  // the document being rendered — write to it, or the edit would be
+  // overwritten the moment the workbench next syncs.
+  const target = lensDraft && lensDraft.id === active.id ? lensDraft : { ...active, reference: hex };
+  target.reference = hex;
+  if (target === lensDraft) {
+    renderLensBindings();
+    lensDraftChanged();
+  } else {
+    const result = saveLens(localStorage, lenses, target);
+    lenses = result.lenses;
+    if (!result.saved) {
+      showToast(result.error ?? 'Could not save the lens.');
+      return;
+    }
+    syncCustomFilters();
+    rebuildLensEntries();
+    renderFilterStrip();
+    renderPreview(performance.now());
+  }
+  renderPickedColor();
+  showToast(`“${target.name}” is now looking for ${hex.toUpperCase()}`);
+});
 
 byId('v2PickColor').addEventListener('click', () => setPickerActive(!pickerActive));
 byId('v2PickerClose').addEventListener('click', () => setPickerActive(false));

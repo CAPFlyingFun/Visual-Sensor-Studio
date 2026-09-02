@@ -302,6 +302,20 @@ export interface CustomLens {
   stops: LensStop[];
   /** Optional second field that modulates brightness. */
   brightness?: LensBinding;
+  /**
+   * The darkest the second field may take a pixel, 0..1. Absent means 0 —
+   * the original behaviour, where a brightness field reading nothing turns
+   * the pixel black and the colour field's answer is lost with it.
+   *
+   * That loss is why this exists. Camouflage Breaker colours by how unusual
+   * a hue is and brightens by whether the pixel sits on a colour boundary;
+   * in a dim, low-colour room the boundary term collapses to zero almost
+   * everywhere, multiplies the colour away, and the lens degenerates into an
+   * edge map indistinguishable from Colour Edges (Joshua's device, 2026-09-02).
+   * A floor lets the second field DIM rather than annihilate, so both fields
+   * stay readable and the lens keeps saying two things at once.
+   */
+  brightnessFloor?: number;
   base: LensBase;
   /** How much of the camera picture shows under the colour, 0..1. */
   sceneBlend: number;
@@ -345,7 +359,8 @@ export function describeLens(lens: CustomLens): string {
     const bHi = Math.max(lens.brightness.low, lens.brightness.high);
     const bDigits = bHi <= 20 ? 3 : 0;
     parts.push(`brightness from ${b.label.toLowerCase()},`
-      + ` ${bLo.toFixed(bDigits)}–${bHi.toFixed(bDigits)}${bUnit}${bInverted ? ' (inverted)' : ''}`);
+      + ` ${bLo.toFixed(bDigits)}–${bHi.toFixed(bDigits)}${bUnit}${bInverted ? ' (inverted)' : ''}`
+      + `${lens.brightnessFloor ? `, never below ${Math.round(lens.brightnessFloor * 100)}%` : ''}`);
   }
   if (lens.reference && channelInfo(lens.color.channel).needsReference) {
     parts.push(`measured from ${lens.reference}`);
@@ -562,6 +577,7 @@ export function renderLens(
   const colorSource = sources[lens.color.channel];
   const brightnessBinding = lens.brightness;
   const brightnessSource = brightnessBinding ? sources[brightnessBinding.channel] : undefined;
+  const brightnessFloor = clamp(lens.brightnessFloor ?? 0, 0, 1);
   const blend = clamp(lens.sceneBlend, 0, 1);
 
   let resolved = 0;
@@ -600,7 +616,11 @@ export function renderLens(
 
     if (brightnessBinding && brightnessSource) {
       const validB = !brightnessSource.valid || (brightnessSource.valid[i] ?? 0) !== 0;
-      const v = validB ? normaliseBinding(brightnessSource.values[i] ?? 0, brightnessBinding) : 0;
+      const raw = validB ? normaliseBinding(brightnessSource.values[i] ?? 0, brightnessBinding) : 0;
+      // The floor is the SAME rule the GPU applies (Rule 4): the second field
+      // dims down to it and no further, so a field reading nothing cannot
+      // erase the colour field's answer.
+      const v = brightnessFloor + (1 - brightnessFloor) * raw;
       r *= v;
       g *= v;
       b *= v;

@@ -299,10 +299,14 @@
           </div>
           <div class="button-row">
             <button type="button" class="btn" id="v2PickerCentre">✛ Sample centre</button>
+            <!-- The shortest path from "that colour there" to "the lens is
+                 now looking for it": no workbench, no round trip. -->
+            <button type="button" class="btn" id="v2PickerUseInLens" hidden></button>
             <button type="button" class="btn" id="v2PickerCopy" disabled>Copy hex</button>
             <button type="button" class="btn" id="v2PickerAddStop" disabled>Add as ramp stop</button>
             <button type="button" class="btn" id="v2PickerClose">Close</button>
           </div>
+          <p class="hint" id="v2PickerLensNote"></p>
         </div>
 
         <!-- The lens workbench (Milestone E). Built from data: the channel list,
@@ -311,7 +315,7 @@
         <div class="card" id="v2LensWorkbench" hidden>
           <h3 id="v2LensTitle">Custom lens</h3>
           <input class="lens-name" id="v2LensName" type="text" maxlength="40" placeholder="Lens name" />
-          <input class="lens-name" id="v2LensNote" type="text" maxlength="120" placeholder="What it does, in a line" />
+          <input class="lens-name" id="v2LensNote" type="text" maxlength="280" placeholder="What it does, in a line" />
           <p class="hint" id="v2LensOrigin" hidden></p>
           <div class="lens-field">
             <label for="v2LensChannel">Colour from</label>

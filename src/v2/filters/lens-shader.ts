@@ -65,7 +65,8 @@ export function lensFilterId(lens: CustomLens): string {
 export function lensRevision(lens: CustomLens): string {
   const text = JSON.stringify([
     lens.color, lens.brightness ?? null, lens.stops, lens.base, lens.sceneBlend,
-    lens.output ?? 'paint', lens.reference ?? '', lens.target ?? ''
+    lens.output ?? 'paint', lens.reference ?? '', lens.target ?? '',
+    lens.brightnessFloor ?? 0
   ]);
   let hash = 5381;
   for (let i = 0; i < text.length; i++) hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
@@ -235,6 +236,11 @@ export function compileLens(lens: CustomLens): FilterDefinition {
     ? 'vec3(sceneY)'
     : lens.base === 'grey' ? 'vec3(28.0 / 255.0)' : 'vec3(0.0)';
   const blend = Math.min(1, Math.max(0, lens.sceneBlend));
+  // The second field DIMS to this and no further. At 0 (the default) it still
+  // multiplies straight to black, which is what every lens written before the
+  // floor existed meant; above 0 the colour field survives a second field
+  // that reads nothing. See CustomLens.brightnessFloor for why.
+  const floor = Math.min(1, Math.max(0, lens.brightnessFloor ?? 0));
 
   // The three outputs, each one line. `t` is the lens's own normalised
   // reading, so the range direction (low above high inverts it) is what
@@ -277,7 +283,7 @@ export function compileLens(lens: CustomLens): FilterDefinition {
 ${lens.color.channel === 'speed' ? `  if (raw <= 0.0) { gl_FragColor = vec4(base, 1.0); return; }\n` : ''}\
   float t = normColour(raw);
   ${paint}
-${lens.brightness ? `  c *= normBright(ch_${lens.brightness.channel}(vUv));\n` : ''}\
+${lens.brightness ? `  c *= mix(${glslFloat(floor)}, 1.0, normBright(ch_${lens.brightness.channel}(vUv)));\n` : ''}\
 ${blend > 0 ? `  c = mix(c, vec3(sceneY), ${glslFloat(blend)});\n` : ''}\
   gl_FragColor = vec4(c, 1.0);
 }`;
@@ -297,6 +303,7 @@ ${blend > 0 ? `  c = mix(c, vec3(sceneY), ${glslFloat(blend)});\n` : ''}\
     rampKey: JSON.stringify(lens.stops),
     lens,
     revision,
-    needsHistogram
+    needsHistogram,
+    note: lens.note
   };
 }

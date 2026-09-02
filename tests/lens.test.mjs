@@ -363,7 +363,9 @@ test('an enormous stop list is capped', () => {
 test('a runaway name cannot break the list layout', () => {
   const lens = sanitiseLens({ name: 'x'.repeat(5000), note: 'y'.repeat(5000) });
   assert.ok(lens.name.length <= 40);
-  assert.ok((lens.note ?? '').length <= 140);
+  // 280, raised from 140 when two colour lenses needed room to say why they
+  // differ from each other rather than only what they read (2026-09-02).
+  assert.ok((lens.note ?? '').length <= 280);
 });
 
 test('a bad colour becomes black rather than reaching the parser', () => {

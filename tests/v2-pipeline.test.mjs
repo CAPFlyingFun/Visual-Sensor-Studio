@@ -39,7 +39,7 @@ import {
 import { tipFor } from '../.test-build/v2/ui/coach.js';
 import { normaliseBinding } from '../.test-build/vision/lens.js';
 import { allFilters, setCustomFilters } from '../.test-build/v2/filters/registry.js';
-import { STARTER_LENSES } from '../.test-build/v2/filters/starter-lenses.js';
+import { STARTER_LENSES, SUPERSEDED_STARTERS } from '../.test-build/v2/filters/starter-lenses.js';
 import { CHANNELS, buildRampLut, channelInfo, describeLens } from '../.test-build/vision/lens.js';
 import { sanitiseLens } from '../.test-build/vision/lens-store.js';
 
@@ -1019,9 +1019,18 @@ test('the starter pack is valid, unique, and describes itself honestly', () => {
   const notes = STARTER_LENSES.map((lens) => lens.note ?? '');
   assert.ok(notes.every((note) => note.length > 20), 'every starter carries a note');
   assert.equal(new Set(notes).size, notes.length, 'and no two notes are the same');
+  // Short enough to read at a glance. The cap was 120 until the two colour
+  // lenses that look alike in a dull room needed room to say WHY they differ
+  // (Joshua, 2026-09-02) — a note that fits but explains nothing is worse
+  // than one that wraps.
   for (const lens of STARTER_LENSES) {
-    assert.ok((lens.note ?? '').length <= 120, `${lens.name}'s note stays one line`);
+    assert.ok((lens.note ?? '').length <= 280, `${lens.name}'s note stays short`);
   }
+  // The pair he could not tell apart each name the other, so the strip
+  // answers the question without him having to ask it twice.
+  const named = (id) => STARTER_LENSES.find((l) => l.id === id)?.note ?? '';
+  assert.match(named('lens-v2-camouflage-breaker'), /unusual/i);
+  assert.match(named('lens-v2-chroma-edge'), /Camouflage Breaker/);
   for (const lens of STARTER_LENSES) {
     assert.deepEqual(JSON.parse(JSON.stringify(sanitiseLens(lens))), JSON.parse(JSON.stringify(lens)),
       `${lens.name} survives a save/load round trip unchanged`);
@@ -1228,4 +1237,88 @@ test('a copy is a new document, so a starter can never be overwritten by it', ()
   assert.deepEqual(copied.stops, STARTER_LENSES[0].stops);
   copied.stops[0].color = '#ff0000';
   assert.notEqual(STARTER_LENSES[0].stops[0].color, '#ff0000', 'and edits cannot reach the original');
+});
+
+test('a brightness floor lets the second field dim rather than annihilate', () => {
+  // The failure this exists for: Camouflage Breaker colours by how UNUSUAL a
+  // hue is and brightens by whether the pixel sits on a colour boundary. In a
+  // dim, low-colour room the boundary term reads near zero almost everywhere,
+  // multiplies the colour answer to black, and the lens degenerates into an
+  // edge map — which is exactly what Colour Edges already is (Joshua's
+  // device, 2026-09-02: "they look the same").
+  const base = {
+    version: 1, id: 'floor-test', name: 'Floor test',
+    color: { channel: 'rarity', low: 60, high: 220, gamma: 1 },
+    brightness: { channel: 'chromaEdge', low: 5, high: 70, gamma: 1 },
+    stops: [{ at: 0, color: '#000000' }, { at: 1, color: '#ffffff' }],
+    base: 'black', sceneBlend: 0
+  };
+  const none = compileLens(sanitiseLens(base));
+  const floored = compileLens(sanitiseLens({ ...base, brightnessFloor: 0.35 }));
+  // No floor is the historical shader, unchanged — a lens written before the
+  // floor existed still compiles to exactly what it always did.
+  assert.match(none.fragment, /c \*= mix\(0\.0000, 1\.0,/);
+  assert.match(floored.fragment, /c \*= mix\(0\.3500, 1\.0,/);
+  // And the floor is part of the lens's identity, so a live edit recompiles.
+  assert.notEqual(none.revision, floored.revision);
+  // 0 means "no floor", which is the same document as not asking for one.
+  assert.equal(sanitiseLens({ ...base, brightnessFloor: 0 }).brightnessFloor, undefined);
+  assert.equal(sanitiseLens({ ...base, brightnessFloor: 9 }).brightnessFloor, 1, 'clamped');
+  // A lens with no second field has no floor to apply.
+  const single = sanitiseLens({ ...base, brightness: undefined, brightnessFloor: 0.5 });
+  assert.equal(single.brightnessFloor, undefined);
+});
+
+test('Camouflage Breaker and Colour Edges are different lenses, and say so', () => {
+  const breaker = STARTER_LENSES.find((l) => l.id === 'lens-v2-camouflage-breaker');
+  const edges = STARTER_LENSES.find((l) => l.id === 'lens-v2-chroma-edge');
+  // The one that reads two fields is the one that can say two things.
+  assert.equal(breaker.color.channel, 'rarity');
+  assert.equal(breaker.brightness.channel, 'chromaEdge');
+  assert.equal(edges.color.channel, 'chromaEdge');
+  assert.equal(edges.brightness, undefined);
+  // The floor is what keeps the rarity answer visible where the boundary
+  // term reads nothing — without it the two collapse onto each other.
+  assert.ok(breaker.brightnessFloor > 0, 'the breaker never multiplies to black');
+  assert.notEqual(describeLens(breaker), describeLens(edges));
+});
+
+test('every built-in filter carries its own sentence', () => {
+  // The notes lived in a lookup table in the shell, keyed by id, and RGB and
+  // Edges were simply missing from it — silently, because a missing key reads
+  // as an empty note (Joshua, 2026-09-02: "some filters are missing
+  // descriptions"). A filter now carries its own, so the omission would be in
+  // the same file that adds the filter.
+  for (const filter of FILTERS) {
+    assert.ok((filter.note ?? '').length > 20, `${filter.name} says what it does`);
+  }
+  assert.equal(new Set(FILTERS.map((f) => f.note)).size, FILTERS.length, 'and no two share one');
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+  assert.ok(!appTs.includes('FILTER_NOTES'), 'the shell keeps no second copy of them');
+  // A compiled lens carries its own note through the same field, so the
+  // strip reads ONE place whatever kind of filter is active.
+  assert.equal(compileLens(sanitiseLens(STARTER_LENSES[0])).note, STARTER_LENSES[0].note);
+});
+
+test('an untouched starter can be corrected; an edited one is never overwritten', () => {
+  // Seeding is once-per-id, so a starter that shipped mistuned would stay
+  // mistuned forever on a device that already had it. The record now holds
+  // the fingerprint of what was OFFERED, which is what tells a copy nobody
+  // touched from a copy that is somebody's work.
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+  const block = appTs.slice(appTs.indexOf('function loadLensList'), appTs.indexOf('function syncCustomFilters'));
+  assert.match(block, /untouched && savedMark !== mark/, 'only an untouched, stale copy is replaced');
+  assert.match(block, /shippedForms/, 'and a device with no fingerprint falls back to known-shipped forms');
+  // The superseded list is what makes that fallback exact: the copy on a
+  // device seeded before the record existed is recognisable only by matching
+  // a document this app is known to have shipped.
+  assert.ok(SUPERSEDED_STARTERS.some((l) => l.id === 'lens-v2-camouflage-breaker'),
+    'the mistuned Camouflage Breaker is on it');
+  for (const old of SUPERSEDED_STARTERS) {
+    const current = STARTER_LENSES.find((l) => l.id === old.id);
+    assert.ok(current, `${old.name} is still a starter — it was replaced, not removed`);
+    assert.notDeepEqual(JSON.parse(JSON.stringify(sanitiseLens(old))),
+      JSON.parse(JSON.stringify(sanitiseLens(current))),
+      `${old.name}'s superseded form really differs from the current one`);
+  }
 });

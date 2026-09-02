@@ -38,7 +38,10 @@ export const LENS_STORAGE_KEY = 'vss.lenses.v1';
 
 /** Names are shown in a list, so an enormous one would break the layout. */
 const MAX_NAME = 40;
-const MAX_NOTE = 140;
+// A note has to have room to say WHY a lens differs from the one beside it,
+// not just what it reads: two colour lenses that looked identical in a dull
+// room could not be told apart in 140 characters (Joshua, 2026-09-02).
+const MAX_NOTE = 280;
 
 const CHANNEL_IDS = new Set<string>(CHANNELS.map((c) => c.id));
 const BASES = new Set<string>(['black', 'grey', 'scene']);
@@ -117,6 +120,12 @@ export function sanitiseLens(raw: unknown): CustomLens {
     color,
     stops: sanitiseStops(source.stops),
     brightness: hasBrightness ? sanitiseBinding(source.brightness, 'luma') : undefined,
+    // 0 is the historical behaviour, so it is stored as absent — a lens
+    // written before the floor existed and one that deliberately asks for no
+    // floor are the same document, and stay the same document.
+    brightnessFloor: hasBrightness && clamp(finite(source.brightnessFloor, 0), 0, 1) > 0
+      ? clamp(finite(source.brightnessFloor, 0), 0, 1)
+      : undefined,
     base: BASES.has(String(source.base)) ? (source.base as LensBase) : 'black',
     sceneBlend: clamp(finite(source.sceneBlend, 0), 0, 1),
     output: OUTPUTS.has(String(source.output)) ? (source.output as LensOutput) : undefined,

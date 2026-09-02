@@ -160,6 +160,77 @@ export const STARTER_LENSES: readonly CustomLens[] = [
     // colour from how UNUSUAL a pixel's hue is, brightness from whether it
     // sits on a colour boundary. A thing hiding by matching its background
     // fails both tests at once.
+    //
+    // RETUNED 2026-09-02, because on Joshua's device it was indistinguishable
+    // from Colour Edges. Both colour fields are gated on saturation, and in a
+    // dim, low-colour room the gate held rarity near zero while the edge term
+    // — multiplying straight to black without a floor — was the only thing
+    // left drawing anything. The lens was correct and unreadable: an edge map.
+    // The floor stops the second field erasing the first, and the wider,
+    // lower ranges let an ordinary indoor scene reach the ramp at all.
+    version: 1,
+    id: 'lens-v2-camouflage-breaker',
+    note: 'Two questions at once: COLOUR says how unusual a hue is here, '
+      + 'BRIGHTNESS says whether it sits on a colour boundary. Something '
+      + 'hiding by matching its background fails both. Needs real colour in '
+      + 'view — in a dull grey room everything reads ordinary.',
+    name: 'Camouflage Breaker',
+    color: { channel: 'rarity', low: 60, high: 220, gamma: 1 },
+    brightness: { channel: 'chromaEdge', low: 5, high: 70, gamma: 1 },
+    // Never darker than a third: the boundary field dims the rarity answer
+    // rather than deleting it, which is the whole difference from Colour Edges.
+    brightnessFloor: 0.35,
+    stops: [
+      { at: 0, color: '#0b1420' },
+      { at: 0.6, color: '#3dfaff' },
+      { at: 1, color: '#ffffff' }
+    ],
+    base: 'black',
+    sceneBlend: 0
+  },
+  {
+    version: 1,
+    id: 'lens-v2-chroma-edge',
+    note: 'ONLY boundaries, found by hue instead of brightness — a red shape '
+      + 'on equally bright green still shows, where the Edges filter sees '
+      + 'nothing. It says nothing about whether a colour is unusual; '
+      + 'Camouflage Breaker is the one that does that.',
+    name: 'Colour Edges',
+    color: { channel: 'chromaEdge', low: 0, high: 140, gamma: 1 },
+    stops: MONO,
+    base: 'black',
+    sceneBlend: 0
+  },
+  {
+    version: 1,
+    id: 'lens-v2-red-solo',
+    note: 'The sensor’s red channel on its own, as grey.',
+    name: 'Red Channel',
+    color: { channel: 'red', low: 0, high: 255, gamma: 1 },
+    stops: MONO,
+    base: 'black',
+    sceneBlend: 0
+  }
+];
+
+/**
+ * Starter documents that have been REPLACED, kept only so a device seeded
+ * before the fingerprint record existed can be recognised.
+ *
+ * The shell refreshes a starter whose saved copy still matches what was
+ * offered; from now on it knows what was offered because it recorded the
+ * fingerprint. For devices seeded earlier there is no record, so the only
+ * safe evidence that a copy is untouched is that it matches a definition
+ * this app is known to have shipped — which is what this list is. The
+ * note-less form of each is checked too, because notes were added to the
+ * starters after they first shipped.
+ *
+ * This list only ever needs entries for starters changed BEFORE the
+ * fingerprint record landed (2026-09-02). It can be emptied once no device
+ * predates it.
+ */
+export const SUPERSEDED_STARTERS: readonly CustomLens[] = [
+  {
     version: 1,
     id: 'lens-v2-camouflage-breaker',
     note: 'Unusual hue AND a colour boundary at once: what hides by blending in fails both tests.',
@@ -180,16 +251,6 @@ export const STARTER_LENSES: readonly CustomLens[] = [
     note: 'Boundaries found by hue, so a red shape on equally bright green still shows.',
     name: 'Colour Edges',
     color: { channel: 'chromaEdge', low: 0, high: 140, gamma: 1 },
-    stops: MONO,
-    base: 'black',
-    sceneBlend: 0
-  },
-  {
-    version: 1,
-    id: 'lens-v2-red-solo',
-    note: 'The sensor’s red channel on its own, as grey.',
-    name: 'Red Channel',
-    color: { channel: 'red', low: 0, high: 255, gamma: 1 },
     stops: MONO,
     base: 'black',
     sceneBlend: 0

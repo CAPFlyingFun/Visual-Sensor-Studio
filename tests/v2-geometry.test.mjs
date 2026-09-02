@@ -1114,7 +1114,9 @@ test('colour lenses: mask keeps the camera\'s colour, swap recolours, both take 
         fields: document.querySelectorAll('#v2LensBrightBindings input[type="number"]').length
       }));
       assert.equal(twoFields.bright, 'chromaEdge', 'the second field is shown as what it is');
-      assert.equal(twoFields.fields, 3, 'with its own exact-number controls');
+      // Dim at / Full at / Curve / Never below — the floor is part of the
+      // second field, because a field with no floor multiplies to black.
+      assert.equal(twoFields.fields, 4, 'with its own exact-number controls');
       // Removing it is one choice, and the lens keeps working.
       await page.selectOption('#v2LensBrightChannel', '');
       await page.waitForTimeout(400);
@@ -1579,6 +1581,130 @@ test('controls stay alive under the live frame loop (fake device)',
       const active = await page.evaluate(() =>
         document.querySelector('#v2ZoomStops [data-zoom-stop="2"]').classList.contains('active'));
       assert.ok(active, 'the tapped stop takes the highlight, in place');
+
+      await page.close();
+      await context.close();
+    });
+  });
+
+test('picking a colour changes the lens from the picker, and the strip names it (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({
+        viewport: { width: 430, height: 932 },
+        permissions: ['camera']
+      });
+      const page = await context.newPage();
+      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.waitForTimeout(400);
+      await page.click('#v2EnableCamera');
+      await page.waitForFunction(() =>
+        /\d+(\.\d+)? rendered fps/.test(document.getElementById('v2DiagPreview')?.textContent ?? ''),
+        null, { timeout: 8000 });
+
+      // "I did pick a colour, but it appeared to look the same" — the sample
+      // used to land in the picker and stop there, because the reference
+      // lived in the workbench. Here the picker changes the running lens.
+      await page.click('[data-filter="lens:lens-v2-colour-splash"]');
+      await page.waitForTimeout(600);
+      const before = await page.evaluate(() =>
+        document.getElementById('v2FilterNote').textContent);
+      // The strip says WHICH colour the lens is hunting, so a picked colour
+      // that changed nothing visible is still visibly a different setting.
+      assert.match(before, /Looking for #[0-9A-F]{6}/, 'the strip names the reference');
+
+      await page.click('#v2PickColor');
+      await page.waitForTimeout(200);
+      assert.equal(await page.isVisible('#v2PickerUseInLens'), true,
+        'a lens that measures against a colour offers the shortcut');
+      assert.match(await page.textContent('#v2PickerUseInLens'), /Colour Splash/,
+        'and the button names the lens it will change');
+      // Nothing sampled yet: the button is there but honestly disabled.
+      assert.equal(await page.evaluate(() =>
+        document.getElementById('v2PickerUseInLens').disabled), true);
+
+      await page.click('#v2PickerCentre');
+      await page.waitForTimeout(300);
+      const hex = await page.textContent('#v2PickerHex');
+      assert.match(hex, /^#[0-9A-F]{6}$/, 'the centre sample reads a colour');
+      await page.click('#v2PickerUseInLens');
+      await page.waitForTimeout(700);
+
+      const after = await page.evaluate(() => ({
+        note: document.getElementById('v2FilterNote').textContent,
+        stage: document.getElementById('v2Stage').textContent,
+        // The change is SAVED, not only rendered — reopening must find it.
+        stored: JSON.parse(localStorage.getItem('vss.lenses.v1') ?? '[]')
+      }));
+      assert.ok(!/shader failed/i.test(after.stage), 'the lens recompiles');
+      assert.ok(after.note.includes(`Looking for ${hex}`),
+        `the strip names the picked colour, got "${after.note}"`);
+      const saved = after.stored.find((l) => l.id === 'lens-v2-colour-splash');
+      assert.equal((saved?.reference ?? '').toUpperCase(), hex, 'and the lens document kept it');
+
+      // A lens that reads the picture itself has no colour to be given, and
+      // the button does not pretend otherwise.
+      await page.click('[data-filter="lens:lens-v2-hue-map"]');
+      await page.waitForTimeout(600);
+      assert.equal(await page.isVisible('#v2PickerUseInLens'), false);
+      assert.match(await page.textContent('#v2PickerLensNote'), /does not measure against a colour/);
+
+      await page.close();
+      await context.close();
+    });
+  });
+
+test('a starter that shipped wrong is corrected; one the user edited is not (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({ viewport: { width: 430, height: 932 } });
+      const page = await context.newPage();
+      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.waitForTimeout(400);
+
+      // Stand in for a device seeded before the fingerprint record existed:
+      // the old ids-only record, holding the mistuned Camouflage Breaker and
+      // an edited Colour Edges that is the user's own work.
+      await page.evaluate(() => {
+        const store = JSON.parse(localStorage.getItem('vss.lenses.v1'));
+        const ids = store.map((l) => l.id);
+        const breaker = store.find((l) => l.id === 'lens-v2-camouflage-breaker');
+        breaker.color = { channel: 'rarity', low: 90, high: 255, gamma: 1 };
+        breaker.brightness = { channel: 'chromaEdge', low: 10, high: 120, gamma: 1 };
+        breaker.note = 'Unusual hue AND a colour boundary at once: what hides by blending in fails both tests.';
+        delete breaker.brightnessFloor;
+        const edges = store.find((l) => l.id === 'lens-v2-chroma-edge');
+        edges.name = 'My edges';
+        edges.stops = [{ at: 0, color: '#000000' }, { at: 1, color: '#ff0000' }];
+        localStorage.setItem('vss.lenses.v1', JSON.stringify(store));
+        localStorage.setItem('vss.v2.lensesSeeded.v2', JSON.stringify(ids));
+      });
+      await page.reload();
+      await page.waitForTimeout(600);
+
+      const state = await page.evaluate(() => {
+        const store = JSON.parse(localStorage.getItem('vss.lenses.v1'));
+        const find = (id) => store.find((l) => l.id === id);
+        return {
+          breaker: find('lens-v2-camouflage-breaker'),
+          edges: find('lens-v2-chroma-edge'),
+          record: JSON.parse(localStorage.getItem('vss.v2.lensesSeeded.v2'))
+        };
+      });
+      assert.equal(state.breaker.brightnessFloor, 0.35, 'the untouched copy took the correction');
+      assert.equal(state.breaker.color.low, 60);
+      assert.equal(state.edges.name, 'My edges', 'the edited copy is left alone');
+      assert.equal(state.edges.stops[1].color, '#ff0000');
+      assert.ok(!Array.isArray(state.record), 'and the record now carries fingerprints');
+
+      // Second load: nothing is stale any more, so nothing is rewritten.
+      await page.reload();
+      await page.waitForTimeout(600);
+      const again = await page.evaluate(() => {
+        const store = JSON.parse(localStorage.getItem('vss.lenses.v1'));
+        return store.find((l) => l.id === 'lens-v2-chroma-edge').name;
+      });
+      assert.equal(again, 'My edges');
 
       await page.close();
       await context.close();
