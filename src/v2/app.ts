@@ -42,6 +42,7 @@ import {
   type Point, type SampledColor
 } from './capture/color-sampler.js';
 import { GUIDES, guideById } from './render/guides.js';
+import { buildHistogram, emptyHistogram } from './vision/frame-histogram.js';
 import { deleteLens, loadLenses, newLensId, sanitiseLens, saveLens } from '../vision/lens-store.js';
 import { RAMP_PRESETS } from '../vision/lens-preview.js';
 import { GlRenderer } from './render/gl-renderer.js';
@@ -151,6 +152,38 @@ let clipStartedAt = 0;
  */
 let fedPerSecond: number[] = [];
 
+/**
+ * The frame's colour census, for lenses bound to rarity or to distance from
+ * the background. Measured on a small sample every few frames: a scene's
+ * prevailing colour does not change at thirty times a second, and a lens
+ * that does not ask for it never pays for it.
+ */
+const HISTOGRAM_EVERY = 6;
+const HISTOGRAM_SAMPLE = 64;
+let histogram = emptyHistogram();
+let histogramVersion = 0;
+let framesSinceHistogram = 0;
+let histogramCanvas: HTMLCanvasElement | null = null;
+
+function measureHistogram(): void {
+  if (video.videoWidth === 0) return;
+  histogramCanvas ??= document.createElement('canvas');
+  histogramCanvas.width = HISTOGRAM_SAMPLE;
+  histogramCanvas.height = HISTOGRAM_SAMPLE;
+  const context = histogramCanvas.getContext('2d', { willReadFrequently: true });
+  if (!context) return;
+  try {
+    // The sample is stretched to a square: a colour census counts pixels, and
+    // a uniform stretch leaves every colour's share of the frame unchanged.
+    context.drawImage(video, 0, 0, HISTOGRAM_SAMPLE, HISTOGRAM_SAMPLE);
+    histogram = buildHistogram(
+      context.getImageData(0, 0, HISTOGRAM_SAMPLE, HISTOGRAM_SAMPLE).data);
+    histogramVersion += 1;
+  } catch {
+    // A mid-switch video element can refuse a draw; the next pass recovers.
+  }
+}
+
 function renderPreview(now: number): void {
   const { source, geometry, activeFilter, recording } = readState();
   if (!source) return;
@@ -174,9 +207,17 @@ function renderPreview(now: number): void {
   // canvas size the encoder was promised) until finalisation completes.
   if (recording?.path === 'filtered' && stoppingClip) return;
   const target = recording?.path === 'filtered' ? recording.input : resolved.preview;
+  // A lens bound to the whole frame's colours gets a fresh census every few
+  // frames; every other filter never triggers the measurement at all.
+  if (filterById(activeFilter)?.needsHistogram && framesSinceHistogram++ % HISTOGRAM_EVERY === 0) {
+    measureHistogram();
+  }
   // Stateful filters (Speed, Trails) advance their memory at the ANALYSIS
   // size — the same bounded size the frame history uses.
-  if (renderer.render(activeFilter, target, resolved.analysis, { fps: readState().deliveredFps })) {
+  if (renderer.render(activeFilter, target, resolved.analysis, {
+    fps: readState().deliveredFps,
+    histogram: { bins: histogram.bins, dominant: histogram.dominant, version: histogramVersion }
+  })) {
     if (recording?.path === 'filtered') {
       framesFedThisClip += 1;
       const second = Math.max(0, Math.floor((now - clipStartedAt) / 1000));
@@ -834,7 +875,11 @@ function renderFilterStrip(): void {
   const lensNote = lensFilter?.lens
     ? lensFilter.unavailableReason
       ? lensFilter.unavailableReason
-      : `${describeLens(lensFilter.lens)}.${lensFilter.supportsPhoto ? '' : ' Stills are declined — this channel lives at ANALYSIS resolution.'}`
+      : `${describeLens(lensFilter.lens)}.`
+        + (lensFilter.supportsPhoto ? '' : ' Stills are declined — this channel lives at ANALYSIS resolution.')
+        + (lensFilter.needsHistogram
+          ? ' Measured against the whole frame’s colours, re-counted a few times a second — point the camera elsewhere and the reading moves.'
+          : '')
     : '';
   setText('v2FilterNote', rec
     ? 'Recording — stop to change filters.'

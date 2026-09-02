@@ -718,7 +718,8 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
 
       // A fresh device carries the starter lens and the Custom + entry.
       const STARTERS = ['Coloring Book Style', 'Colour Splash', 'Colour Hide',
-        'Paper → Pink', 'Hue Map', 'Colour Strength', 'Red Channel'];
+        'Paper → Pink', 'Hue Map', 'Colour Strength', 'Rare Colour',
+        'Background Subtract', 'Rarity Map', 'Red Channel'];
       const strip = await page.evaluate(() => ({
         lenses: [...document.querySelectorAll('#v2FilterStrip [data-filter^="lens:"]')].map((b) => b.textContent),
         custom: Boolean(document.querySelector('#v2FilterStrip [data-lens-new]')),
@@ -987,7 +988,9 @@ test('colour lenses: mask keeps the camera\'s colour, swap recolours, both take 
       for (const [id, expect] of [
         ['lens:lens-v2-colour-splash', /keeping the camera’s colour where it matches/],
         ['lens:lens-v2-paper-pink', /recolouring matches toward/],
-        ['lens:lens-v2-hue-map', /Colour from hue/i]
+        ['lens:lens-v2-hue-map', /Colour from hue/i],
+        ['lens:lens-v2-rare-colour', /whole frame’s colours/],
+        ['lens:lens-v2-background-subtract', /whole frame’s colours/]
       ]) {
         await page.click(`[data-filter="${id}"]`);
         await page.waitForTimeout(700);

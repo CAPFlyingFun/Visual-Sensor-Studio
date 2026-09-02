@@ -30,6 +30,9 @@ import {
   averageRgb, coverScale, patchBoxPercent, patchRect, tapToSource
 } from '../.test-build/v2/capture/color-sampler.js';
 import { GUIDES, DEFAULT_GUIDE, guideById } from '../.test-build/v2/render/guides.js';
+import {
+  HISTOGRAM_BINS, buildHistogram, emptyHistogram
+} from '../.test-build/v2/vision/frame-histogram.js';
 import { allFilters, setCustomFilters } from '../.test-build/v2/filters/registry.js';
 import { STARTER_LENSES } from '../.test-build/v2/filters/starter-lenses.js';
 import { CHANNELS, buildRampLut, channelInfo, describeLens } from '../.test-build/vision/lens.js';
@@ -911,7 +914,8 @@ test('the sample ring on screen is the sample patch, on both axes', () => {
 /* --- The colour fields: one batch, most of the Lens Pack falls out -------- */
 
 test('colour fields are shared as data but offered only by the engine that measures them', () => {
-  const colour = ['hue', 'saturation', 'red', 'green', 'blue', 'colourDistance'];
+  const colour = ['hue', 'saturation', 'red', 'green', 'blue', 'colourDistance',
+    'rarity', 'backgroundDistance'];
   for (const id of colour) {
     const info = channelInfo(id);
     assert.equal(info.id, id, `${id} is a real channel, not a fallback to luma`);
@@ -935,7 +939,7 @@ test('colour fields are shared as data but offered only by the engine that measu
   for (const id of ['luma', 'speed', 'change', 'edges', 'relief', 'age', 'novelty']) {
     assert.ok(!channelInfo(id).gpuOnly, `${id} stays available to both engines`);
   }
-  assert.equal(CHANNELS.length, 13);
+  assert.equal(CHANNELS.length, 15);
 });
 
 test('rgbToHsv agrees with the shader convention', () => {
@@ -1014,4 +1018,84 @@ test('the starter pack is valid, unique, and describes itself honestly', () => {
     /measured from #c81e28.*keeping the camera’s colour/);
   assert.match(describeLens(STARTER_LENSES.find((l) => l.id === 'lens-v2-paper-pink')),
     /recolouring matches toward #ff5ca8/);
+});
+
+/* --- The frame's colour census: three lenses from one measurement --------- */
+
+const rgba = (pixels) => {
+  const data = new Uint8ClampedArray(pixels.length * 4);
+  pixels.forEach(([r, g, b], i) => {
+    data[i * 4] = r;
+    data[i * 4 + 1] = g;
+    data[i * 4 + 2] = b;
+    data[i * 4 + 3] = 255;
+  });
+  return data;
+};
+
+test('the hue histogram counts colour, and greys do not get a vote', () => {
+  const RED = [220, 30, 40];
+  const GREEN = [40, 200, 60];
+  const GREY = [128, 128, 128];
+
+  // Mostly red, a little green: red is the peak and green is the rare one.
+  const scene = buildHistogram(rgba([...Array(20).fill(RED), ...Array(2).fill(GREEN)]));
+  assert.equal(scene.bins.length, HISTOGRAM_BINS);
+  assert.equal(Math.max(...scene.bins), 255, 'the commonest hue defines the scale');
+  const redBin = Math.floor(scene.dominant[0] * HISTOGRAM_BINS);
+  assert.ok(scene.dominant[0] < 0.05 || scene.dominant[0] > 0.95, 'red sits at the wheel\'s origin');
+  assert.equal(scene.bins[redBin], 255);
+  // Two colours in the frame, two bins — and the outnumbered one reads rare.
+  const present = [...scene.bins].filter((share) => share > 0);
+  assert.equal(present.length, 2, 'nothing else was counted');
+  const rarest = Math.min(...present);
+  assert.ok(rarest > 0 && rarest < 60, `green is present but rare, got ${rarest}`);
+  assert.ok(scene.dominant[1] > 0.5, 'the dominant colour reports the strength it was seen with');
+  assert.ok(Math.abs(scene.colourShare - 1) < 1e-9, 'every pixel here had colour');
+
+  // A grey wall elects nobody: no hue, no dominant colour, nothing rare.
+  const wall = buildHistogram(rgba(Array(40).fill(GREY)));
+  assert.deepEqual(wall, emptyHistogram(), 'a colourless frame reports no colour');
+  assert.equal(wall.colourShare, 0);
+  assert.ok(emptyHistogram().bins.every((b) => b === 255),
+    'and "unmeasured" reads as ordinary, never as rare');
+
+  // Greys beside colour are ignored rather than counted as a hue.
+  const mixed = buildHistogram(rgba([...Array(10).fill(GREY), ...Array(10).fill(GREEN)]));
+  assert.ok(Math.abs(mixed.colourShare - 0.5) < 1e-9, 'half the frame had a vote');
+  assert.ok(Math.abs(mixed.dominant[0] - 1 / 3) < 0.02, 'and the half with colour decided');
+  assert.deepEqual(buildHistogram(new Uint8ClampedArray(0)), emptyHistogram());
+});
+
+test('rarity and background distance are one measurement, three lenses', () => {
+  for (const id of ['rarity', 'backgroundDistance']) {
+    assert.equal(channelInfo(id).needsHistogram, true, `${id} reads the whole frame`);
+    assert.equal(channelInfo(id).gpuOnly, true);
+    assert.ok(V2_CHANNELS.includes(id));
+  }
+  // Only a lens that asks pays for the census.
+  const rare = compileLens(STARTER_LENSES.find((l) => l.id === 'lens-v2-rare-colour'));
+  const book = compileLens(STARTER_LENSES[0]);
+  assert.equal(rare.needsHistogram, true);
+  assert.ok(!book.needsHistogram, 'an edges lens never triggers a measurement it cannot use');
+  assert.match(rare.fragment, /texture2D\(uHistogram, vec2\(hsv\.x, 0\.5\)\)/);
+  assert.match(rare.fragment, /smoothstep\(0\.10, 0\.25, hsv\.y\)/,
+    'a grey pixel has no hue to be rare in');
+
+  const background = compileLens(STARTER_LENSES.find((l) => l.id === 'lens-v2-background-subtract'));
+  assert.equal(background.needsHistogram, true);
+  assert.match(background.fragment, /colourGap\(rgb2hsv\(texture2D\(uFrame, uv\)\.rgb\), uDominant\)/,
+    'the background is the frame\'s measured prevailing colour, not a stored plate');
+  // The distance function is written once and shared (Rule 6).
+  const splash = compileLens(STARTER_LENSES.find((l) => l.id === 'lens-v2-colour-splash')).fragment;
+  assert.match(splash, /float colourGap\(vec3 hsv, vec3 ref\)/);
+  assert.equal((background.fragment.match(/float colourGap/g) ?? []).length, 1);
+  assert.doesNotMatch(book.fragment, /colourGap/, 'and only where it is used');
+
+  // All three take stills: a census is of the current frame, not of history.
+  for (const id of ['lens-v2-rare-colour', 'lens-v2-background-subtract', 'lens-v2-rarity-map']) {
+    const filter = compileLens(STARTER_LENSES.find((l) => l.id === id));
+    assert.equal(filter.supportsPhoto, true);
+    assert.equal(filter.temporal, false);
+  }
 });

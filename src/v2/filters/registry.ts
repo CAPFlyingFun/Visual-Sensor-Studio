@@ -50,6 +50,8 @@ export interface FilterDefinition {
   unavailableReason?: string;
   /** The lens document a custom filter was compiled from. */
   lens?: CustomLens;
+  /** Reads the whole frame's colour histogram, so the shell must supply one. */
+  needsHistogram?: boolean;
 }
 
 export const SHADER_HEADER = `precision mediump float;
@@ -60,6 +62,11 @@ uniform sampler2D uPrevious;
 uniform sampler2D uState;
 uniform vec2 uTexel;
 float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+// The frame's colour histogram (64 texels, red channel = share of the
+// commonest hue) and its prevailing colour as HSV. Both are measurements of
+// the WHOLE picture; a filter that ignores them costs nothing for them.
+uniform sampler2D uHistogram;
+uniform vec3 uDominant;
 `;
 const HEADER = SHADER_HEADER;
 

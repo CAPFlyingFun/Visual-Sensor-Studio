@@ -39,7 +39,9 @@ export type ChannelId =
   | 'red'
   | 'green'
   | 'blue'
-  | 'colourDistance';
+  | 'colourDistance'
+  | 'rarity'
+  | 'backgroundDistance';
 
 export interface ChannelInfo {
   id: ChannelId;
@@ -64,6 +66,11 @@ export interface ChannelInfo {
   gpuOnly?: boolean;
   /** Needs the lens's reference colour to mean anything. */
   needsReference?: boolean;
+  /**
+   * Needs the frame's colour histogram — a measurement of the WHOLE picture,
+   * so what this field reports about a pixel depends on the company it keeps.
+   */
+  needsHistogram?: boolean;
 }
 
 /**
@@ -201,6 +208,28 @@ export const CHANNELS: readonly ChannelInfo[] = [
     temporal: false,
     gpuOnly: true,
     needsReference: true
+  },
+  {
+    id: 'rarity',
+    label: 'Rare colour',
+    meaning: 'How little of the rest of the frame shares this pixel’s hue. 255 means almost nothing else in view is this colour. Measured over the whole frame, so it changes as the camera moves.',
+    unit: '0–255',
+    low: 120,
+    high: 255,
+    temporal: false,
+    gpuOnly: true,
+    needsHistogram: true
+  },
+  {
+    id: 'backgroundDistance',
+    label: 'Away from the background',
+    meaning: 'How far this pixel is from the frame’s prevailing colour. The background is whatever most of the picture is, measured — not a stored plate of an empty scene.',
+    unit: '0–255',
+    low: 0,
+    high: 90,
+    temporal: false,
+    gpuOnly: true,
+    needsHistogram: true
   }
 ];
 

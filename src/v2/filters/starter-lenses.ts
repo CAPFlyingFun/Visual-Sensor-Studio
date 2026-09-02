@@ -96,6 +96,44 @@ export const STARTER_LENSES: readonly CustomLens[] = [
     sceneBlend: 0
   },
   {
+    // Rare Colour Finder: keep the colour of whatever little else in the
+    // frame shares — a berry in foliage, a jacket in a crowd.
+    version: 1,
+    id: 'lens-v2-rare-colour',
+    name: 'Rare Colour',
+    color: { channel: 'rarity', low: 110, high: 255, gamma: 1 },
+    stops: MONO,
+    base: 'black',
+    sceneBlend: 0,
+    output: 'mask'
+  },
+  {
+    // Background Colour Subtract: the frame's prevailing colour goes quiet,
+    // everything unlike it keeps its colour.
+    version: 1,
+    id: 'lens-v2-background-subtract',
+    name: 'Background Subtract',
+    color: { channel: 'backgroundDistance', low: 0, high: 90, gamma: 1 },
+    stops: MONO,
+    base: 'black',
+    sceneBlend: 0,
+    output: 'mask'
+  },
+  {
+    // The census itself, as a picture: how unusual each colour is.
+    version: 1,
+    id: 'lens-v2-rarity-map',
+    name: 'Rarity Map',
+    color: { channel: 'rarity', low: 0, high: 255, gamma: 1 },
+    stops: [
+      { at: 0, color: '#07124a' },
+      { at: 0.55, color: '#d52078' },
+      { at: 1, color: '#ffd93d' }
+    ],
+    base: 'black',
+    sceneBlend: 0
+  },
+  {
     version: 1,
     id: 'lens-v2-red-solo',
     name: 'Red Channel',

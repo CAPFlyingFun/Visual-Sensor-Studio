@@ -26,7 +26,9 @@ import { SHADER_HEADER, SPEED_STATE, type FilterDefinition } from './registry.js
 export const V2_CHANNELS: readonly ChannelId[] = [
   'luma', 'edges', 'change', 'speed',
   // The colour fields — one pass over the frame, no state, no history.
-  'hue', 'saturation', 'red', 'green', 'blue', 'colourDistance'
+  'hue', 'saturation', 'red', 'green', 'blue', 'colourDistance',
+  // Fed by the frame histogram the shell measures each few frames.
+  'rarity', 'backgroundDistance'
 ];
 
 /** Hue 0..1, saturation 0..1, value 0..1 — the shader's own convention. */
@@ -125,20 +127,27 @@ function channelGlsl(id: ChannelId): string {
       return `float ch_hue(vec2 uv) { return rgb2hsv(texture2D(uFrame, uv).rgb).x * 360.0; }`;
     case 'saturation':
       return `float ch_saturation(vec2 uv) { return rgb2hsv(texture2D(uFrame, uv).rgb).y * 255.0; }`;
+    case 'rarity':
+      // One minus the share of the frame that carries this hue. A grey pixel
+      // has no hue to be rare in, so it is reported as ordinary rather than
+      // as the rarest thing in the picture.
+      return `float ch_rarity(vec2 uv) {
+  vec3 hsv = rgb2hsv(texture2D(uFrame, uv).rgb);
+  float share = texture2D(uHistogram, vec2(hsv.x, 0.5)).r;
+  float colourful = smoothstep(0.10, 0.25, hsv.y);
+  return (1.0 - share) * colourful * 255.0;
+}`;
+    case 'backgroundDistance':
+      return `float ch_backgroundDistance(vec2 uv) {
+  return colourGap(rgb2hsv(texture2D(uFrame, uv).rgb), uDominant) * 255.0;
+}`;
     case 'colourDistance':
       // Distance from the reference in hue, strength and brightness together.
       // The hue term is weighted by how colourful BOTH colours are, because
       // the hue of a grey pixel is arithmetic, not a measurement. The weights
       // are display tuning, stated as such.
       return `float ch_colourDistance(vec2 uv) {
-  vec3 hsv = rgb2hsv(texture2D(uFrame, uv).rgb);
-  float dh = abs(hsv.x - REF_HSV.x);
-  dh = min(dh, 1.0 - dh) * 2.0;
-  float ds = abs(hsv.y - REF_HSV.y);
-  float dv = abs(hsv.z - REF_HSV.z);
-  float hueWeight = min(hsv.y, REF_HSV.y);
-  float d = sqrt(dh * dh * hueWeight + ds * ds * 0.5 + dv * dv * 0.35);
-  return clamp(d, 0.0, 1.0) * 255.0;
+  return colourGap(rgb2hsv(texture2D(uFrame, uv).rgb), REF_HSV) * 255.0;
 }`;
     case 'speed':
       // The Speed state holds normal flow / 8 (texels per frame at analysis
@@ -150,6 +159,21 @@ function channelGlsl(id: ChannelId): string {
       return `float ch_${id}(vec2 uv) { return 0.0; }`;
   }
 }
+
+/**
+ * How far apart two colours are, 0..1, in hue, strength and brightness
+ * together. The hue term is weighted by how colourful BOTH colours are,
+ * because the hue of a grey pixel is arithmetic rather than a measurement.
+ * The weights are display tuning and are stated as such.
+ */
+const COLOUR_GAP = `float colourGap(vec3 hsv, vec3 ref) {
+  float dh = abs(hsv.x - ref.x);
+  dh = min(dh, 1.0 - dh) * 2.0;
+  float ds = abs(hsv.y - ref.y);
+  float dv = abs(hsv.z - ref.z);
+  float hueWeight = min(hsv.y, ref.y);
+  return clamp(sqrt(dh * dh * hueWeight + ds * ds * 0.5 + dv * dv * 0.35), 0.0, 1.0);
+}`;
 
 function normaliseGlsl(name: string, binding: LensBinding): string {
   const gamma = binding.gamma > 0 ? binding.gamma : 1;
@@ -201,9 +225,11 @@ export function compileLens(lens: CustomLens): FilterDefinition {
   const temporal = [...channels].some((c) => channelInfo(c).temporal);
   const needsSpeed = channels.has('speed');
   const output = lens.output ?? 'paint';
-  const needsHsv = [...channels].some((c) => c === 'hue' || c === 'saturation' || c === 'colourDistance')
-    || output === 'swap';
+  const needsGap = [...channels].some((c) => c === 'colourDistance' || c === 'backgroundDistance');
+  const needsHsv = needsGap || output === 'swap'
+    || [...channels].some((c) => c === 'hue' || c === 'saturation' || c === 'rarity');
   const needsReference = [...channels].some((c) => channelInfo(c).needsReference);
+  const needsHistogram = [...channels].some((c) => channelInfo(c).needsHistogram);
   const reference = rgbToHsv(lens.reference ?? '#ffffff');
   const target = rgbToHsv(lens.target ?? '#ffffff');
   const base = lens.base === 'scene'
@@ -238,6 +264,7 @@ export function compileLens(lens: CustomLens): FilterDefinition {
   return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 ` : '')
+    + (needsGap ? `${COLOUR_GAP}\n` : '')
     + (needsReference ? `const vec3 REF_HSV = vec3(${reference.map(glslFloat).join(', ')});\n` : '')
     + (output === 'swap' ? `const vec3 TARGET_HSV = vec3(${target.map(glslFloat).join(', ')});\n` : '')
     + [...channels].map(channelGlsl).join('\n') + '\n'
@@ -270,6 +297,7 @@ ${blend > 0 ? `  c = mix(c, vec3(sceneY), ${glslFloat(blend)});\n` : ''}\
     ramp: lensRampRgba(lens),
     rampKey: JSON.stringify(lens.stops),
     lens,
-    revision
+    revision,
+    needsHistogram
   };
 }

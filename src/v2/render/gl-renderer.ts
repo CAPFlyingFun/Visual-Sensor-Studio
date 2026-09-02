@@ -65,6 +65,10 @@ export class GlRenderer {
   private stateOwner = '';
   /** Per-filter ramp textures (custom lenses), keyed by filter id; re-uploaded when rampKey changes. */
   private rampTextures = new Map<string, { key: string; texture: WebGLTexture }>();
+  /** The frame's hue histogram, uploaded when the shell measures a new one. */
+  private histogramTexture: WebGLTexture | null = null;
+  private histogramVersion = -1;
+  private dominant: [number, number, number] = [0, 0, 0];
   /** Which program key each filter id currently owns, so an edited lens frees its old program. */
   private programKeys = new Map<string, string>();
   private failure = '';
@@ -124,6 +128,8 @@ export class GlRenderer {
     this.stateOwner = '';
     this.rampTextures.clear();
     this.programKeys.clear();
+    this.histogramTexture = null;
+    this.histogramVersion = -1;
     this.failure = '';
   }
 
@@ -290,7 +296,10 @@ export class GlRenderer {
     filterId: string,
     target: RenderTargetSize,
     stateSize?: RenderTargetSize,
-    extras: { fps?: number } = {}
+    extras: {
+      fps?: number;
+      histogram?: { bins: Uint8Array; dominant: [number, number, number]; version: number };
+    } = {}
   ): boolean {
     const gl = this.gl;
     const filter = filterById(filterId);
@@ -328,9 +337,48 @@ export class GlRenderer {
     // Unit conversions a lens may need: a missing location is simply ignored.
     gl.uniform1f(gl.getUniformLocation(program, 'uFps'), extras.fps ?? 0);
     gl.uniform1f(gl.getUniformLocation(program, 'uAnalysisWidth'), stateSize?.width ?? 0);
+    // The frame's colour census. Always bound, so a photo taken between
+    // measurements uses the last real one rather than an empty texture.
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, this.histogramFor(extras.histogram));
+    gl.uniform1i(gl.getUniformLocation(program, 'uHistogram'), 4);
+    gl.uniform3f(gl.getUniformLocation(program, 'uDominant'),
+      this.dominant[0], this.dominant[1], this.dominant[2]);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     return true;
+  }
+
+  /**
+   * The histogram texture, uploaded only when the shell reports a NEW
+   * measurement. Until one arrives every hue reads equally common, so a
+   * rarity lens says "nothing unusual" while it waits instead of declaring
+   * the whole picture rare.
+   */
+  private histogramFor(
+    measurement?: { bins: Uint8Array; dominant: [number, number, number]; version: number }
+  ): WebGLTexture | null {
+    const gl = this.gl;
+    if (!gl) return null;
+    if (!this.histogramTexture) {
+      this.histogramTexture = this.makeTexture(gl);
+      const blank = new Uint8Array(64 * 4).fill(255);
+      gl.bindTexture(gl.TEXTURE_2D, this.histogramTexture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 64, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, blank);
+    }
+    if (measurement && measurement.version !== this.histogramVersion) {
+      this.histogramVersion = measurement.version;
+      this.dominant = measurement.dominant;
+      const texels = new Uint8Array(measurement.bins.length * 4);
+      for (let i = 0; i < measurement.bins.length; i++) {
+        texels[i * 4] = measurement.bins[i];
+        texels[i * 4 + 3] = 255;
+      }
+      gl.bindTexture(gl.TEXTURE_2D, this.histogramTexture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, measurement.bins.length, 1, 0,
+        gl.RGBA, gl.UNSIGNED_BYTE, texels);
+    }
+    return this.histogramTexture;
   }
 
   /** The filter's own ramp texture, uploaded when its rampKey changes; else the Ironbow ramp. */
