@@ -276,7 +276,7 @@ test('a GIF is sized before one is made, because it is big', () => {
 
 import { readFileSync } from 'node:fs';
 const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+const html = readFileSync(new URL('../public/legacy.html', import.meta.url), 'utf8');
 
 test('frames are grabbed live, not decoded back out of a recorded clip', () => {
   // Decoding would mean playing the video through and reading it frame by

@@ -464,7 +464,7 @@ test('the camera rule document and the code speak the same language', () => {
   assert.match(rule, /MAXIMUM SAVED OUTPUT DOES NOT MEAN MAXIMUM LIVE CAMERA STREAM/);
   assert.match(rule, /No downstream output may silently inherit/i);
 
-  const html = readFileSync(new URL('../public/v2.html', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
   for (const label of ['SOURCE', 'CAPABILITY', 'VIEWFINDER', 'PREVIEW', 'ANALYSIS', 'PHOTO POLICY', 'LAST PHOTO']) {
     assert.ok(html.includes(`>${label}<`), `the truth table needs a ${label} row`);
   }

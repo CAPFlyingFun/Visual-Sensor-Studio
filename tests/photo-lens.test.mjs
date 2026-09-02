@@ -13,7 +13,7 @@ import {
 import { sanitiseLens } from '../.test-build/vision/lens-store.js';
 
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-const htmlSource = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+const htmlSource = readFileSync(new URL('../public/legacy.html', import.meta.url), 'utf8');
 
 function lensOn(channel, brightness) {
   return sanitiseLens({

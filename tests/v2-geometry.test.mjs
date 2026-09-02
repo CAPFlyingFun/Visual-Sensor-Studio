@@ -49,22 +49,27 @@ async function withBrowser(body, extraArgs = []) {
   }
 }
 
-test('?scene=v2 routes to V2 and its absence leaves legacy untouched',
+test('the bare URL is the app, and Version 1 is kept beside it (fake device)',
   { skip: runnable ? false : 'no browser available' }, async () => {
     await withBrowser(async (browser, base) => {
       const page = await browser.newPage({ viewport: { width: 430, height: 932 } });
 
-      await page.goto(`${base}/index.html?scene=v2`);
+      // THE PROMOTION, asserted: no query parameter, no redirect, no /v2/
+      // path. What someone typing the address gets, and what an installed
+      // home-screen icon opens, is this app.
+      await page.goto(`${base}/`);
       await page.waitForTimeout(400);
-      assert.ok(page.url().includes('/v2.html'), `should land on v2.html, got ${page.url()}`);
-      assert.ok(page.url().includes('scene=v2'), 'the query survives the redirect');
-      assert.equal(await page.textContent('#v2Badge'), 'V2 · Experimental');
+      assert.equal(await page.isVisible('#v2Viewfinder'), true, 'the root serves the camera app');
+      assert.ok(!page.url().includes('v2.html'), 'and it does not bounce anywhere');
 
-      await page.goto(`${base}/index.html`);
+      // Version 1 is reachable on purpose, not by default — a reference while
+      // its features are rebuilt here.
+      await page.goto(`${base}/legacy.html`);
       await page.waitForTimeout(400);
-      assert.ok(!page.url().includes('v2.html'), 'without the parameter the legacy app stays');
-      assert.ok(await page.$('.tabbar'), 'the legacy tab bar is present');
-      assert.equal(await page.$('#v2Badge'), null, 'no V2 chrome leaks into legacy');
+      assert.equal(await page.evaluate(() =>
+        document.getElementById('v2Viewfinder') === null), true, 'legacy.html is still V1');
+      assert.ok(!page.url().includes('index.html'), 'and V1 no longer redirects anywhere');
+
       await page.close();
     });
   });
@@ -74,7 +79,7 @@ for (const [label, width, height] of [['430x932', 430, 932], ['320x568', 320, 56
     { skip: runnable ? false : 'no browser available' }, async () => {
       await withBrowser(async (browser, base) => {
         const page = await browser.newPage({ viewport: { width, height } });
-        await page.goto(`${base}/v2.html?scene=v2`);
+        await page.goto(`${base}/index.html`);
         await page.waitForTimeout(400);
 
         const seen = await page.evaluate(() => {
@@ -150,7 +155,7 @@ test('the hidden attribute really hides — no author display rule may defeat it
     // here rather than one at a time.
     await withBrowser(async (browser, base) => {
       const page = await browser.newPage({ viewport: { width: 430, height: 932 } });
-      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.goto(`${base}/index.html`);
       await page.waitForTimeout(300);
       const showing = await page.evaluate(() =>
         [...document.querySelectorAll('[hidden]')]
@@ -169,7 +174,7 @@ test('the camera goes live and the HUD carries measured truth (fake device)',
         permissions: ['camera']
       });
       const page = await context.newPage();
-      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.goto(`${base}/index.html`);
       await page.waitForTimeout(400);
 
       await page.click('#v2EnableCamera');
@@ -217,7 +222,7 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
       });
       const page = await context.newPage();
       page.on('download', () => { /* the photo triggers a real download; discard it */ });
-      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.goto(`${base}/index.html`);
       await page.waitForTimeout(400);
 
       // The strip exists before the camera does — it is built from FILTERS at
@@ -385,7 +390,7 @@ test('Milestone D: Motion renders honest frame change on the GPU (fake device)',
         permissions: ['camera']
       });
       const page = await context.newPage();
-      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.goto(`${base}/index.html`);
       await page.waitForTimeout(400);
       await page.click('#v2EnableCamera');
       await page.waitForFunction(() =>
@@ -454,7 +459,7 @@ test('the stream tier renegotiates the LIVE stream and the row measures it (fake
         permissions: ['camera']
       });
       const page = await context.newPage();
-      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.goto(`${base}/index.html`);
       await page.waitForTimeout(400);
       await page.click('#v2EnableCamera');
       await page.waitForFunction(() =>
@@ -554,7 +559,7 @@ test('Milestone D: Speed and Trails carry their memory in a state pass at ANALYS
         permissions: ['camera']
       });
       const page = await context.newPage();
-      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.goto(`${base}/index.html`);
       await page.waitForTimeout(400);
       await page.click('#v2EnableCamera');
       await page.waitForFunction(() =>
@@ -625,7 +630,7 @@ test('temporal filters compare a frame against the SAME frame, not its mirror (r
     // own upside-down history.
     await withBrowser(async (browser, base) => {
       const page = await browser.newPage({ viewport: { width: 430, height: 932 } });
-      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.goto(`${base}/index.html`);
       await page.waitForTimeout(300);
       const result = await page.evaluate(async () => {
         const { GlRenderer } = await import('/app/v2/render/gl-renderer.js');
@@ -713,7 +718,7 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
         permissions: ['camera']
       });
       const page = await context.newPage();
-      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.goto(`${base}/index.html`);
       await page.waitForTimeout(400);
 
       // A fresh device carries the starter lens and the Custom + entry.
@@ -958,7 +963,7 @@ test('colour lenses: mask keeps the camera\'s colour, swap recolours, both take 
         permissions: ['camera']
       });
       const page = await context.newPage();
-      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.goto(`${base}/index.html`);
       await page.waitForTimeout(400);
       await page.click('#v2EnableCamera');
       await page.waitForFunction(() =>
@@ -1170,7 +1175,7 @@ test('the coach names the lens in hand, even when three share one tip (fake devi
     await withBrowser(async (browser, base) => {
       const context = await browser.newContext({ viewport: { width: 430, height: 932 } });
       const page = await context.newPage();
-      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.goto(`${base}/index.html`);
       await page.waitForTimeout(400);
       const titles = [];
       for (const id of ['lens-v2-rare-colour', 'lens-v2-background-subtract', 'lens-v2-rarity-map']) {
@@ -1193,7 +1198,7 @@ test('the encoder probe records a synthetic canvas through the real recorder and
     await withBrowser(async (browser, base) => {
       const context = await browser.newContext({ viewport: { width: 430, height: 932 } });
       const page = await context.newPage();
-      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.goto(`${base}/index.html`);
       await page.waitForTimeout(300);
       // Tiny trials: the instrument's mechanics, not the device's envelope —
       // the 12 MP ladder is for the phone.
@@ -1241,7 +1246,7 @@ test('a stream above the encoder envelope records through the render, held under
           JSON.stringify({ largestDecoded: 1000, smallestFailed: 1200 }));
       });
       const page = await context.newPage();
-      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.goto(`${base}/index.html`);
       await page.waitForTimeout(400);
       await page.click('#v2EnableCamera');
       await page.waitForFunction(() =>
@@ -1303,7 +1308,7 @@ test('recording truth: native and filtered clips measured from their files (fake
       });
       const page = await context.newPage();
       page.on('download', () => { /* clips download like photos; discard */ });
-      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.goto(`${base}/index.html`);
       await page.waitForTimeout(400);
       await page.click('#v2EnableCamera');
       await page.waitForFunction(() =>
@@ -1403,7 +1408,7 @@ test('a maximum-tier filtered clip records the CHOSEN stream, risk stated up fro
       });
       const page = await context.newPage();
       page.on('download', () => {});
-      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.goto(`${base}/index.html`);
       await page.waitForTimeout(400);
       await page.click('#v2EnableCamera');
       await page.waitForFunction(() =>
@@ -1469,7 +1474,7 @@ test('a lost GPU context is reported and recovered — never a silent black came
         permissions: ['camera']
       });
       const page = await context.newPage();
-      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.goto(`${base}/index.html`);
       await page.waitForTimeout(400);
       await page.click('#v2EnableCamera');
       await page.waitForFunction(() =>
@@ -1532,7 +1537,7 @@ test('controls stay alive under the live frame loop (fake device)',
         permissions: ['camera']
       });
       const page = await context.newPage();
-      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.goto(`${base}/index.html`);
       await page.waitForTimeout(400);
       await page.click('#v2EnableCamera');
       await page.waitForFunction(() =>
@@ -1595,7 +1600,7 @@ test('picking a colour changes the lens from the picker, and the strip names it 
         permissions: ['camera']
       });
       const page = await context.newPage();
-      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.goto(`${base}/index.html`);
       await page.waitForTimeout(400);
       await page.click('#v2EnableCamera');
       await page.waitForFunction(() =>
@@ -1659,7 +1664,7 @@ test('a starter that shipped wrong is corrected; one the user edited is not (fak
     await withBrowser(async (browser, base) => {
       const context = await browser.newContext({ viewport: { width: 430, height: 932 } });
       const page = await context.newPage();
-      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.goto(`${base}/index.html`);
       await page.waitForTimeout(400);
 
       // Stand in for a device seeded before the fingerprint record existed:
@@ -1719,7 +1724,7 @@ test('frame averaging steadies a still scene without softening it (fake device)'
         permissions: ['camera']
       });
       const page = await context.newPage();
-      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.goto(`${base}/index.html`);
       await page.waitForTimeout(400);
       await page.click('#v2EnableCamera');
       await page.waitForFunction(() =>
@@ -1777,14 +1782,21 @@ test('frame averaging steadies a still scene without softening it (fake device)'
       // works out to at the rate the camera is actually delivering.
       assert.match(await page.textContent('#v2AverageNote'), /about \d+ ms at \d+ fps/);
 
-      // Dizzy is the same mechanism asked for on purpose, and it damps hardest
-      // of all — it is set apart in the row so it cannot read as a stronger
-      // reading rather than as the effect it is.
+      // Dizzy is the same mechanism asked for on purpose, and it is set apart
+      // in the row so it cannot read as a stronger reading rather than as the
+      // effect it is.
+      //
+      // NO ORDERING IS ASSERTED BETWEEN TWO AVERAGING DEPTHS. The fake camera
+      // rolls a clean synthetic pattern with no noise in it, and an EMA passes
+      // steady motion through at the same speed — lagged, not slowed — so
+      // deeper averaging does not reduce this statistic and measuring it here
+      // would be measuring the content, not the control. How much noise each
+      // depth removes is exact arithmetic and is pinned in the unit tests
+      // (an EMA at 2/(N+1) has 1/N of the input's variance).
       await page.click('[data-average="dizzy"]');
       await page.waitForTimeout(1200);
       const dizzy = await drift();
-      assert.ok(dizzy.moved < averaged.moved,
-        `Dizzy carries the most of the past: ${dizzy.moved} vs ${averaged.moved}`);
+      assert.ok(!/shader failed/i.test(dizzy.stage), 'Dizzy renders');
       assert.match(await page.textContent('#v2AverageNote'), /swims/);
       // An effect holds a DURATION, so its note prints the frame count that
       // duration works out to instead — the conversion runs both ways and is

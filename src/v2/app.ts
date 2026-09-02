@@ -21,6 +21,8 @@ import {
 import { FrameRateMeter } from '../vision/frame-rate.js';
 import { zoomPresetStops } from '../sensors/zoom.js';
 import { NAV_ROUTES } from './routes.js';
+import { registerServiceWorker } from './pwa.js';
+import { APP_VERSION } from './version.js';
 import { readState, subscribe, updateState, frameSize } from './state.js';
 import { resolveGeometry, DEFAULT_GEOMETRY_INPUTS } from './camera/geometry.js';
 import { captureAtMaxStream, type Escalation, type ShutterStream } from './capture/shutter.js';
@@ -440,6 +442,11 @@ async function switchCamera(): Promise<void> {
   }
 }
 
+/**
+ * Installed app, or a browser tab? The camera's error advice differs — an iOS
+ * standalone app has its own permission story — and so does what an update
+ * means, which is why registerServiceWorker cares about resumes at all.
+ */
 function isStandalone(): boolean {
   return window.matchMedia('(display-mode: standalone)').matches
     || Boolean((navigator as Navigator & { standalone?: boolean }).standalone);
@@ -2395,11 +2402,23 @@ byId('v2EncoderProbe').addEventListener('click', () => {
 });
 byId('v2SwitchCamera').addEventListener('click', () => void switchCamera());
 byId('v2LegacyLink').addEventListener('click', () => {
+  // V1 is kept at its own address rather than at the root: this app is the
+  // root now. The page is a reference while its features are rebuilt here,
+  // and its full history lives on the version_1_legacy branch.
   const back = new URL(location.href);
   back.searchParams.delete('scene');
-  back.pathname = back.pathname.replace(/v2\.html$/, 'index.html');
+  back.pathname = back.pathname.replace(/[^/]*$/, 'legacy.html');
   location.href = back.toString();
 });
+
+// The installed app's update path. Promoting this page to the root document
+// made it the thing people INSTALL, and an installed app that cannot notice a
+// new build is the worst place to test a camera from: every fix looks failed.
+registerServiceWorker();
+// The build stamp: which version, and whether this is the installed app or a
+// tab. On a phone that is the only way to tell a pushed fix from a resumed
+// stale one — see version.ts.
+setText('v2Badge', `v${APP_VERSION}${isStandalone() ? ' · PWA' : ''}`);
 
 buildGuides();
 buildFrameAverage();

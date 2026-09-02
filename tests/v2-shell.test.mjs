@@ -5,25 +5,44 @@ import { readFileSync } from 'node:fs';
 import { NAV_ROUTES, routeById } from '../.test-build/v2/routes.js';
 import { frameSize, readState, subscribe, updateState } from '../.test-build/v2/state.js';
 
-const indexHtml = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
-const v2Html = readFileSync(new URL('../public/v2.html', import.meta.url), 'utf8');
+const indexHtml = readFileSync(new URL('../public/legacy.html', import.meta.url), 'utf8');
+const v2Html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
 const stateTs = readFileSync(new URL('../src/v2/state.ts', import.meta.url), 'utf8');
 
 /* --- Routing ------------------------------------------------------------- */
 
-test('the V2 router is the first script and inert without the parameter', () => {
-  // Legacy behaviour must be unchanged when scene=v2 is absent. The router's
-  // only act is a guarded location.replace, and it must run before anything
-  // legacy can begin to boot.
-  const router = indexHtml.indexOf("get('scene') === 'v2'");
-  assert.ok(router > 0, 'index.html must carry the scene=v2 check');
-  const firstOtherScript = indexHtml.indexOf('<script', indexHtml.indexOf('</script>', router));
-  assert.ok(indexHtml.indexOf('<script') < router, 'the router lives in a script tag');
-  const beforeRouter = indexHtml.slice(0, router);
-  assert.ok(!/<script[^>]*src=/.test(beforeRouter), 'no external script may load before the router');
-  assert.match(indexHtml, /location\.replace\('\.\/v2\.html' \+ location\.search \+ location\.hash\)/);
-  assert.ok(firstOtherScript > 0);
+test('the app is the root document and Version 1 redirects nowhere', () => {
+  // The relationship inverted when V2 was promoted (2026-09-02). V1 used to
+  // own index.html and hand ?scene=v2 visits away; now the app IS index.html
+  // and V1 is a page you reach deliberately. The old redirect must be GONE
+  // from V1, or opening the reference page would bounce straight back out.
+  assert.ok(!indexHtml.includes("get('scene') === 'v2'"),
+    'Version 1 no longer routes anywhere');
+  assert.ok(!indexHtml.includes("location.replace('./v2.html'"),
+    'and its redirect is removed, not merely disabled');
+  assert.match(v2Html, /id="v2Viewfinder"/, 'the root document is the camera app');
+});
+
+test('the root document carries the PWA layer it needs to be installed', () => {
+  // Promoting this page made it the thing people INSTALL, and none of this
+  // was here before: V1 owned the manifest link, the iOS meta tags and the
+  // service-worker registration. Installed without them, iOS gives a browser
+  // window with no offline support and — the one that matters on a phone —
+  // no way to ever notice a new build.
+  assert.match(v2Html, /<link rel="manifest" href="\.\/manifest\.webmanifest"/);
+  assert.match(v2Html, /name="apple-mobile-web-app-capable" content="yes"/,
+    'iOS ignores the manifest display mode without this');
+  assert.match(v2Html, /rel="apple-touch-icon"/);
+  assert.match(appTs, /registerServiceWorker\(\);/, 'the app registers the worker at boot');
+
+  const pwaTs = readFileSync(new URL('../src/v2/pwa.ts', import.meta.url), 'utf8');
+  assert.match(pwaTs, /navigator\.serviceWorker\.register\('\.\/sw\.js'\)/);
+  // Resumed far more often than launched, so the check rides visibility.
+  assert.match(pwaTs, /document\.addEventListener\('visibilitychange', check\)/);
+  assert.match(pwaTs, /registration\?\.update\(\)/);
+  assert.match(pwaTs, /now - lastCheck < CHECK_INTERVAL_MS/, 'throttled');
+  assert.match(pwaTs, /\.catch\(/, 'offline must never surface as an error');
 });
 
 test('V2 is its own document sharing only the camera engine', () => {
@@ -34,7 +53,13 @@ test('V2 is its own document sharing only the camera engine', () => {
     'the engine must load before the V2 module that bridges to it');
   assert.ok(!/styles\.css|settings\.css|app\/main\.js/.test(v2Html),
     'V2 must not pull the legacy bundle or stylesheets in');
-  assert.match(v2Html, /V2 · Experimental/, 'the badge that stops a cached legacy build passing as V2');
+  // The badge became a BUILD STAMP when this page was promoted: on an
+  // installed app, "did my fix reach the phone?" has no other answer.
+  const versionTs = readFileSync(new URL('../src/v2/version.ts', import.meta.url), 'utf8');
+  const version = /APP_VERSION = '([^']+)'/.exec(versionTs)?.[1] ?? '';
+  assert.ok(version.length > 0, 'the app carries a version');
+  assert.match(appTs, /setText\('v2Badge', `v\$\{APP_VERSION\}\$\{isStandalone\(\) \? ' · PWA' : ''\}`\)/,
+    'the badge shows the build and whether it is the installed app');
 });
 
 test('V2 code never touches getUserMedia', () => {

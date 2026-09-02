@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 const mainSource = read('../src/main.ts');
-const htmlSource = read('../public/index.html');
+const htmlSource = read('../public/legacy.html');
 const swSource = read('../public/sw.js');
 const cssSource = read('../public/styles.css');
 const typesSource = read('../src/core/types.ts');
@@ -136,9 +136,18 @@ test('a shared lens in the address bar is added but does not silently persist', 
 });
 
 test('the gallery and its modules are cached so lenses work offline', () => {
+  // The shipped gallery is a fixed file that must be there on a COLD start,
+  // so it stays in the precached shell.
   assert.match(swSource, /'\.\/lenses\/index\.json'/);
-  assert.match(swSource, /'\.\/app\/vision\/lens\.js'/);
-  assert.match(swSource, /'\.\/app\/vision\/lens-store\.js'/);
+  // The shell no longer enumerates modules. That list went stale the moment a
+  // module was added — a fresh app.js running against a cached older one — so
+  // everything under /app/ is now fetched network-first and CACHED on the way
+  // through (see the fetch handler in sw.js). One online visit makes the app
+  // offline-capable, and no list can drift out of step with the build.
+  const handler = swSource.slice(swSource.indexOf("addEventListener('fetch'"));
+  assert.match(handler, /url\.pathname\.includes\('\/app\/'\)/, 'modules are network-first');
+  assert.match(handler, /caches\.open\(CACHE\)\.then\(\(cache\) => cache\.put/,
+    'and the response is kept, so the next launch works offline');
 });
 
 test('the panel explains what a lens can and cannot do', () => {
@@ -154,7 +163,15 @@ test('the panel explains what a lens can and cannot do', () => {
 });
 
 test('the preview module is cached so the editor works offline', () => {
-  assert.match(swSource, /'\.\/app\/vision\/lens-preview\.js'/);
+  // The shell no longer enumerates modules. That list went stale the moment a
+  // module was added — a fresh app.js running against a cached older one — so
+  // everything under /app/ is now fetched network-first and CACHED on the way
+  // through (see the fetch handler in sw.js). One online visit makes the app
+  // offline-capable, and no list can drift out of step with the build.
+  const handler = swSource.slice(swSource.indexOf("addEventListener('fetch'"));
+  assert.match(handler, /url\.pathname\.includes\('\/app\/'\)/, 'modules are network-first');
+  assert.match(handler, /caches\.open\(CACHE\)\.then\(\(cache\) => cache\.put/,
+    'and the response is kept, so the next launch works offline');
 });
 
 test('the editor leads with the choice, not with a dropdown', () => {

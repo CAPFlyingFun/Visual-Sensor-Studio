@@ -253,7 +253,7 @@ test('nothing sits between the preview and the shutter', () => {
   // capture — you can't see what you're taking." The scatter plot and two rows
   // of readouts were in that gap, which put the button off the bottom of the
   // screen whenever the preview was on it.
-  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../public/legacy.html', import.meta.url), 'utf8');
   const stage = html.indexOf('id="burstStage"');
   const shutter = html.indexOf('id="burstCaptureButton"');
   assert.ok(stage > 0 && shutter > stage, 'the shutter should follow the preview');
@@ -284,7 +284,7 @@ test('the merged result can be saved, and as PNG', () => {
   assert.match(main, /canvas\.toBlob\(resolve, 'image\/png'\)/);
   assert.ok(!/burstSave[\s\S]{0,400}image\/jpeg/.test(main), 'the merge must not be saved lossy');
 
-  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../public/legacy.html', import.meta.url), 'utf8');
   assert.match(html, /id="burstSaveRow"[^>]*hidden/, 'saving should appear only after a merge');
   assert.match(main, /byId\('burstSaveRow'\)\.hidden = false;/);
 });

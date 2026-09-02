@@ -108,7 +108,7 @@ test('megapixels reads as a number a person can compare', () => {
 
 test('the readout separates the three sizes rather than conflating them', () => {
   const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../public/legacy.html', import.meta.url), 'utf8');
   assert.match(main, /function reportDisplayMetrics\(\): void/);
   for (const id of ['dispScreen', 'dispRatio', 'dispBox', 'dispContent',
                     'dispSource', 'dispRender', 'dispOverdraw', 'dispSourceOver']) {

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const htmlSource = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+const htmlSource = readFileSync(new URL('../public/legacy.html', import.meta.url), 'utf8');
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 const cameraSource = readFileSync(new URL('../public/camera-bootstrap.js', import.meta.url), 'utf8');
 const swSource = readFileSync(new URL('../public/sw.js', import.meta.url), 'utf8');
@@ -132,14 +132,16 @@ test('tracking consumes analysis output rather than the camera directly', () => 
   assert.doesNotMatch(trackingSource, /getUserMedia|HTMLVideoElement|MediaStream/);
 });
 
-test('the new modules ship in the service worker shell', () => {
-  for (const file of [
-    'frame-rate.js', 'adaptive.js', 'tracking.js', 'integration.js',
-    'histogram.js', 'overlays.js'
-  ]) {
-    assert.match(swSource, new RegExp(`vision/${file}`), `missing ${file} in the cache list`);
-  }
-  assert.match(swSource, /sensors\/stability\.js/);
+test('every module reaches the cache, without a list that can go stale', () => {
+  // The shell no longer enumerates modules. That list went stale the moment a
+  // module was added — a fresh app.js running against a cached older one — so
+  // everything under /app/ is now fetched network-first and CACHED on the way
+  // through (see the fetch handler in sw.js). One online visit makes the app
+  // offline-capable, and no list can drift out of step with the build.
+  const handler = swSource.slice(swSource.indexOf("addEventListener('fetch'"));
+  assert.match(handler, /url\.pathname\.includes\('\/app\/'\)/, 'modules are network-first');
+  assert.match(handler, /caches\.open\(CACHE\)\.then\(\(cache\) => cache\.put/,
+    'and the response is kept, so the next launch works offline');
 });
 
 test('expensive analysis is skipped when no mode needs it', () => {

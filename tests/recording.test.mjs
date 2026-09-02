@@ -199,7 +199,7 @@ test('the budget is also stated as recording time, not only megabytes', () => {
 /* --- The wiring ---------------------------------------------------------- */
 
 const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+const html = readFileSync(new URL('../public/legacy.html', import.meta.url), 'utf8');
 
 test('the recorder records what is on screen, filters included', () => {
   // A recording of the raw camera would be a worse copy of what the phone's
@@ -351,7 +351,7 @@ test('a filter is recorded at the size it is shown, not the size it is computed'
 test('upscaling is called upscaling', () => {
   // It adds no detail, and a recording that quietly implied otherwise would be
   // the app overstating what it measured.
-  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../public/legacy.html', import.meta.url), 'utf8');
   assert.match(html, /scaled up from it to the size you actually see/);
   assert.match(html, /not\s+extra detail/);
   assert.match(main, /\+ ' not more detail';/);
@@ -402,7 +402,7 @@ test('all three rates are shown while recording, and named apart', () => {
   assert.match(tick, /processingFps/);
   assert.match(tick, /recording \$\{writtenFps\.toFixed\(1\)\} fps/);
 
-  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../public/legacy.html', import.meta.url), 'utf8');
   assert.match(html, /Three rates, and they are three different things/);
   // And it says where the lever is, since it is not in the recorder.
   assert.match(html, /cannot invent\s+frames the pipeline never drew/);
@@ -449,7 +449,7 @@ test('what the choice costs is stated in numbers, not adjectives', () => {
   // and record another.
   assert.match(fn, /control\.value = settings\.recordDetail/);
 
-  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../public/legacy.html', import.meta.url), 'utf8');
   assert.match(html, /id="recordDetail"/);
   for (const value of ['preview', 'higher', 'full']) {
     assert.match(html, new RegExp(`value="${value}"`));

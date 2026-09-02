@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-const htmlSource = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+const htmlSource = readFileSync(new URL('../public/legacy.html', import.meta.url), 'utf8');
 
 const ladder = mainSource.slice(
   mainSource.indexOf('async function compareCaptureResolutions'),

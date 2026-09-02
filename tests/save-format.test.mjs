@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-const htmlSource = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+const htmlSource = readFileSync(new URL('../public/legacy.html', import.meta.url), 'utf8');
 
 test('a format is only offered when the browser can encode it', async () => {
   const { supportedFormats } = await import('../.test-build/vision/save-format.js');

@@ -34,7 +34,7 @@ const runnable = chromium !== null && existsSync(CHROME);
 async function withPage(width, height, body) {
   const server = createServer((req, res) => {
     const url = req.url.split('?')[0];
-    const file = join(ROOT, url === '/' ? 'index.html' : url);
+    const file = join(ROOT, url === '/' ? 'legacy.html' : url);
     if (!existsSync(file) || !file.startsWith(ROOT)) { res.writeHead(404); res.end(); return; }
     res.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream' });
     res.end(readFileSync(file));
@@ -44,7 +44,7 @@ async function withPage(width, height, body) {
   const browser = await chromium.launch({ executablePath: CHROME });
   try {
     const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 2 });
-    await page.goto(`http://127.0.0.1:${port}/index.html`);
+    await page.goto(`http://127.0.0.1:${port}/legacy.html`);
     await page.waitForTimeout(500);
     await page.click('[data-tab="camera"]');
     await page.waitForTimeout(250);

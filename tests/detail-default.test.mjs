@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-const htmlSource = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+const htmlSource = readFileSync(new URL('../public/legacy.html', import.meta.url), 'utf8');
 
 test('live detail defaults to measuring rather than to any fixed cap', () => {
   // Both fixed guesses were wrong in opposite directions: 540p threw away

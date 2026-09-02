@@ -97,7 +97,7 @@ test('unmeasurable is never silently a number', () => {
 
 test('the burst measures the lens and only adopts it when nothing was typed', () => {
   const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../public/legacy.html', import.meta.url), 'utf8');
 
   // Both halves of the relation come from the burst that just ran.
   assert.match(main, /imagePixels: Math\.hypot\(shifts\[i\]\.shiftX, shifts\[i\]\.shiftY\)/);

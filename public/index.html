@@ -2,1408 +2,503 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <script>
-    /*
-     * V2 routing. ?scene=v2 hands this visit to the experimental rebuild,
-     * which is its own document (v2.html) sharing only the camera engine.
-     * Without the parameter this script does nothing at all, so the legacy
-     * app's behaviour is untouched — and it must stay the FIRST script in the
-     * head, before anything legacy can begin to boot.
-     */
-    if (new URLSearchParams(location.search).get('scene') === 'v2') {
-      location.replace('./v2.html' + location.search + location.hash);
-    }
-  </script>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#071019" />
-  <meta name="description" content="A privacy-first iPhone camera, motion, GPS, parallax and 3D sensor-fusion playground." />
+  <meta name="theme-color" content="#050b12" />
+  <meta name="description" content="A privacy-first camera laboratory: measured stream sizes, custom lenses and honest capture." />
+  <!-- The PWA layer. Without the manifest iOS installs a browser window
+       rather than a standalone app; without apple-mobile-web-app-capable it
+       ignores the manifest's display mode entirely. -->
+  <link rel="manifest" href="./manifest.webmanifest" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Sensor Studio" />
   <title>Visual Sensor Studio</title>
-  <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="./icons/icon-180.png" />
-  <link rel="stylesheet" href="./styles.css" />
-  <link rel="stylesheet" href="./settings.css" />
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.min.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+  <!--
+    VISUAL SENSOR STUDIO — the camera-first rebuild, promoted to the root
+    document on 2026-09-02. This IS the app now: the bare URL serves it, the
+    installed PWA opens it, and Version 1 is kept alongside at ./legacy.html
+    for reference while its features are rebuilt here (full history on the
+    version_1_legacy branch).
+
+    This page deliberately shares NO stylesheet and no bundle with V1: the
+    only shared pieces are the persistent camera engine (camera-bootstrap.js,
+    which owns #cameraVideo and every getUserMedia call) and the compiled
+    src/ modules it imports explicitly.
+
+    Portrait rule, from the V2 design spec and two rejected legacy layouts:
+    ONLY the viewfinder is sticky. Everything below scrolls normally.
+  -->
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #02060a; --shell: #071019; --panel: #0c1620; --panel2: #111d29;
+      --line: #263746; --line2: #375064; --text: #f3f7fa; --muted: #93a4b3;
+      --blue: #438dff; --blue2: #7db4ff; --red: #ff4a4f; --green: #78df8a;
+      --safe-top: max(10px, env(safe-area-inset-top));
+      --safe-bottom: max(10px, env(safe-area-inset-bottom));
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
     }
-  }
-  </script>
+    * { box-sizing: border-box; }
+    /* hidden means HIDDEN. The browser's own [hidden] rule is display:none at
+       UA priority, so any author `display` (grid/flex/block) silently beats
+       it — which left the reticle and the lens actions on screen with the
+       attribute dutifully set (Joshua, 2026-09-02: "still visible whether
+       toggled on or off"). One rule, applied to every element that carries
+       the attribute, so it can never be defeated element by element. */
+    [hidden] { display: none !important; }
+    html, body { margin: 0; background: #000; color: var(--text); }
+    /* The two lessons v1 paid for: no block may inflate text, and no element
+       may widen the document. */
+    html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+    body { display: flex; justify-content: center; min-height: 100dvh; overflow-x: clip; }
+    button, input { font: inherit; color: inherit; }
+    .app { width: min(100%, 520px); min-width: 0; min-height: 100dvh; background: linear-gradient(#071019, #02060a 70%); padding-bottom: calc(74px + var(--safe-bottom)); }
+
+    .topbar { padding: var(--safe-top) 13px 9px; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 9px; background: rgba(5, 11, 18, .96); border-bottom: 1px solid rgba(255, 255, 255, .08); }
+    .topbar h1 { font-size: 16px; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .pill { padding: 5px 9px; font-size: 11px; border: 1px solid #355f94; color: #9fc5ff; background: #0b151f; border-radius: 10px; white-space: nowrap; }
+
+    /* --- The one sticky element on the page. ------------------------------ */
+    .viewfinder-wrap { position: sticky; top: 0; z-index: 20; background: #03070c; border-bottom: 1px solid var(--line); box-shadow: 0 12px 25px rgba(0, 0, 0, .32); }
+    .viewfinder { height: clamp(245px, 38dvh, 390px); position: relative; overflow: hidden; background: #04090f; }
+    .viewfinder video { width: 100%; height: 100%; object-fit: cover; display: block; }
+    /* The filtered preview sits over the raw video; when WebGL is unavailable
+       it stays hidden and the honest raw feed shows instead. */
+    .viewfinder canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 2; }
+    /* The capture flash: the mode renegotiation happens behind it, so the
+       shutter pause reads as intentional rather than a hiccup. */
+    #v2Guides { position: absolute; inset: 0; z-index: 3; width: 100%; height: 100%; pointer-events: none; }
+    #v2Guides line { stroke: rgba(255, 255, 255, .55); stroke-width: .35; vector-effect: non-scaling-stroke; }
+    #v2Reticle {
+      position: absolute; z-index: 3; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: 46px; height: 46px; border: 1px solid rgba(140, 188, 255, .85); border-radius: 6px;
+      display: grid; place-items: center; pointer-events: none;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, .35), inset 0 0 0 1px rgba(0, 0, 0, .25);
+    }
+    /* The ring is sized from the measured patch, never from taste. */
+    #v2PatchRing { display: block; border: 1px solid rgba(255, 255, 255, .95); border-radius: 50%; box-shadow: 0 0 2px rgba(0, 0, 0, .8); }
+    #v2ShutterFlash { position: absolute; inset: 0; z-index: 4; background: #fff; opacity: 0; pointer-events: none; transition: opacity .18s ease; }
+    #v2ShutterFlash.firing { opacity: .85; }
+    .capture button.recording { color: #ff5c5c; border-color: #ff5c5c; box-shadow: 0 0 0 1px rgba(255, 92, 92, .35); }
+    .share-save { margin-top: 9px; min-height: 42px; padding: 0 16px; border-radius: 11px; border: 1px solid var(--blue); background: #10203a; color: #cfe4ff; font-size: 12px; font-weight: 600; }
+    .enable-overlay {
+      position: absolute; z-index: 6; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      min-height: 52px; padding: 0 22px; border-radius: 999px;
+      border: 1px solid rgba(125, 180, 255, .7); background: rgba(10, 40, 70, .93);
+      color: #eef6ff; font-weight: 700; cursor: pointer;
+    }
+    .hud {
+      position: absolute; left: 10px; right: 10px; bottom: 9px; z-index: 5;
+      display: flex; justify-content: space-around; align-items: center; gap: 7px;
+      padding: 7px 8px; border: 1px solid rgba(192, 219, 240, .32); border-radius: 10px;
+      background: rgba(2, 7, 12, .68); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      font-size: 11px; pointer-events: none;
+    }
+    .hud span { white-space: nowrap; }
+    /* Shown only while a clip runs: the size the FILE receives, beside the
+       size a photo would be — they differ wherever the encoder has a ceiling. */
+    .rec-hud {
+      position: absolute; left: 10px; right: 10px; bottom: 50px; z-index: 5; text-align: center;
+      padding: 5px 8px; border: 1px solid rgba(255, 92, 92, .6); border-radius: 9px;
+      background: rgba(110, 8, 18, .74); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      font-size: 11px; font-weight: 600; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      pointer-events: none;
+    }
+    .hud .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #627080; margin-right: 4px; }
+    .hud .dot[data-state="live"] { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .hud .dot[data-state="requesting"] { background: var(--blue); }
+    .hud .dot[data-state="error"], .hud .dot[data-state="suspended"] { background: var(--red); }
+
+    .quickbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; align-items: center; padding: 8px 10px; background: #08111a; }
+    .zoom { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
+    .zoom::-webkit-scrollbar { display: none; }
+    .zoom button { min-width: 45px; height: 38px; border: 1px solid var(--line); background: #0c1721; border-radius: 10px; flex: 0 0 auto; }
+    .zoom button.active { border-color: var(--blue); box-shadow: inset 0 0 0 1px rgba(67, 141, 255, .3); color: #fff; }
+    /* An effect is chosen for the look, not as a stronger reading — set
+       apart from the ladder so it cannot read as its top rung. */
+    .zoom button[data-effect] { min-width: 84px; margin-left: 10px; border-style: dashed; }
+    /* Tier availability speaks through color: green = this camera can fill
+       the class, red = it cannot (tap explains via toast). */
+    .tiers button { color: var(--green); }
+    .tiers button.unavailable { color: var(--red); opacity: .6; }
+    .toast { position: fixed; left: 50%; bottom: 86px; transform: translateX(-50%); max-width: 86vw;
+      padding: 10px 14px; background: #1a2836; border: 1px solid var(--line2); border-radius: 12px;
+      font-size: 12px; line-height: 1.45; color: #fff; box-shadow: 0 6px 24px rgba(0, 0, 0, .5); z-index: 50; }
+    .capture { display: flex; gap: 8px; }
+    .capture button { width: 43px; height: 43px; border-radius: 50%; border: 1px solid #6b7b89; background: #0b141c; font-size: 15px; }
+    .capture button[disabled] { opacity: .4; }
+
+    .section { padding: 12px 11px 0; }
+    .section-title { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+    .section-title h2 { font-size: 13px; margin: 0; }
+    .hint { font-size: 10px; color: var(--muted); }
+    .chip { min-height: 30px; padding: 0 11px; border: 1px solid var(--line2); border-radius: 999px; background: #0d1a26; color: var(--muted); font-size: 11px; }
+    .chip.active { border-color: var(--blue); color: #cfe4ff; background: #10203a; }
+    .card { margin: 0 11px 10px; padding: 13px; border: 1px solid var(--line); border-radius: 15px; background: linear-gradient(180deg, #0d1823, #09131c); }
+    .card h3 { font-size: 13px; margin: 0 0 10px; }
+    .card p { font-size: 12px; color: var(--muted); line-height: 1.5; margin: 0 0 8px; }
+    .button-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+    .btn { min-height: 42px; padding: 0 14px; border: 1px solid var(--line2); background: #0d1a26; border-radius: 11px; cursor: pointer; }
+    .btn[disabled] { opacity: .45; }
+    .probe-out { margin: 10px 0 0; font-size: 11px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; color: var(--muted); }
+    .stage-note { font-size: 11px; color: #ffc46b; min-height: 1.2em; margin: 8px 0 0; }
+    .stage-note.timing { color: #9fb0bf; font-family: ui-monospace, 'SF Mono', Menlo, monospace; white-space: pre-line; min-height: 0; }
+
+    .diagnostics { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.7; color: #c9d8e4; overflow-x: auto; }
+    .diagnostics b { color: #fff; font-weight: 650; }
+    .diagnostics .k { display: inline-block; min-width: 86px; color: var(--muted); letter-spacing: .04em; }
+
+    .filters { display: flex; gap: 8px; overflow-x: auto; padding: 1px 1px 9px; scroll-snap-type: x proximity; scrollbar-width: none; }
+    .filters::-webkit-scrollbar { display: none; }
+    .filter { flex: 0 0 76px; scroll-snap-align: start; border: 1px solid var(--line); background: #0c1620; border-radius: 12px; padding: 6px; text-align: left; }
+    .filter.active { border-color: var(--blue); box-shadow: 0 0 0 1px rgba(67, 141, 255, .24); }
+    .thumb { height: 53px; border-radius: 8px; background: linear-gradient(135deg, #182838, #07111a); margin-bottom: 6px; }
+    .thumb-ironbow { background: linear-gradient(135deg, #07124a, #51118c, #d52078, #ff5c37, #ffd93d); }
+    .thumb-edges { background: repeating-linear-gradient(135deg, #05080a 0 8px, #e8f2fa 8px 10px, #05080a 10px 18px); }
+    .thumb-difference { background: linear-gradient(135deg, #07124a 0 38%, #d52078 52%, #ff5c37 60%, #07124a 74%); }
+    .thumb-speed { background: linear-gradient(90deg, #07124a 0 30%, #51118c 45%, #ff5c37 62%, #ffd93d 72%, #fff 78%, #07124a 84%); }
+    .thumb-trails { background: linear-gradient(135deg, #07124a 0 20%, #2a0e5c 35%, #7a1a6a 50%, #d52078 65%, #ff9a3d 80%, #ffd93d 90%); }
+    .thumb.custom { display: grid; place-items: center; font-size: 26px; color: #8cbcff; }
+    .filter.unavailable { opacity: .45; }
+    /* The lens workbench: every slider has a paired number field — the number
+       is the value, the slider is a way to reach it (Joshua, 2026-09-01). */
+    .lens-field { display: grid; grid-template-columns: 82px minmax(0, 1fr) 76px; gap: 8px; align-items: center; margin: 6px 0; font-size: 12px; }
+    .lens-field label { color: var(--muted); }
+    .lens-field input[type="range"] { width: 100%; min-width: 0; }
+    .lens-field input[type="number"], .lens-field select, .lens-name { min-height: 36px; padding: 0 8px; border: 1px solid var(--line2); border-radius: 9px; background: #0b151f; color: var(--text); font-size: 13px; width: 100%; }
+    .lens-name { margin-bottom: 4px; }
+    .lens-stops { display: grid; gap: 6px; margin: 8px 0; }
+    .lens-stop { display: grid; grid-template-columns: 44px 76px minmax(0, 1fr) 36px; gap: 8px; align-items: center; }
+    .lens-stop input[type="color"] { width: 44px; height: 36px; padding: 0; border: 1px solid var(--line2); border-radius: 8px; background: transparent; }
+    .lens-stop input[type="number"] { min-height: 36px; padding: 0 8px; border: 1px solid var(--line2); border-radius: 9px; background: #0b151f; color: var(--text); width: 100%; }
+    .lens-stop button { min-height: 36px; border: 1px solid var(--line2); border-radius: 9px; background: #0d1a26; }
+    .lens-swatch { height: 18px; border-radius: 6px; border: 1px solid var(--line); }
+    .lens-presets { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+    .lens-presets button { min-height: 30px; padding: 0 10px; border: 1px solid var(--line2); border-radius: 8px; background: #0d1a26; font-size: 11px; }
+    .lens-describe { font-size: 11px; color: var(--muted); margin: 8px 0 0; }
+    .coach { margin: 8px 0 0; padding: 11px 13px; border: 1px solid #3a5f8a; border-radius: 13px; background: linear-gradient(180deg, #10233a, #0b1726); }
+    .coach h3 { font-size: 12px; margin: 0 0 6px; color: #cfe4ff; }
+    .coach ol { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.55; color: var(--muted); }
+    .coach li { margin-bottom: 2px; }
+    .coach-mute { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+    .coach-mute input { width: 17px; height: 17px; }
+    .picker-read { display: flex; align-items: center; gap: 12px; margin: 4px 0 8px; }
+    .picker-swatch { width: 54px; height: 54px; border-radius: 12px; border: 1px solid var(--line2); background: #0b151f; flex: 0 0 auto; }
+    .picker-hex { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 17px; letter-spacing: .04em; }
+    /* While picking, the viewfinder is a target rather than a picture. */
+    .viewfinder.picking { cursor: crosshair; }
+    /* While picking, the tap must land on the VIEWFINDER itself, so its own
+       coordinates map the cover crop — not on the video or the canvas. */
+    .viewfinder.picking video, .viewfinder.picking canvas { pointer-events: none; }
+    .viewfinder.picking::after { content: ''; position: absolute; inset: 0; z-index: 3; border: 2px dashed rgba(140, 188, 255, .8); pointer-events: none; }
+    .filter small { display: block; font-size: 10px; color: #d9e3eb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .placeholder { margin: 10px 11px 0; padding: 18px 14px; border: 1px dashed #345064; border-radius: 14px; color: #9fb0bf; font-size: 12px; text-align: center; }
+    .placeholder h2 { font-size: 14px; margin: 0 0 8px; color: #cfe0ee; }
+    .placeholder button { margin-top: 10px; }
+
+    .dock {
+      position: fixed; z-index: 50; left: 50%; bottom: 0; transform: translateX(-50%);
+      width: min(100%, 520px); padding: 6px 8px var(--safe-bottom);
+      display: grid; grid-template-columns: repeat(5, 1fr);
+      background: rgba(5, 10, 16, .97); border-top: 1px solid rgba(255, 255, 255, .1);
+      backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+    }
+    .dock button { border: 0; background: transparent; color: #7f91a0; font-size: 10px; min-height: 52px; display: grid; place-items: center; gap: 2px; }
+    .dock button.active { color: #86b7ff; }
+    .dock i { font-style: normal; font-size: 19px; line-height: 1; }
+
+    footer { margin: 14px 11px 0; font-size: 10px; color: #6d7d8b; text-align: center; }
+
+    @media (orientation: landscape) and (min-width: 700px) {
+      .app { width: 100%; max-width: none; }
+      .camera-layout { display: grid; grid-template-columns: minmax(45%, 1.1fr) minmax(340px, .9fr); align-items: start; }
+      .viewfinder-wrap { position: sticky; top: 0; }
+      .viewfinder { height: calc(100dvh - 130px); }
+      .content { min-width: 0; }
+    }
+  </style>
 </head>
 <body>
-  <div class="app-shell">
-    <header class="topbar">
-      <div>
-        <p class="eyebrow">IPHONE SENSOR PLAYGROUND</p>
-        <h1>Visual Sensor Studio</h1>
-        <p class="subtitle">Camera + motion + GPS + experimental parallax + interactive 3D fusion.</p>
-      </div>
-      <div class="topbar-actions">
-        <div class="status-row" aria-label="Sensor status">
-          <span class="status-chip" id="cameraChip" data-state="idle">Camera idle</span>
-          <span class="status-chip" id="motionChip" data-state="idle">Motion idle</span>
-          <span class="status-chip" id="gpsChip" data-state="idle">GPS idle</span>
-          <span class="status-chip" id="pwaChip" data-state="idle">PWA</span>
+<div class="app">
+  <header class="topbar">
+    <h1>Visual Sensor Studio</h1>
+    <span class="pill" id="v2Badge">v0.40.0</span>
+  </header>
+
+  <div class="camera-layout">
+    <div class="viewfinder-wrap">
+      <div class="viewfinder" id="v2Viewfinder">
+        <video id="cameraVideo" autoplay muted playsinline></video>
+        <canvas id="v2PreviewCanvas" hidden></canvas>
+        <!-- Composition guides: percent-space lines stretched to the box, so
+             they need no display read. Purely an overlay — nothing captured
+             is changed by them. -->
+        <svg id="v2Guides" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"></svg>
+        <!-- The reticle: an outer aiming frame, and inside it a ring that is
+             the TRUE size of the colour picker's patch. -->
+        <div id="v2Reticle" aria-hidden="true" hidden><i id="v2PatchRing"></i></div>
+        <div id="v2ShutterFlash" aria-hidden="true"></div>
+        <button class="enable-overlay" id="v2EnableCamera" type="button">Enable Camera</button>
+        <div class="rec-hud" id="v2RecHud" hidden></div>
+        <div class="hud" aria-label="Live readouts">
+          <span><i class="dot" id="v2HudDot"></i><span id="v2HudState">IDLE</span></span>
+          <span id="v2HudSource">—</span>
+          <span id="v2HudFps">— fps</span>
+          <span id="v2HudZoom">—</span>
         </div>
-        <button class="settings-button" id="settingsButton" type="button" aria-label="Open settings">⚙️ Settings</button>
       </div>
-    </header>
+      <div class="quickbar">
+        <div class="zoom" id="v2ZoomStops" aria-label="Zoom presets"></div>
+        <div class="capture">
+          <button type="button" id="v2PhotoButton" title="Photo" disabled>◉</button>
+          <button type="button" id="v2RecordButton" title="Record" disabled>⏺</button>
+          <button type="button" id="v2SwitchCamera" title="Switch camera" disabled>⟲</button>
+        </div>
+      </div>
+    </div>
 
-    <!--
-    Exposure filter for the live preview.
+    <main class="content">
+      <div id="v2CameraRoute">
+        <section class="section">
+          <div class="section-title"><h2>Camera Stream</h2><span class="hint">a bigger stream costs delivered fps</span></div>
+          <div class="zoom tiers" id="v2StreamTiers" aria-label="Stream tiers"></div>
+          <div class="toast" id="v2Toast" hidden></div>
+        </section>
 
-    An SVG feComponentTransfer rather than CSS brightness/contrast, because CSS
-    has no gamma at all and no way to express the soft shoulder. The table is
-    sampled from the same curve the pipeline uses, so the preview and the saved
-    frame cannot drift apart.
+        <section class="section">
+          <div class="section-title">
+            <h2>Guides</h2>
+            <button type="button" class="chip" id="v2ReticleToggle" aria-pressed="false">✛ Reticle</button>
+          </div>
+          <div class="zoom guides" id="v2GuideRow" aria-label="Viewfinder guides"></div>
+          <p class="hint" id="v2GuideNote">composition only — captures are always the full frame</p>
+        </section>
 
-    Only referenced while exposure is actually adjusted, so it costs nothing at
-    the default setting.
-  -->
-  <svg class="filter-defs" aria-hidden="true" focusable="false" width="0" height="0">
-    <filter id="exposureFilter" color-interpolation-filters="sRGB">
-      <feComponentTransfer>
-        <feFuncR type="table" tableValues="0 1" />
-        <feFuncG type="table" tableValues="0 1" />
-        <feFuncB type="table" tableValues="0 1" />
-      </feComponentTransfer>
-    </filter>
-  </svg>
+        <!-- Frame averaging: how many camera frames are blended before a
+             filter measures the picture. Sensor noise is re-rolled every
+             frame and averages away; a still scene does not. Stills never
+             use it — they already get one good frame. -->
+        <section class="section">
+          <div class="section-title"><h2>Frame averaging</h2><span class="hint">preview &amp; video · steadies the hue lenses</span></div>
+          <div class="zoom guides" id="v2AverageRow" aria-label="Frame averaging"></div>
+          <p class="hint" id="v2AverageNote"></p>
+        </section>
 
-  <main>
-      <nav class="tabbar" role="tablist" aria-label="Sections">
-        <button class="tab" type="button" role="tab" id="tabbtn-camera" data-tab="camera" aria-controls="tab-camera" aria-selected="false" title="Live vision">Camera</button>
-        <button class="tab" type="button" role="tab" id="tabbtn-motion" data-tab="motion" aria-controls="tab-motion" aria-selected="false" title="Orientation and steadiness">Motion</button>
-        <button class="tab" type="button" role="tab" id="tabbtn-world" data-tab="world" aria-controls="tab-world" aria-selected="false" title="Position, terrain and the 3D view">World</button>
-        <button class="tab" type="button" role="tab" id="tabbtn-rig" data-tab="rig" aria-controls="tab-rig" aria-selected="false" title="Puppet a rigged model">Rig</button>
-        <button class="tab" type="button" role="tab" id="tabbtn-data" data-tab="data" aria-controls="tab-data" aria-selected="false" title="Depth scan and export">Data</button>
-        <button class="tab" type="button" role="tab" id="tabbtn-burst" data-tab="burst" aria-controls="tab-burst" aria-selected="false" title="Measure whether a burst carries extra detail">Burst</button>
-      </nav>
+        <section class="section">
+          <div class="section-title"><h2>Filters &amp; Lenses</h2><span class="hint">Swipe &rarr; · one shader for preview and photo</span></div>
+          <div class="filters" id="v2FilterStrip"></div>
+          <p class="hint" id="v2FilterNote"></p>
+          <!-- Shown when the chosen filter needs a step before it can show
+               anything, with a switch to stop showing it. -->
+          <div class="coach" id="v2Coach" hidden>
+            <h3 id="v2CoachTitle"></h3>
+            <ol id="v2CoachSteps"></ol>
+            <div class="button-row">
+              <button type="button" class="btn" id="v2CoachAction" hidden></button>
+              <button type="button" class="btn" id="v2CoachClose">Got it</button>
+              <label class="coach-mute"><input type="checkbox" id="v2CoachMute" /> Don’t show this again</label>
+            </div>
+          </div>
+          <div class="button-row" id="v2LensActions" hidden>
+            <button type="button" class="btn" id="v2LensEdit">Edit lens</button>
+            <button type="button" class="btn" id="v2LensImportButton">Import .lens.json</button>
+            <button type="button" class="btn" id="v2PickColor">⌾ Pick colour</button>
+          </div>
 
-      <section class="tab-panel" id="tab-camera" role="tabpanel" aria-labelledby="tabbtn-camera" hidden>
-        <div class="primary-grid single">
-        <article class="panel vision-panel">
-<div class="panel-heading">
+        </section>
+
+        <!-- The colour picker reads the CAMERA FRAME, never the filtered
+             render: a false colour is the palette's answer, not the scene's. -->
+        <div class="card" id="v2PickerCard" hidden>
+          <h3>Colour picker</h3>
+          <p id="v2PickerHint">Tap the viewfinder to read a colour from the camera frame.</p>
+          <div class="picker-read">
+            <div class="picker-swatch" id="v2PickerSwatch"></div>
             <div>
-              <p class="section-kicker">LIVE VISION</p>
-              <h2>Camera Lab</h2>
+              <div class="picker-hex" id="v2PickerHex">—</div>
+              <div class="hint" id="v2PickerDetail"></div>
             </div>
-          </div>
-
-        <!--
-          THE WORKBENCH HEAD STAYS PUT.
-
-          Everything a person looks at while aiming — the picture, the readouts
-          over it, the shutter, and the mode choice — is one sticky block, and
-          the controls scroll underneath it. That is the whole point of the
-          redesign: the controls come to the camera instead of the camera
-          scrolling away from the controls.
-        -->
-        <div class="workbench-head">
-<div class="vision-stage" id="visionStage" aria-label="Live camera view">
-            <video id="cameraVideo" autoplay muted playsinline></video>
-            <canvas id="visionCanvas" class="vision-overlay" hidden></canvas>
-            <button class="camera-enable-overlay" id="cameraOverlayButton" type="button">Enable Camera</button>
-            <div class="reticle" aria-hidden="true"></div>
-            <div class="horizon-wrap" aria-hidden="true"><div id="horizonLine" class="horizon-line"></div></div>
-          
-            <div class="view-hud" aria-label="Live readouts">
-              <span class="small-badge" id="visionModeLabel">RGB camera</span>
-              <div class="metric"><span>Processing</span><strong id="metricFps">&mdash;</strong></div>
-              <div class="metric"><span>Zoom</span><strong id="metricZoom">&mdash;</strong></div>
-              <div class="metric"><span>Delivered</span><strong id="metricDelivered">—</strong></div>
-              <div class="metric"><span>Objects</span><strong id="metricObjects">—</strong></div>
-            </div>
-          </div>
-
-          <div class="command-strip">
-<div class="zoom-row" aria-label="Camera zoom">
-            <div class="zoom-presets" id="zoomPresets" role="group" aria-label="Zoom presets"></div>
-            <input class="zoom-slider" id="zoomSlider" type="range" min="1" max="5" step="0.1" value="1"
-                   aria-label="Camera zoom level" disabled />
-            <span class="zoom-value" id="zoomValue">1.0&times; <em>None</em></span>
-          </div>
-            <div class="capture-cluster">
-              <button class="secondary-button shutter-button" id="captureStillButton" type="button">📸 Save Frame</button>
-              <button class="primary-button" id="recordButton" type="button" disabled>Record</button>
-              <button class="secondary-button" id="expandViewButton" type="button">⤢ Full Screen</button>
-              <span class="record-elapsed" id="recordElapsed" aria-live="polite"></span>
-            </div>
-          </div>
-
-          <!--
-            Families are five radio buttons and five labels, and the rows below
-            are shown by :checked. No script decides what is visible, so nothing
-            here can fall out of step with the app's own mode state — the real
-            mode buttons are the same elements they always were, with the same
-            data-vision-mode attributes, merely grouped.
-          -->
-          <div class="mode-console" role="group" aria-label="Camera mode family">
-          <input class="family-radio" type="radio" name="modeFamily" id="fam-view" checked />
-          <input class="family-radio" type="radio" name="modeFamily" id="fam-motion" />
-          <input class="family-radio" type="radio" name="modeFamily" id="fam-time" />
-          <input class="family-radio" type="radio" name="modeFamily" id="fam-night" />
-          <input class="family-radio" type="radio" name="modeFamily" id="fam-custom" />
-            <div class="family-tabs">
-            <label class="family-tab" for="fam-view">View</label>
-            <label class="family-tab" for="fam-motion">Motion</label>
-            <label class="family-tab" for="fam-time">Time</label>
-            <label class="family-tab" for="fam-night">Night</label>
-            <label class="family-tab" for="fam-custom">Custom</label>
-            </div>
-            <div class="mode-strip wide" aria-label="Camera visualization mode">
-            <div class="mode-row" data-family="view">
-              <button class="segmented active" type="button" data-vision-mode="camera">RGB</button>
-              <button class="segmented" type="button" data-vision-mode="relief">Relief</button>
-              <button class="segmented" type="button" data-vision-mode="edges">Edges</button>
-            </div>
-            <div class="mode-row" data-family="motion">
-              <button class="segmented" type="button" data-vision-mode="motion">Motion</button>
-              <button class="segmented" type="button" data-vision-mode="difference">Difference</button>
-              <button class="segmented" type="button" data-vision-mode="flow">Flow</button>
-              <button class="segmented" type="button" data-vision-mode="speed">Speed</button>
-              <button class="segmented" type="button" data-vision-mode="motiontrails">Trails</button>
-            </div>
-            <div class="mode-row" data-family="time">
-              <button class="segmented" type="button" data-vision-mode="amplify">Amplify</button>
-              <button class="segmented" type="button" data-vision-mode="background">Background</button>
-              <button class="segmented" type="button" data-vision-mode="chrono">Chrono</button>
-              <button class="segmented" type="button" data-vision-mode="slitscan">Slit Scan</button>
-            </div>
-            <div class="mode-row" data-family="night">
-              <button class="segmented" type="button" data-vision-mode="night">Night</button>
-            </div>
-            <div class="mode-row" data-family="custom">
-              <button class="segmented" type="button" data-vision-mode="lens">Lens</button>
-            </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="tool-drawer">
-<div class="night-grid lens-detail-row" id="displayDetailRow" hidden>
-            <label>Live detail
-              <select id="lensDetail">
-                <option value="auto">Auto — settles by measuring</option>
-                <option value="analysis">Analysis — fastest</option>
-                <option value="540">540p</option>
-                <option value="720">720p</option>
-                <option value="full">Full — all the screen can show</option>
-              </select>
-            </label>
-            <label>Costs here <span class="value" id="lensCostValue">—</span>
-              <span class="helper" id="lensDetailNote"></span>
-              <span class="helper" id="lensDetailCap"></span>
-            </label>
-          </div>
-<section class="night-panel" id="motionPanel" hidden aria-label="Motion speed controls">
-            <div class="night-heading">
-              <strong id="motionPanelTitle">Motion Ironbow</strong>
-              <span class="small-badge warning">Speed, not temperature</span>
-            </div>
-            <p class="helper">
-              Colour is how fast part of the image is moving, measured in frame widths per second.
-              This camera has no infrared sensitivity and measures no temperature at all — the palette
-              is borrowed because it reads well, not because anything here is thermal.
-            </p>
-            <ul class="speed-legend" id="speedLegend">
-              <li><span class="swatch" data-speed="0"></span>Still</li>
-              <li><span class="swatch" data-speed="0.2"></span>Very slow</li>
-              <li><span class="swatch" data-speed="0.4"></span>Slow</li>
-              <li><span class="swatch" data-speed="0.6"></span>Medium</li>
-              <li><span class="swatch" data-speed="0.8"></span>Fast</li>
-              <li><span class="swatch" data-speed="1"></span>Very fast</li>
-              <li><span class="swatch unresolved"></span>Moved, speed unknown</li>
-            </ul>
-            <div class="night-grid" id="motionTrailControls">
-              <label>Trail Length
-                <select id="motionExposure">
-                  <option value="1">1 sec</option>
-                  <option value="2">2 sec</option>
-                  <option value="5">5 sec</option>
-                  <option value="10">10 sec</option>
-                  <option value="30">30 sec</option>
-                  <option value="60">60 sec</option>
-                </select>
-              </label>
-              <label>Sensitivity <span class="range-value" id="motionSensitivityValue">18</span>
-                <input id="motionSensitivity" type="range" min="4" max="60" step="1" value="18" />
-              </label>
-              <label class="switch-row">
-                <input id="motionKeepFastest" type="checkbox" checked /> Keep fastest colour
-              </label>
-              <label class="switch-row">
-                <input id="motionFadeTrails" type="checkbox" checked /> Fade older motion
-              </label>
-              <label class="switch-row">
-                <input id="motionEventTrigger" type="checkbox" /> Event trigger (tripod watch)
-              </label>
-              <label>Horizontal FOV <span class="range-value" id="motionFovValue">not set</span>
-                <input id="motionFov" type="number" min="0" max="180" step="0.1" placeholder="degrees" />
-              </label>
-            </div>
-            <div class="night-status">
-              <div class="readout"><span>Peak speed</span><strong id="motionPeakSpeed">—</strong></div>
-              <div class="readout"><span>Full scale</span><strong id="motionFullScale">—</strong></div>
-              <div class="readout"><span>Moving</span><strong id="motionMovingFraction">—</strong></div>
-              <div class="readout wide"><span>Speed source</span><strong id="motionUnresolved">—</strong></div>
-              <div class="readout"><span>Trail coverage</span><strong id="motionTrailCoverage">—</strong></div>
-              <div class="readout"><span>Angular speed</span><strong id="motionAngular">—</strong></div>
-              <div class="readout"><span>At the ceiling</span><strong id="motionSaturated">—</strong></div>
-              <div class="readout wide"><span>Event</span><strong id="motionEventState">Trigger off</strong></div>
-              <div class="readout wide"><span>Steady gate</span><strong id="steadyState">Gate off</strong></div>
-            </div>
-            <div class="button-row">
-              <button class="secondary-button" id="motionFreezeButton" type="button">Freeze Trail</button>
-              <button class="secondary-button" id="motionClearButton" type="button">Clear Trails</button>
-              <button class="secondary-button" id="motionSnapshotButton" type="button">Save Observation</button>
-            </div>
-            <div class="button-row">
-              <button class="secondary-button" id="motionCalibrateButton" type="button">Hold Still &amp; Calibrate</button>
-              <button class="secondary-button" id="motionSteadyToggle" type="button" aria-pressed="false">Steady Gate: Off</button>
-            </div>
-            <p class="helper" id="motionCalibrationHint">Calibration measures how still this phone is in your hand, so tremor stops counting as motion. It is a gate, not stabilisation.</p>
-            <p class="helper">
-              Save Observation writes a JSON record — speeds, the measured/inferred/unknown split,
-              camera settings, and position and heading when those are enabled — alongside the frame
-              with the same figures burned in. A trail image on its own is unreadable a week later:
-              two trails look identical whether one covered five seconds or sixty.
-            </p>
-          </section>
-<section class="night-panel" id="layerPanel" hidden aria-label="Time layer controls">
-            <div class="night-heading">
-              <strong id="layerPanelTitle">Time layer</strong>
-              <span class="small-badge warning">Builds up over frames</span>
-            </div>
-            <p class="helper" id="layerHelp">These layers hold state across frames, so give them a few seconds before judging them.</p>
-            <div class="night-grid" id="layerControls">
-              <label>Amplifier gain <span class="range-value" id="amplifyGainValue">12×</span>
-                <input id="amplifyGain" type="range" min="1" max="40" step="1" value="12" />
-              </label>
-              <label>Chrono spacing <span class="range-value" id="chronoSpacingValue">4 frames</span>
-                <input id="chronoSpacing" type="range" min="1" max="12" step="1" value="4" />
-              </label>
-              <label>Slit position <span class="range-value" id="slitColumnValue">centre</span>
-                <input id="slitColumn" type="range" min="0" max="1" step="0.02" value="0.5" />
-              </label>
-            </div>
-            <div class="night-status">
-              <div class="readout wide"><span>State</span><strong id="layerState">—</strong></div>
-            </div>
-            <div class="button-row">
-              <button class="secondary-button" id="layerResetButton" type="button">Restart Layer</button>
-            </div>
-          </section>
-<section class="night-panel" id="nightPanel" hidden aria-label="Night and low light controls">
-            <div class="night-heading">
-              <strong>Night / Low Light</strong>
-              <span class="small-badge warning">Computational, not infrared</span>
-            </div>
-            <div class="night-grid">
-              <label>Stack Mode
-                <select id="nightStackMode">
-                  <option value="clean">Clean · average, less noise</option>
-                  <option value="brighten">Brighten · accumulate dim signal</option>
-                  <option value="trails">Light Trails · keep brightest</option>
-                </select>
-              </label>
-              <label>Integration
-                <select id="nightIntegration">
-                  <option value="0.5">0.5 sec</option>
-                  <option value="1">1 sec</option>
-                  <option value="2">2 sec</option>
-                  <option value="4">4 sec</option>
-                  <option value="8">8 sec</option>
-                  <option value="15">15 sec</option>
-                  <option value="30">30 sec</option>
-                </select>
-              </label>
-              <label>Palette
-                <select id="nightPalette">
-                  <option value="natural">Natural</option>
-                  <option value="monochrome">Monochrome</option>
-                  <option value="green">Green</option>
-                  <option value="falsecolor">False Color</option>
-                </select>
-              </label>
-              <label>Light Boost <span class="range-value" id="nightGainValue">1.0×</span>
-                <input id="nightGain" type="range" min="1" max="6" step="0.1" value="1" />
-              </label>
-              <label>Gamma <span class="range-value" id="nightGammaValue">1.00</span>
-                <input id="nightGamma" type="range" min="0.3" max="2" step="0.05" value="1" />
-              </label>
-            </div>
-            <div class="night-status">
-              <div class="readout"><span>Integration</span><strong id="nightIntegrationState">Idle</strong></div>
-              <div class="readout"><span>Frames stacked</span><strong id="nightFrames">0</strong></div>
-              <div class="readout"><span>Stability</span><strong id="nightStability">—</strong></div>
-            </div>
-            <div class="button-row">
-              <button class="secondary-button" id="nightRestartButton" type="button">Restart Exposure</button>
-            </div>
-          </section>
-<section class="night-panel" id="lensPanel" hidden aria-label="Custom lens">
-            <div class="night-heading">
-              <strong>Custom lens</strong>
-              <span class="small-badge" id="lensCoverage">—</span>
-            </div>
-            <p class="helper">
-              Pick a field the app measures, pick the colours it maps to. A lens recolours a
-              measurement; it cannot add one. Saved lenses stay on this device.
-            </p>
-            <div class="lens-chips" id="lensChips"></div>
-            <div class="lens-actions">
-              <button class="ghost" type="button" id="lensNewButton">+ New lens</button>
-              <button class="ghost" type="button" id="lensEditButton">Edit</button>
-              <button class="ghost" type="button" id="lensImportButton">Load…</button>
-              <button class="ghost" type="button" id="lensPhotoButton">Apply to a photo…</button>
-              <button class="ghost" type="button" id="lensShareNowButton">Share this lens…</button>
-            </div>
-            <div id="lensEditor" hidden>
-              <details class="lens-intro" id="lensIntro">
-                <summary>How a lens works</summary>
-                <ol>
-                  <li><strong>A field</strong> — one number the app measures at every pixel,
-                    like how fast that part of the image is moving.</li>
-                  <li><strong>A ramp</strong> — the colours that number maps to, low to high.</li>
-                  <li><strong>Optionally a second field</strong> driving the brightness, so one
-                    picture can carry two measurements at once.</li>
-                </ol>
-                <p>A lens recolours a measurement. It cannot create one, and where nothing was
-                  measured it paints nothing rather than guessing.</p>
-              </details>
-
-              <figure class="lens-preview">
-                <canvas id="lensPreviewCanvas" width="480" height="270"></canvas>
-                <figcaption id="lensPreviewCaption"></figcaption>
-              </figure>
-
-              <div class="lens-step">
-                <h4><span class="lens-step-number">1</span> What should the colour show?</h4>
-                <div class="lens-channels" id="lensColorChannels" role="radiogroup"
-                  aria-label="Field the colour comes from"></div>
-                <p class="helper" id="lensChannelMeaning"></p>
-              </div>
-
-              <div class="lens-step">
-                <h4><span class="lens-step-number">2</span> Pick the colours</h4>
-                <div class="lens-presets" id="lensPresets"></div>
-                <div class="lens-swatch" id="lensSwatch" aria-hidden="true"></div>
-                <div class="lens-stops" id="lensStops"></div>
-                <button class="ghost" type="button" id="lensAddStop">+ Colour stop</button>
-              </div>
-
-              <details class="lens-step lens-advanced">
-                <summary><span class="lens-step-number">3</span> Fine tune</summary>
-                <p class="helper">
-                  The range decides which measured values fill the ramp. Anything below the low
-                  end takes the first colour, anything above the high end takes the last.
-                </p>
-                <div class="night-grid">
-                  <label>Low end <span class="value" id="lensLowValue"></span>
-                    <input type="range" id="lensLow" min="0" max="1" step="0.001" />
-                  </label>
-                  <label>High end <span class="value" id="lensHighValue"></span>
-                    <input type="range" id="lensHigh" min="0" max="1" step="0.001" />
-                  </label>
-                  <label>Curve <span class="value" id="lensGammaValue"></span>
-                    <input type="range" id="lensGamma" min="0.2" max="3" step="0.05" />
-                  </label>
-                </div>
-                <div class="night-grid">
-                  <label>Brightness from
-                    <select id="lensBrightnessChannel"></select>
-                  </label>
-                  <label>Behind the colour
-                    <select id="lensBase">
-                      <option value="black">Black</option>
-                      <option value="grey">Dark grey</option>
-                      <option value="scene">The camera picture</option>
-                    </select>
-                  </label>
-                  <label>Picture through <span class="value" id="lensBlendValue"></span>
-                    <input type="range" id="lensBlend" min="0" max="1" step="0.01" />
-                  </label>
-                </div>
-                <div id="lensBrightnessRange" hidden>
-                  <div class="night-grid">
-                    <label>Bright at <span class="value" id="lensBrightHighValue"></span>
-                      <input type="range" id="lensBrightHigh" min="0" max="1" step="0.001" />
-                    </label>
-                    <label>Dark at <span class="value" id="lensBrightLowValue"></span>
-                      <input type="range" id="lensBrightLow" min="0" max="1" step="0.001" />
-                    </label>
-                  </div>
-                </div>
-              </details>
-
-              <div class="lens-step">
-                <label class="lens-name-field">Name
-                  <input type="text" id="lensName" maxlength="40" autocomplete="off" />
-                </label>
-                <div class="lens-actions">
-                  <button class="primary" type="button" id="lensSaveButton">Save</button>
-                  <button class="ghost" type="button" id="lensShareButton">Copy share link</button>
-                  <button class="ghost" type="button" id="lensExportButton">Export file</button>
-                  <button class="ghost danger" type="button" id="lensDeleteButton">Delete</button>
-                </div>
-                <p class="helper" id="lensStatus" role="status"></p>
-              </div>
-            </div>
-            <div id="lensShareBox" hidden>
-              <p class="helper" id="lensShareSummary"></p>
-              <textarea id="lensShareText" rows="4" readonly
-                aria-label="Share code for this lens"></textarea>
-              <p class="helper">
-                Select the text above and copy it. Anyone who opens the link, or pastes the
-                code into Load…, gets this lens. Nothing is uploaded — a shared lens is just text.
-              </p>
-              <div class="lens-actions">
-                <button class="ghost" type="button" id="lensShareCopyButton">Copy</button>
-                <button class="ghost" type="button" id="lensShareCloseButton">Done</button>
-              </div>
-              <p class="helper" id="lensShareStatus" role="status"></p>
-            </div>
-            <p class="helper" id="lensPhotoStatus" role="status"></p>
-            <input type="file" id="lensPhotoFile" accept="image/*" hidden />
-            <div id="lensImport" hidden>
-              <p class="helper">
-                Paste a share link or code from someone else, or open an exported file.
-                Nothing is uploaded and nothing is fetched from anyone — a shared lens is
-                just text that describes a mapping.
-              </p>
-              <textarea id="lensImportText" rows="3" placeholder="Paste a lens link or code"></textarea>
-              <div class="lens-actions">
-                <button class="primary" type="button" id="lensImportConfirm">Add lens</button>
-                <button class="ghost" type="button" id="lensImportFileButton">Open file…</button>
-                <button class="ghost" type="button" id="lensImportCancel">Cancel</button>
-              </div>
-              <input type="file" id="lensImportFile" accept="application/json,.json" hidden />
-              <p class="helper" id="lensImportStatus" role="status"></p>
-            </div>
-          </section>
-<div class="lens-row" id="lensRow" hidden aria-label="Camera lens"></div>
-<div class="manual-row" id="manualRow" aria-label="Manual camera controls">
-            <button class="manual-toggle" id="torchToggle" type="button" hidden aria-pressed="false">🔦 Torch</button>
-            <label class="toggle inline-select" id="whiteBalanceWrap" hidden>WB
-              <select id="whiteBalanceMode"></select>
-            </label>
-            <label class="manual-slider" id="focusDistanceWrap" hidden>Focus
-              <input id="focusDistance" type="range" min="0" max="1" step="0.01" value="0.5" />
-            </label>
-            <label class="toggle inline-select" id="exposureModeWrap" hidden>Exp
-              <select id="exposureMode"></select>
-            </label>
-            <label class="manual-slider" id="exposureCompWrap" hidden>EV
-              <input id="exposureCompensation" type="range" min="-3" max="3" step="0.1" value="0" />
-            </label>
-            <label class="manual-slider" id="exposureTimeWrap" hidden>Shutter
-              <input id="exposureTime" type="range" min="0" max="1" step="0.01" value="0.5" />
-            </label>
-            <label class="manual-slider" id="isoWrap" hidden>ISO
-              <input id="isoValue" type="range" min="0" max="1" step="0.01" value="0.5" />
-            </label>
-            <label class="manual-slider">Brightness <span class="range-value" id="exposureGainValue">1.0×</span>
-              <input id="exposureGain" type="range" min="0.25" max="4" step="0.05" value="1" />
-            </label>
-            <label class="manual-slider">Gamma <span class="range-value" id="exposureGammaValue">1.00</span>
-              <input id="exposureGamma" type="range" min="0.4" max="2.2" step="0.05" value="1" />
-            </label>
-            <button class="secondary-button" id="exposureResetButton" type="button">Reset Exposure</button>
-            <p class="helper" id="exposureNote">Brightness and Gamma are applied after capture — they cannot recover a blown highlight or add light that was never collected. Real exposure controls appear above only where this device exposes them.</p>
-          </div>
-<div class="observe-row" aria-label="Observation tools">
-            <label class="toggle"><input type="checkbox" id="trackingToggle" checked /> Track objects</label>
-            <label class="toggle"><input type="checkbox" id="zebraToggle" /> Zebra</label>
-            <label class="toggle"><input type="checkbox" id="focusPeakToggle" /> Focus peak</label>
-            <label class="toggle inline-select">Trails
-              <select id="trailPreference">
-                <option value="off">Off</option>
-                <option value="short">Short</option>
-                <option value="medium">Medium</option>
-                <option value="long">Long</option>
-              </select>
-            </label>
-          </div>
-<canvas class="histogram" id="histogramCanvas" width="256" height="46" aria-label="Live luminance histogram"></canvas>
-<div class="metric-strip" id="metricStrip" aria-label="Live camera measurements">
-            <div class="metric"><span>Brightness</span><strong id="metricBrightness">&mdash;</strong></div>
-            <div class="metric"><span>Contrast</span><strong id="metricContrast">&mdash;</strong></div>
-            <div class="metric"><span>Detail</span><strong id="metricDetail">&mdash;</strong></div>
-            <div class="metric"><span>Motion</span><strong id="metricMotion">&mdash;</strong></div>
-          </div>
-<div class="metric-strip observe" aria-label="Observation measurements">
-            <div class="metric"><span>Analysis</span><strong id="metricAnalysis">—</strong></div>
-            <div class="metric"><span>Adaptive</span><strong id="metricAdaptive">—</strong></div>
-            <div class="metric"><span>Fastest</span><strong id="metricFastest">—</strong></div>
-            <div class="metric"><span>Dropped</span><strong id="metricDropped">—</strong></div>
-          </div>
-<div class="button-row">
-            <button class="primary-button" id="cameraButton" type="button">Enable Camera</button>
-            <button class="secondary-button" id="switchCameraButton" type="button" disabled>Use Front Camera</button>
-            <button class="secondary-button camera-browser-fallback" id="cameraBrowserFallback" type="button" hidden>Open Live Camera in Edge</button>
-          </div>
-<section class="night-panel" id="recordPanel" aria-label="Recording">
-            <div class="night-heading">
-              <strong>Record</strong>
-              <span class="small-badge" id="recordFormat">checking…</span>
-            </div>
-            <div class="night-grid">
-              <label>Recording detail
-                <select id="recordDetail">
-                  <option value="preview">Match the preview &mdash; fastest</option>
-                  <option value="higher">Higher &mdash; 2&times; the pixels</option>
-                  <option value="full">Full &mdash; the screen's real pixels</option>
-                  <option value="sensor">Sensor &mdash; full resolution, ~1 frame/sec</option>
-                </select>
-              </label>
-            </div>
-            <p class="helper" id="recordDetailNote"></p>
-            <div class="night-grid">
-              <label>Codec request <span class="helper">diagnostic</span>
-                <select id="recordCodec">
-                  <option value="auto">Automatic &mdash; ask for H.264 Level 3.0 first</option>
-                  <option value="no-level">MP4 without naming a level</option>
-                  <option value="default">Let the browser choose everything</option>
-                </select>
-              </label>
-            </div>
-            <p class="helper">
-              <strong>avc1.42E01E is H.264 Level 3.0</strong>, whose frame ceiling is 1620
-              macroblocks. A 548&times;732 frame is 1610 &mdash; ten short of the limit &mdash;
-              and every larger setting here is over it (1033&times;775 is 3185, even 720p is
-              3600). If an encoder honours the level it is handed, that one string would cap
-              recordings at almost exactly the size that keeps appearing. Chromium refuses every
-              codec-parameterised string outright and takes only plain MP4; what Safari does is
-              not known from here. Record the same scene on each setting and compare the
-              <strong>encoded</strong> size in the log below &mdash; that is the number that
-              settles it.
-            </p>
-            <details class="explainer">
-              <summary>How recording works, and what its frame rate means</summary>
-              <p class="helper">
-              Records what is on screen &mdash; the filter as well as the camera &mdash; in
-              clips of at most 30 seconds. Each clip is a finished file the moment it is cut, so
-              a call or a lock screen costs the clip in hand and nothing already recorded.
-            </p>
-            <p class="helper">
-              Several filters compute at a small analysis frame for speed, and the recording is
-              scaled up from it to the size you actually see. That is the picture on screen, not
-              extra detail: <strong>Live detail</strong> above is what makes the filter itself
-              render larger, and it costs frame rate. The camera on its own records at its own
-              full resolution with no scaling.
-            </p>
-            <p class="helper">
-              <strong>Recording detail lifts the preview's ceiling.</strong> A filter normally
-              renders no larger than this screen's own logical pixel count &mdash; the cap that
-              stopped the preview lagging &mdash; which is right for something you are watching
-              live and wrong for a file you will watch full screen later. Raising it applies
-              while recording only, and it costs frame rate in proportion: roughly 0.4 megapixels
-              a frame at Match, 0.8 at Higher, and up to about 2 at Full on this phone. An
-              unfiltered recording ignores all of this and uses the camera's own resolution.
-            </p>
-            <p class="helper">
-              <strong>Three rates, and they are three different things.</strong> The camera
-              delivers frames at one rate, the vision pipeline analyses at another, and the
-              recording gets a frame every time a filtered picture is actually redrawn. On a
-              heavy filter the last one is the slowest, and it is the one the file contains &mdash;
-              measured, not requested, and shown while recording. A recorder cannot invent
-              frames the pipeline never drew, so if the number is low the levers are
-              <strong>Live detail</strong> and the vision rate in Settings, not the recorder.
-            </p>
-            </details>
-            <div class="button-row">
-            </div>
-            <p class="helper" id="recordMessage">Enable the camera to record.</p>
-            <div class="clip-list" id="clipList"></div>
-            <label class="burst-log-label">Recording diagnostics
-              <textarea id="recordLog" rows="6" readonly
-                        placeholder="One line per clip: the camera stream, the render size, the recording canvas, and what the encoder actually wrote."></textarea>
-            </label>
-            <div class="button-row">
-              <button class="secondary-button" id="recordCopyLog" type="button">Copy Diagnostics</button>
-            </div>
-            <p class="helper" id="clipStorage"></p>
-            <p class="helper">
-              Held clips live on this device only and are never uploaded. They are also
-              <strong>temporary</strong>: the browser may clear them when the phone is short of
-              space, or after weeks without opening the app. Export anything worth keeping.
-            </p>
-            <div class="button-row">
-              <button class="secondary-button" id="clipClearButton" type="button" hidden>Delete All Held Clips</button>
-            </div>
-
-            <div class="night-heading" style="margin-top:.8rem">
-              <strong>GIF</strong>
-              <span class="small-badge warning">256 colours, and large</span>
-            </div>
-            <details class="explainer">
-              <summary>What a GIF costs</summary>
-              <p class="helper">
-              No browser can encode a GIF, so this app writes the file itself. The format holds
-              256 colours and compresses each frame on its own, so a few seconds of camera can
-              outweigh a thirty-second video &mdash; keep them short and small. What it buys is
-              that a GIF plays inline anywhere, in any message, with no player and no codec
-              question.
-            </p>
-            </details>
-            <div class="night-grid">
-              <label>Length
-                <select id="gifSeconds">
-                  <option value="2">2 seconds</option>
-                  <option value="4" selected>4 seconds</option>
-                  <option value="6">6 seconds</option>
-                </select>
-              </label>
-              <label>Frame rate
-                <select id="gifFps">
-                  <option value="8">8 per second</option>
-                  <option value="10" selected>10 per second</option>
-                  <option value="12.5">12.5 per second</option>
-                </select>
-              </label>
-              <label>Long side
-                <select id="gifWidth">
-                  <option value="240">240 px</option>
-                  <option value="320" selected>320 px</option>
-                  <option value="480">480 px</option>
-                </select>
-              </label>
-            </div>
-            <div class="button-row">
-              <button class="primary-button" id="gifButton" type="button" disabled>Capture GIF</button>
-              <button class="secondary-button" id="gifSaveButton" type="button" hidden>Save</button>
-              <button class="secondary-button" id="gifShareButton" type="button" hidden>Share</button>
-            </div>
-            <p class="helper" id="gifEstimate"></p>
-            <p class="helper" id="gifMessage" aria-live="polite"></p>
-            <figure class="gif-preview" id="gifPreviewFigure" hidden>
-              <img id="gifPreview" alt="The GIF just captured" />
-              <figcaption id="gifCaption"></figcaption>
-            </figure>
-          </section>
-<p class="helper" id="cameraMessage">Tap Enable Camera for live video. Pinch the preview or use the zoom slider once the camera is live.</p>
-          <p class="stage-trace" id="cameraStage" hidden>stage: idle</p>
-        </div>
-</article>
-        </div>
-      </section>
-
-      <section class="tab-panel" id="tab-motion" role="tabpanel" aria-labelledby="tabbtn-motion" hidden>
-        <div class="single-panel">
-        <article class="panel compact-panel">
-          <div class="panel-heading"><div><p class="section-kicker">DEVICE MOTION</p><h2>Orientation + IMU</h2></div></div>
-          <button class="primary-button full" id="motionButton" type="button">Enable Motion Sensors</button>
-          <div class="readout-grid three">
-            <div class="readout"><span>Alpha</span><strong id="alphaValue">—</strong></div>
-            <div class="readout"><span>Beta</span><strong id="betaValue">—</strong></div>
-            <div class="readout"><span>Gamma</span><strong id="gammaValue">—</strong></div>
-          </div>
-          <div class="wide-readout"><span>Acceleration XYZ</span><strong id="accelValue">—</strong></div>
-          <div class="wide-readout"><span>Rotation αβγ</span><strong id="rotationValue">—</strong></div>
-          <p class="helper" id="motionMessage">On iPhone, motion uses a special explicit permission request, so a tap can trigger its prompt directly.</p>
-        </article>
-        </div>
-      </section>
-
-      <section class="tab-panel" id="tab-world" role="tabpanel" aria-labelledby="tabbtn-world" hidden>
-      <section class="panel terrain-panel">
-        <div class="panel-heading">
-          <div><p class="section-kicker">POSITION &amp; TERRAIN</p><h2>Where you are</h2></div>
-        </div>
-
-        <div class="button-row">
-          <button class="primary-button" id="locateAndLoadButton" type="button">Use My Location</button>
-          <button class="secondary-button" id="gpsButton" type="button">Start GPS Track</button>
-          <button class="secondary-button" id="resetGpsButton" type="button">Clear Track</button>
-        </div>
-        <p class="helper" id="gpsMessage">Use My Location starts GPS if it is not already running, waits for a fix, and loads the terrain around it — one tap for the whole sequence.</p>
-        <p class="helper warning-copy compact-warning">
-          Loading terrain fetches map tiles over the network — the only request this app makes.
-          It sends tile indices, never your coordinates. <a href="#terrainPrivacy">What that means →</a>
-        </p>
-
-        <div class="readout-grid two">
-          <div class="readout"><span>Latitude</span><strong id="latValue">—</strong></div>
-          <div class="readout"><span>Longitude</span><strong id="lonValue">—</strong></div>
-          <div class="readout"><span>Altitude</span><strong id="altValue">—</strong></div>
-          <div class="readout"><span>Speed</span><strong id="speedValue">—</strong></div>
-          <div class="readout"><span>Track points</span><strong id="trackValue">0</strong></div>
-          <div class="readout"><span>Your elevation</span><strong id="terrainElevation">—</strong></div>
-        </div>
-
-        <figure class="terrain-output">
-          <canvas id="terrainCanvas"></canvas>
-          <figcaption>Drag to pan · pinch or scroll to zoom · double-tap to reset. Hypsometric tint + hillshade + contours; ✛ marks your position.</figcaption>
-        </figure>
-
-        <div class="button-row">
-          <button class="secondary-button" id="terrain3dButton" type="button">Show in 3D View</button>
-          <button class="secondary-button" id="terrainClear3dButton" type="button">Remove From 3D</button>
-        </div>
-        <p class="helper" id="terrainMessage">Tap Use My Location, or open Pick a location below to type coordinates.</p>
-
-        <details class="disclosure">
-          <summary>Terrain detail &amp; readouts</summary>
-          <div class="diagnostics-grid">
-            <div class="readout"><span>Slope here</span><strong id="terrainSlope">—</strong></div>
-            <div class="readout"><span>Range in view</span><strong id="terrainRange">—</strong></div>
-            <div class="readout"><span>Contour interval</span><strong id="terrainContour">—</strong></div>
-            <div class="readout"><span>Resolution</span><strong id="terrainResolution">—</strong></div>
-            <div class="readout"><span>Tiles</span><strong id="terrainTiles">—</strong></div>
-            <div class="readout wide"><span>Survey consistency</span><strong id="terrainSourceMix">—</strong></div>
-            <div class="readout wide"><span>In 3D view</span><strong id="terrainSceneState">Not loaded</strong></div>
-            <div class="readout wide"><span>Datum difference</span><strong id="terrainDatumGap">—</strong></div>
-          </div>
-        </details>
-
-        <details class="disclosure">
-          <summary>Map settings</summary>
-          <div class="night-grid">
-            <label>Radius
-              <select id="terrainRadius">
-                <option value="1609">1 mile</option>
-                <option value="3218" selected>2 miles</option>
-                <option value="8047">5 miles</option>
-              </select>
-            </label>
-            <label>Relief exaggeration <span class="range-value" id="terrainExaggerationValue">2.0×</span>
-              <input id="terrainExaggeration" type="range" min="1" max="8" step="0.5" value="2" />
-            </label>
-            <label>Sun bearing <span class="range-value" id="terrainAzimuthValue">315°</span>
-              <input id="terrainAzimuth" type="range" min="0" max="359" step="5" value="315" />
-            </label>
-            <label class="switch-row"><input id="terrainContours" type="checkbox" checked /> Contour lines</label>
-          </div>
-        </details>
-
-        <details class="disclosure">
-          <summary>Pick a location by hand</summary>
-          <p class="helper">GPS is never consulted at all on this path.</p>
-          <div class="night-grid">
-            <label>Latitude<input id="terrainLat" type="number" step="0.0001" placeholder="27.9506" /></label>
-            <label>Longitude<input id="terrainLon" type="number" step="0.0001" placeholder="-82.4572" /></label>
           </div>
           <div class="button-row">
-            <button class="secondary-button" id="loadTerrainManualButton" type="button">Load Entered Location</button>
+            <button type="button" class="btn" id="v2PickerCentre">✛ Sample centre</button>
+            <!-- The shortest path from "that colour there" to "the lens is
+                 now looking for it": no workbench, no round trip. -->
+            <button type="button" class="btn" id="v2PickerUseInLens" hidden></button>
+            <button type="button" class="btn" id="v2PickerCopy" disabled>Copy hex</button>
+            <button type="button" class="btn" id="v2PickerAddStop" disabled>Add as ramp stop</button>
+            <button type="button" class="btn" id="v2PickerClose">Close</button>
           </div>
-        </details>
-
-        <p class="helper warning-copy" id="terrainPrivacy">
-          <strong>Terrain is the only part of this app that uses the network.</strong>
-          A tile request carries a zoom and two integer tile indices — never a latitude, a
-          longitude, an accuracy or an identifier. Those indices name a square several
-          kilometres across, so the tile server learns roughly which few-kilometre square
-          you asked about and nothing finer. Elevation data is roughly 30 m resolution:
-          good for a hillside, not for a kerb.
-        </p>
-      </section>
-        <div class="scene-slot" data-scene-slot></div>
-      </section>
-
-      <section class="tab-panel" id="tab-rig" role="tabpanel" aria-labelledby="tabbtn-rig" hidden>
-      <section class="panel rig-panel" id="rigPanel">
-        <div class="panel-heading">
-          <div><p class="section-kicker">RIG PUPPET</p><h2>Animate a model by hand</h2></div>
-        </div>
-        <p class="lead-copy">
-          Load a rigged GLB, pick a bone, and move the phone — the bone copies its rotation.
-          Record a loop, then record the next bone over the top of it.
-        </p>
-        <p class="helper">
-          The phone is the controller, not the camera. The gyroscope gives sub-degree rotation in
-          your hand, in any light, with nothing to download — a puppet handle rather than a tracker.
-          Models stay on the device; nothing is uploaded.
-        </p>
-
-        <div class="button-row">
-          <label class="file-button" for="rigFile">Load GLB / glTF</label>
-          <input id="rigFile" type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" hidden />
-          <button class="secondary-button" id="rigClearButton" type="button">Remove Model</button>
-        </div>
-        <p class="helper" id="rigMessage">No model loaded.</p>
-
-        <div class="readout-grid two">
-          <div class="readout"><span>Armed bone</span><strong id="rigArmedBone">none</strong></div>
-          <div class="readout"><span>Loop position</span><strong id="rigClock">0.00 s</strong></div>
-          <div class="readout"><span>Channels</span><strong id="rigChannelCount">0</strong></div>
-          <div class="readout"><span>State</span><strong id="rigState">Idle</strong></div>
+          <p class="hint" id="v2PickerLensNote"></p>
         </div>
 
-        <div class="button-row">
-          <button class="primary-button" id="rigRecordButton" type="button" disabled>Record Bone</button>
-          <button class="secondary-button" id="rigPlayButton" type="button" disabled>Play Loop</button>
-          <button class="secondary-button" id="rigResetPoseButton" type="button" disabled>Reset Pose</button>
-        </div>
-
-        <div class="bone-list" id="rigBoneList">Load a model to list its bones.</div>
-
-        <details class="disclosure">
-          <summary>Smoothing &amp; loop</summary>
-          <div class="night-grid">
-            <label>Loop length
-              <select id="rigLoop">
-                <option value="1">1 sec</option>
-                <option value="2" selected>2 sec</option>
-                <option value="4">4 sec</option>
-                <option value="8">8 sec</option>
-              </select>
-            </label>
-            <label>Steadiness <span class="range-value" id="rigMinCutoffValue">1.2 Hz</span>
-              <input id="rigMinCutoff" type="range" min="0.2" max="6" step="0.1" value="1.2" />
-            </label>
-            <label>Responsiveness <span class="range-value" id="rigBetaValue">0.05</span>
-              <input id="rigBeta" type="range" min="0" max="1" step="0.01" value="0.05" />
-            </label>
+        <!-- The lens workbench (Milestone E). Built from data: the channel list,
+             the bindings and the ramp stops are the lens document itself, and
+             the preview IS the lens running as the active filter. -->
+        <div class="card" id="v2LensWorkbench" hidden>
+          <h3 id="v2LensTitle">Custom lens</h3>
+          <input class="lens-name" id="v2LensName" type="text" maxlength="40" placeholder="Lens name" />
+          <input class="lens-name" id="v2LensNote" type="text" maxlength="280" placeholder="What it does, in a line" />
+          <p class="hint" id="v2LensOrigin" hidden></p>
+          <div class="lens-field">
+            <label for="v2LensChannel">Colour from</label>
+            <select id="v2LensChannel"></select>
+            <span class="hint" id="v2LensUnit"></span>
           </div>
-          <p class="helper">Steadiness is the cutoff while you hold still — lower is calmer. Responsiveness lets fast movement through unfiltered, so a deliberate gesture does not arrive late.</p>
-        </details>
+          <p class="hint" id="v2LensChannelMeaning"></p>
+          <div class="lens-field">
+            <label for="v2LensOutput">Does</label>
+            <select id="v2LensOutput">
+              <option value="paint">paint false colour</option>
+              <option value="mask">keep colour where it matches</option>
+              <option value="swap">recolour the matches</option>
+            </select>
+            <span></span>
+          </div>
+          <div class="lens-field" id="v2LensReferenceRow" hidden>
+            <label for="v2LensReference">Reference</label>
+            <input type="color" id="v2LensReference" />
+            <button type="button" class="chip" id="v2LensUseSample">Use sample</button>
+          </div>
+          <div class="lens-field" id="v2LensTargetRow" hidden>
+            <label for="v2LensTarget">Recolour to</label>
+            <input type="color" id="v2LensTarget" />
+            <span></span>
+          </div>
+          <div id="v2LensBindings"></div>
+          <div class="lens-field">
+            <label for="v2LensBrightChannel">Brightness</label>
+            <select id="v2LensBrightChannel"></select>
+            <span class="hint" id="v2LensBrightUnit"></span>
+          </div>
+          <div id="v2LensBrightBindings"></div>
+          <div class="lens-swatch" id="v2LensSwatch"></div>
+          <div class="lens-presets" id="v2LensPresets"></div>
+          <div class="button-row"><button type="button" class="btn" id="v2LensReverse">🔄 Reverse colours</button></div>
+          <div class="lens-stops" id="v2LensStops"></div>
+          <div class="button-row"><button type="button" class="btn" id="v2LensAddStop">+ Stop</button></div>
+          <div class="lens-field">
+            <label for="v2LensBase">Base</label>
+            <select id="v2LensBase">
+              <option value="black">black</option>
+              <option value="grey">grey</option>
+              <option value="scene">camera picture</option>
+            </select>
+            <span></span>
+          </div>
+          <div id="v2LensBlend"></div>
+          <p class="lens-describe" id="v2LensDescribe"></p>
+          <div class="button-row">
+            <button type="button" class="btn" id="v2LensSave">Save</button>
+            <button type="button" class="btn" id="v2LensSaveAsNew">Save as new</button>
+            <button type="button" class="btn" id="v2LensExport">Export</button>
+            <button type="button" class="btn" id="v2LensDelete">Delete</button>
+            <button type="button" class="btn" id="v2LensClose">Close</button>
+          </div>
+          <p class="stage-note" id="v2LensStatus"></p>
+        </div>
 
-        <details class="disclosure">
-          <summary>Gait — six legs from one take</summary>
-          <p class="helper">
-            A walking hexapod's legs are one cycle at six offsets, not six separate performances.
-            Record a single leg, name the six here, and the gait distributes it. A leg you record
-            by hand keeps its own take.
+        <!-- The main screen shows RESULTS, not instruments (Joshua, 2026-09-01:
+             "hide all the diagnostics in settings, not in the main app"). The
+             full measurements live under More. -->
+        <div class="card">
+          <h3>Captures</h3>
+          <p class="stage-note" id="v2Stage"></p>
+          <p class="stage-note" id="v2PhotoResult"></p>
+          <button type="button" class="share-save" id="v2SharePhoto" hidden>Share &middot; Save to Photos</button>
+          <p class="stage-note" id="v2RecordSummary"></p>
+          <button type="button" class="share-save" id="v2ShareClip" hidden>Share &middot; Save to Photos</button>
+          <p class="hint">Full measurements for every capture are under More.</p>
+        </div>
+      </div>
+      <input type="file" id="v2LensImport" accept=".json,application/json" hidden />
+
+      <div id="v2MoreRoute" hidden>
+        <div class="card">
+          <h3>Photo</h3>
+          <p>
+            The live stream stays responsive; the shutter briefly asks the SAME camera track
+            for its maximum mode, waits for a real decoded frame at the new size, renders the
+            ACTIVE filter once at that measured size, saves the JPEG, then restores the
+            responsive stream. A short pause during capture is the trade. Saved dimensions are
+            what the camera actually granted &mdash; never the request, never upscaled.
           </p>
-          <div class="night-grid">
-            <label>Pattern
-              <select id="rigGait">
-                <option value="none">Off</option>
-                <option value="tripod">Tripod — three down at all times</option>
-                <option value="wave">Wave — one leg at a time</option>
-              </select>
-            </label>
-            <label>Source channel
-              <select id="rigGaitSource"><option value="">—</option></select>
-            </label>
+          <p class="stage-note timing" id="v2PhotoTiming"></p>
+        </div>
+
+        <div class="card">
+          <h3>Recording</h3>
+          <p>
+            RGB records the camera stream directly while the stream fits the encoder's
+            frame limit; above it, and for every filter, the clip is the same GPU render the
+            preview shows, at the RECORD IN size. The container is the browser's own choice,
+            and every number below is measured from the finished file &mdash; never from
+            what was asked.
+          </p>
+          <p class="stage-note" id="v2RecordResult"></p>
+          <p>
+            <strong>Encoder envelope probe.</strong> Records a synthetic moving-noise canvas
+            through the same recorder at 4:3 sizes bracketing the H.264 Level 5.2 frame limit
+            (36,864 macroblocks), then MAX at 30 / 15 / 10 / 5 fed fps &mdash; each file decoded.
+            About 30 s; nothing is saved. Its verdict becomes this device's ENCODER capability.
+          </p>
+          <div class="button-row"><button type="button" class="btn" id="v2EncoderProbe">Probe encoder envelope</button></div>
+          <pre class="probe-out" id="v2EncoderProbeOut" hidden></pre>
+        </div>
+
+        <div class="card">
+          <h3>Source truth</h3>
+          <div class="diagnostics" aria-label="Frame truth table">
+            <div><span class="k">SOURCE</span><b id="v2DiagSource">not started</b></div>
+            <div><span class="k">CAPABILITY</span><span id="v2DiagCapability">—</span></div>
+            <div><span class="k">ENCODER</span><span id="v2DiagEncoder">—</span></div>
+            <div><span class="k">VIEWFINDER</span><span id="v2DiagViewfinder">—</span></div>
+            <div><span class="k">PREVIEW</span><span id="v2DiagPreview">—</span></div>
+            <div><span class="k">ANALYSIS</span><span id="v2DiagAnalysis">—</span></div>
+            <div><span class="k">PHOTO POLICY</span><span id="v2DiagPhotoPolicy">maximum available stream on shutter</span></div>
+            <div><span class="k">LAST PHOTO</span><span id="v2DiagLastPhoto">none yet</span></div>
+            <div><span class="k">RECORD IN</span><span id="v2DiagRecordIn">—</span></div>
+            <div><span class="k">ENCODED</span><span id="v2DiagEncoded">none yet</span></div>
+            <div><span class="k">STATE</span><span id="v2DiagState">idle</span></div>
+            <div><span class="k">TRACK</span><span id="v2DiagTrack">—</span></div>
           </div>
-          <label class="stacked-field">Leg bones, in order: front-left, mid-left, rear-left, front-right, mid-right, rear-right
-            <input id="rigLegs" type="text" placeholder="legL1, legL2, legL3, legR1, legR2, legR3" />
-          </label>
-          <div class="button-row">
-            <button class="secondary-button" id="rigGuessLegsButton" type="button">Guess From Names</button>
-          </div>
-        </details>
-
-        <div class="button-row">
-          <button class="secondary-button" id="rigExportButton" type="button" disabled>Export Animation JSON</button>
-          <button class="secondary-button" id="rigClearTakesButton" type="button">Clear All Takes</button>
-        </div>
-      </section>
-        <div class="scene-slot" data-scene-slot></div>
-      </section>
-
-      <section class="tab-panel" id="tab-burst" role="tabpanel" aria-labelledby="tabbtn-burst" hidden>
-      <section class="panel">
-        <div class="panel-heading">
-          <div><p class="section-kicker">MULTI-FRAME</p><h2>Burst Detail Probe</h2></div>
-          <span class="small-badge warning">Measured, then merged</span>
-        </div>
-        <p class="lead-copy">
-          Hold the phone as still as you can and press Capture. This records a burst, measures
-          where your hand actually put each frame to a fraction of a pixel, and reports whether
-          those frames between them carry more detail than any one of them does. Merge then
-          builds the picture and puts it beside the single frame it has to beat.
-        </p>
-
-        <div class="burst-enable" id="burstEnableRow">
-          <button class="secondary-button" id="burstEnableCamera" type="button">Enable Camera</button>
-          <button class="secondary-button" id="burstEnableMotion" type="button">Enable Motion</button>
-        </div>
-        <p class="helper" id="burstReadiness">Camera and motion can both be started from here.</p>
-
-        <!--
-          THE CONTROLS SIT DIRECTLY UNDER THE PREVIEW, and everything else is
-          below them.
-
-          Joshua: "the layout of the tab is still not optimal as there is a
-          large black gap between the camera and where you capture — you can't
-          see what you're taking." The scatter plot and two rows of readouts
-          used to sit between the two, which put the shutter off the bottom of
-          the screen while the preview was on it. Every readout here describes
-          a burst that has already been taken; none of them is needed while
-          aiming, so none of them belongs between the view and the button.
-        -->
-        <div class="burst-stage" id="burstStage">
-          <video id="burstVideo" autoplay muted playsinline></video>
-          <div class="burst-target" aria-hidden="true"><span></span></div>
-        </div>
-        <div class="button-row burst-actions">
-          <button class="primary-button" id="burstCaptureButton" type="button">Capture Burst</button>
-          <button class="secondary-button" id="burstMergeButton" type="button" disabled>Merge Frames</button>
-        </div>
-        <p class="helper" id="burstProgress" aria-live="polite"></p>
-        <p class="value" id="burstVerdict">Not captured yet.</p>
-        <p class="helper" id="burstReason">
-          Point at something with texture &mdash; ground, foliage, brickwork. A blank wall has
-          nothing to measure movement against.
-        </p>
-
-        <div class="metric-strip">
-          <div class="metric"><span>Frames</span><strong id="burstFrames">&mdash;</strong></div>
-          <div class="metric"><span>Measurable</span><strong id="burstConfident">&mdash;</strong></div>
-          <div class="metric"><span>Distinct</span><strong id="burstDistinct">&mdash;</strong></div>
-          <div class="metric"><span>Travel</span><strong id="burstTravel">&mdash;</strong></div>
-          <div class="metric"><span>Grid coverage</span><strong id="burstSpread">&mdash;</strong></div>
         </div>
 
-        <figure class="burst-figure" id="burstCompareFigure" hidden>
-          <canvas id="burstCompare" aria-label="Upscaled, sharpened and merged versions side by side"></canvas>
-          <figcaption id="burstCompareCaption"></figcaption>
-        </figure>
-        <p class="helper" id="burstMergeVerdict"></p>
-        <div class="button-row" id="burstSaveRow" hidden>
-          <button class="secondary-button" id="burstSaveMerged" type="button">Save Result</button>
-          <button class="secondary-button" id="burstSaveFigure" type="button">Save Comparison</button>
-          <button class="secondary-button" id="burstShareMerged" type="button" hidden>Share</button>
+        <div class="card">
+          <h3>What this build is</h3>
+          <p>
+            V2 Milestones A–C: the camera shell, the frame-geometry authority, the GPU
+            render contract and recording truth. The live stream is a performance decision;
+            the photo is a quality decision (the camera's maximum, fetched only for the shot);
+            a clip is measured from its own file and held under the encoder's measured frame
+            limit. Preview, photo and filtered recording are ONE fragment shader at explicit
+            sizes, and the truth table above is the authority's live output &mdash; every row
+            a separate fact with its own policy.
+          </p>
+          <p>
+            Milestone D has begun: Motion is the first temporal tool, its frame history held
+            at ANALYSIS resolution and saying so. The lens workbench (E) follows. The legacy
+            app is unaffected and remains the default URL.
+          </p>
         </div>
-        <p class="helper" id="burstSaveStatus" aria-live="polite"></p>
-        <p class="helper">
-          A number only appears when the box contains <strong>one straight edge tilted a few
-          degrees</strong> &mdash; a door frame, a book, a sign. Grass and brickwork give you the
-          pictures to compare by eye but nothing to measure, and the report says so rather than
-          inventing a figure. Brightness only: colour would come from the reference frame and is
-          not part of what is being compared.
-        </p>
+      </div>
 
-        <figure class="burst-figure burst-scatter-figure">
-          <canvas id="burstScatter" width="320" height="320" aria-label="Sub-pixel offsets of each captured frame"></canvas>
-          <figcaption>
-            Where each frame landed inside one pixel. Filled marks are the frames that would be
-            kept; hollow ones duplicate an offset already held. Detail is recovered by
-            <em>covering</em> this square &mdash; frames stacked in one spot are copies of the
-            same measurement.
-          </figcaption>
-        </figure>
+      <div id="v2RoutePlaceholder" class="placeholder" hidden>
+        <h2 id="v2PlaceholderTitle"></h2>
+        <span id="v2PlaceholderPlan"></span>
+        <div><button class="btn" id="v2LegacyLink" type="button">Open the legacy app</button></div>
+      </div>
 
-        <p class="helper">
-          Both sources are shown because they are checked against each other: the gyroscope
-          predicts where the frame should have moved, and the image says where it did. Where they
-          agree, motion sensors alone could drive the capture. Where they disagree, they could not.
-        </p>
-        <div class="metric-strip">
-          <div class="metric"><span>From the image</span><strong id="burstImageMove">&mdash;</strong></div>
-          <div class="metric"><span>From the gyroscope</span><strong id="burstGyroMove">&mdash;</strong></div>
-          <div class="metric"><span>Agreement</span><strong id="burstAgreement">&mdash;</strong></div>
-        </div>
-
-        <p class="helper">
-          Only what is inside the box is measured &mdash; the centre of the sensor at full
-          resolution, not the whole frame. Fill it with texture: gravel, foliage, brickwork,
-          fabric weave. A blank wall or a flat sky inside the box leaves nothing to measure
-          movement against, however detailed the rest of the view is.
-        </p>
-        <p class="helper">
-          <strong>Holding still beats moving deliberately</strong>, which is the opposite of what
-          it sounds like. Detail is recovered from where the camera sits <em>within</em> a pixel,
-          so a shift of seven pixels and a shift of a fifth of a pixel count the same &mdash;
-          travelling further adds nothing and blurs each frame while it does it. Ordinary tremor
-          is already the right size.
-        </p>
-
-        <div class="burst-enable">
-          <label class="burst-fov">Lens FOV
-            <input id="burstFov" type="number" min="0" max="180" step="0.1" placeholder="measured" />
-          </label>
-        </div>
-        <p class="helper" id="burstFovMeasured">
-          The field of view is measured from the burst, not looked up &mdash; no browser reports
-          it. Turning the phone a little while capturing is what makes it measurable. Type a
-          value only to override.
-        </p>
-
-        <div class="panel-heading" style="margin-top:.6rem">
-          <div><p class="section-kicker">CAMERA CONTROLS</p></div>
-          <button class="secondary-button" id="burstReadCaps" type="button">Read Capabilities</button>
-        </div>
-        <p class="helper" id="burstCapsSummary">
-          Not read yet. This asks what <em>this browser</em> will let a web page set &mdash; which
-          is narrower than what the camera can do. Native apps reach controls WebKit does not
-          pass through, so an absent row means the browser withholds it, not that the phone
-          lacks it.
-        </p>
-        <div class="burst-caps" id="burstCapsList"></div>
-
-        <label class="burst-log-label">Run log
-          <textarea id="burstLog" rows="10" readonly
-                    placeholder="Each capture appends a line here. Copy it and send it over."></textarea>
-        </label>
-        <div class="button-row">
-          <button class="secondary-button" id="burstCopyLog" type="button">Copy Log</button>
-          <button class="secondary-button" id="burstClearLog" type="button">Clear</button>
-          <span class="helper" id="burstCopyStatus" aria-live="polite"></span>
-        </div>
-      </section>
-      </section>
-
-      <section class="tab-panel" id="tab-data" role="tabpanel" aria-labelledby="tabbtn-data" hidden>
-      <section class="panel parallax-panel">
-        <div class="panel-heading">
-          <div><p class="section-kicker">EXPERIMENTAL DEPTH</p><h2>Two-Frame Parallax Scan</h2></div>
-          <span class="small-badge warning">Relative, not LiDAR</span>
-        </div>
-        <p class="lead-copy">Capture A, slide the phone sideways about 5–10 cm while keeping the scene framed, then analyze B. Bigger disparity generally corresponds to nearer structure.</p>
-        <div class="parallax-layout">
-          <div class="capture-pair">
-            <figure><canvas id="referenceCanvas"></canvas><figcaption>A · reference</figcaption></figure>
-            <figure><canvas id="currentCanvas"></canvas><figcaption>B · moved</figcaption></figure>
-          </div>
-          <figure class="depth-output"><canvas id="parallaxCanvas"></canvas><figcaption>Relative disparity map · warm = larger shift</figcaption></figure>
-        </div>
-        <div class="button-row">
-          <button class="primary-button" id="captureParallaxButton" type="button" disabled>Capture A</button>
-          <button class="secondary-button" id="analyzeParallaxButton" type="button" disabled>Analyze B</button>
-        </div>
-        <p class="helper" id="parallaxMessage">Enable the live camera first. Textured scenes work better than blank walls, glass, or shiny surfaces.</p>
-      </section>
-      <section class="panel export-panel">
-        <div>
-          <p class="section-kicker">DATA SNAPSHOT</p><h2>Take the numbers with you</h2>
-          <p class="lead-copy">Exports the latest motion, GPS and parallax summary as JSON. Camera frames stay on the device and are not uploaded by this app.</p>
-        </div>
-        <div class="export-actions">
-          <div class="security-readout"><span>Context</span><strong id="secureContextValue">Checking…</strong></div>
-          <button class="primary-button" id="downloadButton" type="button">Export Sensor JSON</button>
-        </div>
-      </section>
-      </section>
+      <footer>Experimental instrument, not calibrated survey or safety equipment. Version 1 is kept at <a href="./legacy.html" style="color:#86b7ff">legacy.html</a>.</footer>
     </main>
-
-    <div id="sceneHost" class="scene-host" hidden>
-        <article class="panel scene-panel">
-          <div class="panel-heading">
-            <div><p class="section-kicker">3D FUSION</p><h2>Sensor Space</h2></div>
-            <button class="icon-button" id="resetViewButton" type="button" title="Reset 3D view" disabled>Reset view</button>
-          </div>
-          <div id="fusionScene" class="fusion-scene" aria-label="Interactive 3D sensor visualization">Loading interactive 3D sensor view…</div>
-          <div class="scene-legend">
-            <span><i class="legend-swatch phone"></i> phone orientation</span>
-            <span><i class="legend-swatch accel"></i> acceleration</span>
-            <span><i class="legend-swatch gps"></i> GPS trail</span>
-            <span><i class="legend-swatch terrain"></i> terrain (load below)</span>
-          </div>
-          <p class="helper" id="sceneMessage">The 3D viewer loads independently. Camera, motion, GPS and parallax controls remain usable even if the 3D module cannot load.</p>
-        </article>
-    </div>
-
-    <footer><strong>Visual Sensor Studio v0.39.12</strong><span>Experimental instrument, not calibrated survey or safety equipment.</span></footer>
   </div>
+</div>
 
-  <div class="viewer" id="cameraViewer" hidden role="dialog" aria-modal="true" aria-label="Full screen camera">
-    <div class="viewer-stage" id="viewerStage">
-      <video id="viewerVideo" autoplay muted playsinline hidden></video>
-      <canvas id="viewerCanvas"></canvas>
-      <p class="viewer-hint" id="viewerHint">Pinch to zoom · filter previews are upscaled from the analysis frame, saved stills are full resolution</p>
-    </div>
-    <div class="viewer-top">
-      <span class="viewer-badge" id="viewerMode">RGB</span>
-      <span class="viewer-badge" id="viewerStats">—</span>
-      <button class="viewer-fit" id="viewerFitButton" type="button" aria-pressed="false">Fill</button>
-      <button class="viewer-close" id="viewerCloseButton" type="button" aria-label="Close full screen">✕</button>
-    </div>
-    <div class="viewer-controls">
-      <div class="viewer-zoom" id="viewerZoom" role="group" aria-label="Zoom presets"></div>
-      <div class="viewer-modes" id="viewerModes" role="group" aria-label="Camera mode"></div>
-      <div class="viewer-actions">
-        <button class="viewer-secondary" id="viewerTorchButton" type="button" hidden>🔦</button>
-        <button class="viewer-shutter" id="viewerShutterButton" type="button" aria-label="Save frame"></button>
-        <button class="viewer-secondary viewer-swap" id="viewerSwitchButton" type="button" aria-label="Use front camera" title="Use front camera">
-          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-            <path d="M9 4h6l1.2 2H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3.8Z" />
-            <path d="M8.6 12.4a3.4 3.4 0 0 1 5.8-2.4M15.4 12.4a3.4 3.4 0 0 1-5.8 2.4" class="swap-arc" />
-            <path d="M14.4 7.2v2.8h-2.8M9.6 17.6v-2.8h2.8" class="swap-tip" />
-          </svg>
-          <span class="viewer-swap-label" id="viewerSwitchLabel">Front</span>
-        </button>
-      </div>
-    </div>
-  </div>
+<nav class="dock" id="v2Dock" aria-label="Primary navigation"></nav>
 
-  <dialog class="settings-dialog" id="settingsDialog">
-    <form method="dialog" class="settings-card">
-      <div class="settings-heading">
-        <div><p class="section-kicker">APP CONTROL</p><h2>Settings</h2></div>
-        <button class="icon-button" value="cancel" aria-label="Close settings">Close</button>
-      </div>
-
-      <section class="settings-section">
-        <h3>Updates & recovery</h3>
-        <p class="helper" id="updateStatus">Ready to check for updates.</p>
-        <div class="settings-actions">
-          <button class="primary-button" id="checkUpdatesButton" type="button">Check for Updates</button>
-          <button class="secondary-button" id="applyUpdateButton" type="button" disabled>Install Update & Restart</button>
-          <button class="danger-button" id="clearCacheButton" type="button">Clear App Cache & Reload</button>
-        </div>
-      </section>
-
-      <section class="settings-section settings-grid">
-        <label>Preferred Camera
-          <select id="cameraPreference">
-            <option value="auto">Auto / Rear first</option>
-            <option value="environment">Rear</option>
-            <option value="user">Front</option>
-          </select>
-        </label>
-        <label>3D Quality
-          <select id="qualityPreference">
-            <option value="low">Battery Saver</option>
-            <option value="normal">Balanced</option>
-            <option value="high">High</option>
-          </select>
-        </label>
-        <label>Capture Resolution
-          <select id="captureResolution">
-            <option value="720">720p · fastest</option>
-            <option value="1080">1080p · balanced</option>
-            <option value="1440">1440p</option>
-            <option value="2160">2160p · highest detail</option>
-            <option value="10000">Maximum this camera has</option>
-          </select>
-          <span class="helper">
-            The number names the SHORT side. The request carries no orientation and no
-            square: it asks for the shape this camera advertises, so the sensor decides
-            which way up.
-            This is a VIDEO STREAM, and it is the ceiling for everything here including
-            saved frames. It is not the sensor's still resolution: a 36MP or 48MP shot comes
-            from a capture API only an installed app can use, so a frame saved here will not
-            match the Camera app however high this is set. Higher costs frame rate.
-          </span>
-        </label>
-        <label>Saved Shape
-          <select id="saveAspect">
-            <option value="sensor">As captured — the whole sensor frame</option>
-            <option value="wide">Widescreen — 16:9, or 9:16 held upright</option>
-          </select>
-          <span class="helper">
-            A camera cannot change its aspect ratio, so widescreen is a CROP of what it
-            captured — sides in portrait, top and bottom in landscape. It can only ever
-            give up field of view, never gain it.
-          </span>
-        </label>
-        <label>Saved Format
-          <select id="saveFormat"></select>
-          <span class="helper" id="saveFormatNote">
-            A twelve-megapixel frame is about 22 MB as lossless PNG. JPEG and WebP are
-            allowed to discard what the eye does not miss, which is where the order of
-            magnitude comes from. Zipping a PNG saves almost nothing — PNG already uses
-            the same compression a .zip does.
-          </span>
-        </label>
-        <label>Saved Quality <span class="value" id="saveQualityValue">92%</span>
-          <input id="saveQuality" type="range" min="30" max="100" step="1" value="92" />
-          <span class="helper" id="saveQualityNote">
-            Only applies to JPEG and WebP. Lossless PNG ignores it.
-          </span>
-        </label>
-        <label>Camera Frame Rate
-          <select id="cameraFrameRate">
-            <option value="auto">Auto Max</option>
-            <option value="30">30 FPS</option>
-            <option value="60">60 FPS</option>
-            <option value="120">120 FPS (experimental)</option>
-            <option value="240">240 FPS (experimental)</option>
-          </select>
-        </label>
-        <label>Vision Processing
-          <select id="visionRatePreference">
-            <option value="adaptive">Adaptive</option>
-            <option value="battery">Battery Saver</option>
-            <option value="balanced">Balanced</option>
-            <option value="fast">Fast</option>
-          </select>
-        </label>
-        <label>GPS Accuracy
-          <select id="gpsAccuracyPreference">
-            <option value="balanced">Balanced</option>
-            <option value="high">High Accuracy</option>
-          </select>
-        </label>
-      </section>
-
-      <section class="settings-section">
-        <div class="settings-heading compact"><h3>Camera Performance</h3></div>
-        <div class="diagnostics-grid">
-          <div class="readout"><span>Capability range</span><strong id="benchCapability">—</strong></div>
-          <div class="readout"><span>Requested</span><strong id="benchRequested">—</strong></div>
-          <div class="readout"><span>Track reports</span><strong id="benchReported">—</strong></div>
-          <div class="readout"><span>Measured delivered</span><strong id="benchMeasured">—</strong></div>
-          <div class="readout"><span>Vision processing</span><strong id="benchProcessing">—</strong></div>
-          <div class="readout"><span>Average processing</span><strong id="benchAvgMs">—</strong></div>
-          <div class="readout"><span>Peak processing</span><strong id="benchPeakMs">—</strong></div>
-          <div class="readout"><span>Skipped / dropped</span><strong id="benchSkipped">—</strong></div>
-          <div class="readout"><span>Analysis resolution</span><strong id="benchAnalysis">—</strong></div>
-          <div class="readout"><span>Camera resolution</span><strong id="benchResolution">—</strong></div>
-          <div class="readout"><span>Frame delivery</span><strong id="benchDelivery">—</strong></div>
-          <div class="readout"><span>Capture failures</span><strong id="benchCaptureFailures">—</strong></div>
-          <div class="readout"><span>Frame identity</span><strong id="benchIdentity">—</strong></div>
-          <div class="readout"><span>Effective detail</span><strong id="benchEffective">—</strong></div>
-        </div>
-        <h3>Display vs Camera</h3>
-        <p class="helper">
-          Three sizes get called &ldquo;resolution&rdquo; and they are not the same. SOURCE is what
-          the camera sends. CONTENT is how many real pixels the picture actually occupies on this
-          screen, after the browser has fitted it into its box. RENDER is what the app chose to draw.
-          Overdraw above 1.0 means pixels are being drawn that cannot be seen.
-        </p>
-        <div class="readout-grid">
-          <div class="readout"><span>Screen</span><strong id="dispScreen">&mdash;</strong></div>
-          <div class="readout"><span>Pixel ratio</span><strong id="dispRatio">&mdash;</strong></div>
-          <div class="readout"><span>Canvas box</span><strong id="dispBox">&mdash;</strong></div>
-          <div class="readout"><span>Content shown</span><strong id="dispContent">&mdash;</strong></div>
-          <div class="readout"><span>Camera source</span><strong id="dispSource">&mdash;</strong></div>
-          <div class="readout"><span>App renders</span><strong id="dispRender">&mdash;</strong></div>
-          <div class="readout"><span>Overdraw</span><strong id="dispOverdraw">&mdash;</strong></div>
-          <div class="readout"><span>Source would be</span><strong id="dispSourceOver">&mdash;</strong></div>
-          <div class="readout"><span>Measured</span><strong id="dispWhen">&mdash;</strong></div>
-          <div class="readout"><span>This device draws</span><strong id="dispThroughput">&mdash;</strong></div>
-        </div>
-        <p class="helper" id="dispProjection"></p>
-        <div class="settings-actions">
-          <button class="secondary-button" id="measureDisplayButton" type="button">Measure Display</button>
-        </div>
-        <p class="helper" id="benchmarkStatus">The benchmark applies each rate to the live track and counts presented frames. It never calls getUserMedia, so it cannot re-prompt for permission or drop the preview. Effective detail samples a centre crop at 1:1 pixel scale and reports whether those pixels carry real information or interpolation — a track can report 4K truthfully while a scaler stretches a smaller sensor mode to fill it. Point the camera at something textured; a blank wall has no detail to measure.</p>
-        <div class="settings-actions">
-          <button class="secondary-button" id="runBenchmarkButton" type="button">Run Frame-Rate Benchmark</button>
-          <button class="secondary-button" id="measureDetailButton" type="button">Measure Effective Detail</button>
-          <button class="secondary-button" id="compareResolutionsButton" type="button">Compare Resolutions</button>
-          <button class="secondary-button" id="resetPeakButton" type="button">Reset Peak</button>
-        </div>
-        <div id="benchmarkResults" class="benchmark-results"></div>
-      </section>
-
-      <section class="settings-section">
-        <div class="settings-heading compact"><h3>Manual Camera</h3></div>
-        <div id="capabilityTable" class="capability-table">Enable the camera to read capabilities.</div>
-        <div class="settings-heading compact"><h3>Video Inputs</h3></div>
-        <div id="videoInputs" class="capability-table">Enable the camera to enumerate inputs.</div>
-        <p class="helper">Reported straight from <code>getCapabilities()</code>. <strong>Not exposed</strong> means WebKit reports nothing for that control, which is different from reporting that it is unsupported.</p>
-      </section>
-
-      <section class="settings-section">
-        <div class="settings-heading compact"><h3>Sensor Startup &amp; Steadiness</h3></div>
-        <p class="helper">
-          A web page cannot hold or extend a browser permission — that grant belongs to Safari and to
-          iOS, and nothing here changes how long it lasts. What these remember is that you wanted a
-          sensor running, so it starts on its own when the browser already says yes. Where a tap is
-          still required, one tap anywhere starts everything that is waiting.
-        </p>
-        <div class="settings-grid">
-          <label class="switch-row"><input id="autoStartCamera" type="checkbox" /> Start camera on open</label>
-          <label class="switch-row"><input id="autoStartGps" type="checkbox" /> Start GPS on open</label>
-          <label class="switch-row"><input id="autoStartMotion" type="checkbox" /> Start motion on open</label>
-          <label class="switch-row"><input id="steadyGate" type="checkbox" /> Steady-hand gate</label>
-        </div>
-        <p class="helper" id="autoStartStatus">Auto-start is off for every sensor.</p>
-        <p class="helper">
-          Sensors are released when the app is backgrounded and restored when it returns, so nothing
-          left running keeps the GPS or the camera awake behind your back.
-        </p>
-        <div class="settings-heading compact"><h3>Handshake calibration</h3></div>
-        <p class="helper">
-          Hold the phone the way you actually mean to hold it and calibrate for ten seconds. That
-          measures how still <em>this</em> device is in <em>your</em> hand, and everything below the
-          measured floor is then treated as tremor rather than movement. It is a gate, not
-          stabilisation — it does not remove camera movement from the picture, it stops the app
-          reporting your own hand as an event.
-        </p>
-        <div class="diagnostics-grid">
-          <div class="readout wide"><span>Calibration</span><strong id="calibrationState">Not calibrated — using a generic floor</strong></div>
-          <div class="readout wide"><span>Deadzone</span><strong id="calibrationDeadzone">—</strong></div>
-          <div class="readout wide"><span>Measured rotation</span><strong id="calibrationSpread">—</strong></div>
-        </div>
-        <div class="settings-actions two">
-          <button class="secondary-button" id="calibrateButton" type="button">Hold Still &amp; Calibrate</button>
-          <button class="secondary-button" id="clearCalibrationButton" type="button">Clear Calibration</button>
-        </div>
-      </section>
-
-      <section class="settings-section">
-        <div class="settings-heading compact"><h3>Diagnostics</h3><button class="secondary-button" id="resetSettingsButton" type="button">Reset Settings</button></div>
-        <div class="diagnostics-grid">
-          <div class="readout"><span>App version</span><strong id="settingsVersion">—</strong></div>
-          <div class="readout"><span>Cache</span><strong id="settingsCacheVersion">—</strong></div>
-          <div class="readout"><span>Service worker</span><strong id="settingsWorkerState">—</strong></div>
-          <div class="readout"><span>Display mode</span><strong id="settingsDisplayMode">—</strong></div>
-          <div class="readout"><span>Secure context</span><strong id="settingsSecureContext">—</strong></div>
-          <div class="readout"><span>Camera API</span><strong id="settingsCameraApi">—</strong></div>
-          <div class="readout"><span>Camera constraints</span><strong id="settingsCameraConstraints">—</strong></div>
-          <div class="readout"><span>Video inputs</span><strong id="settingsCameraDevices">—</strong></div>
-          <div class="readout"><span>Camera stream</span><strong id="settingsCameraStream">—</strong></div>
-          <div class="readout"><span>Camera state</span><strong id="settingsCameraState">—</strong></div>
-          <div class="readout"><span>Permission</span><strong id="settingsPermission">—</strong></div>
-          <div class="readout"><span>Request stage</span><strong id="settingsCameraStage">—</strong></div>
-          <div class="readout"><span>Selected camera</span><strong id="settingsCameraLabel">—</strong></div>
-          <div class="readout"><span>Track</span><strong id="settingsTrackState">—</strong></div>
-          <div class="readout"><span>Video element</span><strong id="settingsVideoState">—</strong></div>
-          <div class="readout"><span>First frame</span><strong id="settingsFirstFrame">—</strong></div>
-          <div class="readout"><span>Hardware zoom</span><strong id="settingsZoomSupport">—</strong></div>
-          <div class="readout"><span>Processing FPS</span><strong id="settingsProcessingFps">—</strong></div>
-          <div class="readout"><span>Adaptive state</span><strong id="settingsAdaptive">—</strong></div>
-          <div class="readout"><span>Tracked objects</span><strong id="settingsTracking">—</strong></div>
-          <div class="readout"><span>Night integration</span><strong id="settingsNight">—</strong></div>
-          <div class="readout"><span>Storage</span><strong id="settingsStorage">—</strong></div>
-          <div class="readout"><span>ImageCapture API</span><strong id="settingsImageCapture">—</strong></div>
-        </div>
-        <div class="wide-readout"><span>Last camera attempt</span><strong id="settingsLastAttempt">—</strong></div>
-        <div class="settings-actions">
-          <button class="secondary-button" id="hardResetCameraButton" type="button">Hard Reset Camera</button>
-          <button class="secondary-button" id="refreshDiagnosticsButton" type="button">Refresh Diagnostics</button>
-          <button class="secondary-button" id="copyDiagnosticsButton" type="button">Copy Diagnostics</button>
-        </div>
-        <p class="helper">Camera diagnostics use <code>getSupportedConstraints()</code>, <code>enumerateDevices()</code> and <code>getCapabilities()</code> when WebKit exposes them. Device labels can remain hidden until camera permission is granted. <strong>First frame</strong> is the honest liveness test: a stream that reports a live track but never delivers a decoded frame is reported as a failure, not as “Camera Live”.</p>
-      </section>
-    </form>
-  </dialog>
-
-  <script src="./camera-bootstrap.js"></script>
-  <script type="module" src="./app/main.js"></script>
-  <script>
-  /*
-   * Keep the family tabs in step with the mode the APP thinks is active.
-   *
-   * The tabs themselves are pure CSS — five radios and `:checked` — which is
-   * why no script decides what is visible. But the app also sets the mode on
-   * its own: it restores the remembered mode at startup, and a shared lens link
-   * switches to Lens. Without this, the workbench would open showing the View
-   * family while Trails was the mode actually running.
-   *
-   * So this mirrors state one way only, from the app to the chrome, by watching
-   * for the `.active` class the existing code already applies. It reads; it
-   * never sets a mode, and it is deliberately in the page rather than in
-   * main.ts so that the redesign changed no application logic at all.
-   */
-  (() => {
-    const FAMILY = {
-      camera: 'view', relief: 'view', edges: 'view',
-      motion: 'motion', difference: 'motion', flow: 'motion',
-      speed: 'motion', motiontrails: 'motion',
-      amplify: 'time', background: 'time', chrono: 'time', slitscan: 'time',
-      night: 'night',
-      lens: 'custom'
-    };
-    const strip = document.querySelector('.mode-console .mode-strip');
-    if (!strip) return;
-
-    const follow = () => {
-      const active = strip.querySelector('.segmented.active[data-vision-mode]');
-      if (!active) return;
-      const radio = document.getElementById('fam-' + FAMILY[active.dataset.visionMode]);
-      // Only when it is not already right: assigning `checked` unconditionally
-      // would fight a person mid-tap on a family they are still choosing.
-      if (radio && !radio.checked) radio.checked = true;
-    };
-
-    new MutationObserver(follow).observe(strip, {
-      subtree: true, attributes: true, attributeFilter: ['class']
-    });
-    follow();
-  })();
-  </script>
+<script src="./camera-bootstrap.js"></script>
+<script type="module" src="./app/v2/app.js"></script>
 </body>
 </html>

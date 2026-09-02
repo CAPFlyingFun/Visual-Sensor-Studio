@@ -1,42 +1,36 @@
-const CACHE = 'visual-sensor-studio-v0.39.12';
+const CACHE = 'visual-sensor-studio-v0.40.0';
+
+/*
+ * THE SHELL IS SHORT ON PURPOSE, and it is a different list from the one V1
+ * carried here.
+ *
+ * Two lessons are built into its shortness. First, cache.addAll REJECTS THE
+ * WHOLE INSTALL if a single entry 404s, so every extra name is another way
+ * for the service worker to fail to install at all — silently, on a phone,
+ * where the only symptom is that nothing ever updates. Second, this file used
+ * to enumerate every compiled module, that list went stale the moment new
+ * ones were added, and a fresh app.js ran against a cached older module.
+ *
+ * So the shell holds only what must exist for a cold start, and every module
+ * under /app/ is fetched network-first and cached as it is used (see the
+ * fetch handler). After one online visit the app is fully offline-capable,
+ * and no list can drift out of step with the build.
+ *
+ * tests/pwa-parity.test.mjs asserts every entry here exists on disk.
+ */
 const APP_SHELL = [
   './',
   './index.html',
-  './styles.css',
-  './settings.css',
-  './camera-bootstrap.js',
   './manifest.webmanifest',
+  './camera-bootstrap.js',
   // The shipped lens gallery, so custom lenses work offline too.
   './lenses/index.json',
   './icons/icon.svg',
   './icons/icon-180.png',
   './icons/icon-192.png',
   './icons/icon-512.png',
-  './app/main.js',
-  './app/core/math.js',
-  './app/core/types.js',
-  './app/sensors/camera.js',
-  './app/sensors/motion.js',
-  './app/sensors/gps.js',
-  './app/sensors/zoom.js',
-  './app/vision/frame-processing.js',
-  './app/vision/frame-source.js',
-  './app/vision/optical-flow.js',
-  './app/vision/frame-rate.js',
-  './app/vision/adaptive.js',
-  './app/vision/tracking.js',
-  './app/vision/integration.js',
-  './app/vision/histogram.js',
-  './app/vision/overlays.js',
-  './app/sensors/stability.js',
-  './app/vision/parallax.js',
-  './app/vision/lens.js',
-  './app/vision/lens-store.js',
-  './app/vision/lens-preview.js',
-  './app/vision/photo-lens.js',
-  './app/vision/aspect.js',
-  './app/vision/display-metrics.js',
-  './app/visualization/scene.js'
+  // The one entry module. Everything it imports arrives network-first.
+  './app/v2/app.js'
 ];
 
 self.addEventListener('install', (event) => {

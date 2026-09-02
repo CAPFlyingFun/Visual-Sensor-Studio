@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 const adapterSource = readFileSync(new URL('../src/sensors/camera.ts', import.meta.url), 'utf8');
-const htmlSource = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+const htmlSource = readFileSync(new URL('../public/legacy.html', import.meta.url), 'utf8');
 const cameraPath = new URL('../public/camera-bootstrap.js', import.meta.url);
 const cameraSource = existsSync(cameraPath) ? readFileSync(cameraPath, 'utf8') : '';
 

@@ -1,9 +1,13 @@
 name: Build and deploy Visual Sensor Studio
 
-# Runs only from main's ref: the github-pages environment rejects deployments
-# from any other branch (measured: a Version2-triggered run failed in the
-# deploy job before its first step). Version2 pushes refresh the preview by
-# DISPATCHING this workflow instead — see trigger-preview.yml on Version2.
+# main IS the app (promoted from Version2 on 2026-09-02). The workflow no
+# longer copies a preview of another branch alongside it: the bare URL serves
+# the camera-first rebuild, and Version 1 rides along as ./legacy.html out of
+# the same tree. Version 1's full history is on the version_1_legacy branch.
+#
+# The github-pages environment rejects deployments from any ref but main
+# (measured: a Version2-triggered run failed in the deploy job before its
+# first step), so this runs on main's pushes and on demand.
 on:
   push:
     branches: [main]
@@ -22,9 +26,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # The production site is ALWAYS main, whichever branch triggered the
-      # run — a Version2 push must refresh the preview, never replace the app.
-      - name: Checkout main (production site)
+      - name: Checkout main (the app)
         uses: actions/checkout@v4
         with:
           ref: main
@@ -42,28 +44,6 @@ jobs:
 
       - name: Build TypeScript
         run: npm run build
-
-      # The V2 preview rides along under /v2/ so the experimental branch is
-      # reachable on a real phone without replacing the production app. A
-      # failing Version2 build fails the whole run and deploys nothing, so it
-      # can never take the live site down with it.
-      - name: Checkout Version2 (preview)
-        uses: actions/checkout@v4
-        with:
-          ref: Version2
-          path: v2preview
-
-      - name: Test and build the V2 preview
-        working-directory: v2preview
-        run: |
-          npm install --no-audit --no-fund
-          npm test
-          npm run build
-
-      - name: Publish the preview under /v2/
-        run: |
-          rm -rf public/v2
-          cp -R v2preview/public public/v2
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

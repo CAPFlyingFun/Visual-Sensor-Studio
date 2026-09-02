@@ -254,7 +254,7 @@ test('a match on the edge of the search window is refused, not reported as small
 
 test('the burst tab can start its own sensors and hand back a shareable log', () => {
   const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../public/legacy.html', import.meta.url), 'utf8');
 
   // Joshua is the probe now, so the tab has to be usable without touring the
   // other tabs first — and it reuses the real enable paths rather than
@@ -298,7 +298,7 @@ test('every log line carries the version and the numbers that decide the verdict
 
 test('the burst tab shows the camera, and marks the region it actually measures', () => {
   const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../public/legacy.html', import.meta.url), 'utf8');
 
   // Joshua: "I didn't see the camera on the screen... and had to guess what I
   // was looking at." Aiming a measurement instrument blind.
