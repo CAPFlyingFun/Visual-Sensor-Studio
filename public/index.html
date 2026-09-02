@@ -225,7 +225,7 @@
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
-    <span class="pill" id="v2Badge">v0.40.2</span>
+    <span class="pill" id="v2Badge">v0.40.3</span>
   </header>
 
   <div class="camera-layout">
@@ -275,6 +275,16 @@
           </div>
           <div class="zoom guides" id="v2GuideRow" aria-label="Viewfinder guides"></div>
           <p class="hint" id="v2GuideNote">composition only — captures are always the full frame</p>
+        </section>
+
+        <!-- Camera controls, built ONLY from what this browser really offers
+             the page. An empty section is an honest answer about WebKit, not
+             about the camera. -->
+        <section class="section">
+          <div class="section-title"><h2>Camera controls</h2><span class="hint">what WebKit actually exposes</span></div>
+          <div id="v2ControlRows"></div>
+          <p class="hint" id="v2ControlNote"></p>
+          <p class="hint" id="v2ControlVerdict"></p>
         </section>
 
         <!-- Milestone F's instruments. Zebra and peaking are VIEWING AIDS:

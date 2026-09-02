@@ -34,6 +34,9 @@ import {
   ZEBRA_LEVELS, PEAKING_LEVELS, peakingThreshold, zebraThreshold
 } from '../.test-build/v2/render/overlays.js';
 import {
+  CAMERA_CONTROLS, noControlsNote, offeredControls, verifyApply
+} from '../.test-build/v2/camera/controls.js';
+import {
   EXPOSURE_BINS, CLIPPED, buildExposure, describeExposure, emptyExposure
 } from '../.test-build/v2/vision/exposure.js';
 import {
@@ -1583,4 +1586,114 @@ test('one read of the frame answers every census asked of it', () => {
   assert.match(censuses, /if \(wantsExposure\)/);
   assert.match(censuses, /if \(!needsColour && !lens && !wantsExposure\)/,
     'nothing is read when nothing is asking');
+});
+
+/* --- Milestone F: manual camera controls --------------------------------- */
+
+const capabilityReport = (fields, settings = {}) => ({
+  available: true,
+  fields,
+  settings
+});
+
+test('only what the browser really offers becomes a control', () => {
+  // Three states, deliberately not conflated by the engine: `supported`,
+  // `unsupported` (capabilities reported, not this one) and `not exposed` (no
+  // capability reporting at all). Only the first is an offer — a switch on
+  // screen for either of the others would do nothing when pressed.
+  const offered = offeredControls(capabilityReport({
+    torch: { state: 'supported', value: true },
+    iso: { state: 'supported', min: 32, max: 3200, step: 1 },
+    focusMode: { state: 'supported', options: ['continuous', 'manual'] },
+    exposureMode: { state: 'unsupported' },
+    whiteBalanceMode: { state: 'not exposed' }
+  }, { torch: false, iso: 200, focusMode: 'continuous' }));
+  assert.deepEqual(offered.map((c) => c.id), ['torch', 'iso', 'focusMode'],
+    'in the order a photographer reaches for them: light, then focus');
+  assert.equal(offered[0].current, false, 'the current value comes from settings');
+  assert.equal(offered[1].max, 3200);
+  assert.deepEqual(offered[2].options, ['continuous', 'manual']);
+
+  // A "capability" with nothing to choose or nowhere to move is not one.
+  assert.deepEqual(offeredControls(capabilityReport({
+    focusMode: { state: 'supported', options: ['continuous'] },
+    iso: { state: 'supported', min: 100, max: 100 }
+  })).map((c) => c.id), [], 'one mode is not a choice; a zero range is not a range');
+
+  // No report at all is a real answer, and it is about the BROWSER.
+  assert.deepEqual(offeredControls(null), []);
+  assert.deepEqual(offeredControls({ available: false, fields: {}, settings: {} }), []);
+  assert.match(noControlsNote(null), /describes the browser, not the camera/);
+  assert.match(noControlsNote(capabilityReport({})), /does not pass them through/);
+  for (const note of [noControlsNote(null), noControlsNote(capabilityReport({}))]) {
+    assert.ok(!/cannot|unsupported hardware|not capable/i.test(note),
+      'it must never say the CAMERA cannot do a thing');
+  }
+
+  // Zoom has its own control already; a second owner of one number is a bug.
+  assert.ok(!CAMERA_CONTROLS.some((c) => c.id === 'zoom'));
+  assert.equal(new Set(CAMERA_CONTROLS.map((c) => c.id)).size, CAMERA_CONTROLS.length);
+  for (const control of CAMERA_CONTROLS) assert.ok(control.note.length > 20, control.id);
+});
+
+test('applied is not applied: every change is read back', () => {
+  // THE GAP THIS EXISTS FOR. applyConstraints resolving means the browser
+  // accepted the REQUEST. WebKit will advertise a capability, accept a
+  // constraint for it, resolve happily, and leave the setting alone. A control
+  // built on the promise would report success every single time.
+  const iso = CAMERA_CONTROLS.find((c) => c.id === 'iso');
+
+  const took = verifyApply(iso, 800, { iso: 200 }, { iso: 800 }, true);
+  assert.equal(took.outcome, 'took');
+  assert.match(took.message, /ISO is now 800/);
+
+  const ignored = verifyApply(iso, 800, { iso: 200 }, { iso: 200 }, true);
+  assert.equal(ignored.outcome, 'ignored');
+  assert.match(ignored.message, /took the request and did not act on it/);
+
+  const clamped = verifyApply(iso, 6400, { iso: 200 }, { iso: 3200 }, true);
+  assert.equal(clamped.outcome, 'clamped');
+  assert.match(clamped.message, /asked for 6400, got 3200/);
+
+  const refused = verifyApply(iso, 800, { iso: 200 }, { iso: 200 }, false, 'OverconstrainedError');
+  assert.equal(refused.outcome, 'refused');
+  assert.match(refused.message, /OverconstrainedError/);
+
+  // UNVERIFIABLE is the honest fifth answer, and is neither success nor
+  // failure: WebKit accepts a constraint and then declines to report the key.
+  // Calling that success would be a guess; calling it failure would be another.
+  const silent = verifyApply(iso, 800, {}, {}, true);
+  assert.equal(silent.outcome, 'unverifiable');
+  assert.equal(silent.actual, null);
+  assert.match(silent.message, /cannot be checked either way/);
+  assert.ok(!/failed|refused|error/i.test(silent.message), 'it is not reported as a failure');
+
+  // A camera rounds what it returns, so an exact compare would call a
+  // successful change "clamped" forever.
+  const torch = CAMERA_CONTROLS.find((c) => c.id === 'torch');
+  assert.equal(verifyApply(iso, 800, { iso: 200 }, { iso: 799 }, true).outcome, 'took');
+  assert.equal(verifyApply(torch, true, { torch: false }, { torch: true }, true).outcome, 'took');
+  assert.match(verifyApply(torch, true, { torch: false }, { torch: true }, true).message, /on/);
+});
+
+test('a camera control is never changed mid-recording, and the row is not rebuilt under a finger', () => {
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+  const block = appTs.slice(appTs.indexOf('async function applyCameraControl'));
+  assert.match(block, /if \(readState\(\)\.recording\)/,
+    're-constraining the track mid-clip would put two pictures in one file');
+  // The rows are keyed on the OFFER, not on the values: a setting moving must
+  // not replace the control it moved in — that is how this app made its own
+  // controls untouchable on iOS once already.
+  const render = appTs.slice(appTs.indexOf('function renderCameraControls'));
+  assert.match(render, /const key = `\$\{live\}\|\$\{offered\.map/);
+  assert.match(render, /if \(key === offeredKey\) return;/);
+  // A CAMERA slider applies on change, not on input: applyConstraints
+  // renegotiates the live track, so one per pixel of a drag would queue dozens
+  // against one camera. (The lens workbench's sliders are the opposite case
+  // and do use input — they edit a shader, not a device — so this is scoped
+  // to the row that talks to the camera.)
+  const row = appTs.slice(appTs.indexOf('function controlRow'),
+    appTs.indexOf('async function applyCameraControl'));
+  assert.match(row, /slider\.addEventListener\('change'/);
+  assert.ok(!row.includes("slider.addEventListener('input'"));
 });

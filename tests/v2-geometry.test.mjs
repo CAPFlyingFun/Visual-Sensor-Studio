@@ -1939,3 +1939,73 @@ test('zebra and peaking draw on the preview, and clear again (fake device)',
       await context.close();
     });
   });
+
+test('camera controls show only what the browser offers, and report what took (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({
+        viewport: { width: 430, height: 932 },
+        permissions: ['camera']
+      });
+      const page = await context.newPage();
+      await page.goto(`${base}/index.html`);
+      await page.waitForTimeout(400);
+
+      // Before the camera is live there is nothing to offer, and the section
+      // says so rather than showing dead controls.
+      assert.match(await page.textContent('#v2ControlNote'), /Start the camera/);
+      assert.equal(await page.evaluate(() =>
+        document.querySelectorAll('#v2ControlRows [data-control]').length), 0);
+
+      await page.click('#v2EnableCamera');
+      await page.waitForFunction(() =>
+        /\d+(\.\d+)? rendered fps/.test(document.getElementById('v2DiagPreview')?.textContent ?? ''),
+        null, { timeout: 8000 });
+      await page.waitForTimeout(700);
+
+      const offered = await page.evaluate(() => ({
+        ids: [...document.querySelectorAll('#v2ControlRows [data-control]')]
+          .map((el) => el.dataset.control),
+        note: document.getElementById('v2ControlNote').textContent,
+        // What the browser ACTUALLY advertises, read the same way the app does.
+        advertised: (() => {
+          const report = window.VisualCamera?.capabilityReport;
+          if (!report?.available) return null;
+          return Object.entries(report.fields)
+            .filter(([, f]) => f.state === 'supported').map(([k]) => k);
+        })()
+      }));
+
+      // THE RULE: every row shown must correspond to something the browser
+      // really advertised. Whether this particular browser advertises much is
+      // not the app's business — WebKit exposes almost nothing and Chromium
+      // exposes more, and both are correct answers to show honestly.
+      for (const id of offered.ids) {
+        assert.ok(offered.advertised?.includes(id),
+          `${id} has a row but was never advertised: ${offered.advertised?.join(',')}`);
+      }
+      assert.ok(!offered.ids.includes('zoom'), 'zoom has its own control already');
+
+      if (offered.ids.length === 0) {
+        // A device that offers nothing must say so WITHOUT blaming the camera:
+        // this is a browser boundary, not a hardware limit.
+        assert.match(offered.note, /browser/);
+        assert.ok(!/camera cannot|not capable/i.test(offered.note));
+      } else {
+        assert.match(offered.note, /READ BACK/,
+          'the section states that every change is verified');
+        // Operate the first control and demand a verdict — the whole point is
+        // that the app says what HAPPENED, not that it accepted the request.
+        const first = offered.ids[0];
+        await page.click(`[data-control="${first}"] [data-control-value]`);
+        await page.waitForTimeout(900);
+        const verdict = await page.textContent('#v2ControlVerdict');
+        assert.ok(verdict.length > 0, `${first} must report an outcome`);
+        assert.match(verdict, /is now|nothing changed|asked for|refused|cannot be checked/,
+          `the verdict must be one of the five outcomes, got: ${verdict}`);
+      }
+
+      await page.close();
+      await context.close();
+    });
+  });

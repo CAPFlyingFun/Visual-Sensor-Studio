@@ -21,6 +21,10 @@ import {
 import { FrameRateMeter } from '../vision/frame-rate.js';
 import { zoomPresetStops } from '../sensors/zoom.js';
 import { NAV_ROUTES } from './routes.js';
+import {
+  noControlsNote, offeredControls, verifyApply,
+  type OfferedControl
+} from './camera/controls.js';
 import { registerServiceWorker } from './pwa.js';
 import { APP_VERSION } from './version.js';
 import { readState, subscribe, updateState, frameSize } from './state.js';
@@ -806,6 +810,127 @@ function renderGuides(): void {
   setText('v2GuideNote', guide?.note || 'composition only — captures are always the full frame');
 }
 
+/* --- Manual camera controls: only what this browser really offers -------- */
+
+/**
+ * The controls are rebuilt only when the OFFER changes, never on a broadcast.
+ * The offer changes on going live and on switching camera — the front and rear
+ * cameras advertise different things — and rebuilding a row under a finger is
+ * how this app made its controls untouchable on iOS once already.
+ */
+let offeredKey = '';
+let lastVerdict = '';
+
+function renderCameraControls(): void {
+  const live = readState().camera?.state === 'live';
+  const report = live ? camera.capabilityReport : null;
+  const offered = offeredControls(report);
+  // The key is the OFFER, not the settings: a value moving must not rebuild
+  // the row it moved in.
+  const key = `${live}|${offered.map((c) => `${c.id}:${c.options.join('/')}:${c.min}-${c.max}`).join(',')}`;
+  if (key === offeredKey) return;
+  offeredKey = key;
+
+  const holder = byId('v2ControlRows');
+  holder.replaceChildren();
+  if (!live) {
+    setText('v2ControlNote', 'Start the camera to see what it offers.');
+    return;
+  }
+  setText('v2ControlNote', offered.length > 0
+    ? 'Every change below is applied and then READ BACK: a browser can accept a '
+      + 'setting and quietly not act on it, so the result says what really happened.'
+    : noControlsNote(report));
+
+  for (const control of offered) holder.appendChild(controlRow(control));
+}
+
+function controlRow(control: OfferedControl): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'lens-field';
+  row.dataset.control = control.id;
+  const label = document.createElement('label');
+  label.textContent = control.label;
+  row.appendChild(label);
+
+  const run = (value: string | number | boolean): void => {
+    void applyCameraControl(control, value);
+  };
+
+  if (control.kind === 'toggle') {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'chip';
+    button.dataset.controlValue = 'toggle';
+    button.textContent = control.current === true ? 'On' : 'Off';
+    button.addEventListener('click', () => run(control.current !== true));
+    row.appendChild(button);
+  } else if (control.kind === 'mode') {
+    for (const option of control.options) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'chip';
+      button.dataset.controlValue = option;
+      button.textContent = option;
+      if (control.current === option) button.classList.add('active');
+      button.addEventListener('click', () => run(option));
+      row.appendChild(button);
+    }
+  } else {
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = String(control.min ?? 0);
+    slider.max = String(control.max ?? 1);
+    slider.step = String(control.step && control.step > 0 ? control.step : 'any');
+    slider.value = String(typeof control.current === 'number' ? control.current : control.min ?? 0);
+    slider.dataset.controlValue = 'range';
+    // `change`, not `input`: applyConstraints renegotiates the live track, and
+    // firing one per pixel of a drag would queue dozens against one camera.
+    slider.addEventListener('change', () => run(Number(slider.value)));
+    row.appendChild(slider);
+  }
+
+  const note = document.createElement('span');
+  note.className = 'hint';
+  note.textContent = control.note + (control.unit ? ` Values are in ${control.unit}.` : '');
+  row.appendChild(note);
+  return row;
+}
+
+/**
+ * Apply one control, then READ THE TRACK BACK.
+ *
+ * A resolved applyConstraints means the browser accepted the request, not that
+ * the camera moved — WebKit will advertise a capability, accept a constraint
+ * for it and leave the setting exactly where it was. Everything interesting is
+ * in the difference between the two reads, which is what gets reported.
+ */
+async function applyCameraControl(
+  control: OfferedControl, value: string | number | boolean
+): Promise<void> {
+  if (readState().recording) {
+    setText('v2ControlVerdict',
+      'Not while recording — re-constraining the live track mid-clip is how a '
+      + 'file ends up with two different pictures in it.');
+    return;
+  }
+  const before = camera.capabilityReport.settings;
+  const result = await camera.applyCameraSetting(control.id, value);
+  // The read has to come after the track has had a moment to settle; an
+  // immediate getSettings() can still report the old value on a change that
+  // did work, which would be reported as "ignored" and be a lie.
+  await new Promise((resolve) => setTimeout(resolve, 220));
+  const after = camera.capabilityReport.settings;
+  const verdict = verifyApply(control, value, before, after, result.applied, result.reason);
+  lastVerdict = verdict.message;
+  setText('v2ControlVerdict', lastVerdict);
+  // The offer itself can change with the setting (a manual mode unlocking a
+  // range), so the rows are re-derived rather than patched.
+  offeredKey = '';
+  renderCameraControls();
+  setText('v2ControlVerdict', lastVerdict);
+}
+
 /* --- Zoom: presets derived from the engine's own reported range ---------- */
 
 /**
@@ -1218,6 +1343,7 @@ function renderTextPanels(): void {
   renderCoach();
   renderDiagnostics();
   renderFrameAverage();
+  renderCameraControls();
   renderAids();
   renderExposure();
   // The picker's shortcut names the ACTIVE lens, so it follows the strip.
