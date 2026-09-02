@@ -869,9 +869,14 @@ test('viewfinder guides are one registry of percent-space lines', () => {
   assert.equal(guideById('grid4').lines(1).length, 6, 'a 4×4 grid is three lines each way');
   assert.equal(guideById('diagonals').lines(1).length, 2);
 
-  // Only the centre guide claims the sample ring, and it says what the ring is.
-  assert.deepEqual(GUIDES.filter((g) => g.centerSpot).map((g) => g.id), ['center']);
-  assert.match(guideById('center').note, /ring/i);
+  // A guide draws lines and nothing else: the picker's reticle is its own
+  // switch, because a marker in the middle of the picture is clutter when
+  // nobody is sampling (Joshua, 2026-09-02).
+  assert.ok(GUIDES.every((g) => !('centerSpot' in g)),
+    'no guide may claim the reticle — it has its own toggle');
+  assert.equal(readState().reticle, false, 'the reticle starts off, uninvited');
+  assert.doesNotMatch(guideById('center').note, /\bring\b|picker|sampl/i,
+    'the centre guide is a crosshair, not the sampling target');
 
   // The 1:1 guide really is square in real pixels, at either box shape, and
   // says plainly that nothing is cropped.

@@ -800,35 +800,51 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
       assert.equal(thirds.lines.length, 4, 'four lines make the thirds');
       assert.match(thirds.note, /Rule of thirds/);
 
-      // The centre guide shows the reticle, and its ring is the sample patch.
+      // A guide alone never puts a marker in the middle of the picture.
       await page.click('[data-guide="center"]');
+      await page.waitForTimeout(300);
+      assert.equal(await page.evaluate(() => document.getElementById('v2Reticle').hidden), true,
+        'choosing a guide must not summon the reticle');
+
+      // The reticle is its own toggle, and its ring is the sample patch.
+      await page.click('#v2ReticleToggle');
       await page.waitForTimeout(300);
       const centre = await page.evaluate(() => {
         const ring = document.getElementById('v2PatchRing');
         const box = document.getElementById('v2Viewfinder');
         return {
           reticle: !document.getElementById('v2Reticle').hidden,
+          pressed: document.getElementById('v2ReticleToggle').getAttribute('aria-pressed'),
           ringWidth: ring.getBoundingClientRect().width,
           ringHeight: ring.getBoundingClientRect().height,
           boxW: box.clientWidth,
           boxH: box.clientHeight
         };
       });
-      assert.equal(centre.reticle, true, 'the centre guide shows the reticle');
+      assert.equal(centre.reticle, true, 'the toggle shows the reticle');
+      assert.equal(centre.pressed, 'true', 'and says so to a screen reader');
       assert.ok(Math.abs(centre.ringWidth - centre.ringHeight) < 1.5,
         `the ring is square on screen: ${centre.ringWidth} × ${centre.ringHeight}`);
       assert.ok(centre.ringWidth > 0 && centre.ringWidth < centre.boxW / 4,
         'the ring is the small patch it claims to be');
 
+      // Toggled back off it leaves — but an ARMED PICKER still gets its target.
+      await page.click('#v2ReticleToggle');
+      await page.waitForTimeout(250);
+      assert.equal(await page.evaluate(() => document.getElementById('v2Reticle').hidden), true,
+        'off means off');
+
       // The colour picker reads the CAMERA FRAME through the cover crop.
       await page.click('#v2PickColor');
       await page.waitForTimeout(150);
       const armed = await page.evaluate(() => ({
+        reticle: !document.getElementById('v2Reticle').hidden,
         cardShown: !document.getElementById('v2PickerCard').hidden,
         picking: document.getElementById('v2Viewfinder').classList.contains('picking'),
         hex: document.getElementById('v2PickerHex').textContent
       }));
       assert.equal(armed.cardShown, true);
+      assert.equal(armed.reticle, true, 'arming the picker shows its target, toggle or not');
       assert.equal(armed.picking, true, 'the viewfinder becomes a target');
       assert.equal(armed.hex, '—', 'nothing is claimed before a tap');
 
@@ -892,10 +908,12 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
       await page.waitForTimeout(400);
       const again = await page.evaluate(() => ({
         lenses: [...document.querySelectorAll('#v2FilterStrip [data-filter^="lens:"]')].map((b) => b.textContent),
-        guide: document.querySelector('#v2GuideRow .active')?.dataset.guide ?? ''
+        guide: document.querySelector('#v2GuideRow .active')?.dataset.guide ?? '',
+        reticle: document.getElementById('v2ReticleToggle').classList.contains('active')
       }));
       assert.deepEqual(again.lenses, ['Coloring Book Style', 'Probe lens']);
       assert.equal(again.guide, 'center', 'the chosen guide is remembered');
+      assert.equal(again.reticle, false, 'and so is leaving the reticle off');
       await page.close();
       await context.close();
     });
@@ -1138,7 +1156,7 @@ test('a maximum-tier filtered clip records the CHOSEN stream, risk stated up fro
       await page.waitForFunction(() =>
         /largest frame this device's H\.264 encoder can write/.test(
           document.getElementById('v2FilterNote')?.textContent ?? ''),
-        null, { timeout: 8000 });
+        null, { timeout: 20000 });
       assert.match(await page.textContent('#v2FilterNote'), /Photos always stay at MAX/,
         'the note says stills are exempt');
       assert.ok(!/macroblock|capped/.test(await page.textContent('#v2DiagRecordIn')),

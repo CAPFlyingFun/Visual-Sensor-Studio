@@ -28,9 +28,16 @@ export interface GuideDefinition {
   note: string;
   /** Percent-space lines; `boxAspect` is width / height of the viewfinder. */
   lines(boxAspect: number): GuideLine[];
-  /** Show the sample ring — the true size of the colour picker's patch. */
-  centerSpot?: boolean;
 }
+
+/*
+ * The RETICLE is deliberately not a guide property. It is the colour
+ * picker's target — an aiming frame around a ring that is the true size of
+ * the sampled patch — and it has its own toggle, because a marker in the
+ * middle of the picture is clutter when nobody is sampling (Joshua,
+ * 2026-09-02: "shouldn't be on the screen all the time"). A guide draws
+ * lines; the reticle marks a measurement. Two switches, two meanings.
+ */
 
 const line = (x1: number, y1: number, x2: number, y2: number): GuideLine => ({ x1, y1, x2, y2 });
 
@@ -57,8 +64,7 @@ export const GUIDES: readonly GuideDefinition[] = [
   {
     id: 'center',
     label: '✛ Centre',
-    note: 'Centre crosshair. The small ring is the patch the colour picker averages.',
-    centerSpot: true,
+    note: 'Centre crosshair — for centring a subject or levelling a horizon.',
     // Ticks rather than full lines: the middle of the picture stays visible.
     lines: () => [
       line(38, 50, 46, 50), line(54, 50, 62, 50),

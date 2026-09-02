@@ -112,6 +112,8 @@
     .section-title { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
     .section-title h2 { font-size: 13px; margin: 0; }
     .hint { font-size: 10px; color: var(--muted); }
+    .chip { min-height: 30px; padding: 0 11px; border: 1px solid var(--line2); border-radius: 999px; background: #0d1a26; color: var(--muted); font-size: 11px; }
+    .chip.active { border-color: var(--blue); color: #cfe4ff; background: #10203a; }
     .card { margin: 0 11px 10px; padding: 13px; border: 1px solid var(--line); border-radius: 15px; background: linear-gradient(180deg, #0d1823, #09131c); }
     .card h3 { font-size: 13px; margin: 0 0 10px; }
     .card p { font-size: 12px; color: var(--muted); line-height: 1.5; margin: 0 0 8px; }
@@ -239,8 +241,12 @@
         </section>
 
         <section class="section">
-          <div class="section-title"><h2>Guides</h2><span class="hint" id="v2GuideNote">composition only — captures are always the full frame</span></div>
+          <div class="section-title">
+            <h2>Guides</h2>
+            <button type="button" class="chip" id="v2ReticleToggle" aria-pressed="false">✛ Reticle</button>
+          </div>
           <div class="zoom guides" id="v2GuideRow" aria-label="Viewfinder guides"></div>
+          <p class="hint" id="v2GuideNote">composition only — captures are always the full frame</p>
         </section>
 
         <section class="section">

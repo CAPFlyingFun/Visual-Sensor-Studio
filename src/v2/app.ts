@@ -479,6 +479,15 @@ function renderStreamTiers(): void {
 /* --- Viewfinder guides: composition only, never a capture decision ------- */
 
 const GUIDE_STORE_KEY = 'vss.v2.guide.v1';
+const RETICLE_STORE_KEY = 'vss.v2.reticle.v1';
+
+function remember(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Storage is optional; the choice still stands for this session.
+  }
+}
 
 function buildGuides(): void {
   const holder = byId('v2GuideRow');
@@ -490,28 +499,30 @@ function buildGuides(): void {
     if (guide.id === readState().guide) button.classList.add('active');
     button.addEventListener('click', () => {
       updateState({ guide: guide.id });
-      try {
-        localStorage.setItem(GUIDE_STORE_KEY, guide.id);
-      } catch {
-        // Storage is optional; the choice still stands for this session.
-      }
+      remember(GUIDE_STORE_KEY, guide.id);
     });
     holder.appendChild(button);
   }
+  byId('v2ReticleToggle').addEventListener('click', () => {
+    const on = !readState().reticle;
+    updateState({ reticle: on });
+    remember(RETICLE_STORE_KEY, on ? '1' : '0');
+  });
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 let renderedGuideKey = '';
 function renderGuides(): void {
-  const { guide: guideId, viewfinder, source, camera: status } = readState();
+  const { guide: guideId, reticle: reticleOn, viewfinder, source, camera: status } = readState();
   const guide = guideById(guideId);
   // The box's shape is the only thing a guide can need, and it comes from
   // the state's measured viewfinder — never a second display read.
   const boxAspect = viewfinder && viewfinder.height > 0 ? viewfinder.width / viewfinder.height : 1;
   const live = status?.state === 'live';
   const ring = source && viewfinder ? patchBoxPercent(viewfinder, source, PICK_PATCH) : null;
-  const showReticle = live && (pickerActive || (guide?.centerSpot ?? false));
-  const key = `${guideId}|${boxAspect.toFixed(3)}|${live}|${showReticle}|${ring ? ring.width.toFixed(3) : '-'}`;
+  // Armed picker or an explicit ask — never just because a guide is chosen.
+  const showReticle = live && (pickerActive || reticleOn);
+  const key = `${guideId}|${reticleOn}|${boxAspect.toFixed(3)}|${live}|${showReticle}|${ring ? ring.width.toFixed(3) : '-'}`;
   if (key === renderedGuideKey) return;
   renderedGuideKey = key;
 
@@ -542,6 +553,9 @@ function renderGuides(): void {
   for (const button of byId('v2GuideRow').querySelectorAll<HTMLButtonElement>('[data-guide]')) {
     button.classList.toggle('active', button.dataset.guide === guideId);
   }
+  const toggle = byId<HTMLButtonElement>('v2ReticleToggle');
+  toggle.classList.toggle('active', reticleOn);
+  toggle.setAttribute('aria-pressed', reticleOn ? 'true' : 'false');
   setText('v2GuideNote', guide?.note || 'composition only — captures are always the full frame');
 }
 
@@ -1889,8 +1903,9 @@ buildGuides();
 try {
   const stored = localStorage.getItem(GUIDE_STORE_KEY);
   if (stored && guideById(stored)) updateState({ guide: stored });
+  updateState({ reticle: localStorage.getItem(RETICLE_STORE_KEY) === '1' });
 } catch {
-  // Storage is optional; the default guide (off) stands.
+  // Storage is optional; the defaults (no guide, no reticle) stand.
 }
 buildFilterStrip();
 // Custom lenses append AFTER the built-ins, then the Custom + entry.

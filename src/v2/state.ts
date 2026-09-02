@@ -115,6 +115,12 @@ export interface V2State {
   streamTier: string;
   /** The chosen viewfinder guide id; the guides registry defines it. */
   guide: string;
+  /**
+   * The colour picker's aiming reticle. Its own switch, not a guide: the
+   * picker forces it on while armed, and otherwise it shows only if asked
+   * for — nothing sits in the middle of the picture uninvited.
+   */
+  reticle: boolean;
   /** Non-null while a clip is being recorded. */
   recording: ActiveRecording | null;
   /** ENCODED: what the last clip's file really contained. */
@@ -149,6 +155,7 @@ const state: V2State = {
   captureActive: false,
   streamTier: '720',
   guide: 'off',
+  reticle: false,
   recording: null,
   lastClip: null,
   encoderEnvelope: ASSUMED_ENVELOPE
