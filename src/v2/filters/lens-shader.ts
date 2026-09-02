@@ -20,6 +20,7 @@ import {
   buildRampLut, channelInfo, parseHex,
   type ChannelId, type CustomLens, type LensBinding, type LensStop
 } from '../../vision/lens.js';
+import { COLOUR_GAP_GLSL, rgbToHsvValues } from '../vision/colour-gap.js';
 import { SHADER_HEADER, SPEED_STATE, type FilterDefinition } from './registry.js';
 
 /** Channels V2 computes on the GPU, in legacy units. */
@@ -31,23 +32,10 @@ export const V2_CHANNELS: readonly ChannelId[] = [
   'rarity', 'backgroundDistance'
 ];
 
-/** Hue 0..1, saturation 0..1, value 0..1 — the shader's own convention. */
+/** A hex colour as HSV, each 0..1 — the shader's own convention. */
 export function rgbToHsv(hex: string): [number, number, number] {
-  const [r255, g255, b255] = parseHex(hex);
-  const r = r255 / 255;
-  const g = g255 / 255;
-  const b = b255 / 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const span = max - min;
-  let hue = 0;
-  if (span > 0) {
-    if (max === r) hue = ((g - b) / span + 6) % 6;
-    else if (max === g) hue = (b - r) / span + 2;
-    else hue = (r - g) / span + 4;
-    hue /= 6;
-  }
-  return [hue, max > 0 ? span / max : 0, max];
+  const [r, g, b] = parseHex(hex);
+  return rgbToHsvValues(r, g, b);
 }
 
 export function channelAvailability(id: ChannelId): { available: boolean; reason: string } {
@@ -166,14 +154,7 @@ function channelGlsl(id: ChannelId): string {
  * because the hue of a grey pixel is arithmetic rather than a measurement.
  * The weights are display tuning and are stated as such.
  */
-const COLOUR_GAP = `float colourGap(vec3 hsv, vec3 ref) {
-  float dh = abs(hsv.x - ref.x);
-  dh = min(dh, 1.0 - dh) * 2.0;
-  float ds = abs(hsv.y - ref.y);
-  float dv = abs(hsv.z - ref.z);
-  float hueWeight = min(hsv.y, ref.y);
-  return clamp(sqrt(dh * dh * hueWeight + ds * ds * 0.5 + dv * dv * 0.35), 0.0, 1.0);
-}`;
+const COLOUR_GAP = COLOUR_GAP_GLSL;
 
 function normaliseGlsl(name: string, binding: LensBinding): string {
   const gamma = binding.gamma > 0 ? binding.gamma : 1;

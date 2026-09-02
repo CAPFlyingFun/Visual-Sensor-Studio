@@ -31,11 +31,13 @@ import {
 } from './capture/encoder-envelope.js';
 import { STREAM_TIERS, tierAvailable, tierById } from './camera/stream-tiers.js';
 import { FILTERS, allFilters, filterById, setCustomFilters } from './filters/registry.js';
-import { compileLens, channelAvailability, lensFilterId, reverseStops } from './filters/lens-shader.js';
+import {
+  compileLens, channelAvailability, lensFilterId, reverseStops, rgbToHsv
+} from './filters/lens-shader.js';
 import { STARTER_LENSES } from './filters/starter-lenses.js';
 import {
-  CHANNELS, MAX_STOPS, MIN_STOPS, channelInfo, describeLens, rampToCss, toHex,
-  type ChannelId, type CustomLens
+  CHANNELS, MAX_STOPS, MIN_STOPS, channelInfo, describeLens, normaliseBinding,
+  rampToCss, toHex, type ChannelId, type CustomLens
 } from '../vision/lens.js';
 import {
   averageRgb, patchBoxPercent, patchRect, tapToSource,
@@ -43,6 +45,8 @@ import {
 } from './capture/color-sampler.js';
 import { GUIDES, guideById } from './render/guides.js';
 import { buildHistogram, emptyHistogram } from './vision/frame-histogram.js';
+import { matchShare } from './vision/colour-gap.js';
+import { tipFor } from './ui/coach.js';
 import { deleteLens, loadLenses, newLensId, sanitiseLens, saveLens } from '../vision/lens-store.js';
 import { RAMP_PRESETS } from '../vision/lens-preview.js';
 import { GlRenderer } from './render/gl-renderer.js';
@@ -164,6 +168,14 @@ let histogram = emptyHistogram();
 let histogramVersion = 0;
 let framesSinceHistogram = 0;
 let histogramCanvas: HTMLCanvasElement | null = null;
+/**
+ * How much of the frame the active lens is matching, 0..1, or null when the
+ * question does not apply. This is the number that answers "is it working?" —
+ * a Colour Splash pointed at a room with none of its colour in it renders a
+ * correct grey picture, and only a measurement can tell that apart from a
+ * broken lens.
+ */
+let matchingShare: number | null = null;
 
 function measureHistogram(): void {
   if (video.videoWidth === 0) return;
@@ -181,6 +193,24 @@ function measureHistogram(): void {
     histogramVersion += 1;
   } catch {
     // A mid-switch video element can refuse a draw; the next pass recovers.
+  }
+}
+
+/** The same small sample, asked a different question. */
+function measureMatchShare(lens: CustomLens): void {
+  if (video.videoWidth === 0) return;
+  histogramCanvas ??= document.createElement('canvas');
+  histogramCanvas.width = HISTOGRAM_SAMPLE;
+  histogramCanvas.height = HISTOGRAM_SAMPLE;
+  const context = histogramCanvas.getContext('2d', { willReadFrequently: true });
+  if (!context) return;
+  try {
+    context.drawImage(video, 0, 0, HISTOGRAM_SAMPLE, HISTOGRAM_SAMPLE);
+    const data = context.getImageData(0, 0, HISTOGRAM_SAMPLE, HISTOGRAM_SAMPLE).data;
+    matchingShare = matchShare(data, rgbToHsv(lens.reference ?? '#ffffff'),
+      (gap) => normaliseBinding(gap, lens.color));
+  } catch {
+    matchingShare = null;
   }
 }
 
@@ -209,8 +239,15 @@ function renderPreview(now: number): void {
   const target = recording?.path === 'filtered' ? recording.input : resolved.preview;
   // A lens bound to the whole frame's colours gets a fresh census every few
   // frames; every other filter never triggers the measurement at all.
-  if (filterById(activeFilter)?.needsHistogram && framesSinceHistogram++ % HISTOGRAM_EVERY === 0) {
-    measureHistogram();
+  const active = filterById(activeFilter);
+  if ((active?.needsHistogram || active?.lens) && framesSinceHistogram++ % HISTOGRAM_EVERY === 0) {
+    if (active.needsHistogram) measureHistogram();
+    // A reference lens reports what it is currently catching.
+    if (active.lens && channelInfo(active.lens.color.channel).needsReference) {
+      measureMatchShare(active.lens);
+    } else {
+      matchingShare = null;
+    }
   }
   // Stateful filters (Speed, Trails) advance their memory at the ANALYSIS
   // size — the same bounded size the frame history uses.
@@ -846,7 +883,8 @@ function renderFilterStrip(): void {
   const warning = !cap && activeFilter !== 'rgb'
     ? tierById(streamTier)?.clipWarning ?? ''
     : '';
-  const key = `${activeFilter}|${rec}|${cap}|${warning}`;
+  const key = `${activeFilter}|${rec}|${cap}|${warning}`
+    + `|${matchingShare === null ? '-' : Math.round(matchingShare * 100)}`;
   if (key === renderedFilterKey) return;
   renderedFilterKey = key;
   for (const button of byId('v2FilterStrip').querySelectorAll<HTMLButtonElement>('[data-filter]')) {
@@ -880,6 +918,10 @@ function renderFilterStrip(): void {
         + (lensFilter.needsHistogram
           ? ' Measured against the whole frame’s colours, re-counted a few times a second — point the camera elsewhere and the reading moves.'
           : '')
+        + (matchingShare !== null
+          ? ` Matching ${(matchingShare * 100).toFixed(0)}% of the frame right now`
+            + (matchingShare < 0.005 ? ' — nothing in view is that colour yet.' : '.')
+          : '')
     : '';
   setText('v2FilterNote', rec
     ? 'Recording — stop to change filters.'
@@ -887,6 +929,70 @@ function renderFilterStrip(): void {
   byId('v2LensActions').hidden = rec;
   byId('v2LensEdit').hidden = !lensFilter?.lens;
 }
+
+/* --- The coach: what to do with a filter that needs a step --------------- */
+
+const COACH_MUTED_KEY = 'vss.v2.coachMuted.v1';
+
+function mutedTips(): Set<string> {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(COACH_MUTED_KEY) ?? '[]');
+    return new Set(Array.isArray(raw) ? raw.filter((id): id is string => typeof id === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+/** Dismissed for this session only, unless the switch says forever. */
+const closedTips = new Set<string>();
+// 'unrendered' is deliberately distinct from 'none': resetting the key to
+// the value that MEANS hidden makes the next render bail out and the card
+// stays on screen — which is exactly what happened the first time.
+let renderedCoachKey = 'unrendered';
+
+function renderCoach(): void {
+  const tip = tipFor(filterById(readState().activeFilter));
+  const show = tip !== null && !closedTips.has(tip.id) && !mutedTips().has(tip.id);
+  const key = show && tip ? tip.id : 'none';
+  if (key === renderedCoachKey) return;
+  renderedCoachKey = key;
+  const card = byId('v2Coach');
+  card.hidden = !show;
+  if (!show || !tip) return;
+  setText('v2CoachTitle', tip.title);
+  byId('v2CoachSteps').replaceChildren(...tip.steps.map((step) => {
+    const item = document.createElement('li');
+    item.textContent = step;
+    return item;
+  }));
+  const action = byId<HTMLButtonElement>('v2CoachAction');
+  action.hidden = !tip.action;
+  if (tip.action) action.textContent = tip.action.label;
+  byId<HTMLInputElement>('v2CoachMute').checked = false;
+}
+
+byId('v2CoachClose').addEventListener('click', () => {
+  const tip = tipFor(filterById(readState().activeFilter));
+  if (!tip) return;
+  closedTips.add(tip.id);
+  if (byId<HTMLInputElement>('v2CoachMute').checked) {
+    const muted = mutedTips();
+    muted.add(tip.id);
+    try {
+      localStorage.setItem(COACH_MUTED_KEY, JSON.stringify([...muted]));
+    } catch {
+      // Storage is optional; it stays dismissed for this session either way.
+    }
+  }
+  renderedCoachKey = 'unrendered';
+  renderCoach();
+});
+
+byId('v2CoachAction').addEventListener('click', () => {
+  // The tip does the thing rather than only describing it.
+  setPickerActive(true);
+  byId('v2PickerCard').scrollIntoView({ block: 'nearest' });
+});
 
 /**
  * One subscriber, two speeds — and it lives BELOW every renderer it calls,
@@ -908,6 +1014,7 @@ let queuedTextRender = 0;
 function renderTextPanels(): void {
   renderHud();
   renderGuides();
+  renderCoach();
   renderDiagnostics();
 }
 

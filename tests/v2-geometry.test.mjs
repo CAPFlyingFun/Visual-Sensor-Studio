@@ -1001,6 +1001,51 @@ test('colour lenses: mask keeps the camera\'s colour, swap recolours, both take 
         assert.match(seen.note, expect, `${id}: the note describes what the lens does`);
       }
 
+      // A lens that needs a step explains itself, and the box can do the step.
+      await page.click('[data-filter="lens:lens-v2-colour-splash"]');
+      await page.waitForTimeout(500);
+      const coach = await page.evaluate(() => ({
+        shown: !document.getElementById('v2Coach').hidden,
+        title: document.getElementById('v2CoachTitle').textContent,
+        steps: document.querySelectorAll('#v2CoachSteps li').length,
+        action: document.getElementById('v2CoachAction').textContent,
+        note: document.getElementById('v2FilterNote').textContent
+      }));
+      assert.equal(coach.shown, true, 'a lens needing a reference colour coaches the first time');
+      assert.match(coach.title, /Colour Splash/);
+      assert.ok(coach.steps >= 3, 'with the steps to follow');
+      assert.match(coach.action, /Pick a colour/);
+      // And the note answers "is this working" with a number.
+      assert.match(coach.note, /Matching \d+% of the frame right now/,
+        `the live match share is reported, got "${coach.note}"`);
+
+      // The action arms the picker rather than only describing it.
+      await page.click('#v2CoachAction');
+      await page.waitForTimeout(200);
+      assert.equal(await page.isVisible('#v2PickerCard'), true, 'the tip does the thing');
+      await page.click('#v2PickerClose');
+
+      // Muted, it stays gone — including after a reload.
+      await page.check('#v2CoachMute');
+      await page.click('#v2CoachClose');
+      await page.waitForTimeout(200);
+      assert.equal(await page.isVisible('#v2Coach'), false, '"Got it" closes it');
+      await page.reload();
+      await page.waitForTimeout(500);
+      await page.click('#v2EnableCamera');
+      await page.waitForFunction(() =>
+        /\d+(\.\d+)? rendered fps/.test(document.getElementById('v2DiagPreview')?.textContent ?? ''),
+        null, { timeout: 8000 });
+      await page.click('[data-filter="lens:lens-v2-colour-splash"]');
+      await page.waitForTimeout(500);
+      assert.equal(await page.isVisible('#v2Coach'), false,
+        'don’t show this again means across launches');
+      // A different kind of lens still coaches — muting is per tip, not global.
+      await page.click('[data-filter="lens:lens-v2-rare-colour"]');
+      await page.waitForTimeout(500);
+      assert.equal(await page.isVisible('#v2Coach'), true, 'another tip is still offered');
+      await page.click('#v2CoachClose');
+
       // Colour Splash is the mask mode: mostly grey, with matched colour kept.
       await page.click('[data-filter="lens:lens-v2-colour-splash"]');
       await page.waitForTimeout(700);

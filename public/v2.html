@@ -163,6 +163,12 @@
     .lens-presets { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
     .lens-presets button { min-height: 30px; padding: 0 10px; border: 1px solid var(--line2); border-radius: 8px; background: #0d1a26; font-size: 11px; }
     .lens-describe { font-size: 11px; color: var(--muted); margin: 8px 0 0; }
+    .coach { margin: 8px 0 0; padding: 11px 13px; border: 1px solid #3a5f8a; border-radius: 13px; background: linear-gradient(180deg, #10233a, #0b1726); }
+    .coach h3 { font-size: 12px; margin: 0 0 6px; color: #cfe4ff; }
+    .coach ol { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.55; color: var(--muted); }
+    .coach li { margin-bottom: 2px; }
+    .coach-mute { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+    .coach-mute input { width: 17px; height: 17px; }
     .picker-read { display: flex; align-items: center; gap: 12px; margin: 4px 0 8px; }
     .picker-swatch { width: 54px; height: 54px; border-radius: 12px; border: 1px solid var(--line2); background: #0b151f; flex: 0 0 auto; }
     .picker-hex { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 17px; letter-spacing: .04em; }
@@ -260,6 +266,17 @@
           <div class="section-title"><h2>Filters &amp; Lenses</h2><span class="hint">Swipe &rarr; · one shader for preview and photo</span></div>
           <div class="filters" id="v2FilterStrip"></div>
           <p class="hint" id="v2FilterNote"></p>
+          <!-- Shown when the chosen filter needs a step before it can show
+               anything, with a switch to stop showing it. -->
+          <div class="coach" id="v2Coach" hidden>
+            <h3 id="v2CoachTitle"></h3>
+            <ol id="v2CoachSteps"></ol>
+            <div class="button-row">
+              <button type="button" class="btn" id="v2CoachAction" hidden></button>
+              <button type="button" class="btn" id="v2CoachClose">Got it</button>
+              <label class="coach-mute"><input type="checkbox" id="v2CoachMute" /> Don’t show this again</label>
+            </div>
+          </div>
           <div class="button-row" id="v2LensActions" hidden>
             <button type="button" class="btn" id="v2LensEdit">Edit lens</button>
             <button type="button" class="btn" id="v2LensImportButton">Import .lens.json</button>

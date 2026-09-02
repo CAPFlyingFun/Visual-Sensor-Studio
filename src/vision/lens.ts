@@ -432,7 +432,13 @@ export interface ChannelData {
 
 export type ChannelSource = Partial<Record<ChannelId, ChannelData>>;
 
-function normalise(raw: number, binding: LensBinding): number {
+/**
+ * A raw reading to 0..1 through the binding's own range and curve. Exported
+ * because the app reports what a lens is matching right now, and that answer
+ * must come from the same arithmetic the shader uses rather than a second
+ * opinion.
+ */
+export function normaliseBinding(raw: number, binding: LensBinding): number {
   const span = binding.high - binding.low;
   if (Math.abs(span) < 1e-9) return raw >= binding.high ? 1 : 0;
   const t = clamp((raw - binding.low) / span, 0, 1);
@@ -573,7 +579,7 @@ export function renderLens(
       continue;
     }
 
-    const t = normalise(colorSource.values[i] ?? 0, lens.color);
+    const t = normaliseBinding(colorSource.values[i] ?? 0, lens.color);
     resolved++;
     levelTotal += t;
     const index = clamp(Math.round(t * 255), 0, 255) * 3;
@@ -583,7 +589,7 @@ export function renderLens(
 
     if (brightnessBinding && brightnessSource) {
       const validB = !brightnessSource.valid || (brightnessSource.valid[i] ?? 0) !== 0;
-      const v = validB ? normalise(brightnessSource.values[i] ?? 0, brightnessBinding) : 0;
+      const v = validB ? normaliseBinding(brightnessSource.values[i] ?? 0, brightnessBinding) : 0;
       r *= v;
       g *= v;
       b *= v;

@@ -33,6 +33,11 @@ import { GUIDES, DEFAULT_GUIDE, guideById } from '../.test-build/v2/render/guide
 import {
   HISTOGRAM_BINS, buildHistogram, emptyHistogram
 } from '../.test-build/v2/vision/frame-histogram.js';
+import {
+  COLOUR_GAP_GLSL, GAP_WEIGHTS, colourGap, matchShare, rgbToHsvValues
+} from '../.test-build/v2/vision/colour-gap.js';
+import { tipFor } from '../.test-build/v2/ui/coach.js';
+import { normaliseBinding } from '../.test-build/vision/lens.js';
 import { allFilters, setCustomFilters } from '../.test-build/v2/filters/registry.js';
 import { STARTER_LENSES } from '../.test-build/v2/filters/starter-lenses.js';
 import { CHANNELS, buildRampLut, channelInfo, describeLens } from '../.test-build/vision/lens.js';
@@ -1098,4 +1103,67 @@ test('rarity and background distance are one measurement, three lenses', () => {
     assert.equal(filter.supportsPhoto, true);
     assert.equal(filter.temporal, false);
   }
+});
+
+/* --- One formula, two evaluators; and coaching derived from need ---------- */
+
+test('the colour gap is written once and the shader is generated from it', () => {
+  // Two evaluators are unavoidable — one per pixel on the GPU, one over a
+  // sample on the CPU — so the FORMULA must not fork. The weights live in
+  // one place and the GLSL is built from them; this pins the two together.
+  assert.match(COLOUR_GAP_GLSL, new RegExp(`ds \\* ${GAP_WEIGHTS.strength.toFixed(2)}`));
+  assert.match(COLOUR_GAP_GLSL, new RegExp(`dv \\* ${GAP_WEIGHTS.brightness.toFixed(2)}`));
+  assert.match(COLOUR_GAP_GLSL, /min\(hsv\.y, ref\.y\)/, 'hue is weighted by how colourful both are');
+  assert.match(compileLens(STARTER_LENSES.find((l) => l.id === 'lens-v2-colour-splash')).fragment,
+    /float colourGap\(vec3 hsv, vec3 ref\)/, 'and the shader uses that very text');
+
+  const red = rgbToHsvValues(220, 30, 40);
+  assert.equal(colourGap(red, red), 0, 'a colour is no distance from itself');
+  const green = rgbToHsvValues(40, 200, 60);
+  assert.ok(colourGap(red, green) > 0.5, `red and green are far apart, got ${colourGap(red, green)}`);
+  // Greys are compared by brightness, not by a hue neither of them has.
+  const darkGrey = rgbToHsvValues(60, 60, 60);
+  const lightGrey = rgbToHsvValues(200, 200, 200);
+  assert.ok(colourGap(darkGrey, darkGrey) === 0);
+  assert.ok(colourGap(darkGrey, lightGrey) < 0.5, 'two greys differ only in brightness');
+  assert.ok(colourGap(red, darkGrey) > colourGap(darkGrey, lightGrey), 'colour beats brightness');
+
+  // The match share follows the LENS's own range, not a second opinion.
+  const splash = STARTER_LENSES.find((l) => l.id === 'lens-v2-colour-splash');
+  const frame = rgba([...Array(3).fill([200, 30, 38]), ...Array(1).fill([40, 200, 60])]);
+  const share = matchShare(frame, rgbToHsvValues(200, 30, 38),
+    (gap) => normaliseBinding(gap, splash.color));
+  assert.ok(Math.abs(share - 0.75) < 1e-9, `three of four pixels match, got ${share}`);
+  assert.equal(matchShare(frame, rgbToHsvValues(40, 200, 60),
+    (gap) => normaliseBinding(gap, splash.color)), 0.25);
+  assert.equal(matchShare(new Uint8ClampedArray(0), [0, 0, 0], () => 1), 0);
+});
+
+test('a filter that needs a step says so, derived from what it needs', () => {
+  // Not written per filter: a lens the user builds tomorrow is coached too.
+  const splash = tipFor(compileLens(STARTER_LENSES.find((l) => l.id === 'lens-v2-colour-splash')));
+  assert.equal(splash.id, 'lens-reference');
+  assert.match(splash.title, /Colour Splash/);
+  assert.match(splash.steps.join(' '), /Pick colour/);
+  assert.match(splash.steps.join(' '), /0%/, 'and says what "nothing matches" looks like');
+  assert.deepEqual(splash.action, { label: 'Pick a colour', kind: 'pick' });
+
+  const swap = tipFor(compileLens(STARTER_LENSES.find((l) => l.id === 'lens-v2-paper-pink')));
+  assert.equal(swap.id, 'lens-swap');
+  assert.match(swap.steps.join(' '), /Recolour to/);
+
+  const rare = tipFor(compileLens(STARTER_LENSES.find((l) => l.id === 'lens-v2-rare-colour')));
+  assert.equal(rare.id, 'lens-histogram');
+  assert.match(rare.steps.join(' '), /whole frame|every colour in view/i);
+
+  assert.equal(tipFor(filterById('difference')).id, 'temporal');
+  assert.equal(tipFor(filterById('trails')).id, 'temporal');
+  assert.match(tipFor(filterById('speed')).steps.join(' '), /still scene reads dark/);
+
+  // A filter that shows its result on the first tap gets no lecture.
+  assert.equal(tipFor(filterById('rgb')), null);
+  assert.equal(tipFor(filterById('ironbow')), null);
+  assert.equal(tipFor(filterById('edges')), null);
+  assert.equal(tipFor(compileLens(STARTER_LENSES[0])), null, 'the edges lens needs no step');
+  assert.equal(tipFor(null), null);
 });

@@ -21,6 +21,8 @@
  * how small a frame — this never touches the DOM or the GPU.
  */
 
+import { rgbToHsvValues } from './colour-gap.js';
+
 /** 64 bins ≈ 5.6° each, and a hue maps straight onto a 64-texel lookup. */
 export const HISTOGRAM_BINS = 64;
 
@@ -35,20 +37,6 @@ export interface FrameHistogram {
 
 /** Below this saturation a pixel's hue is arithmetic rather than a colour. */
 const VOTE_FLOOR = 0.12;
-
-function hsv(r: number, g: number, b: number): [number, number, number] {
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const span = max - min;
-  let hue = 0;
-  if (span > 0) {
-    if (max === r) hue = ((g - b) / span + 6) % 6;
-    else if (max === g) hue = (b - r) / span + 2;
-    else hue = (r - g) / span + 4;
-    hue /= 6;
-  }
-  return [hue, max > 0 ? span / max : 0, max];
-}
 
 /**
  * A histogram with nothing in it yet: every hue equally common, so a lens
@@ -75,7 +63,7 @@ export function buildHistogram(data: ArrayLike<number>): FrameHistogram {
   let voted = 0;
 
   for (let i = 0; i < pixels; i++) {
-    const [h, s, v] = hsv(data[i * 4] / 255, data[i * 4 + 1] / 255, data[i * 4 + 2] / 255);
+    const [h, s, v] = rgbToHsvValues(data[i * 4], data[i * 4 + 1], data[i * 4 + 2]);
     if (s < VOTE_FLOOR) continue;
     const bin = Math.min(HISTOGRAM_BINS - 1, Math.floor(h * HISTOGRAM_BINS));
     weights[bin] += s;
