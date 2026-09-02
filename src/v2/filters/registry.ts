@@ -170,10 +170,21 @@ varying vec2 vUv;
 uniform sampler2D uFrame;
 uniform sampler2D uAverage;
 uniform float uWeight;
+// ALIGNMENT, in UV. The accumulation stays in the orientation it began at and
+// is never itself warped; each arriving frame is sampled at an offset that
+// puts the scene back where the accumulation expects it. Zero is exactly the
+// unaligned pass, so averaging with no gyro behaves as it always did.
+uniform vec2 uAlign;
 void main() {
-  vec3 now = texture2D(uFrame, vUv).rgb;
+  vec2 src = vUv + uAlign;
+  vec3 now = texture2D(uFrame, src).rgb;
   vec3 before = texture2D(uAverage, vUv).rgb;
-  gl_FragColor = vec4(mix(before, now, uWeight), 1.0);
+  // Past the frame's edge there is nothing photographed. The clamp would
+  // repeat the edge row and the average would blend in a smear that was never
+  // in front of the lens, so the accumulation simply keeps what it had there.
+  float inside = step(0.0, src.x) * step(src.x, 1.0)
+    * step(0.0, src.y) * step(src.y, 1.0);
+  gl_FragColor = vec4(mix(before, now, uWeight * inside), 1.0);
 }`;
 
 /**

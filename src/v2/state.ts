@@ -137,6 +137,19 @@ export interface V2State {
    */
   frameAverage: string;
   /**
+   * GYRO ALIGNMENT: whether frame averaging is steadied by the phone's own
+   * orientation. Its own switch rather than a level on the averaging ladder,
+   * because it needs a motion permission and can therefore be REFUSED — a
+   * ladder rung that silently does nothing would be the dishonest version.
+   */
+  align: boolean;
+  /**
+   * Why alignment is or is not running, in the app's own words. Not derived
+   * from `align`: "off" and "the phone refused the sensor" are different
+   * facts and the row says which.
+   */
+  alignStatus: 'off' | 'asking' | 'on' | 'denied' | 'unsupported';
+  /**
    * The colour picker's aiming reticle. Its own switch, not a guide: the
    * picker forces it on while armed, and otherwise it shows only if asked
    * for — nothing sits in the middle of the picture uninvited.
@@ -180,6 +193,8 @@ const state: V2State = {
   peaking: 'off',
   exposureShown: false,
   frameAverage: DEFAULT_FRAME_AVERAGE,
+  align: false,
+  alignStatus: 'off',
   reticle: false,
   recording: null,
   lastClip: null,

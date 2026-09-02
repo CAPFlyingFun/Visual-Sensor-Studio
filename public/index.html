@@ -225,7 +225,7 @@
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
-    <span class="pill" id="v2Badge">v0.40.8</span>
+    <span class="pill" id="v2Badge">v0.40.9</span>
   </header>
 
   <div class="camera-layout">
@@ -313,6 +313,12 @@
           <div class="section-title"><h2>Frame averaging</h2><span class="hint">preview &amp; video · steadies the hue lenses</span></div>
           <div class="zoom guides" id="v2AverageRow" aria-label="Frame averaging"></div>
           <p class="hint" id="v2AverageNote"></p>
+          <!-- Night's first half. The gyro predicts where the picture went
+               between frames, so the average can put each one back instead of
+               smearing it. Needs a motion permission, so it is a button. -->
+          <button type="button" class="btn" id="v2AlignToggle" aria-pressed="false">🧭 Steady with the gyro</button>
+          <p class="hint" id="v2AlignNote"></p>
+          <p class="hint" id="v2AlignReading"></p>
         </section>
 
         <section class="section">

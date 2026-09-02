@@ -27,7 +27,15 @@ import {
 } from './camera/controls.js';
 import { registerServiceWorker } from './pwa.js';
 import { APP_VERSION } from './version.js';
-import { readState, subscribe, updateState, frameSize } from './state.js';
+import {
+  readState, subscribe, updateState, frameSize, type FrameSize, type V2State
+} from './state.js';
+import { MotionController } from '../sensors/motion.js';
+import type { QuaternionLike } from '../core/math.js';
+import {
+  DEFAULT_NOISE_FLOOR_RADIANS, StackAligner, describeShift, nominalFocalPixels,
+  type AlignedFrame
+} from './vision/alignment.js';
 import { resolveGeometry, DEFAULT_GEOMETRY_INPUTS } from './camera/geometry.js';
 import { captureAtMaxStream, type Escalation, type ShutterStream } from './capture/shutter.js';
 import { ClipRecorder, type ClipResult } from './capture/record.js';
@@ -302,10 +310,16 @@ function renderPreview(now: number): void {
   }
   // Stateful filters (Speed, Trails) advance their memory at the ANALYSIS
   // size — the same bounded size the frame history uses.
+  const frames = framesForLevel(readState().frameAverage, readState().deliveredFps);
   if (renderer.render(activeFilter, target, resolved.analysis, {
     fps: readState().deliveredFps,
     histogram: { bins: histogram.bins, dominant: histogram.dominant, version: histogramVersion },
-    frames: framesForLevel(readState().frameAverage, readState().deliveredFps),
+    frames,
+    // NIGHT. The average only removes noise while the scene stays put, so the
+    // gyro puts each arriving frame back before it is blended — and says when
+    // the view has moved on far enough that the accumulation should restart
+    // rather than blend two different pictures.
+    ...alignmentFor(frames, target),
     lumaRange: exposure.range,
     // VIEWING AIDS reach the preview and nothing else. The photo and clip
     // paths below pass none, so stripes can never be baked into a file.
@@ -678,6 +692,178 @@ function buildFrameAverage(): void {
     });
     holder.appendChild(button);
   }
+}
+
+/* --- Night, first half: the gyro steadies the average -------------------- */
+
+/**
+ * ALIGNMENT — the phone's own orientation, spent on the frame average.
+ *
+ * Frame averaging removes noise because the noise is different in every frame
+ * and the scene is not. That second half stops being true the moment the
+ * phone moves: a tenth of a degree puts the scene about five pixels along, so
+ * the average blends a picture with a slightly different picture and softens
+ * instead of steadying. It is the same mechanism that made Dizzy an effect.
+ *
+ * The gyro already knows. `vision/alignment.ts` turns the rotation since the
+ * accumulation began into a pixel offset, the averaging pass samples each
+ * arriving frame there, and when the drift outgrows the edge budget the
+ * accumulation restarts rather than blending two different views.
+ *
+ * A SWITCH, NOT A LEVEL, for two reasons. iOS will not hand a page motion
+ * data without a permission asked for from a real tap, so this cannot be a
+ * silent improvement to an existing row; and the permission can be REFUSED,
+ * which a ladder rung would have no way to say.
+ */
+const motion = new MotionController();
+const aligner = new StackAligner();
+let latestOrientation: QuaternionLike | null = null;
+let alignedFrame: AlignedFrame | null = null;
+
+function stopAlignment(status: V2State['alignStatus']): void {
+  motion.stop();
+  aligner.reset();
+  latestOrientation = null;
+  alignedFrame = null;
+  updateState({ align: false, alignStatus: status });
+}
+
+async function startAlignment(): Promise<void> {
+  if (typeof DeviceOrientationEvent === 'undefined') {
+    updateState({ align: false, alignStatus: 'unsupported' });
+    return;
+  }
+  updateState({ alignStatus: 'asking' });
+  let granted = false;
+  try {
+    granted = await motion.requestPermission();
+  } catch {
+    // A throw here is a refusal like any other — the page still has no gyro.
+    granted = false;
+  }
+  if (!granted) {
+    updateState({ align: false, alignStatus: 'denied' });
+    return;
+  }
+  aligner.reset();
+  motion.start((sample) => {
+    // NO READING IS NOT A READING. The controller emits once the moment it
+    // starts, before any sensor event has arrived, and its angles are null —
+    // which the quaternion maths turns into the phone lying flat on a table.
+    // Anchoring on that and then meeting the first real orientation reads as
+    // a ninety-degree swing and throws the accumulation away for nothing
+    // (measured: one spurious restart at every start).
+    if (sample.alpha === null && sample.beta === null && sample.gamma === null) return;
+    // The quaternion arrives already corrected for the screen angle, so its
+    // axes line up with the frame the camera is delivering.
+    latestOrientation = sample.quaternion;
+  });
+  // Deliberately NOT remembered across loads. iOS grants the motion
+  // permission to a gesture, so a remembered "on" could only be restored by
+  // asking again silently and failing — a switch that read on while nothing
+  // was aligning.
+  updateState({ align: true, alignStatus: 'on' });
+}
+
+function buildAlignment(): void {
+  byId('v2AlignToggle').addEventListener('click', () => {
+    if (readState().align) {
+      stopAlignment('off');
+      return;
+    }
+    void startAlignment();
+  });
+}
+
+/**
+ * The offset for THIS frame, and whether the accumulation should start again.
+ *
+ * Returns nothing at all unless alignment is on, a frame is actually being
+ * averaged, and an orientation has arrived — an aligner with no gyro reading
+ * would otherwise anchor itself to nothing and report a confident zero.
+ */
+function alignmentFor(frames: number, target: FrameSize):
+{ align?: [number, number]; restartAverage?: boolean } {
+  if (!readState().align || !latestOrientation || !(frames > 1)) {
+    if (alignedFrame) {
+      // Averaging stopped or the gyro went away: the anchor no longer
+      // describes anything, so the next frame that needs one starts over.
+      aligner.reset();
+      alignedFrame = null;
+    }
+    return {};
+  }
+  const { camera, source } = readState();
+  // MEASURED IN SENSOR PIXELS, not render-target pixels. The offset that
+  // comes out is a UV fraction — a pixel shift divided by the width it was
+  // computed against — so both give the identical warp, but only one gives a
+  // readout whose "5 px" is the five pixels of the camera's own frame.
+  // Reporting the preview's pixels would quietly shrink every number by the
+  // ratio between the two.
+  const frame = source ?? target;
+  alignedFrame = aligner.track(latestOrientation, {
+    // ASSUMED, not measured: no browser reports a field of view and V2 has no
+    // visual fit yet, so this is the stated stand-in and every reading says
+    // so. It sets the scale of the pixel numbers and, with the edge budget,
+    // how far the view may drift before the accumulation restarts.
+    focalPixels: nominalFocalPixels(frame.width),
+    frameWidth: frame.width,
+    frameHeight: frame.height,
+    facing: camera?.facing ?? ''
+  });
+  return { align: alignedFrame.align, restartAverage: alignedFrame.restart };
+}
+
+function renderAlignment(): void {
+  const { align, alignStatus, camera } = readState();
+  const toggle = byId<HTMLButtonElement>('v2AlignToggle');
+  toggle.textContent = align ? '🧭 Gyro steadying is on' : '🧭 Steady with the gyro';
+  toggle.setAttribute('aria-pressed', align ? 'true' : 'false');
+  setText('v2AlignNote', alignNote(alignStatus, camera?.facing ?? ''));
+  setText('v2AlignReading', align ? alignReading() : '');
+}
+
+function alignNote(status: V2State['alignStatus'], facing: string): string {
+  if (status === 'asking') return 'Asking iOS for the motion sensor…';
+  if (status === 'denied') {
+    return 'This phone refused the motion sensor, so there is nothing to '
+      + 'align with. Safari asks once per site — Settings ▸ Safari ▸ Motion & '
+      + 'Orientation Access, or reload and tap again.';
+  }
+  if (status === 'unsupported') {
+    return 'This browser reports no orientation sensor at all. That describes '
+      + 'the browser: the phone certainly has a gyroscope.';
+  }
+  if (status !== 'on') {
+    return 'Averaging blends this frame with the last few, which only removes '
+      + 'noise while the scene stays put. The gyro says how far the phone '
+      + 'turned, so each frame can be put back before it is blended.';
+  }
+  if (facing !== 'environment') {
+    return 'On, but not aligning: the front camera looks the other way along '
+      + 'its own axis and which way its frames come out is a thing to measure '
+      + 'rather than assume. A wrong sign would double the error instead of '
+      + 'removing it, so the front camera averages unaligned.';
+  }
+  return 'On. Each frame is put back where the last one was before it is '
+    + 'blended, and the average starts again when the view has moved on.';
+}
+
+function alignReading(): string {
+  const frame = alignedFrame;
+  if (!frame) {
+    return readState().frameAverage === 'off'
+      ? 'Nothing to align: frame averaging is Off, so every frame stands alone.'
+      : 'Waiting for the first orientation reading.';
+  }
+  const floor = (DEFAULT_NOISE_FLOOR_RADIANS * 180 / Math.PI).toFixed(3);
+  const restarts = aligner.rejectedCount;
+  return `${describeShift(frame.shift, frame.delta)} · ${frame.verdict} · `
+    + `${frame.reason} · ${aligner.stackedCount} frames on this anchor, `
+    + `${restarts} restart${restarts === 1 ? '' : 's'} · pixels are the `
+    + 'camera\'s own, from an ASSUMED focal length — no browser reports a '
+    + `field of view · floor ${floor}° is the default, not a calibration of `
+    + 'this phone.';
 }
 
 /**
@@ -1375,6 +1561,7 @@ function renderTextPanels(): void {
   renderCoach();
   renderDiagnostics();
   renderFrameAverage();
+  renderAlignment();
   renderCameraControls();
   renderAids();
   renderExposure();
@@ -2700,6 +2887,7 @@ setText('v2Badge', `v${APP_VERSION}${isStandalone() ? ' · PWA' : ''}`);
 
 buildGuides();
 buildFrameAverage();
+buildAlignment();
 buildAids();
 try {
   const stored = localStorage.getItem(GUIDE_STORE_KEY);

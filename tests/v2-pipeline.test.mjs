@@ -1940,3 +1940,50 @@ test('every renderable filter can save a still — and says what kind of still',
   assert.equal(broken.supportsPhoto, false, 'a lens that cannot run cannot save one either');
 });
 
+
+test('the averaging pass can be aligned, and refuses to average what was never photographed', () => {
+  const registry = readFileSync(new URL('../src/v2/filters/registry.ts', import.meta.url), 'utf8');
+  const average = registry.slice(registry.indexOf('export const AVERAGE_FRAGMENT'));
+  const body = average.slice(0, average.indexOf('`;'));
+
+  // THE ARRIVING FRAME MOVES, THE ACCUMULATION DOES NOT. Re-warping the
+  // accumulation would resample it again on every frame and soften it without
+  // limit; sampling the incoming frame at an offset costs one lookup and
+  // leaves the memory untouched.
+  assert.match(body, /texture2D\(uFrame, src\)/, 'the frame is sampled at an offset');
+  assert.match(body, /texture2D\(uAverage, vUv\)/, 'the accumulation is read straight');
+  assert.match(body, /vec2 src = vUv \+ uAlign;/,
+    'plus, not minus: to find where the scene went, look where it moved TO');
+
+  // Past the frame's edge there is nothing photographed, and CLAMP_TO_EDGE
+  // would repeat the edge row into the average as though it were scene.
+  assert.match(body, /float inside = step/);
+  assert.match(body, /uWeight \* inside/, 'outside contributes nothing at all');
+
+  /*
+   * MEASURED on a real GL context, running this exact shader over a synthetic
+   * scene drifted 6 px across and 4 px down, mean absolute error per pixel
+   * against the accumulation it should have landed on:
+   *
+   *   blended unaligned      90
+   *   blended with +offset    0    exact
+   *   blended with -offset  176    the wrong sign nearly DOUBLES the error
+   *
+   * The third row is why the signs are derived in alignment.ts rather than
+   * picked: getting them backwards is worse than not aligning at all. And
+   * with a quarter-frame offset the rows that sample past the edge came back
+   * bit-identical to the accumulation, so the guard above really holds.
+   */
+
+  const renderer = readFileSync(new URL('../src/v2/render/gl-renderer.ts', import.meta.url), 'utf8');
+  // Priming ADOPTS the frame whole, so it defines the orientation everything
+  // afterwards is aligned to — offsetting it would align the anchor to itself.
+  assert.match(renderer, /const offset = pass\.weight >= 1 \? \[0, 0\] : align \?\? \[0, 0\];/);
+  assert.match(renderer, /if \(extras\.restartAverage\) this\.averagePrimed = false;/,
+    'a restart re-primes rather than fading a new view in over an old one');
+
+  // A still asks for none of it: it already got one good frame, and a photo
+  // must never carry a warp derived from a sensor reading.
+  const photo = readFileSync(new URL('../src/v2/capture/photo.ts', import.meta.url), 'utf8');
+  assert.ok(!/align/.test(photo), 'capturePhoto passes no alignment');
+});

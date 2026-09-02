@@ -331,7 +331,9 @@ export class GlRenderer {
    * weight. Starting from black would fade the picture up over a third of a
    * second and look like a fault.
    */
-  private advanceAverage(size: RenderTargetSize, frames: number): void {
+  private advanceAverage(
+    size: RenderTargetSize, frames: number, align?: [number, number]
+  ): void {
     const gl = this.gl;
     this.averaging = false;
     if (!gl || !(frames > 1) || size.width <= 0 || size.height <= 0) return;
@@ -385,6 +387,10 @@ export class GlRenderer {
       gl.bindTexture(gl.TEXTURE_2D, pass.read);
       gl.uniform1i(gl.getUniformLocation(program, 'uAverage'), 1);
       gl.uniform1f(gl.getUniformLocation(program, 'uWeight'), pass.weight);
+      // Priming adopts the frame whole, so it defines the reference the later
+      // passes align TO — it must not be offset itself.
+      const offset = pass.weight >= 1 ? [0, 0] : align ?? [0, 0];
+      gl.uniform2f(gl.getUniformLocation(program, 'uAlign'), offset[0], offset[1]);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       this.averageRead = pass.write === this.averageTextures[0] ? 0 : 1;
     }
@@ -459,6 +465,14 @@ export class GlRenderer {
       /** Frames to average together — see render/frame-average.ts. 1 = none. */
       frames?: number;
       /**
+       * Where the scene has drifted to since the accumulation began, in UV.
+       * Each arriving frame is sampled at this offset so it lands back on the
+       * accumulation instead of smearing across it.
+       */
+      align?: [number, number];
+      /** Throw the accumulation away and start again from this frame. */
+      restartAverage?: boolean;
+      /**
        * VIEWING AIDS, thresholds from render/overlays.ts. 0 is off, and off
        * is what the photo and recording paths pass: an aid must never reach a
        * file. Only the preview asks for them.
@@ -473,7 +487,8 @@ export class GlRenderer {
     if (!program) return false;
     // The average advances BEFORE the state pass, because a filter's memory
     // must be built from the same picture its live frame is.
-    this.advanceAverage(target, extras.frames ?? 1);
+    if (extras.restartAverage) this.averagePrimed = false;
+    this.advanceAverage(target, extras.frames ?? 1, extras.align);
     // A stateful filter advances its memory first, at the ANALYSIS size the
     // caller resolves — the display pass then reads it, whatever its own size.
     const state = filter.state && stateSize ? this.advanceState(filter, stateSize) : null;

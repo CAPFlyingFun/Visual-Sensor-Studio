@@ -156,3 +156,63 @@ test('delivered FPS is measured from presented frames, not the track claim', () 
   assert.ok(!/frameRateInfo\.reported/.test(appTs),
     'the track claim is an intention, not a measurement');
 });
+
+test('gyro steadying is a switch that can be refused, and says which', () => {
+  // A SWITCH, not a rung on the averaging ladder. iOS hands a page motion
+  // data only after a permission asked for from a real tap, and that
+  // permission can be REFUSED — a ladder rung would have no way to say so and
+  // would sit there looking as though it were working.
+  assert.match(v2Html, /id="v2AlignToggle"/);
+  assert.match(v2Html, /id="v2AlignNote"/);
+  assert.match(v2Html, /id="v2AlignReading"/);
+  assert.match(appTs, /motion\.requestPermission\(\)/, 'the permission is asked for');
+  for (const status of ['asking', 'denied', 'unsupported']) {
+    assert.ok(appTs.includes(`'${status}'`), `${status} is a state the row can be in`);
+  }
+  assert.match(stateTs, /alignStatus: 'off' \| 'asking' \| 'on' \| 'denied' \| 'unsupported';/,
+    'off and refused are different facts');
+
+  // A refusal must not read as a fault of the phone, and an absent sensor
+  // must not read as an absent gyroscope.
+  assert.match(appTs, /Safari asks once per site/);
+  assert.match(appTs, /no orientation sensor at all/);
+  assert.match(appTs, /the phone certainly has a gyroscope/,
+    'an unsupported browser is a browser limit, never an absent gyroscope');
+
+  // NOT REMEMBERED across loads, deliberately: the permission belongs to a
+  // gesture, so a restored "on" could only be a switch that reads on while
+  // nothing is aligning.
+  assert.ok(!/ALIGN_STORE_KEY/.test(appTs), 'no remembered alignment preference');
+
+  // The focal length is a STAND-IN and every reading says so — no browser
+  // reports a field of view, and V2 has no visual fit yet.
+  assert.match(appTs, /from an ASSUMED focal length/);
+  // And the pixel numbers are the CAMERA's, not the preview's — the same
+  // turn read as a fifth of the shift when it was measured against the
+  // render target, which is a different and much smaller number.
+  assert.match(appTs, /const frame = source \?\? target;/);
+  // And the noise floor is the default rather than a calibration of this
+  // phone, which is a different claim and would be a bigger one.
+  assert.match(appTs, /is the default, not a calibration of/);
+  // The verdict text must not claim a calibration either — the two would
+  // contradict each other in the same sentence.
+  const alignmentTs = readFileSync(new URL('../src/v2/vision/alignment.ts', import.meta.url), 'utf8');
+  assert.ok(!/calibrated noise floor/.test(alignmentTs),
+    'nothing calls the default floor calibrated');
+});
+
+test('alignment only runs when there is something to align', () => {
+  // An aligner asked for an offset while nothing is being averaged would
+  // anchor itself to whatever orientation happened to be current and then
+  // report a confident zero about a stack that does not exist.
+  assert.match(appTs, /if \(!readState\(\)\.align \|\| !latestOrientation \|\| !\(frames > 1\)\)/);
+  assert.match(appTs, /aligner\.reset\(\);/, 'and the anchor is dropped, not left stale');
+
+  // NO READING IS NOT A READING. MotionController emits once the instant it
+  // starts, before any sensor event, with null angles — which the quaternion
+  // maths reads as a phone lying flat. Anchoring on that and then meeting the
+  // first real orientation is a ninety-degree swing, and the accumulation was
+  // thrown away for it at every single start (measured, then fixed).
+  assert.match(appTs,
+    /sample\.alpha === null && sample\.beta === null && sample\.gamma === null\) return;/);
+});
