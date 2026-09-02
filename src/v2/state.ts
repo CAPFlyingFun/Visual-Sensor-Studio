@@ -144,11 +144,19 @@ export interface V2State {
    */
   align: boolean;
   /**
-   * Why alignment is or is not running, in the app's own words. Not derived
-   * from `align`: "off" and "the phone refused the sensor" are different
-   * facts and the row says which.
+   * THE MOTION SENSOR's own state, owned once and read by everything that
+   * needs it — gyro alignment and the steady shutter both do. Not derived
+   * from either feature's switch: "off" and "the phone refused the sensor"
+   * are different facts, and a feature that inferred one from the other would
+   * report a refusal as a preference.
    */
-  alignStatus: 'off' | 'asking' | 'on' | 'denied' | 'unsupported';
+  motionStatus: 'off' | 'asking' | 'on' | 'denied' | 'unsupported';
+  /**
+   * STEADY SHUTTER: armed and waiting for a hold steady enough to photograph.
+   * Its own flag rather than a mode, because it is a thing the camera is
+   * WAITING to do and the picture has to keep working meanwhile.
+   */
+  autoShot: boolean;
   /**
    * The colour picker's aiming reticle. Its own switch, not a guide: the
    * picker forces it on while armed, and otherwise it shows only if asked
@@ -194,7 +202,8 @@ const state: V2State = {
   exposureShown: false,
   frameAverage: DEFAULT_FRAME_AVERAGE,
   align: false,
-  alignStatus: 'off',
+  motionStatus: 'off',
+  autoShot: false,
   reticle: false,
   recording: null,
   lastClip: null,

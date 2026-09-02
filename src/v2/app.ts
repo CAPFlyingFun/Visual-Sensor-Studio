@@ -34,8 +34,12 @@ import { MotionController } from '../sensors/motion.js';
 import type { QuaternionLike } from '../core/math.js';
 import {
   DEFAULT_NOISE_FLOOR_RADIANS, StackAligner, describeShift, nominalFocalPixels,
-  type AlignedFrame
+  rotationSince, type AlignedFrame
 } from './vision/alignment.js';
+import {
+  DEFAULT_STEADY_THRESHOLD, HOLD_MS, SteadyShutter, describeSteadiness,
+  rateFrom, readSteadiness, smoothRate, type SteadyReading
+} from './vision/steadiness.js';
 import { resolveGeometry, DEFAULT_GEOMETRY_INPUTS } from './camera/geometry.js';
 import { captureAtMaxStream, type Escalation, type ShutterStream } from './capture/shutter.js';
 import { ClipRecorder, type ClipResult } from './capture/record.js';
@@ -62,7 +66,7 @@ import {
 } from './capture/color-sampler.js';
 import { GUIDES, guideById } from './render/guides.js';
 import {
-  FRAME_AVERAGE_LEVELS, conversionNote, frameAverageById, framesForLevel
+  FRAME_AVERAGE_LEVELS, NOMINAL_FPS, conversionNote, frameAverageById, framesForLevel
 } from './render/frame-average.js';
 import {
   ZEBRA_LEVELS, PEAKING_LEVELS, peakingById, peakingThreshold, zebraById, zebraThreshold
@@ -486,6 +490,10 @@ function startDeliveryMeter(): void {
     // and where none ever arrive the per-frame reconcile launches the scan.
     reconcileCapability();
     renderPreview(frame.now);
+    // On the DELIVERY loop, so an armed shutter only ever fires against a
+    // picture the camera is really producing — never into a suspended stream
+    // on a timer that kept running.
+    updateSteadyShutter(frame.now);
   });
 }
 
@@ -717,23 +725,48 @@ function buildFrameAverage(): void {
  */
 const motion = new MotionController();
 const aligner = new StackAligner();
+const steadyShutter = new SteadyShutter();
 let latestOrientation: QuaternionLike | null = null;
 let alignedFrame: AlignedFrame | null = null;
 
-function stopAlignment(status: V2State['alignStatus']): void {
+/**
+ * THE ROTATION RATE, smoothed — how fast the phone is turning right now.
+ *
+ * A different question from the aligner's, and deliberately derived from the
+ * same `rotationSince`: a phone can be far from its anchor and perfectly
+ * still (a sharp photograph) or back exactly where it started and swinging
+ * through (a blurred one). Two sensor paths for one movement could disagree
+ * on screen, so there is one.
+ */
+let orientationAt = 0;
+let previousOrientation: QuaternionLike | null = null;
+let turnRate = 0;
+
+function stopMotion(status: V2State['motionStatus']): void {
   motion.stop();
   aligner.reset();
+  steadyShutter.disarm();
   latestOrientation = null;
+  previousOrientation = null;
+  turnRate = 0;
   alignedFrame = null;
-  updateState({ align: false, alignStatus: status });
+  updateState({ align: false, autoShot: false, motionStatus: status });
 }
 
-async function startAlignment(): Promise<void> {
+/**
+ * Start the sensor, once, for whichever feature asked first.
+ *
+ * iOS hands a page motion data only after a permission asked for from a real
+ * tap, and the permission can be REFUSED — so this returns whether it worked
+ * rather than assuming, and both features read the same answer.
+ */
+async function ensureMotion(): Promise<boolean> {
+  if (readState().motionStatus === 'on') return true;
   if (typeof DeviceOrientationEvent === 'undefined') {
-    updateState({ align: false, alignStatus: 'unsupported' });
-    return;
+    updateState({ motionStatus: 'unsupported' });
+    return false;
   }
-  updateState({ alignStatus: 'asking' });
+  updateState({ motionStatus: 'asking' });
   let granted = false;
   try {
     granted = await motion.requestPermission();
@@ -742,10 +775,9 @@ async function startAlignment(): Promise<void> {
     granted = false;
   }
   if (!granted) {
-    updateState({ align: false, alignStatus: 'denied' });
-    return;
+    updateState({ motionStatus: 'denied' });
+    return false;
   }
-  aligner.reset();
   motion.start((sample) => {
     // NO READING IS NOT A READING. The controller emits once the moment it
     // starts, before any sensor event has arrived, and its angles are null —
@@ -757,21 +789,38 @@ async function startAlignment(): Promise<void> {
     // The quaternion arrives already corrected for the screen angle, so its
     // axes line up with the frame the camera is delivering.
     latestOrientation = sample.quaternion;
+    if (previousOrientation) {
+      const turned = rotationSince(previousOrientation, sample.quaternion);
+      const dt = sample.timestamp - orientationAt;
+      const rate = rateFrom(turned.total, dt);
+      // A refused rate means the samples are too far apart to divide — a
+      // resumed page, a dropped event. The old rate stands rather than a
+      // confident middling number for a movement nobody made.
+      if (rate !== null) turnRate = smoothRate(turnRate, rate, dt);
+    }
+    previousOrientation = sample.quaternion;
+    orientationAt = sample.timestamp;
   });
-  // Deliberately NOT remembered across loads. iOS grants the motion
-  // permission to a gesture, so a remembered "on" could only be restored by
-  // asking again silently and failing — a switch that read on while nothing
-  // was aligning.
-  updateState({ align: true, alignStatus: 'on' });
+  updateState({ motionStatus: 'on' });
+  return true;
 }
 
 function buildAlignment(): void {
   byId('v2AlignToggle').addEventListener('click', () => {
     if (readState().align) {
-      stopAlignment('off');
+      updateState({ align: false });
+      aligner.reset();
+      alignedFrame = null;
+      // The sensor stays on only while something is still using it.
+      if (!readState().autoShot) stopMotion('off');
       return;
     }
-    void startAlignment();
+    void (async () => {
+      if (await ensureMotion()) {
+        aligner.reset();
+        updateState({ align: true });
+      }
+    })();
   });
 }
 
@@ -815,26 +864,18 @@ function alignmentFor(frames: number, target: FrameSize):
 }
 
 function renderAlignment(): void {
-  const { align, alignStatus, camera } = readState();
+  const { align, motionStatus, camera } = readState();
   const toggle = byId<HTMLButtonElement>('v2AlignToggle');
   toggle.textContent = align ? '🧭 Gyro steadying is on' : '🧭 Steady with the gyro';
   toggle.setAttribute('aria-pressed', align ? 'true' : 'false');
-  setText('v2AlignNote', alignNote(alignStatus, camera?.facing ?? ''));
+  setText('v2AlignNote', alignNote(motionStatus, camera?.facing ?? '', align));
   setText('v2AlignReading', align ? alignReading() : '');
 }
 
-function alignNote(status: V2State['alignStatus'], facing: string): string {
-  if (status === 'asking') return 'Asking iOS for the motion sensor…';
-  if (status === 'denied') {
-    return 'This phone refused the motion sensor, so there is nothing to '
-      + 'align with. Safari asks once per site — Settings ▸ Safari ▸ Motion & '
-      + 'Orientation Access, or reload and tap again.';
-  }
-  if (status === 'unsupported') {
-    return 'This browser reports no orientation sensor at all. That describes '
-      + 'the browser: the phone certainly has a gyroscope.';
-  }
-  if (status !== 'on') {
+function alignNote(status: V2State['motionStatus'], facing: string, on: boolean): string {
+  const sensor = motionNote(status);
+  if (sensor) return sensor;
+  if (!on) {
     return 'Averaging blends this frame with the last few, which only removes '
       + 'noise while the scene stays put. The gyro says how far the phone '
       + 'turned, so each frame can be put back before it is blended.';
@@ -900,6 +941,155 @@ function buildAids(): void {
     // not be reading a frame every few frames to answer nobody.
     updateState({ exposureShown: !readState().exposureShown });
   });
+}
+
+/* --- The steady shutter: wait for a hold, then take the photograph ------- */
+
+/**
+ * AUTO CAPTURE ON A STEADY HOLD.
+ *
+ * Joshua, 2026-09-02: "would be good to add an auto picture take once it gets
+ * a stable over 70% hold still for best image clarity."
+ *
+ * The gyro is already measuring the rotation; vision/steadiness.ts turns its
+ * RATE into the pixels a photograph would smear by, and waits for that to
+ * stay good for long enough to be a hold rather than a moment. The shutter it
+ * pulls is the ordinary one — same escalation to the camera's maximum, same
+ * geometry, same file. Nothing about the picture changes; only what decides
+ * WHEN.
+ */
+let steadyReading: SteadyReading = { steadiness: 1, rate: 0, smear: 0 };
+let steadyProgress = 0;
+let steadyFiredAt: SteadyReading | null = null;
+
+/**
+ * The shutter time the smear is computed over.
+ *
+ * WebKit almost never reports the real exposure, so the frame interval stands
+ * in for it — right in daylight and an understatement in the dark, where the
+ * camera holds the shutter open longer than one frame. Understating is the
+ * safe direction for a warning: the real blur is worse than this says, never
+ * better, so a reading that says "sharp" is not being generous.
+ */
+function shutterSeconds(): number {
+  const fps = readState().deliveredFps;
+  return 1 / (fps > 1 ? fps : NOMINAL_FPS);
+}
+
+/**
+ * Update the meter, and fire when a hold completes.
+ *
+ * Runs on the FRAME loop rather than on a sensor event, so the reading the
+ * shutter acts on belongs to a picture that is actually being delivered — an
+ * armed shutter on a suspended camera must not fire into nothing.
+ */
+function updateSteadyShutter(now: number): void {
+  const { camera: status, autoShot, capability, source } = readState();
+  // The photo's own pixels, because its clarity is the question being asked.
+  // CAPABILITY where the track advertises one, since that is the frame the
+  // shutter escalates to; the negotiated stream otherwise.
+  const photo = capability ?? source;
+  steadyReading = readSteadiness(
+    turnRate, nominalFocalPixels(photo?.width ?? 0), shutterSeconds()
+  );
+  if (!autoShot) {
+    steadyProgress = 0;
+    return;
+  }
+  if (status?.state !== 'live') {
+    // Nothing to photograph. The hold is abandoned rather than held, so a
+    // camera that comes back does not fire on a stale clock.
+    steadyShutter.arm(DEFAULT_STEADY_THRESHOLD);
+    steadyProgress = 0;
+    return;
+  }
+  const progress = steadyShutter.update(steadyReading.steadiness, now);
+  steadyProgress = progress.progress;
+  if (!progress.fire) return;
+  // ONCE. The flag goes down before the shutter is pulled, so a slow capture
+  // cannot be re-entered by the next frame.
+  steadyFiredAt = steadyReading;
+  updateState({ autoShot: false });
+  void takePhoto();
+}
+
+function buildSteadyShutter(): void {
+  byId('v2SteadyToggle').addEventListener('click', () => {
+    if (readState().autoShot) {
+      steadyShutter.disarm();
+      updateState({ autoShot: false });
+      if (!readState().align) stopMotion('off');
+      return;
+    }
+    void (async () => {
+      if (!await ensureMotion()) return;
+      steadyFiredAt = null;
+      steadyShutter.arm(DEFAULT_STEADY_THRESHOLD);
+      updateState({ autoShot: true });
+    })();
+  });
+}
+
+function renderSteadyShutter(): void {
+  const { autoShot, motionStatus, deliveredFps } = readState();
+  const toggle = byId<HTMLButtonElement>('v2SteadyToggle');
+  toggle.textContent = autoShot ? '⏳ Waiting for a steady hold…' : '🎯 Shoot when steady';
+  toggle.setAttribute('aria-pressed', autoShot ? 'true' : 'false');
+
+  const percent = Math.round(DEFAULT_STEADY_THRESHOLD * 100);
+  setText('v2SteadyNote', motionStatus === 'on'
+    ? `Armed, the shutter waits until the picture is ${percent}% steady and `
+      + `STAYS there for ${HOLD_MS} ms, then takes one photograph and disarms. `
+      + 'A moment of stillness is not a steady hand — a phone changing '
+      + 'direction is motionless for one frame — so the reading has to survive.'
+    : `Takes one photograph by itself once you hold the phone ${percent}% `
+      + 'steady. Needs the motion sensor, which iOS only grants to a tap.');
+
+  if (motionStatus !== 'on') {
+    setText('v2SteadyReading', motionNote(motionStatus));
+    return;
+  }
+  const line = describeSteadiness(steadyReading, shutterSeconds(), deliveredFps > 1);
+  const held = steadyProgress > 0 ? ` · holding ${Math.round(steadyProgress * 100)}%` : '';
+  const fired = steadyFiredAt
+    ? ` · last shot fired at ${Math.round(steadyFiredAt.steadiness * 100)}% steady`
+    : '';
+  setText('v2SteadyReading', `${line}${held}${fired}`);
+}
+
+/**
+ * The meter OVER THE PICTURE, because that is where the eyes are.
+ *
+ * Reading a percentage in a panel below the viewfinder means looking away
+ * from the thing being held still, which moves it. The banner sits where the
+ * recording one does and turns green as the hold fills.
+ */
+function renderSteadyHud(): void {
+  const hud = byId('v2SteadyHud');
+  const { autoShot } = readState();
+  hud.hidden = !autoShot;
+  if (!autoShot) return;
+  const percent = Math.round(steadyReading.steadiness * 100);
+  const target = Math.round(DEFAULT_STEADY_THRESHOLD * 100);
+  const holding = steadyProgress > 0;
+  hud.dataset.holding = holding ? 'true' : 'false';
+  hud.textContent = holding
+    ? `🎯 Holding ${percent}% — ${Math.round(steadyProgress * 100)}%`
+    : `🎯 ${percent}% steady · hold at ${target}% to shoot`;
+}
+
+/** What the SENSOR is doing, said once and shared by both features. */
+function motionNote(status: V2State['motionStatus']): string {
+  if (status === 'asking') return 'Asking iOS for the motion sensor…';
+  if (status === 'denied') {
+    return 'This phone refused the motion sensor. Safari asks once per site — '
+      + 'Settings ▸ Safari ▸ Motion & Orientation Access, or reload and tap again.';
+  }
+  if (status === 'unsupported') {
+    return 'This browser reports no orientation sensor at all. That describes '
+      + 'the browser: the phone certainly has a gyroscope.';
+  }
+  return '';
 }
 
 let renderedAidKey = '';
@@ -1562,6 +1752,8 @@ function renderTextPanels(): void {
   renderDiagnostics();
   renderFrameAverage();
   renderAlignment();
+  renderSteadyShutter();
+  renderSteadyHud();
   renderCameraControls();
   renderAids();
   renderExposure();
@@ -2888,6 +3080,7 @@ setText('v2Badge', `v${APP_VERSION}${isStandalone() ? ' · PWA' : ''}`);
 buildGuides();
 buildFrameAverage();
 buildAlignment();
+buildSteadyShutter();
 buildAids();
 try {
   const stored = localStorage.getItem(GUIDE_STORE_KEY);

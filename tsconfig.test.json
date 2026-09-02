@@ -69,6 +69,7 @@
     "src/v2/camera/controls.ts",
     "src/v2/vision/exposure.ts",
     "src/v2/vision/alignment.ts",
+    "src/v2/vision/steadiness.ts",
     "src/v2/vision/frame-histogram.ts",
     "src/v2/vision/colour-gap.ts",
     "src/v2/ui/coach.ts",

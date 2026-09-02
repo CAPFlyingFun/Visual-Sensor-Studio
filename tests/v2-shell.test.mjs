@@ -166,11 +166,22 @@ test('gyro steadying is a switch that can be refused, and says which', () => {
   assert.match(v2Html, /id="v2AlignNote"/);
   assert.match(v2Html, /id="v2AlignReading"/);
   assert.match(appTs, /motion\.requestPermission\(\)/, 'the permission is asked for');
+  // The sensor stops when the LAST feature using it lets go, not when either
+  // one does — turning alignment off while the shutter is armed would
+  // otherwise silently kill the shutter's readings.
+  assert.match(appTs, /if \(!readState\(\)\.autoShot\) stopMotion\('off'\);/);
+  assert.match(appTs, /if \(!readState\(\)\.align\) stopMotion\('off'\);/);
   for (const status of ['asking', 'denied', 'unsupported']) {
     assert.ok(appTs.includes(`'${status}'`), `${status} is a state the row can be in`);
   }
-  assert.match(stateTs, /alignStatus: 'off' \| 'asking' \| 'on' \| 'denied' \| 'unsupported';/,
+  assert.match(stateTs, /motionStatus: 'off' \| 'asking' \| 'on' \| 'denied' \| 'unsupported';/,
     'off and refused are different facts');
+  // ONE OWNER for the sensor (Rule 1). Two features need the gyro now, and a
+  // second copy of "is the sensor on" is how one of them ends up reporting a
+  // refusal as a preference.
+  assert.match(appTs, /async function ensureMotion\(\): Promise<boolean>/);
+  assert.equal((appTs.match(/motion\.start\(/g) ?? []).length, 1,
+    'the sensor is started in exactly one place');
 
   // A refusal must not read as a fault of the phone, and an absent sensor
   // must not read as an absent gyroscope.
@@ -215,4 +226,37 @@ test('alignment only runs when there is something to align', () => {
   // thrown away for it at every single start (measured, then fixed).
   assert.match(appTs,
     /sample\.alpha === null && sample\.beta === null && sample\.gamma === null\) return;/);
+});
+
+test('the steady shutter waits on a real picture and fires exactly once', () => {
+  assert.match(v2Html, /id="v2SteadyToggle"/);
+  assert.match(v2Html, /id="v2SteadyReading"/);
+  // The meter sits OVER the picture, because reading a percentage in a panel
+  // below the viewfinder means looking away from the thing being held still.
+  assert.match(v2Html, /id="v2SteadyHud"/);
+  assert.match(appTs, /renderSteadyHud\(\);/);
+
+  // ON THE DELIVERY LOOP. An armed shutter driven by a timer would fire into
+  // a suspended camera; driven by frames, it can only ever act on a picture
+  // that is really arriving.
+  assert.match(appTs, /renderPreview\(frame\.now\);\n\s*\/\/[\s\S]*?updateSteadyShutter\(frame\.now\);/);
+  assert.match(appTs, /if \(status\?\.state !== 'live'\)/);
+
+  // ONCE: the flag goes down BEFORE the shutter is pulled, so a slow capture
+  // cannot be re-entered by the next frame while it is still running.
+  const fire = appTs.slice(appTs.indexOf('if (!progress.fire) return;'));
+  const flagDown = fire.indexOf("updateState({ autoShot: false })");
+  const pull = fire.indexOf('void takePhoto()');
+  assert.ok(flagDown > 0 && pull > flagDown, 'disarmed before the shutter is pulled');
+
+  // It pulls the ORDINARY shutter. Nothing about the photograph changes —
+  // same escalation, same geometry, same file — only what decides when.
+  assert.ok(!/captureAtMaxStream/.test(appTs.slice(
+    appTs.indexOf('function updateSteadyShutter'), appTs.indexOf('function buildSteadyShutter'))),
+    'no second capture path');
+
+  // The photo's OWN pixels: capability where the track advertises one, since
+  // that is the frame the shutter escalates to. Measuring the smear against
+  // the preview would understate it by the ratio between the two.
+  assert.match(appTs, /const photo = capability \?\? source;/);
 });
