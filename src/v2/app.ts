@@ -273,14 +273,23 @@ function renderPreview(now: number): void {
   // canvas size the encoder was promised) until finalisation completes.
   if (recording?.path === 'filtered' && stoppingClip) return;
   const target = recording?.path === 'filtered' ? recording.input : resolved.preview;
-  // A lens bound to the whole frame's colours gets a fresh census every few
-  // frames; every other filter never triggers the measurement at all.
+  // A fresh census every few frames, for whoever is asking: a lens bound to
+  // the whole frame's colours, a reference lens reporting its match share, or
+  // the exposure instrument being open.
+  //
+  // THE EXPOSURE CLAUSE IS NOT OPTIONAL. Without it the census ran only while
+  // a LENS was active, so the histogram was empty under RGB, Ironbow, Edges —
+  // every ordinary filter — and drew a blank graph reading "mean 0%"
+  // (Joshua's device, 2026-09-02).
   const active = filterById(activeFilter);
-  if ((active?.needsHistogram || active?.lens) && framesSinceHistogram++ % HISTOGRAM_EVERY === 0) {
-    // A reference lens reports what it is currently catching.
-    const reference = active.lens
+  const asking = active?.needsHistogram || active?.lens || readState().exposureShown;
+  if (asking && framesSinceHistogram++ % HISTOGRAM_EVERY === 0) {
+    // A reference lens reports what it is currently catching. `active` may
+    // be null here now, because the exposure instrument asks for a census on
+    // its own account — it is about the CAMERA, not about the filter.
+    const reference = active?.lens
       && channelInfo(active.lens.color.channel).needsReference ? active.lens : null;
-    measureCensuses(active.needsHistogram === true, reference);
+    measureCensuses(active?.needsHistogram === true, reference);
   }
   // Stateful filters (Speed, Trails) advance their memory at the ANALYSIS
   // size — the same bounded size the frame history uses.

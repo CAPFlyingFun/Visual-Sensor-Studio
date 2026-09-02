@@ -1922,11 +1922,41 @@ test('zebra and peaking draw on the preview, and clear again (fake device)',
       // The histogram is an instrument you OPEN, and it costs nothing closed.
       assert.equal(await page.isVisible('#v2ExposurePanel'), false);
       await page.click('#v2ExposureToggle');
-      await page.waitForTimeout(700);
+      await page.waitForTimeout(900);
       assert.equal(await page.isVisible('#v2ExposurePanel'), true);
       const note = await page.textContent('#v2ExposureNote');
       assert.match(note, /mean \d+% · .*blown · .*crushed/);
       assert.match(note, /nothing recovers it/);
+
+      /*
+       * A MEASUREMENT REALLY HAPPENED — and this is the assertion that was
+       * missing when the histogram shipped broken. The census was gated on a
+       * LENS being active, so under RGB it never ran and the reading stayed
+       * empty. An empty reading still prints "mean 0% · 0% blown · 0%
+       * crushed", which has exactly the shape the line above checks, so the
+       * test passed while the panel drew a blank graph on Joshua's phone.
+       *
+       * Shape is not evidence. The scene is a lit camera frame, so its mean
+       * cannot be zero and the graph cannot be empty.
+       */
+      const reading = await page.evaluate(() => {
+        const canvas = document.getElementById('v2ExposureGraph');
+        const d = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+        let drawn = 0;
+        for (let i = 3; i < d.length; i += 4) if (d[i] > 0) drawn++;
+        return {
+          drawn: drawn / (d.length / 4),
+          mean: Number(/mean (\d+)%/.exec(
+            document.getElementById('v2ExposureNote').textContent)?.[1] ?? '0')
+        };
+      });
+      assert.ok(reading.mean > 0,
+        `a lit frame cannot read mean 0% — the census did not run: ${reading.mean}`);
+      // ANY bar is the test, not a share of the canvas: a uniform scene puts
+      // nearly every pixel in ONE of 64 bins, which is about 1.2% of the
+      // graph and entirely correct. An empty reading draws exactly nothing.
+      assert.ok(reading.drawn > 0,
+        `the graph must have bars in it, drew ${reading.drawn}`);
       // The choice survives a reload, like every other shooting control.
       await page.click('[data-peaking="medium"]');
       await page.waitForTimeout(300);
