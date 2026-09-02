@@ -17,7 +17,8 @@
  */
 
 import {
-  buildRampLut, channelInfo, type ChannelId, type CustomLens, type LensBinding
+  buildRampLut, channelInfo,
+  type ChannelId, type CustomLens, type LensBinding, type LensStop
 } from '../../vision/lens.js';
 import { SHADER_HEADER, SPEED_STATE, type FilterDefinition } from './registry.js';
 
@@ -30,6 +31,17 @@ export function channelAvailability(id: ChannelId): { available: boolean; reason
     available: false,
     reason: `"${channelInfo(id).label}" is not built in V2 yet — it needs an estimator V2 does not run.`
   };
+}
+
+/**
+ * The same ramp, read the other way: a stop at 0 lands at 1 and back again.
+ * Colours are untouched — only their positions mirror — so black→white
+ * becomes white→black and reversing twice is exactly where it started.
+ */
+export function reverseStops(stops: readonly LensStop[]): LensStop[] {
+  return stops
+    .map((stop) => ({ at: 1 - stop.at, color: stop.color }))
+    .sort((a, b) => a.at - b.at);
 }
 
 export function lensFilterId(lens: CustomLens): string {

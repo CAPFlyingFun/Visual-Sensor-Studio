@@ -31,12 +31,13 @@ import {
 } from './capture/encoder-envelope.js';
 import { STREAM_TIERS, tierAvailable, tierById } from './camera/stream-tiers.js';
 import { FILTERS, allFilters, filterById, setCustomFilters } from './filters/registry.js';
-import { compileLens, channelAvailability, lensFilterId } from './filters/lens-shader.js';
+import { compileLens, channelAvailability, lensFilterId, reverseStops } from './filters/lens-shader.js';
 import { STARTER_LENSES } from './filters/starter-lenses.js';
 import {
-  CHANNELS, MAX_STOPS, MIN_STOPS, channelInfo, describeLens, rampToCss,
+  CHANNELS, MAX_STOPS, MIN_STOPS, channelInfo, describeLens, rampToCss, toHex,
   type ChannelId, type CustomLens
 } from '../vision/lens.js';
+import { averageRgb, patchRect, tapToSource, type SampledColor } from './capture/color-sampler.js';
 import { deleteLens, loadLenses, newLensId, sanitiseLens, saveLens } from '../vision/lens-store.js';
 import { RAMP_PRESETS } from '../vision/lens-preview.js';
 import { GlRenderer } from './render/gl-renderer.js';
@@ -1480,6 +1481,7 @@ function openLensWorkbench(existing: CustomLens | null): void {
   renderLensBindings();
   renderLensStops();
   byId('v2LensWorkbench').hidden = false;
+  renderPickedColor();
   syncCustomFilters();
   rebuildLensEntries();
   updateState({ activeFilter: lensFilterId(draft) });
@@ -1490,6 +1492,7 @@ function closeLensWorkbench(): void {
   const draft = lensDraft;
   lensDraft = null;
   byId('v2LensWorkbench').hidden = true;
+  renderPickedColor();
   syncCustomFilters();
   // An unsaved new lens leaves with the workbench; the strip follows.
   if (draft && !lenses.some((lens) => lens.id === draft.id) && readState().activeFilter === lensFilterId(draft)) {
@@ -1608,6 +1611,14 @@ byId('v2LensAddStop').addEventListener('click', () => {
   renderLensStops();
   lensDraftChanged();
 });
+byId('v2LensReverse').addEventListener('click', () => {
+  const draft = lensDraft;
+  if (!draft) return;
+  // The same colours, read the other way — black→white becomes white→black.
+  draft.stops = reverseStops(draft.stops);
+  renderLensStops();
+  lensDraftChanged();
+});
 byId('v2LensSave').addEventListener('click', saveLensDraft);
 byId('v2LensDelete').addEventListener('click', deleteLensDraft);
 byId('v2LensExport').addEventListener('click', exportLensDraft);
@@ -1624,6 +1635,111 @@ byId<HTMLInputElement>('v2LensImport').addEventListener('change', () => {
   if (file) void importLensFile(file);
 });
 
+
+/* --- The colour picker: a reading from the CAMERA FRAME (Milestone E.2) --- */
+
+/**
+ * A tap on the viewfinder samples the SOURCE frame, not the filtered render:
+ * under Ironbow or a lens, the pixel on screen is a colour the ramp chose, so
+ * reporting it would hand the palette back to the person who picked it. The
+ * cover crop is mapped by capture/color-sampler.ts — the one owner of that
+ * arithmetic — and the reading is the mean of a small patch, because a single
+ * pixel of a live frame is mostly sensor noise.
+ */
+const PICK_PATCH = 9;
+let pickerActive = false;
+let pickedColor: SampledColor | null = null;
+let pickCanvas: HTMLCanvasElement | null = null;
+
+function setPickerActive(on: boolean): void {
+  pickerActive = on;
+  byId('v2PickerCard').hidden = !on;
+  byId('v2Viewfinder').classList.toggle('picking', on);
+  byId<HTMLButtonElement>('v2PickColor').classList.toggle('active', on);
+  if (on) setText('v2PickerHint', readState().camera?.state === 'live'
+    ? 'Tap the viewfinder to read a colour from the camera frame.'
+    : 'Start the camera first — there is no frame to read yet.');
+}
+
+function renderPickedColor(): void {
+  const colour = pickedColor;
+  const addStop = byId<HTMLButtonElement>('v2PickerAddStop');
+  const copy = byId<HTMLButtonElement>('v2PickerCopy');
+  if (!colour) {
+    byId('v2PickerSwatch').style.background = '';
+    setText('v2PickerHex', '—');
+    setText('v2PickerDetail', '');
+    addStop.disabled = true;
+    copy.disabled = true;
+    return;
+  }
+  const hex = toHex([colour.r, colour.g, colour.b]);
+  byId('v2PickerSwatch').style.background = hex;
+  setText('v2PickerHex', hex.toUpperCase());
+  setText('v2PickerDetail',
+    `rgb(${colour.r}, ${colour.g}, ${colour.b}) · luma ${colour.luma} · `
+    + `mean of a ${PICK_PATCH}×${PICK_PATCH} patch of camera pixels`);
+  copy.disabled = false;
+  addStop.disabled = !lensDraft || lensDraft.stops.length >= MAX_STOPS;
+}
+
+function samplePoint(tapX: number, tapY: number, boxWidth: number, boxHeight: number): void {
+  const source = readState().source;
+  if (!source || video.videoWidth === 0) return;
+  const point = tapToSource({ x: tapX, y: tapY },
+    { width: boxWidth, height: boxHeight },
+    { width: source.width, height: source.height });
+  if (!point) return;
+  const patch = patchRect(point, { width: source.width, height: source.height }, PICK_PATCH);
+  pickCanvas ??= document.createElement('canvas');
+  pickCanvas.width = patch.width;
+  pickCanvas.height = patch.height;
+  const context = pickCanvas.getContext('2d', { willReadFrequently: true });
+  if (!context) return;
+  try {
+    context.drawImage(video, patch.x, patch.y, patch.width, patch.height,
+      0, 0, patch.width, patch.height);
+    pickedColor = averageRgb(context.getImageData(0, 0, patch.width, patch.height).data);
+  } catch {
+    // A mid-switch video element can refuse a draw; the next tap recovers.
+    return;
+  }
+  renderPickedColor();
+}
+
+byId('v2Viewfinder').addEventListener('pointerdown', (event) => {
+  if (!pickerActive) return;
+  const target = event.currentTarget as HTMLElement;
+  // offsetX/offsetY and the element's own client box locate a POINT inside
+  // the viewfinder; they decide no size, so this is not a second geometry
+  // authority (measureViewfinder remains the one display read for sizing).
+  samplePoint(event.offsetX, event.offsetY, target.clientWidth, target.clientHeight);
+});
+
+byId('v2PickColor').addEventListener('click', () => setPickerActive(!pickerActive));
+byId('v2PickerClose').addEventListener('click', () => setPickerActive(false));
+byId('v2PickerCopy').addEventListener('click', () => {
+  const colour = pickedColor;
+  if (!colour) return;
+  const hex = toHex([colour.r, colour.g, colour.b]);
+  const clipboard = navigator.clipboard;
+  if (clipboard && typeof clipboard.writeText === 'function') {
+    void clipboard.writeText(hex).then(() => showToast(`Copied ${hex}`),
+      () => showToast(`This browser refused the clipboard — the colour is ${hex}`));
+    return;
+  }
+  showToast(`This browser has no clipboard access — the colour is ${hex}`);
+});
+byId('v2PickerAddStop').addEventListener('click', () => {
+  const colour = pickedColor;
+  const draft = lensDraft;
+  if (!colour || !draft || draft.stops.length >= MAX_STOPS) return;
+  draft.stops.push({ at: 0.5, color: toHex([colour.r, colour.g, colour.b]) });
+  renderLensStops();
+  lensDraftChanged();
+  renderPickedColor();
+  showToast('Added the sampled colour as a ramp stop.');
+});
 
 /* --- Wiring -------------------------------------------------------------- */
 

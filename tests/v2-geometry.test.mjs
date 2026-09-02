@@ -771,6 +771,65 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
       assert.deepEqual(saved.names, ['Coloring Book Style', 'Probe lens']);
       assert.deepEqual(saved.strip, ['Coloring Book Style', 'Probe lens']);
 
+      // 🔄 Reverse: the same colours, read the other way.
+      const before = await page.evaluate(() =>
+        [...document.querySelectorAll('#v2LensStops input[type="color"]')].map((i) => i.value));
+      await page.click('#v2LensReverse');
+      await page.waitForTimeout(150);
+      const after = await page.evaluate(() => ({
+        colors: [...document.querySelectorAll('#v2LensStops input[type="color"]')].map((i) => i.value),
+        positions: [...document.querySelectorAll('#v2LensStops input[type="number"]')].map((i) => Number(i.value))
+      }));
+      assert.deepEqual(after.colors, [...before].reverse(), 'reverse flips the ramp order');
+      assert.deepEqual(after.positions, [0, 1], 'the ends stay the ends');
+
+      // The colour picker reads the CAMERA FRAME through the cover crop.
+      await page.click('#v2PickColor');
+      await page.waitForTimeout(150);
+      const armed = await page.evaluate(() => ({
+        cardShown: !document.getElementById('v2PickerCard').hidden,
+        picking: document.getElementById('v2Viewfinder').classList.contains('picking'),
+        hex: document.getElementById('v2PickerHex').textContent
+      }));
+      assert.equal(armed.cardShown, true);
+      assert.equal(armed.picking, true, 'the viewfinder becomes a target');
+      assert.equal(armed.hex, '—', 'nothing is claimed before a tap');
+
+      const boxCentre = await page.evaluate(() => {
+        const vf = document.getElementById('v2Viewfinder');
+        return { w: vf.clientWidth, h: vf.clientHeight };
+      });
+      await page.mouse.click(boxCentre.w / 2, 300);
+      await page.waitForTimeout(200);
+      const picked = await page.evaluate(() => ({
+        hex: document.getElementById('v2PickerHex').textContent,
+        swatch: document.getElementById('v2PickerSwatch').style.background,
+        detail: document.getElementById('v2PickerDetail').textContent,
+        addEnabled: !document.getElementById('v2PickerAddStop').disabled
+      }));
+      assert.match(picked.hex, /^#[0-9A-F]{6}$/, `a real reading, got "${picked.hex}"`);
+      assert.ok(picked.swatch.length > 0, 'the swatch shows the sampled colour');
+      assert.match(picked.detail, /9×9 patch of camera pixels/, 'the reading says what it averaged');
+      assert.match(picked.detail, /luma \d+/);
+      assert.equal(picked.addEnabled, true, 'a sampled colour can become a ramp stop');
+
+      const stopsBefore = await page.evaluate(() =>
+        document.querySelectorAll('#v2LensStops .lens-stop').length);
+      await page.click('#v2PickerAddStop');
+      await page.waitForTimeout(150);
+      const added = await page.evaluate(() => ({
+        stops: document.querySelectorAll('#v2LensStops .lens-stop').length,
+        colors: [...document.querySelectorAll('#v2LensStops input[type="color"]')].map((i) => i.value)
+      }));
+      assert.equal(added.stops, stopsBefore + 1, 'the sample joins the ramp');
+      assert.ok(added.colors.includes(picked.hex.toLowerCase()), 'with the colour that was read');
+      await page.click('#v2PickerClose');
+      await page.waitForTimeout(100);
+      assert.equal(await page.evaluate(() =>
+        document.getElementById('v2Viewfinder').classList.contains('picking')), false);
+      await page.click('#v2LensSave');
+      await page.waitForTimeout(150);
+
       // Import Joshua's file through the real file input.
       await page.setInputFiles('#v2LensImport',
         fileURLToPath(new URL('../docs/lenses/coloring-book-style.lens.json', import.meta.url)));

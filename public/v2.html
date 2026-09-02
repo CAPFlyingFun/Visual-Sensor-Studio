@@ -144,6 +144,15 @@
     .lens-presets { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
     .lens-presets button { min-height: 30px; padding: 0 10px; border: 1px solid var(--line2); border-radius: 8px; background: #0d1a26; font-size: 11px; }
     .lens-describe { font-size: 11px; color: var(--muted); margin: 8px 0 0; }
+    .picker-read { display: flex; align-items: center; gap: 12px; margin: 4px 0 8px; }
+    .picker-swatch { width: 54px; height: 54px; border-radius: 12px; border: 1px solid var(--line2); background: #0b151f; flex: 0 0 auto; }
+    .picker-hex { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 17px; letter-spacing: .04em; }
+    /* While picking, the viewfinder is a target rather than a picture. */
+    .viewfinder.picking { cursor: crosshair; }
+    /* While picking, the tap must land on the VIEWFINDER itself, so its own
+       coordinates map the cover crop — not on the video or the canvas. */
+    .viewfinder.picking video, .viewfinder.picking canvas { pointer-events: none; }
+    .viewfinder.picking::after { content: ''; position: absolute; inset: 0; z-index: 3; border: 2px dashed rgba(140, 188, 255, .8); pointer-events: none; }
     .filter small { display: block; font-size: 10px; color: #d9e3eb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
     .placeholder { margin: 10px 11px 0; padding: 18px 14px; border: 1px dashed #345064; border-radius: 14px; color: #9fb0bf; font-size: 12px; text-align: center; }
@@ -219,8 +228,29 @@
           <div class="button-row" id="v2LensActions" hidden>
             <button type="button" class="btn" id="v2LensEdit">Edit lens</button>
             <button type="button" class="btn" id="v2LensImportButton">Import .lens.json</button>
+            <button type="button" class="btn" id="v2PickColor">⌾ Pick colour</button>
           </div>
+
         </section>
+
+        <!-- The colour picker reads the CAMERA FRAME, never the filtered
+             render: a false colour is the palette's answer, not the scene's. -->
+        <div class="card" id="v2PickerCard" hidden>
+          <h3>Colour picker</h3>
+          <p id="v2PickerHint">Tap the viewfinder to read a colour from the camera frame.</p>
+          <div class="picker-read">
+            <div class="picker-swatch" id="v2PickerSwatch"></div>
+            <div>
+              <div class="picker-hex" id="v2PickerHex">—</div>
+              <div class="hint" id="v2PickerDetail"></div>
+            </div>
+          </div>
+          <div class="button-row">
+            <button type="button" class="btn" id="v2PickerCopy" disabled>Copy hex</button>
+            <button type="button" class="btn" id="v2PickerAddStop" disabled>Add as ramp stop</button>
+            <button type="button" class="btn" id="v2PickerClose">Close</button>
+          </div>
+        </div>
 
         <!-- The lens workbench (Milestone E). Built from data: the channel list,
              the bindings and the ramp stops are the lens document itself, and
@@ -237,6 +267,7 @@
           <div id="v2LensBindings"></div>
           <div class="lens-swatch" id="v2LensSwatch"></div>
           <div class="lens-presets" id="v2LensPresets"></div>
+          <div class="button-row"><button type="button" class="btn" id="v2LensReverse">🔄 Reverse colours</button></div>
           <div class="lens-stops" id="v2LensStops"></div>
           <div class="button-row"><button type="button" class="btn" id="v2LensAddStop">+ Stop</button></div>
           <div class="lens-field">

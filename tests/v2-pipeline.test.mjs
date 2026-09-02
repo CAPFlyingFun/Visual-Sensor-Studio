@@ -23,8 +23,12 @@ import {
 } from '../.test-build/v2/capture/encoder-envelope.js';
 import { countMp4Frames } from '../.test-build/v2/capture/mp4-frames.js';
 import {
-  V2_CHANNELS, channelAvailability, compileLens, lensFilterId, lensRampRgba, lensRevision
+  V2_CHANNELS, channelAvailability, compileLens, lensFilterId, lensRampRgba, lensRevision,
+  reverseStops
 } from '../.test-build/v2/filters/lens-shader.js';
+import {
+  averageRgb, coverScale, patchRect, tapToSource
+} from '../.test-build/v2/capture/color-sampler.js';
 import { allFilters, setCustomFilters } from '../.test-build/v2/filters/registry.js';
 import { STARTER_LENSES } from '../.test-build/v2/filters/starter-lenses.js';
 import { buildRampLut, describeLens } from '../.test-build/vision/lens.js';
@@ -775,4 +779,63 @@ test('custom lenses join the one registry as data entries', () => {
   assert.equal(filterById('rgb')?.id, 'rgb', 'built-ins are untouched');
   setCustomFilters([]);
   assert.equal(filterById(book.id), null);
+});
+
+test('reverseStops mirrors the ramp: black→white becomes white→black', () => {
+  const mono = [{ at: 0, color: '#000000' }, { at: 1, color: '#ffffff' }];
+  assert.deepEqual(reverseStops(mono),
+    [{ at: 0, color: '#ffffff' }, { at: 1, color: '#000000' }]);
+  // Reversing twice is exactly where it started — the button is its own undo.
+  assert.deepEqual(reverseStops(reverseStops(mono)), mono);
+  // An interior stop mirrors about the middle; colours are never touched.
+  const three = [{ at: 0, color: '#f6f2e8' }, { at: 0.3, color: '#8a8474' }, { at: 1, color: '#12100c' }];
+  assert.deepEqual(reverseStops(three), [
+    { at: 0, color: '#12100c' },
+    { at: 0.7, color: '#8a8474' },
+    { at: 1, color: '#f6f2e8' }
+  ]);
+  assert.deepEqual(reverseStops(three).map((s) => s.color).sort(),
+    three.map((s) => s.color).sort(), 'the same colours, in the other order');
+  // The ramp LUT really is the mirror image.
+  const forward = buildRampLut(mono);
+  const back = buildRampLut(reverseStops(mono));
+  assert.equal(forward[0], 0);
+  assert.equal(back[0], 255);
+  assert.equal(back[255 * 3], forward[0]);
+});
+
+test('the colour picker maps a tap through the object-fit: cover crop', () => {
+  // A portrait stream in a shorter box: cover scales to fill the WIDTH and
+  // crops the top and bottom away, which a naive width ratio gets wrong.
+  const box = { width: 430, height: 360 };
+  const source = { width: 720, height: 960 };
+  const scale = coverScale(box, source);
+  assert.ok(Math.abs(scale - 430 / 720) < 1e-9, 'cover fills the wider constraint');
+
+  const centre = tapToSource({ x: 215, y: 180 }, box, source);
+  assert.ok(Math.abs(centre.x - 360) < 0.5, `the box centre is the frame centre, got ${centre.x}`);
+  assert.ok(Math.abs(centre.y - 480) < 0.5, `the box centre is the frame centre, got ${centre.y}`);
+
+  // The top edge of the box is NOT row 0: the crop hides the frame's top.
+  const top = tapToSource({ x: 215, y: 0 }, box, source);
+  assert.ok(top.y > 100, `the cover crop hides the top of the frame, got row ${top.y}`);
+  assert.ok(Math.abs(top.y - 178.6) < 1, `measured crop offset, got ${top.y}`);
+  assert.notEqual(Math.round(top.y), 0, 'a naive width ratio would say row 0');
+
+  // Points stay inside the frame, and a degenerate box refuses rather than guesses.
+  const corner = tapToSource({ x: 1000, y: 1000 }, box, source);
+  assert.ok(corner.x <= source.width - 1 && corner.y <= source.height - 1);
+  assert.equal(tapToSource({ x: 1, y: 1 }, { width: 0, height: 0 }, source), null);
+
+  // The patch is square, inside the frame, and centred where it can be.
+  const patch = patchRect({ x: 360, y: 480 }, source, 9);
+  assert.deepEqual(patch, { x: 356, y: 476, width: 9, height: 9 });
+  const clamped = patchRect({ x: 0, y: 959 }, source, 9);
+  assert.deepEqual(clamped, { x: 0, y: 951, width: 9, height: 9 });
+  assert.ok(clamped.x >= 0 && clamped.y + clamped.height <= source.height);
+
+  // The reading is the MEAN of the patch, with the shaders' own luma.
+  const two = new Uint8ClampedArray([0, 0, 0, 255, 200, 100, 50, 255]);
+  assert.deepEqual(averageRgb(two), { r: 100, g: 50, b: 25, luma: Math.round(0.2126 * 100 + 0.7152 * 50 + 0.0722 * 25) });
+  assert.deepEqual(averageRgb(new Uint8ClampedArray(0)), { r: 0, g: 0, b: 0, luma: 0 });
 });
