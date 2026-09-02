@@ -63,9 +63,18 @@ test('every app-shell entry exists, or the worker never installs at all', () => 
   const entries = [...list.matchAll(/'(\.\/[^']*)'/g)].map((m) => m[1]);
   assert.ok(entries.length > 3, 'the shell is not empty');
   const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
+  const srcDir = fileURLToPath(new URL('../src/', import.meta.url));
   for (const entry of entries) {
-    // './' is the directory itself, served as index.html.
     const relative = entry === './' ? 'index.html' : entry.replace('./', '');
+    // public/app/ is GENERATED and gitignored — it is built after the tests
+    // run, so a checkout being tested has no compiled modules in it at all.
+    // A compiled name is therefore checked against the source it comes from,
+    // which is the thing a typo or a rename would actually break.
+    if (relative.startsWith('app/')) {
+      const source = srcDir + relative.slice('app/'.length).replace(/\.js$/, '.ts');
+      assert.ok(existsSync(source), `${entry} must be compiled from ${source}`);
+      continue;
+    }
     assert.ok(existsSync(publicDir + relative), `${entry} must exist in public/`);
   }
   // The root document is the app now, so the shell must carry ITS entry
