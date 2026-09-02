@@ -69,6 +69,8 @@ export class GlRenderer {
   private histogramTexture: WebGLTexture | null = null;
   private histogramVersion = -1;
   private dominant: [number, number, number] = [0, 0, 0];
+  /** Smoothing radius in texels, set per render and shared by all its passes. */
+  private denoise = 0;
   /** Which program key each filter id currently owns, so an edited lens frees its old program. */
   private programKeys = new Map<string, string>();
   private failure = '';
@@ -266,6 +268,7 @@ export class GlRenderer {
     gl.bindTexture(gl.TEXTURE_2D, read);
     gl.uniform1i(gl.getUniformLocation(program, 'uState'), 3);
     gl.uniform2f(gl.getUniformLocation(program, 'uTexel'), 1 / size.width, 1 / size.height);
+    gl.uniform1f(gl.getUniformLocation(program, 'uDenoise'), this.denoise);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.stateRead = 1 - this.stateRead;
@@ -299,6 +302,8 @@ export class GlRenderer {
     extras: {
       fps?: number;
       histogram?: { bins: Uint8Array; dominant: [number, number, number]; version: number };
+      /** Smoothing radius in render-target texels — see render/denoise.ts. */
+      denoise?: number;
     } = {}
   ): boolean {
     const gl = this.gl;
@@ -306,6 +311,11 @@ export class GlRenderer {
     if (!gl || gl.isContextLost() || !filter || filter.unavailableReason) return false;
     const program = this.program(filter);
     if (!program) return false;
+    // SMOOTHING reaches every filter through the header's frameAt/prevAt, so
+    // it is recorded once here rather than passed to each pass — and BEFORE
+    // the state pass runs, because a filter's memory must be smoothed exactly
+    // the way its live frame is or the difference between them is the blur.
+    this.denoise = extras.denoise ?? 0;
     // A stateful filter advances its memory first, at the ANALYSIS size the
     // caller resolves — the display pass then reads it, whatever its own size.
     const state = filter.state && stateSize ? this.advanceState(filter, stateSize) : null;
@@ -334,6 +344,7 @@ export class GlRenderer {
       gl.uniform1i(gl.getUniformLocation(program, 'uState'), 3);
     }
     gl.uniform2f(gl.getUniformLocation(program, 'uTexel'), 1 / target.width, 1 / target.height);
+    gl.uniform1f(gl.getUniformLocation(program, 'uDenoise'), this.denoise);
     // Unit conversions a lens may need: a missing location is simply ignored.
     gl.uniform1f(gl.getUniformLocation(program, 'uFps'), extras.fps ?? 0);
     gl.uniform1f(gl.getUniformLocation(program, 'uAnalysisWidth'), stateSize?.width ?? 0);

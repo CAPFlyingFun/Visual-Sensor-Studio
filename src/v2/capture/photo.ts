@@ -30,11 +30,18 @@ export async function capturePhoto(
   renderer: GlRenderer,
   video: HTMLVideoElement,
   filterId: string,
-  photo: SizedWithReason
+  photo: SizedWithReason,
+  /**
+   * SMOOTHING, in texels — the caller reads it from the one owner. A still
+   * that measured the frame differently from the viewfinder it was framed in
+   * would not be the same shader at a different size any more.
+   */
+  denoise = 0
 ): Promise<PhotoResult | null> {
   const t0 = performance.now();
   if (!renderer.uploadFrame(video)) return null;
-  if (!renderer.render(filterId, { width: photo.width, height: photo.height })) return null;
+  if (!renderer.render(filterId, { width: photo.width, height: photo.height },
+    undefined, { denoise })) return null;
 
   photoCanvas ??= document.createElement('canvas');
   photoCanvas.width = photo.width;

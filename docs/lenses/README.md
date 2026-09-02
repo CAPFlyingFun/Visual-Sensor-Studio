@@ -37,3 +37,42 @@ written before this still means precisely what it meant.
 The lesson generalises: a second field that can reach zero can erase the
 first one's answer entirely, and the result looks like a simpler lens
 rather than like a fault.
+
+## Smoothing, and why its radii are half-integers (2026-09-02)
+
+Noise is amplified by what a field DOES with it, not by how much of it
+there is. Brightness averages three channels and barely moves. Hue is an
+*argument* between them: at low colour strength a count or two of sensor
+noise decides which channel won, and the hue swings across the whole
+wheel. So the hue-derived fields — `hue`, `chromaEdge`, `rarity`,
+`backgroundDistance`, marked `hueDerived` in `ChannelInfo` — measure
+indoor sensor noise as faithfully as they measure the picture.
+
+`render/denoise.ts` is the one control. It sets `uDenoise`, and every
+filter reads the frame through the header's `frameAt` / `prevAt` rather
+than sampling `uFrame` itself, so nothing can quietly opt out. Two
+exceptions, both deliberate: RGB is the raw frame by definition, and the
+`scene` colour a mask or swap HANDS BACK stays raw — smoothing changes
+what a filter measures, never the colour it keeps.
+
+The radii are 0.5 and 1.5 rather than 1 and 2, and that is the whole
+trick. The shader takes four taps and each is cheap only because the
+GPU's bilinear filter averages the texels it falls between. A tap at a
+whole number of texels lands on a texel centre and averages *nothing*.
+Measured against pure noise (sd 35.1 raw):
+
+| radius | 0 | 0.5 | 0.75 | 1 | 1.25 | 1.5 | 2 | 3 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| noise sd | 35.1 | 13.4 | 12.4 | 17.8 | 11.3 | 9.1 | 17.4 | 17.7 |
+| edge px | 0 | 2 | 2 | 2 | 4 | 4 | 4 | 6 |
+
+The first ladder written here was 1, 2 and 3 — every one a worst case,
+and the level above Medium did not reduce noise at all. There is no
+level above 1.5 now: four bilinear taps average at most sixteen pixels
+and by 1.5 they already do, so a wider radius smears the same sixteen
+samples further apart. A stronger level needs more taps, which means
+compiling the tap count into the shader instead of passing it as a
+uniform.
+
+Off is the default (Joshua, 2026-09-02): most filters show little noise,
+and the ones that do now say so in their own note while smoothing is off.

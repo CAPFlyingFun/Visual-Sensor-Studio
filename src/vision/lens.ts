@@ -72,6 +72,21 @@ export interface ChannelInfo {
    * so what this field reports about a pixel depends on the company it keeps.
    */
   needsHistogram?: boolean;
+  /**
+   * Reads HUE, so sensor noise reads as signal.
+   *
+   * Brightness is an average over three channels and barely moves under
+   * noise. Hue is an ARGUMENT between them: at low colour strength a count or
+   * two of sensor noise decides which channel won, and the hue swings across
+   * the whole wheel. A field built on it therefore measures the noise as
+   * faithfully as it measures the picture — which is exactly what it should
+   * do, and exactly why smoothing exists as a separate control rather than as
+   * something baked into the field.
+   *
+   * Metadata, not an allow-list: the UI points at the smoothing row for these
+   * fields instead of naming lenses it would then have to keep in step.
+   */
+  hueDerived?: boolean;
 }
 
 /**
@@ -151,6 +166,7 @@ export const CHANNELS: readonly ChannelInfo[] = [
   },
   {
     id: 'hue',
+    hueDerived: true,
     label: 'Hue',
     meaning: 'Where this pixel sits on the colour wheel. A grey pixel has no meaningful hue, so pair it with colour strength.',
     unit: 'degrees',
@@ -212,6 +228,7 @@ export const CHANNELS: readonly ChannelInfo[] = [
   },
   {
     id: 'rarity',
+    hueDerived: true,
     label: 'Rare colour',
     meaning: 'How little of the rest of the frame shares this pixel’s hue. 255 means almost nothing else in view is this colour. Measured over the whole frame, so it changes as the camera moves.',
     unit: '0–255',
@@ -223,6 +240,7 @@ export const CHANNELS: readonly ChannelInfo[] = [
   },
   {
     id: 'chromaEdge',
+    hueDerived: true,
     label: 'Colour edge',
     meaning: 'A boundary between two colours, found by hue rather than by brightness. Two areas of the same lightness — a red shape on an equally bright green — have no brightness edge at all, and this finds them.',
     unit: '0–255',
@@ -233,6 +251,7 @@ export const CHANNELS: readonly ChannelInfo[] = [
   },
   {
     id: 'backgroundDistance',
+    hueDerived: true,
     label: 'Away from the background',
     meaning: 'How far this pixel is from the frame’s prevailing colour. The background is whatever most of the picture is, measured — not a stored plate of an empty scene.',
     unit: '0–255',

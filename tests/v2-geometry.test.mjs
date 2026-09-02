@@ -1,4 +1,6 @@
 import test from 'node:test';
+import { SHADER_HEADER } from '../.test-build/v2/filters/registry.js';
+import { DENOISE_LEVELS } from '../.test-build/v2/render/denoise.js';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
@@ -1708,5 +1710,219 @@ test('a starter that shipped wrong is corrected; one the user edited is not (fak
 
       await page.close();
       await context.close();
+    });
+  });
+
+test('smoothing is a real measurement change, and it is remembered (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({
+        viewport: { width: 430, height: 932 },
+        permissions: ['camera']
+      });
+      const page = await context.newPage();
+      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.waitForTimeout(400);
+      await page.click('#v2EnableCamera');
+      await page.waitForFunction(() =>
+        /\d+(\.\d+)? rendered fps/.test(document.getElementById('v2DiagPreview')?.textContent ?? ''),
+        null, { timeout: 8000 });
+
+      // HIGH-FREQUENCY CONTENT: the mean step between horizontally adjacent
+      // pixels. Sensor noise lives here, and so does the grain that made
+      // Colour Edges draw a boundary at every speck. Blurring the frame the
+      // filter measures must lower it; nothing else in this test would.
+      const activity = () => page.evaluate(() => {
+        const canvas = document.getElementById('v2PreviewCanvas');
+        const copy = document.createElement('canvas');
+        copy.width = canvas.width;
+        copy.height = canvas.height;
+        copy.getContext('2d').drawImage(canvas, 0, 0);
+        const d = copy.getContext('2d').getImageData(0, 0, copy.width, copy.height).data;
+        let sum = 0;
+        let n = 0;
+        for (let y = 0; y < copy.height; y++) {
+          for (let x = 1; x < copy.width; x++) {
+            const i = (y * copy.width + x) * 4;
+            sum += Math.abs(d[i] - d[i - 4]);
+            n++;
+          }
+        }
+        return { step: sum / Math.max(n, 1), stage: document.getElementById('v2Stage').textContent };
+      });
+
+      await page.click('[data-filter="edges"]');
+      await page.waitForTimeout(600);
+      assert.equal(await page.isVisible('#v2DenoiseRow'), true, 'the row is a shooting control');
+
+      await page.click('[data-denoise="off"]');
+      await page.waitForTimeout(600);
+      const raw = await activity();
+      assert.ok(!/shader failed/i.test(raw.stage), 'OFF compiles');
+      assert.match(await page.textContent('#v2DenoiseNote'), /including its noise/);
+
+      await page.click('[data-denoise="medium"]');
+      await page.waitForTimeout(600);
+      const smoothed = await activity();
+      assert.ok(!/shader failed/i.test(smoothed.stage), 'MEDIUM compiles');
+      // WIRING, not direction. The fake camera delivers a clean synthetic
+      // pattern with no sensor noise in it, and blur does not reduce the
+      // total variation of a step edge — it spreads it. What this proves is
+      // that the uniform reaches the shader and changes the measurement; the
+      // direction is proved on controlled noise in the shader test below.
+      assert.ok(Math.abs(smoothed.step - raw.step) > 0.05,
+        `smoothing must change what the filter measures: ${smoothed.step} vs ${raw.step}`);
+      assert.match(await page.textContent('#v2DenoiseNote'), /5×5/);
+      assert.equal(await page.evaluate(() =>
+        document.querySelector('[data-denoise="medium"]').classList.contains('active')), true);
+
+      // RGB is the raw frame by definition, so the control must not touch it.
+      await page.click('[data-filter="rgb"]');
+      await page.waitForTimeout(500);
+      const rgbSmoothed = await activity();
+      await page.click('[data-denoise="off"]');
+      await page.waitForTimeout(500);
+      const rgbOff = await activity();
+      assert.ok(Math.abs(rgbSmoothed.step - rgbOff.step) < 0.5,
+        `RGB is unfiltered at every smoothing level: ${rgbSmoothed.step} vs ${rgbOff.step}`);
+
+      // The choice survives a reload, like the guide and reticle before it.
+      await page.click('[data-denoise="low"]');
+      await page.waitForTimeout(300);
+      await page.reload();
+      await page.waitForTimeout(700);
+      assert.equal(await page.evaluate(() =>
+        document.querySelector('[data-denoise="low"]').classList.contains('active')), true);
+
+      await page.close();
+      await context.close();
+    });
+  });
+
+test('the shipped smoothing shader really averages noise away (controlled noise)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    // The app test above can only prove the uniform reaches the shader: the
+    // fake camera delivers a clean synthetic pattern, and blur does not lower
+    // the total variation of a step edge — it spreads it. So the DIRECTION is
+    // measured here instead, on noise this test makes itself, compiling the
+    // real SHADER_HEADER text the app ships rather than a copy of it.
+    await withBrowser(async (browser) => {
+      const page = await browser.newPage();
+      const variance = await page.evaluate((header) => {
+        const size = 64;
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const gl = canvas.getContext('webgl');
+        if (!gl) return null;
+
+        // Mid grey with per-pixel noise on every channel — a dim room's
+        // sensor output, with no picture in it at all so that anything the
+        // shader removes is noise by construction.
+        let seed = 12345;
+        const random = () => {
+          seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+          return seed / 0x7fffffff;
+        };
+        const pixels = new Uint8Array(size * size * 4);
+        for (let i = 0; i < size * size; i++) {
+          const n = 128 + Math.round((random() - 0.5) * 120);
+          pixels[i * 4] = n;
+          pixels[i * 4 + 1] = n;
+          pixels[i * 4 + 2] = n;
+          pixels[i * 4 + 3] = 255;
+        }
+        const texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        // LINEAR, exactly as the renderer's makeTexture sets it — the four
+        // taps only cover a neighbourhood because the GPU filters each one.
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+
+        const compile = (type, src) => {
+          const shader = gl.createShader(type);
+          gl.shaderSource(shader, src);
+          gl.compileShader(shader);
+          if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            throw new Error(gl.getShaderInfoLog(shader) ?? 'compile failed');
+          }
+          return shader;
+        };
+        const program = gl.createProgram();
+        gl.attachShader(program, compile(gl.VERTEX_SHADER, `attribute vec2 aPos;
+varying vec2 vUv;
+void main() { vUv = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }`));
+        gl.attachShader(program, compile(gl.FRAGMENT_SHADER,
+          `${header}void main() { gl_FragColor = vec4(frameAt(vUv), 1.0); }`));
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+          throw new Error(gl.getProgramInfoLog(program) ?? 'link failed');
+        }
+        gl.useProgram(program);
+        const buffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+        const pos = gl.getAttribLocation(program, 'aPos');
+        gl.enableVertexAttribArray(pos);
+        gl.vertexAttribPointer(pos, 2, gl.FLOAT, false, 0, 0);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.uniform1i(gl.getUniformLocation(program, 'uFrame'), 0);
+        gl.uniform2f(gl.getUniformLocation(program, 'uTexel'), 1 / size, 1 / size);
+
+        const spread = (denoise) => {
+          gl.uniform1f(gl.getUniformLocation(program, 'uDenoise'), denoise);
+          gl.viewport(0, 0, size, size);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+          const out = new Uint8Array(size * size * 4);
+          gl.readPixels(0, 0, size, size, gl.RGBA, gl.UNSIGNED_BYTE, out);
+          let sum = 0;
+          for (let i = 0; i < size * size; i++) sum += out[i * 4];
+          const mean = sum / (size * size);
+          let sq = 0;
+          for (let i = 0; i < size * size; i++) sq += (out[i * 4] - mean) ** 2;
+          return { mean, sd: Math.sqrt(sq / (size * size)) };
+        };
+        return {
+          off: spread(0),
+          low: spread(0.5),
+          medium: spread(1.5),
+          // A WHOLE number of texels lands each tap on a texel centre, where
+          // the GPU's bilinear filter averages nothing: four taps then read
+          // four single pixels. This is the trap the first ladder fell into.
+          wholeTexel: spread(1)
+        };
+      }, SHADER_HEADER);
+
+      if (variance === null) {
+        assert.ok(true, 'no WebGL in this browser build — nothing to measure');
+        await page.close();
+        return;
+      }
+      // OFF is the raw texture: the noise this test put there, untouched.
+      assert.ok(variance.off.sd > 20, `the input really is noisy: sd ${variance.off.sd}`);
+      // Averaging a neighbourhood cannot raise the spread, and on noise it
+      // falls hard — each level wider than the last.
+      assert.ok(variance.low.sd < variance.off.sd * 0.5,
+        `LOW halves the noise at least: ${variance.low.sd} vs ${variance.off.sd}`);
+      assert.ok(variance.medium.sd < variance.low.sd,
+        `MEDIUM cuts more: ${variance.medium.sd} vs ${variance.low.sd}`);
+      // The trap, pinned: a whole-texel radius is measurably WORSE than the
+      // half-integer either side of it, so a ladder must never step on one.
+      assert.ok(variance.wholeTexel.sd > variance.low.sd,
+        `a whole-texel radius averages fewer pixels, not more: `
+        + `${variance.wholeTexel.sd} vs ${variance.low.sd}`);
+      for (const level of DENOISE_LEVELS) {
+        assert.ok(level.radius === 0 || Math.abs(level.radius % 1) === 0.5,
+          `${level.label}'s radius must be a half-integer, not ${level.radius}`);
+      }
+      // And it is an AVERAGE, not a fade: the picture keeps its brightness.
+      assert.ok(Math.abs(variance.medium.mean - variance.off.mean) < 4,
+        `smoothing does not darken the frame: ${variance.medium.mean} vs ${variance.off.mean}`);
+
+      await page.close();
     });
   });

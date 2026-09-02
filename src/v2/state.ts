@@ -15,6 +15,7 @@
 import type { CameraStatus, CameraZoomState } from '../sensors/camera.js';
 import type { FrameGeometryState } from './camera/geometry.js';
 import { ASSUMED_ENVELOPE, type EncoderEnvelope } from './capture/encoder-envelope.js';
+import { DEFAULT_DENOISE } from './render/denoise.js';
 
 export interface FrameSize {
   width: number;
@@ -116,6 +117,13 @@ export interface V2State {
   /** The chosen viewfinder guide id; the guides registry defines it. */
   guide: string;
   /**
+   * SMOOTHING: the chosen noise-reduction level id; render/denoise.ts defines
+   * what each one means. One owner for every filter, because it changes what
+   * they MEASURE — a per-filter copy would let two of them disagree about how
+   * noisy the same frame is.
+   */
+  denoise: string;
+  /**
    * The colour picker's aiming reticle. Its own switch, not a guide: the
    * picker forces it on while armed, and otherwise it shows only if asked
    * for — nothing sits in the middle of the picture uninvited.
@@ -155,6 +163,7 @@ const state: V2State = {
   captureActive: false,
   streamTier: '720',
   guide: 'off',
+  denoise: DEFAULT_DENOISE,
   reticle: false,
   recording: null,
   lastClip: null,

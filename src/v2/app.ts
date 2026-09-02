@@ -44,6 +44,7 @@ import {
   type Point, type SampledColor
 } from './capture/color-sampler.js';
 import { GUIDES, guideById } from './render/guides.js';
+import { DENOISE_LEVELS, denoiseById, denoiseRadius } from './render/denoise.js';
 import { buildHistogram, emptyHistogram } from './vision/frame-histogram.js';
 import { matchShare } from './vision/colour-gap.js';
 import { tipFor } from './ui/coach.js';
@@ -253,7 +254,8 @@ function renderPreview(now: number): void {
   // size — the same bounded size the frame history uses.
   if (renderer.render(activeFilter, target, resolved.analysis, {
     fps: readState().deliveredFps,
-    histogram: { bins: histogram.bins, dominant: histogram.dominant, version: histogramVersion }
+    histogram: { bins: histogram.bins, dominant: histogram.dominant, version: histogramVersion },
+    denoise: denoiseRadius(readState().denoise)
   })) {
     if (recording?.path === 'filtered') {
       framesFedThisClip += 1;
@@ -558,6 +560,7 @@ function renderStreamTiers(): void {
 
 const GUIDE_STORE_KEY = 'vss.v2.guide.v1';
 const RETICLE_STORE_KEY = 'vss.v2.reticle.v1';
+const DENOISE_STORE_KEY = 'vss.v2.denoise.v1';
 
 function remember(key: string, value: string): void {
   try {
@@ -586,6 +589,39 @@ function buildGuides(): void {
     updateState({ reticle: on });
     remember(RETICLE_STORE_KEY, on ? '1' : '0');
   });
+}
+
+/**
+ * The smoothing row, built from the registry like every other row.
+ *
+ * It sits with the guides rather than in the diagnostics drawer because it is
+ * a shooting control: it changes what the picture in front of you says, and
+ * the only way to choose a level is to watch the picture while changing it.
+ */
+function buildDenoise(): void {
+  const holder = byId('v2DenoiseRow');
+  for (const level of DENOISE_LEVELS) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = level.label;
+    button.dataset.denoise = level.id;
+    button.addEventListener('click', () => {
+      updateState({ denoise: level.id });
+      remember(DENOISE_STORE_KEY, level.id);
+    });
+    holder.appendChild(button);
+  }
+}
+
+let renderedDenoiseKey = '';
+function renderDenoise(): void {
+  const id = readState().denoise;
+  if (id === renderedDenoiseKey) return;
+  renderedDenoiseKey = id;
+  for (const button of byId('v2DenoiseRow').querySelectorAll<HTMLButtonElement>('[data-denoise]')) {
+    button.classList.toggle('active', button.dataset.denoise === id);
+  }
+  setText('v2DenoiseNote', denoiseById(id)?.note ?? '');
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -879,6 +915,12 @@ function buildFilterStrip(): void {
 let pickerActive = false;
 let pickedColor: SampledColor | null = null;
 
+/** Does either of a lens's fields read hue? Metadata, never a list of ids. */
+function lensReadsHue(lens: CustomLens): boolean {
+  return channelInfo(lens.color.channel).hueDerived === true
+    || (lens.brightness ? channelInfo(lens.brightness.channel).hueDerived === true : false);
+}
+
 let renderedFilterKey = '';
 function renderFilterStrip(): void {
   const { activeFilter, recording, geometry, streamTier } = readState();
@@ -897,7 +939,7 @@ function renderFilterStrip(): void {
   // The revision moves when a lens's own numbers change — including the
   // reference colour the note now names — so a live edit re-renders the note
   // without the id having changed.
-  const key = `${activeFilter}|${rec}|${cap}|${warning}`
+  const key = `${activeFilter}|${rec}|${cap}|${warning}|${readState().denoise}`
     + `|${filterById(activeFilter)?.revision ?? ''}`
     + `|${matchingShare === null ? '-' : Math.round(matchingShare * 100)}`;
   if (key === renderedFilterKey) return;
@@ -936,6 +978,12 @@ function renderFilterStrip(): void {
         + (matchingShare !== null
           ? ` Matching ${(matchingShare * 100).toFixed(0)}% of the frame right now`
             + (matchingShare < 0.005 ? ' — nothing in view is that colour yet.' : '.')
+          : '')
+        // Smoothing is off by default because most filters do not need it.
+        // The ones that do should say so where the noise is visible, rather
+        // than leaving the row to be found — but only while it IS off.
+        + (readState().denoise === 'off' && lensReadsHue(lensFilter.lens)
+          ? ' Speckled indoors? This one reads hue, which sensor noise swings hard — try Smoothing.'
           : '')
     : '';
   setText('v2FilterNote', rec
@@ -1036,6 +1084,7 @@ let queuedTextRender = 0;
 function renderTextPanels(): void {
   renderHud();
   renderGuides();
+  renderDenoise();
   renderCoach();
   renderDiagnostics();
   // The picker's shortcut names the ACTIVE lens, so it follows the strip.
@@ -1308,7 +1357,9 @@ async function toggleRecording(): Promise<void> {
   if (viaRender) {
     // Size the canvas to RECORD IN before the encoder ever sees it; the
     // preview loop holds this target until stop.
-    if (!renderer.uploadFrame(video) || !renderer.render(activeFilter, geometry.recordInput)) {
+    if (!renderer.uploadFrame(video)
+      || !renderer.render(activeFilter, geometry.recordInput,
+        undefined, { denoise: denoiseRadius(readState().denoise) })) {
       setText('v2RecordSummary', 'No frame to start the recording from.');
       return;
     }
@@ -1373,7 +1424,7 @@ async function takePhoto(): Promise<void> {
       return capturePhoto(renderer, video, readState().activeFilter, {
         ...photo,
         reason: CAPTURE_REASONS[escalation]
-      });
+      }, denoiseRadius(readState().denoise));
     }, { now: () => performance.now() });
     if (outcome.still) {
       updateState({
@@ -2338,12 +2389,16 @@ byId('v2LegacyLink').addEventListener('click', () => {
 });
 
 buildGuides();
+buildDenoise();
 try {
   const stored = localStorage.getItem(GUIDE_STORE_KEY);
   if (stored && guideById(stored)) updateState({ guide: stored });
   updateState({ reticle: localStorage.getItem(RETICLE_STORE_KEY) === '1' });
+  const smoothing = localStorage.getItem(DENOISE_STORE_KEY);
+  if (smoothing && denoiseById(smoothing)) updateState({ denoise: smoothing });
 } catch {
-  // Storage is optional; the defaults (no guide, no reticle) stand.
+  // Storage is optional; the state's own defaults stand (no guide, no
+  // reticle, and smoothing at whatever render/denoise.ts calls default).
 }
 buildFilterStrip();
 // Custom lenses append AFTER the built-ins, then the Custom + entry.

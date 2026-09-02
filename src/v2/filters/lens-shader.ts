@@ -83,39 +83,39 @@ const glslFloat = (value: number): string => {
 function channelGlsl(id: ChannelId): string {
   switch (id) {
     case 'luma':
-      return `float ch_luma(vec2 uv) { return luma(texture2D(uFrame, uv).rgb) * 255.0; }`;
+      return `float ch_luma(vec2 uv) { return luma(frameAt(uv)) * 255.0; }`;
     case 'edges':
       // The legacy field is hypot(gx, gy) of a Sobel on 0–255 gray, clamped
       // to 255; on 0–1 luma that is the same number × 255.
       return `float ch_edges(vec2 uv) {
-  float tl = luma(texture2D(uFrame, uv + uTexel * vec2(-1.0, -1.0)).rgb);
-  float  l = luma(texture2D(uFrame, uv + uTexel * vec2(-1.0,  0.0)).rgb);
-  float bl = luma(texture2D(uFrame, uv + uTexel * vec2(-1.0,  1.0)).rgb);
-  float tr = luma(texture2D(uFrame, uv + uTexel * vec2( 1.0, -1.0)).rgb);
-  float  r = luma(texture2D(uFrame, uv + uTexel * vec2( 1.0,  0.0)).rgb);
-  float br = luma(texture2D(uFrame, uv + uTexel * vec2( 1.0,  1.0)).rgb);
-  float  t = luma(texture2D(uFrame, uv + uTexel * vec2( 0.0, -1.0)).rgb);
-  float  b = luma(texture2D(uFrame, uv + uTexel * vec2( 0.0,  1.0)).rgb);
+  float tl = luma(frameAt(uv + uTexel * vec2(-1.0, -1.0)));
+  float  l = luma(frameAt(uv + uTexel * vec2(-1.0,  0.0)));
+  float bl = luma(frameAt(uv + uTexel * vec2(-1.0,  1.0)));
+  float tr = luma(frameAt(uv + uTexel * vec2( 1.0, -1.0)));
+  float  r = luma(frameAt(uv + uTexel * vec2( 1.0,  0.0)));
+  float br = luma(frameAt(uv + uTexel * vec2( 1.0,  1.0)));
+  float  t = luma(frameAt(uv + uTexel * vec2( 0.0, -1.0)));
+  float  b = luma(frameAt(uv + uTexel * vec2( 0.0,  1.0)));
   float gx = (tr + 2.0 * r + br) - (tl + 2.0 * l + bl);
   float gy = (bl + 2.0 * b + br) - (tl + 2.0 * t + tr);
   return clamp(length(vec2(gx, gy)) * 255.0, 0.0, 255.0);
 }`;
     case 'change':
       return `float ch_change(vec2 uv) {
-  return abs(luma(texture2D(uFrame, uv).rgb) - luma(texture2D(uPrevious, uv).rgb)) * 255.0;
+  return abs(luma(frameAt(uv)) - luma(prevAt(uv))) * 255.0;
 }`;
     case 'red':
-      return `float ch_red(vec2 uv) { return texture2D(uFrame, uv).r * 255.0; }`;
+      return `float ch_red(vec2 uv) { return frameAt(uv).r * 255.0; }`;
     case 'green':
-      return `float ch_green(vec2 uv) { return texture2D(uFrame, uv).g * 255.0; }`;
+      return `float ch_green(vec2 uv) { return frameAt(uv).g * 255.0; }`;
     case 'blue':
-      return `float ch_blue(vec2 uv) { return texture2D(uFrame, uv).b * 255.0; }`;
+      return `float ch_blue(vec2 uv) { return frameAt(uv).b * 255.0; }`;
     case 'hue':
       // Degrees around the wheel. Grey pixels have no hue; the field says so
       // by sitting at 0, and a hue lens is meant to be paired with strength.
-      return `float ch_hue(vec2 uv) { return rgb2hsv(texture2D(uFrame, uv).rgb).x * 360.0; }`;
+      return `float ch_hue(vec2 uv) { return rgb2hsv(frameAt(uv)).x * 360.0; }`;
     case 'saturation':
-      return `float ch_saturation(vec2 uv) { return rgb2hsv(texture2D(uFrame, uv).rgb).y * 255.0; }`;
+      return `float ch_saturation(vec2 uv) { return rgb2hsv(frameAt(uv)).y * 255.0; }`;
     case 'chromaEdge':
       // Sobel is a subtraction, and hue is a circle, so the differences are
       // taken the short way round. A grey pixel has no hue, so a "hue edge"
@@ -125,11 +125,11 @@ function channelGlsl(id: ChannelId): string {
   return min(d, 1.0 - d) * 2.0;
 }
 float ch_chromaEdge(vec2 uv) {
-  vec3 here = rgb2hsv(texture2D(uFrame, uv).rgb);
-  float acc = hueGap(here.x, rgb2hsv(texture2D(uFrame, uv + uTexel * vec2(1.0, 0.0)).rgb).x)
-    + hueGap(here.x, rgb2hsv(texture2D(uFrame, uv - uTexel * vec2(1.0, 0.0)).rgb).x)
-    + hueGap(here.x, rgb2hsv(texture2D(uFrame, uv + uTexel * vec2(0.0, 1.0)).rgb).x)
-    + hueGap(here.x, rgb2hsv(texture2D(uFrame, uv - uTexel * vec2(0.0, 1.0)).rgb).x);
+  vec3 here = rgb2hsv(frameAt(uv));
+  float acc = hueGap(here.x, rgb2hsv(frameAt(uv + uTexel * vec2(1.0, 0.0))).x)
+    + hueGap(here.x, rgb2hsv(frameAt(uv - uTexel * vec2(1.0, 0.0))).x)
+    + hueGap(here.x, rgb2hsv(frameAt(uv + uTexel * vec2(0.0, 1.0))).x)
+    + hueGap(here.x, rgb2hsv(frameAt(uv - uTexel * vec2(0.0, 1.0))).x);
   float colourful = smoothstep(0.10, 0.25, here.y);
   return clamp(acc * 0.5 * colourful, 0.0, 1.0) * 255.0;
 }`;
@@ -138,14 +138,14 @@ float ch_chromaEdge(vec2 uv) {
       // has no hue to be rare in, so it is reported as ordinary rather than
       // as the rarest thing in the picture.
       return `float ch_rarity(vec2 uv) {
-  vec3 hsv = rgb2hsv(texture2D(uFrame, uv).rgb);
+  vec3 hsv = rgb2hsv(frameAt(uv));
   float share = texture2D(uHistogram, vec2(hsv.x, 0.5)).r;
   float colourful = smoothstep(0.10, 0.25, hsv.y);
   return (1.0 - share) * colourful * 255.0;
 }`;
     case 'backgroundDistance':
       return `float ch_backgroundDistance(vec2 uv) {
-  return colourGap(rgb2hsv(texture2D(uFrame, uv).rgb), uDominant) * 255.0;
+  return colourGap(rgb2hsv(frameAt(uv)), uDominant) * 255.0;
 }`;
     case 'colourDistance':
       // Distance from the reference in hue, strength and brightness together.
@@ -153,7 +153,7 @@ float ch_chromaEdge(vec2 uv) {
       // the hue of a grey pixel is arithmetic, not a measurement. The weights
       // are display tuning, stated as such.
       return `float ch_colourDistance(vec2 uv) {
-  return colourGap(rgb2hsv(texture2D(uFrame, uv).rgb), REF_HSV) * 255.0;
+  return colourGap(rgb2hsv(frameAt(uv)), REF_HSV) * 255.0;
 }`;
     case 'speed':
       // The Speed state holds normal flow / 8 (texels per frame at analysis
