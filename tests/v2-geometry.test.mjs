@@ -1773,6 +1773,9 @@ test('frame averaging steadies a still scene without softening it (fake device)'
       assert.ok(averaged.moved < raw.moved * 0.85,
         `averaging must damp frame-to-frame change: ${averaged.moved} vs ${raw.moved}`);
       assert.match(await page.textContent('#v2AverageNote'), /four frames/);
+      // A reading level counts frames, so the note prints the DURATION it
+      // works out to at the rate the camera is actually delivering.
+      assert.match(await page.textContent('#v2AverageNote'), /about \d+ ms at \d+ fps/);
 
       // Dizzy is the same mechanism asked for on purpose, and it damps hardest
       // of all — it is set apart in the row so it cannot read as a stronger
@@ -1783,6 +1786,10 @@ test('frame averaging steadies a still scene without softening it (fake device)'
       assert.ok(dizzy.moved < averaged.moved,
         `Dizzy carries the most of the past: ${dizzy.moved} vs ${averaged.moved}`);
       assert.match(await page.textContent('#v2AverageNote'), /swims/);
+      // An effect holds a DURATION, so its note prints the frame count that
+      // duration works out to instead — the conversion runs both ways and is
+      // visible either way.
+      assert.match(await page.textContent('#v2AverageNote'), /about \d+ frames at \d+ fps/);
       assert.equal(await page.evaluate(() =>
         document.querySelector('[data-average="dizzy"]').dataset.effect), 'true');
       assert.equal(await page.evaluate(() =>

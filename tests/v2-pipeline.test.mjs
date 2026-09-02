@@ -31,8 +31,8 @@ import {
 } from '../.test-build/v2/capture/color-sampler.js';
 import { GUIDES, DEFAULT_GUIDE, guideById } from '../.test-build/v2/render/guides.js';
 import {
-  FRAME_AVERAGE_LEVELS, DEFAULT_FRAME_AVERAGE, frameAverageById,
-  frameAverageCount, frameAverageWeight
+  FRAME_AVERAGE_LEVELS, DEFAULT_FRAME_AVERAGE, NOMINAL_FPS, conversionNote,
+  frameAverageById, framesForLevel, frameAverageWeight
 } from '../.test-build/v2/render/frame-average.js';
 import {
   HISTOGRAM_BINS, buildHistogram, emptyHistogram
@@ -1334,11 +1334,11 @@ test('frame averaging is one ladder, and its weights mean what they say', () => 
   // the still images are fine because it has a chance to grab one good frame".
   assert.equal(new Set(FRAME_AVERAGE_LEVELS.map((l) => l.id)).size, FRAME_AVERAGE_LEVELS.length);
   assert.ok(frameAverageById(DEFAULT_FRAME_AVERAGE), 'the default names a real level');
-  assert.equal(frameAverageCount('off'), 1, 'OFF averages a single frame');
-  assert.equal(frameAverageCount('nonsense'), 1, 'and an unknown id averages nothing either');
-  const frames = FRAME_AVERAGE_LEVELS.map((l) => l.frames);
+  assert.equal(framesForLevel('off', 30), 1, 'OFF averages a single frame');
+  assert.equal(framesForLevel('nonsense', 30), 1, 'and an unknown id averages nothing either');
+  const frames = FRAME_AVERAGE_LEVELS.map((l) => framesForLevel(l.id, 30));
   assert.deepEqual(frames, [...frames].sort((a, b) => a - b), 'the row reads as a dial');
-  assert.deepEqual(frames, [1, 2, 3, 4, 10], 'the ladder Joshua asked for, plus Dizzy');
+  assert.deepEqual(frames, [1, 2, 3, 4, 9], 'the ladder Joshua asked for, plus Dizzy');
   for (const level of FRAME_AVERAGE_LEVELS) {
     assert.ok(level.note.length > 20, `${level.label} says what it does`);
   }
@@ -1349,16 +1349,15 @@ test('frame averaging is one ladder, and its weights mean what they say', () => 
   // must be marked so it cannot read as a recommendation for a noisier room.
   for (const level of FRAME_AVERAGE_LEVELS) {
     if (level.effect) continue;
-    assert.ok(level.frames <= 4,
+    assert.ok((level.frames ?? 0) <= 4,
       `${level.label} steadies a reading, so it cannot lag by ${level.frames} frames`);
   }
   const dizzy = frameAverageById('dizzy');
   assert.equal(dizzy?.effect, true, 'Dizzy is the same average, asked for on purpose');
-  assert.equal(dizzy?.frames, 10);
   assert.match(dizzy?.label ?? '', /Dizzy/);
   // One mechanism, not a second: an effect is a level, not a filter.
-  assert.equal(new Set(FRAME_AVERAGE_LEVELS.map((l) => l.frames)).size,
-    FRAME_AVERAGE_LEVELS.length);
+  const distinct = FRAME_AVERAGE_LEVELS.map((l) => framesForLevel(l.id, 30));
+  assert.equal(new Set(distinct).size, FRAME_AVERAGE_LEVELS.length);
 
   // THE WEIGHT IS 2/(N+1), NOT 1/N. An EMA's variance is alpha / (2 - alpha)
   // of its input's, so 2/(N+1) is the weight at which it removes exactly as
@@ -1368,11 +1367,14 @@ test('frame averaging is one ladder, and its weights mean what they say', () => 
   assert.equal(frameAverageWeight(3), 0.5);
   assert.ok(Math.abs(frameAverageWeight(5) - 1 / 3) < 1e-9);
   for (const level of FRAME_AVERAGE_LEVELS) {
-    const alpha = frameAverageWeight(level.frames);
+    // Both units land on a frame count, and there is only ever one formula
+    // from there — an effect converts through the measured rate first.
+    const n = framesForLevel(level.id, 30);
+    const alpha = frameAverageWeight(n);
     // variance ratio of the EMA against a true N-frame average: they match.
     const emaVariance = alpha / (2 - alpha);
-    assert.ok(Math.abs(emaVariance - 1 / level.frames) < 1e-9,
-      `${level.label}: an EMA at ${alpha} matches an average of ${level.frames}`);
+    assert.ok(Math.abs(emaVariance - 1 / n) < 1e-9,
+      `${level.label}: an EMA at ${alpha} matches an average of ${n}`);
   }
 });
 
@@ -1394,4 +1396,48 @@ test('averaging changes the picture every pass sees, not any one filter', () => 
   const photo = readFileSync(new URL('../src/v2/capture/photo.ts', import.meta.url), 'utf8');
   assert.ok(!/frames:/.test(photo), 'capturePhoto passes no frame count');
   assert.match(photo, /NOT applied to a still/);
+});
+
+test('frames for a reading, milliseconds for an effect', () => {
+  // Not a compromise between two ways of saying one thing — two different
+  // units, each correct for its own claim (raised by ChatGPT, 2026-09-02).
+  for (const level of FRAME_AVERAGE_LEVELS) {
+    const hasFrames = level.frames !== undefined;
+    const hasMs = level.persistenceMs !== undefined;
+    assert.ok(hasFrames !== hasMs, `${level.label} declares exactly one unit`);
+    // A NOISE claim is a claim about independent samples, so a reading level
+    // counts frames. A LOOK is made of elapsed time, so an effect counts ms.
+    assert.equal(hasMs, level.effect === true,
+      `${level.label}: effects are timed, readings are counted`);
+  }
+
+  // A reading level removes the same noise at any rate — that is the point of
+  // counting samples rather than the clock.
+  for (const fps of [24, 30, 60, 120]) {
+    assert.equal(framesForLevel('high', fps), 4, `4 frames is 4 frames at ${fps} fps`);
+  }
+  // An effect holds its DURATION instead, so it looks the same on a 60 fps
+  // camera as on a 30 fps one. At a fixed frame count it would be half as
+  // dizzy at 60 for no reason the person holding the phone could see.
+  assert.equal(framesForLevel('dizzy', 30), 9);
+  assert.equal(framesForLevel('dizzy', 60), 18);
+  assert.equal(framesForLevel('dizzy', 120), 36);
+  // 300 ms at each of those rates, back again — one conversion, not two.
+  for (const fps of [24, 30, 60, 120]) {
+    const ms = framesForLevel('dizzy', fps) / fps * 1000;
+    assert.ok(Math.abs(ms - 300) < 25, `${fps} fps holds ~300 ms, got ${ms}`);
+  }
+
+  // Before the rate is measured deliveredFps reads 0, and the conversion has
+  // to go through something; it says which, rather than presenting a guess
+  // as a measurement.
+  assert.equal(framesForLevel('dizzy', 0), framesForLevel('dizzy', NOMINAL_FPS));
+  assert.match(conversionNote('dizzy', 0), /assumed until measured/);
+  assert.doesNotMatch(conversionNote('dizzy', 60), /assumed/);
+
+  // The note prints the OTHER unit, so the conversion is visible either way.
+  assert.match(conversionNote('dizzy', 30), /about 9 frames at 30 fps/);
+  assert.match(conversionNote('high', 30), /about 133 ms at 30 fps/);
+  assert.match(conversionNote('high', 60), /about 67 ms at 60 fps/);
+  assert.equal(conversionNote('off', 30), '', 'one frame has no duration worth naming');
 });

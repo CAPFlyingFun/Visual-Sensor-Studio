@@ -72,6 +72,27 @@ dizzy/drunk look where you can see but it's a little blurred"). It is
 the same average asked for on purpose, marked `effect: true` so it reads
 as a look rather than as the top of the ladder, and set apart in the row.
 
+**Frames for readings, milliseconds for effects.** This is a real
+difference of units, not a compromise between two ways of saying the
+same thing (raised by ChatGPT, 2026-09-02):
+
+- A **noise** claim is a claim about *independent samples*. Averaging
+  four frames halves the noise whether they arrived in 133 ms at 30 fps
+  or 67 ms at 60, so "4 frames" removes the same noise on any device.
+  The smear it costs shrinks at a higher frame rate — the harmless
+  direction: the same reading for less lag.
+- A **look** is made of *how long the past lingers*. Dizzy at a fixed
+  ten frames would be a third of a second of history at 30 fps and half
+  that at 60 — the same setting, visibly less dizzy, for no reason the
+  person holding the phone could see. So it declares 300 ms and the
+  frame count follows from the measured rate.
+
+Both land on a frame count and then the one weight below; there is no
+second formula. The note under the row prints the *other* unit as
+measured ("about 133 ms at 30 fps", "about 9 frames at 30 fps"), so the
+conversion is visible rather than hidden, and says "assumed until
+measured" while `deliveredFps` is still 0.
+
 Three things worth keeping:
 
 - **It is a rolling average, not a hold.** The preview updates on every

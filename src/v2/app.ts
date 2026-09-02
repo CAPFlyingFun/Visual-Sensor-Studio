@@ -45,7 +45,7 @@ import {
 } from './capture/color-sampler.js';
 import { GUIDES, guideById } from './render/guides.js';
 import {
-  FRAME_AVERAGE_LEVELS, frameAverageById, frameAverageCount
+  FRAME_AVERAGE_LEVELS, conversionNote, frameAverageById, framesForLevel
 } from './render/frame-average.js';
 import { buildHistogram, emptyHistogram } from './vision/frame-histogram.js';
 import { matchShare } from './vision/colour-gap.js';
@@ -257,7 +257,7 @@ function renderPreview(now: number): void {
   if (renderer.render(activeFilter, target, resolved.analysis, {
     fps: readState().deliveredFps,
     histogram: { bins: histogram.bins, dominant: histogram.dominant, version: histogramVersion },
-    frames: frameAverageCount(readState().frameAverage)
+    frames: framesForLevel(readState().frameAverage, readState().deliveredFps)
   })) {
     if (recording?.path === 'filtered') {
       framesFedThisClip += 1;
@@ -620,13 +620,19 @@ function buildFrameAverage(): void {
 
 let renderedAverageKey = '';
 function renderFrameAverage(): void {
-  const id = readState().frameAverage;
-  if (id === renderedAverageKey) return;
-  renderedAverageKey = id;
+  const { frameAverage: id, deliveredFps } = readState();
+  // The note carries the MEASURED conversion, so it must re-render when the
+  // rate moves — rounded to whole frames per second, which is as finely as
+  // the sentence can say anything anyway.
+  const key = `${id}|${Math.round(deliveredFps)}`;
+  if (key === renderedAverageKey) return;
+  renderedAverageKey = key;
   for (const button of byId('v2AverageRow').querySelectorAll<HTMLButtonElement>('[data-average]')) {
     button.classList.toggle('active', button.dataset.average === id);
   }
-  setText('v2AverageNote', frameAverageById(id)?.note ?? '');
+  const conversion = conversionNote(id, deliveredFps);
+  setText('v2AverageNote',
+    `${frameAverageById(id)?.note ?? ''}${conversion ? ` ${conversion}` : ''}`);
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -1365,7 +1371,8 @@ async function toggleRecording(): Promise<void> {
     // preview loop holds this target until stop.
     if (!renderer.uploadFrame(video)
       || !renderer.render(activeFilter, geometry.recordInput,
-        undefined, { frames: frameAverageCount(readState().frameAverage) })) {
+        undefined,
+        { frames: framesForLevel(readState().frameAverage, readState().deliveredFps) })) {
       setText('v2RecordSummary', 'No frame to start the recording from.');
       return;
     }
