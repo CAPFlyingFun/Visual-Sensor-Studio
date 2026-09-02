@@ -13,7 +13,10 @@
  * same filters is exactly what Rule 4 exists to prevent.
  */
 
-import { FILTERS, filterById, ironbowLut, type FilterDefinition } from '../filters/registry.js';
+import {
+  AVERAGE_FRAGMENT, FILTERS, filterById, ironbowLut, type FilterDefinition
+} from '../filters/registry.js';
+import { frameAverageWeight as emaWeight } from './frame-average.js';
 
 const VERTEX = `attribute vec2 aPosition;
 varying vec2 vUv;
@@ -38,6 +41,19 @@ void main() {
   vUv = aPosition * 0.5 + 0.5;
   gl_Position = vec4(aPosition, 0.0, 1.0);
 }`;
+
+
+
+/**
+ * The EMA weight that removes as much noise as a true average of N frames.
+ *
+ * An EMA's variance is alpha / (2 - alpha) of its input's, so alpha =
+ * 2 / (N + 1) is the value at which the two match. The obvious guess, 1/N,
+ * would quietly do about twice the smoothing the label on the chip promises.
+ * That weight lives in render/frame-average.ts, which owns the ladder; this
+ * module imports it rather than restating the arithmetic.
+ */
+
 
 export interface RenderTargetSize {
   width: number;
@@ -69,8 +85,20 @@ export class GlRenderer {
   private histogramTexture: WebGLTexture | null = null;
   private histogramVersion = -1;
   private dominant: [number, number, number] = [0, 0, 0];
-  /** Smoothing radius in texels, set per render and shared by all its passes. */
-  private denoise = 0;
+  /**
+   * FRAME AVERAGING — a running average of the camera's own frames, so every
+   * pass sees one steadier picture instead of a fresh roll of sensor noise.
+   * Two textures ping-pong (read one, write the other) at the render size.
+   * `averaging` is set per render: a still, which asks for none, must sample
+   * the camera's real frame rather than the preview's accumulation.
+   */
+  private averageTextures: [WebGLTexture, WebGLTexture] | null = null;
+  private averageFramebuffer: WebGLFramebuffer | null = null;
+  private averageProgram: WebGLProgram | null = null;
+  private averageSize = { width: 0, height: 0 };
+  private averageRead = 0;
+  private averaging = false;
+  private averagePrimed = false;
   /** Which program key each filter id currently owns, so an edited lens frees its old program. */
   private programKeys = new Map<string, string>();
   private failure = '';
@@ -147,6 +175,19 @@ export class GlRenderer {
    */
   get targetCanvas(): HTMLCanvasElement {
     return this.canvas;
+  }
+
+  /**
+   * The frame every pass reads: the camera's, or the running average of the
+   * last few. ONE accessor, so the display pass, the state pass and the
+   * history copy can never disagree about which picture this frame is —
+   * comparing an averaged present against a raw past would read as motion
+   * everywhere.
+   */
+  private get sourceTexture(): WebGLTexture | null {
+    return this.averaging && this.averageTextures
+      ? this.averageTextures[this.averageRead]
+      : this.frameTexture;
   }
 
   private makeTexture(gl: WebGLRenderingContext): WebGLTexture {
@@ -257,7 +298,7 @@ export class GlRenderer {
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.frameTexture);
+    gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture);
     gl.uniform1i(gl.getUniformLocation(program, 'uFrame'), 0);
     if (this.historyTexture) {
       gl.activeTexture(gl.TEXTURE2);
@@ -268,11 +309,119 @@ export class GlRenderer {
     gl.bindTexture(gl.TEXTURE_2D, read);
     gl.uniform1i(gl.getUniformLocation(program, 'uState'), 3);
     gl.uniform2f(gl.getUniformLocation(program, 'uTexel'), 1 / size.width, 1 / size.height);
-    gl.uniform1f(gl.getUniformLocation(program, 'uDenoise'), this.denoise);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.stateRead = 1 - this.stateRead;
     return write;
+  }
+
+  /**
+   * Advance the running frame average by one camera frame.
+   *
+   * new = mix(previous average, this frame, weight). One texture's worth of
+   * memory holds an average of many frames, which is the whole reason it is
+   * an exponential average and not a stack of the last N — a ten-frame stack
+   * at record size is ten full-resolution buffers, and this device has
+   * already lost a GPU context to memory once.
+   *
+   * PRIMED, NEVER FADED IN. On the first frame, a resize, or the control
+   * being switched on, both buffers are filled with the current frame at full
+   * weight. Starting from black would fade the picture up over a third of a
+   * second and look like a fault.
+   */
+  private advanceAverage(size: RenderTargetSize, frames: number): void {
+    const gl = this.gl;
+    this.averaging = false;
+    if (!gl || !(frames > 1) || size.width <= 0 || size.height <= 0) return;
+
+    this.averageProgram ??= this.buildProgram(VERTEX_OFFSCREEN, AVERAGE_FRAGMENT);
+    const program = this.averageProgram;
+    if (!program) return;
+    if (!this.averageTextures) this.averageTextures = [this.makeTexture(gl), this.makeTexture(gl)];
+    if (!this.averageFramebuffer) this.averageFramebuffer = gl.createFramebuffer();
+
+    // A size change makes the stored average meaningless — it is a picture of
+    // a different rectangle — so it is rebuilt from this frame rather than
+    // stretched.
+    const resized = this.averageSize.width !== size.width
+      || this.averageSize.height !== size.height;
+    if (resized) {
+      this.averageSize = { width: size.width, height: size.height };
+      for (const texture of this.averageTextures) {
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size.width, size.height, 0,
+          gl.RGBA, gl.UNSIGNED_BYTE, null);
+      }
+    }
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.averageFramebuffer);
+    gl.viewport(0, 0, size.width, size.height);
+    gl.useProgram(program);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.frameTexture);
+    gl.uniform1i(gl.getUniformLocation(program, 'uFrame'), 0);
+
+    // Weight 1 ignores whatever is in the buffer, so priming is the same
+    // pass run into both textures rather than a second code path.
+    const priming = resized || !this.averagePrimed;
+    const passes: Array<{ read: WebGLTexture; write: WebGLTexture; weight: number }> = priming
+      ? [
+        { read: this.averageTextures[0], write: this.averageTextures[1], weight: 1 },
+        { read: this.averageTextures[1], write: this.averageTextures[0], weight: 1 }
+      ]
+      : [{
+        read: this.averageTextures[this.averageRead],
+        write: this.averageTextures[1 - this.averageRead],
+        weight: emaWeight(frames)
+      }];
+
+    for (const pass of passes) {
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, pass.write, 0);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, pass.read);
+      gl.uniform1i(gl.getUniformLocation(program, 'uAverage'), 1);
+      gl.uniform1f(gl.getUniformLocation(program, 'uWeight'), pass.weight);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      this.averageRead = pass.write === this.averageTextures[0] ? 0 : 1;
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.averagePrimed = true;
+    this.averaging = true;
+  }
+
+  /** Compile and link one offscreen program; renderer machinery, not a filter. */
+  private buildProgram(vertexSource: string, fragmentSource: string): WebGLProgram | null {
+    const gl = this.gl;
+    if (!gl) return null;
+    const compile = (type: number, source: string): WebGLShader | null => {
+      const shader = gl.createShader(type);
+      if (!shader) return null;
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        this.failure = 'The frame-average shader failed to compile: '
+          + (gl.getShaderInfoLog(shader) ?? 'no reason given');
+        return null;
+      }
+      return shader;
+    };
+    const vertex = compile(gl.VERTEX_SHADER, vertexSource);
+    const fragment = compile(gl.FRAGMENT_SHADER, fragmentSource);
+    if (!vertex || !fragment) return null;
+    const program = gl.createProgram();
+    if (!program) return null;
+    gl.attachShader(program, vertex);
+    gl.attachShader(program, fragment);
+    gl.bindAttribLocation(program, 0, 'aPosition');
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      this.failure = 'The frame-average shader failed to link: '
+        + (gl.getProgramInfoLog(program) ?? 'no reason given');
+      return null;
+    }
+    return program;
   }
 
   /** One upload per camera frame; every product of that frame reuses it. */
@@ -302,8 +451,8 @@ export class GlRenderer {
     extras: {
       fps?: number;
       histogram?: { bins: Uint8Array; dominant: [number, number, number]; version: number };
-      /** Smoothing radius in render-target texels — see render/denoise.ts. */
-      denoise?: number;
+      /** Frames to average together — see render/frame-average.ts. 1 = none. */
+      frames?: number;
     } = {}
   ): boolean {
     const gl = this.gl;
@@ -311,11 +460,9 @@ export class GlRenderer {
     if (!gl || gl.isContextLost() || !filter || filter.unavailableReason) return false;
     const program = this.program(filter);
     if (!program) return false;
-    // SMOOTHING reaches every filter through the header's frameAt/prevAt, so
-    // it is recorded once here rather than passed to each pass — and BEFORE
-    // the state pass runs, because a filter's memory must be smoothed exactly
-    // the way its live frame is or the difference between them is the blur.
-    this.denoise = extras.denoise ?? 0;
+    // The average advances BEFORE the state pass, because a filter's memory
+    // must be built from the same picture its live frame is.
+    this.advanceAverage(target, extras.frames ?? 1);
     // A stateful filter advances its memory first, at the ANALYSIS size the
     // caller resolves — the display pass then reads it, whatever its own size.
     const state = filter.state && stateSize ? this.advanceState(filter, stateSize) : null;
@@ -328,7 +475,7 @@ export class GlRenderer {
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.frameTexture);
+    gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture);
     gl.uniform1i(gl.getUniformLocation(program, 'uFrame'), 0);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.rampFor(filter));
@@ -344,7 +491,6 @@ export class GlRenderer {
       gl.uniform1i(gl.getUniformLocation(program, 'uState'), 3);
     }
     gl.uniform2f(gl.getUniformLocation(program, 'uTexel'), 1 / target.width, 1 / target.height);
-    gl.uniform1f(gl.getUniformLocation(program, 'uDenoise'), this.denoise);
     // Unit conversions a lens may need: a missing location is simply ignored.
     gl.uniform1f(gl.getUniformLocation(program, 'uFps'), extras.fps ?? 0);
     gl.uniform1f(gl.getUniformLocation(program, 'uAnalysisWidth'), stateSize?.width ?? 0);
@@ -442,7 +588,7 @@ export class GlRenderer {
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.frameTexture);
+    gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture);
     gl.uniform1i(gl.getUniformLocation(program, 'uFrame'), 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);

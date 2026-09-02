@@ -30,18 +30,17 @@ export async function capturePhoto(
   renderer: GlRenderer,
   video: HTMLVideoElement,
   filterId: string,
-  photo: SizedWithReason,
-  /**
-   * SMOOTHING, in texels — the caller reads it from the one owner. A still
-   * that measured the frame differently from the viewfinder it was framed in
-   * would not be the same shader at a different size any more.
-   */
-  denoise = 0
+  photo: SizedWithReason
 ): Promise<PhotoResult | null> {
+  // FRAME AVERAGING is deliberately NOT applied to a still, and Joshua named
+  // the reason (2026-09-02): "the still images are fine because it has a
+  // chance to grab one good frame and not moving". The averaging exists to
+  // steady a LIVE preview being re-rolled thirty times a second; a photo has
+  // no such problem, and blending a moving frame into it would only smear a
+  // picture that was already sharp. render() below asks for none, on purpose.
   const t0 = performance.now();
   if (!renderer.uploadFrame(video)) return null;
-  if (!renderer.render(filterId, { width: photo.width, height: photo.height },
-    undefined, { denoise })) return null;
+  if (!renderer.render(filterId, { width: photo.width, height: photo.height })) return null;
 
   photoCanvas ??= document.createElement('canvas');
   photoCanvas.width = photo.width;

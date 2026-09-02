@@ -31,8 +31,9 @@ import {
 } from '../.test-build/v2/capture/color-sampler.js';
 import { GUIDES, DEFAULT_GUIDE, guideById } from '../.test-build/v2/render/guides.js';
 import {
-  DENOISE_LEVELS, DEFAULT_DENOISE, denoiseById, denoiseRadius
-} from '../.test-build/v2/render/denoise.js';
+  FRAME_AVERAGE_LEVELS, DEFAULT_FRAME_AVERAGE, frameAverageById,
+  frameAverageCount, frameAverageWeight
+} from '../.test-build/v2/render/frame-average.js';
 import {
   HISTOGRAM_BINS, buildHistogram, emptyHistogram
 } from '../.test-build/v2/vision/frame-histogram.js';
@@ -503,14 +504,10 @@ test('FILTERS is the one list: unique ids, honest metadata, real shaders', () =>
       assert.equal(filter.supportsPhoto, false,
         `${filter.id}: state at ANALYSIS resolution cannot honestly fill a still`);
     }
-    // "Reads history" now means calling prevAt — the header's smoothed read —
-    // rather than sampling uPrevious itself; a filter doing the latter would
-    // be measuring an unsmoothed past against a smoothed present.
-    const readsHistory = (text) => /prevAt\(|texture2D\(uPrevious/.test(text);
     const body = filter.fragment.split('void main')[1] ?? '';
     const stateSamplesHistory = filter.state
-      ? readsHistory(filter.state.slice(filter.state.indexOf('void main'))) : false;
-    assert.equal(readsHistory(body) || stateSamplesHistory, filter.temporal,
+      ? filter.state.slice(filter.state.indexOf('void main')).includes('uPrevious') : false;
+    assert.equal(body.includes('uPrevious') || stateSamplesHistory, filter.temporal,
       `${filter.id}: temporal metadata and shader body must agree`);
   }
   assert.deepEqual(FILTERS.map((f) => f.id), ['rgb', 'ironbow', 'difference', 'speed', 'trails', 'edges']);
@@ -1114,7 +1111,7 @@ test('rarity and background distance are one measurement, three lenses', () => {
 
   const background = compileLens(STARTER_LENSES.find((l) => l.id === 'lens-v2-background-subtract'));
   assert.equal(background.needsHistogram, true);
-  assert.match(background.fragment, /colourGap\(rgb2hsv\(frameAt\(uv\)\), uDominant\)/,
+  assert.match(background.fragment, /colourGap\(rgb2hsv\(texture2D\(uFrame, uv\)\.rgb\), uDominant\)/,
     'the background is the frame\'s measured prevailing colour, not a stored plate');
   // The distance function is written once and shared (Rule 6).
   const splash = compileLens(STARTER_LENSES.find((l) => l.id === 'lens-v2-colour-splash')).fragment;
@@ -1330,78 +1327,54 @@ test('an untouched starter can be corrected; an edited one is never overwritten'
   }
 });
 
-test('smoothing is one control every filter reads, and OFF is the old shader', () => {
-  // In a dim room a near-grey pixel's HUE is decided by sensor noise, so it
-  // walks the whole colour wheel frame to frame. Colour Edges drew a boundary
-  // at every grain of that and Camouflage Breaker called half the room an
-  // unusual colour — both measuring exactly what they were handed (Joshua's
-  // device, 2026-09-02).
-  assert.equal(new Set(DENOISE_LEVELS.map((l) => l.id)).size, DENOISE_LEVELS.length);
-  assert.ok(denoiseById(DEFAULT_DENOISE), 'the default names a real level');
-  assert.equal(denoiseRadius('off'), 0, 'OFF smooths nothing');
-  assert.equal(denoiseRadius('nonsense'), 0, 'and an unknown id smooths nothing either');
-  // Monotonic, so the row reads as a dial rather than a set of moods.
-  const radii = DENOISE_LEVELS.map((l) => l.radius);
-  assert.deepEqual(radii, [...radii].sort((a, b) => a - b));
-  // HALF-INTEGERS ONLY. Each of the shader's four taps is cheap because the
-  // GPU's bilinear filter averages the texels it falls between; a tap at a
-  // whole number of texels lands on a texel centre and averages nothing, so
-  // an integer radius reads FEWER pixels than the half-step either side of
-  // it. Measured on the shipped shader: noise sd 13.4 at 0.5, 17.8 at 1.0,
-  // 9.1 at 1.5. The first ladder written here was 1, 2, 3 — every one of
-  // them a worst case.
-  for (const level of DENOISE_LEVELS) {
-    assert.ok(level.radius === 0 || Math.abs(level.radius % 1) === 0.5,
-      `${level.label}: ${level.radius} texels lands the taps on texel centres`);
-  }
-  for (const level of DENOISE_LEVELS) {
+test('frame averaging is one ladder, and its weights mean what they say', () => {
+  // The speckle is TEMPORAL, which is Joshua's diagnosis and the reason the
+  // spatial blur that stood here was removed (2026-09-02): "each little
+  // motion my phone makes even like 0.2° will grab a new frame/pixel...
+  // the still images are fine because it has a chance to grab one good frame".
+  assert.equal(new Set(FRAME_AVERAGE_LEVELS.map((l) => l.id)).size, FRAME_AVERAGE_LEVELS.length);
+  assert.ok(frameAverageById(DEFAULT_FRAME_AVERAGE), 'the default names a real level');
+  assert.equal(frameAverageCount('off'), 1, 'OFF averages a single frame');
+  assert.equal(frameAverageCount('nonsense'), 1, 'and an unknown id averages nothing either');
+  const frames = FRAME_AVERAGE_LEVELS.map((l) => l.frames);
+  assert.deepEqual(frames, [...frames].sort((a, b) => a - b), 'the row reads as a dial');
+  assert.deepEqual(frames, [1, 3, 5, 10], 'the ladder Joshua asked for');
+  for (const level of FRAME_AVERAGE_LEVELS) {
     assert.ok(level.note.length > 20, `${level.label} says what it does`);
   }
 
-  // The header carries the only two frame reads in the codebase, so one
-  // uniform reaches every filter and none can quietly opt out.
-  assert.match(SHADER_HEADER, /uniform float uDenoise;/);
-  assert.match(SHADER_HEADER, /vec3 frameAt\(vec2 uv\)/);
-  assert.match(SHADER_HEADER, /vec3 prevAt\(vec2 uv\)/);
-  // At 0 the branch collapses to the single tap: OFF is not an approximation
-  // of the pre-smoothing behaviour, it IS it.
-  assert.match(SHADER_HEADER, /if \(uDenoise <= 0\.0\) return texture2D\(uFrame, uv\)\.rgb;/);
-  assert.match(SHADER_HEADER, /if \(uDenoise <= 0\.0\) return texture2D\(uPrevious, uv\)\.rgb;/);
+  // THE WEIGHT IS 2/(N+1), NOT 1/N. An EMA's variance is alpha / (2 - alpha)
+  // of its input's, so 2/(N+1) is the weight at which it removes exactly as
+  // much noise as a true average of N frames — the label's promise. 1/N is
+  // the obvious guess and does about twice the smoothing it claims.
+  assert.equal(frameAverageWeight(1), 1, 'a single frame is the frame itself');
+  assert.equal(frameAverageWeight(3), 0.5);
+  assert.ok(Math.abs(frameAverageWeight(5) - 1 / 3) < 1e-9);
+  for (const level of FRAME_AVERAGE_LEVELS) {
+    const alpha = frameAverageWeight(level.frames);
+    // variance ratio of the EMA against a true N-frame average: they match.
+    const emaVariance = alpha / (2 - alpha);
+    assert.ok(Math.abs(emaVariance - 1 / level.frames) < 1e-9,
+      `${level.label}: an EMA at ${alpha} matches an average of ${level.frames}`);
+  }
 });
 
-test('no filter samples the frame behind smoothing\'s back', () => {
-  const header = SHADER_HEADER;
-  for (const filter of FILTERS) {
-    const body = filter.fragment.replace(header, '') + (filter.state ?? '').replace(header, '');
-    if (filter.id === 'rgb') {
-      // RGB is the raw frame by definition — the reference the others depart
-      // from — so it is the one filter that must NOT be smoothed.
-      assert.match(body, /texture2D\(uFrame/, 'RGB reads the frame directly, on purpose');
-      assert.match(filter.note, /raw frame/i, 'and says so');
-      continue;
-    }
-    assert.ok(!body.includes('texture2D(uFrame'),
-      `${filter.name} reads the frame through frameAt`);
-    assert.ok(!body.includes('texture2D(uPrevious'),
-      `${filter.name} reads history through prevAt`);
-  }
-  // Same for every compiled lens channel. A filter that compares now against
-  // before must smooth BOTH sides or the difference between them is the blur.
-  for (const channel of V2_CHANNELS) {
-    const lens = compileLens(sanitiseLens({
-      version: 1, id: `smooth-${channel.id}`, name: channel.label,
-      color: { channel: channel.id, low: 0, high: 255, gamma: 1 },
-      stops: [{ at: 0, color: '#000000' }, { at: 1, color: '#ffffff' }],
-      base: 'black', sceneBlend: 0, reference: '#ff0000'
-    }));
-    if (lens.unavailableReason) continue;
-    const body = lens.fragment.replace(header, '');
-    // The one legitimate direct read: `scene` is the camera colour a mask or
-    // swap KEEPS. Smoothing changes what a filter measures, never the colour
-    // it hands back.
-    const reads = body.match(/texture2D\(uFrame/g) ?? [];
-    assert.equal(reads.length, 1, `${channel.label}: only the kept scene colour reads raw`);
-    assert.match(body, /vec3 scene = texture2D\(uFrame, vUv\)\.rgb;/);
-    assert.ok(!body.includes('texture2D(uPrevious'), `${channel.label}: history through prevAt`);
-  }
+test('averaging changes the picture every pass sees, not any one filter', () => {
+  const renderer = readFileSync(new URL('../src/v2/render/gl-renderer.ts', import.meta.url), 'utf8');
+  // ONE accessor feeds the display pass, the state pass and the history copy.
+  // Comparing an averaged present against a raw past would read as motion
+  // everywhere, and that is exactly the bug three separate bindings invite.
+  assert.match(renderer, /private get sourceTexture\(\)/);
+  assert.equal((renderer.match(/gl\.bindTexture\(gl\.TEXTURE_2D, this\.sourceTexture\)/g) ?? []).length, 3,
+    'display, state and history all read the same picture');
+  // The average pass is offscreen: flipping here would average each frame
+  // against a mirror of the one before it.
+  assert.match(renderer, /this\.buildProgram\(VERTEX_OFFSCREEN, AVERAGE_FRAGMENT\)/);
+  // Primed from the current frame, never faded up from black.
+  assert.match(renderer, /weight: 1/);
+
+  // A still asks for no averaging at all — it already got one good frame.
+  const photo = readFileSync(new URL('../src/v2/capture/photo.ts', import.meta.url), 'utf8');
+  assert.ok(!/frames:/.test(photo), 'capturePhoto passes no frame count');
+  assert.match(photo, /NOT applied to a still/);
 });

@@ -44,7 +44,9 @@ import {
   type Point, type SampledColor
 } from './capture/color-sampler.js';
 import { GUIDES, guideById } from './render/guides.js';
-import { DENOISE_LEVELS, denoiseById, denoiseRadius } from './render/denoise.js';
+import {
+  FRAME_AVERAGE_LEVELS, frameAverageById, frameAverageCount
+} from './render/frame-average.js';
 import { buildHistogram, emptyHistogram } from './vision/frame-histogram.js';
 import { matchShare } from './vision/colour-gap.js';
 import { tipFor } from './ui/coach.js';
@@ -255,7 +257,7 @@ function renderPreview(now: number): void {
   if (renderer.render(activeFilter, target, resolved.analysis, {
     fps: readState().deliveredFps,
     histogram: { bins: histogram.bins, dominant: histogram.dominant, version: histogramVersion },
-    denoise: denoiseRadius(readState().denoise)
+    frames: frameAverageCount(readState().frameAverage)
   })) {
     if (recording?.path === 'filtered') {
       framesFedThisClip += 1;
@@ -560,7 +562,7 @@ function renderStreamTiers(): void {
 
 const GUIDE_STORE_KEY = 'vss.v2.guide.v1';
 const RETICLE_STORE_KEY = 'vss.v2.reticle.v1';
-const DENOISE_STORE_KEY = 'vss.v2.denoise.v1';
+const FRAME_AVERAGE_STORE_KEY = 'vss.v2.frameAverage.v1';
 
 function remember(key: string, value: string): void {
   try {
@@ -592,36 +594,36 @@ function buildGuides(): void {
 }
 
 /**
- * The smoothing row, built from the registry like every other row.
+ * The frame-averaging row, built from the registry like every other row.
  *
  * It sits with the guides rather than in the diagnostics drawer because it is
  * a shooting control: it changes what the picture in front of you says, and
  * the only way to choose a level is to watch the picture while changing it.
  */
-function buildDenoise(): void {
-  const holder = byId('v2DenoiseRow');
-  for (const level of DENOISE_LEVELS) {
+function buildFrameAverage(): void {
+  const holder = byId('v2AverageRow');
+  for (const level of FRAME_AVERAGE_LEVELS) {
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = level.label;
-    button.dataset.denoise = level.id;
+    button.dataset.average = level.id;
     button.addEventListener('click', () => {
-      updateState({ denoise: level.id });
-      remember(DENOISE_STORE_KEY, level.id);
+      updateState({ frameAverage: level.id });
+      remember(FRAME_AVERAGE_STORE_KEY, level.id);
     });
     holder.appendChild(button);
   }
 }
 
-let renderedDenoiseKey = '';
-function renderDenoise(): void {
-  const id = readState().denoise;
-  if (id === renderedDenoiseKey) return;
-  renderedDenoiseKey = id;
-  for (const button of byId('v2DenoiseRow').querySelectorAll<HTMLButtonElement>('[data-denoise]')) {
-    button.classList.toggle('active', button.dataset.denoise === id);
+let renderedAverageKey = '';
+function renderFrameAverage(): void {
+  const id = readState().frameAverage;
+  if (id === renderedAverageKey) return;
+  renderedAverageKey = id;
+  for (const button of byId('v2AverageRow').querySelectorAll<HTMLButtonElement>('[data-average]')) {
+    button.classList.toggle('active', button.dataset.average === id);
   }
-  setText('v2DenoiseNote', denoiseById(id)?.note ?? '');
+  setText('v2AverageNote', frameAverageById(id)?.note ?? '');
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -939,7 +941,7 @@ function renderFilterStrip(): void {
   // The revision moves when a lens's own numbers change — including the
   // reference colour the note now names — so a live edit re-renders the note
   // without the id having changed.
-  const key = `${activeFilter}|${rec}|${cap}|${warning}|${readState().denoise}`
+  const key = `${activeFilter}|${rec}|${cap}|${warning}|${readState().frameAverage}`
     + `|${filterById(activeFilter)?.revision ?? ''}`
     + `|${matchingShare === null ? '-' : Math.round(matchingShare * 100)}`;
   if (key === renderedFilterKey) return;
@@ -979,11 +981,12 @@ function renderFilterStrip(): void {
           ? ` Matching ${(matchingShare * 100).toFixed(0)}% of the frame right now`
             + (matchingShare < 0.005 ? ' — nothing in view is that colour yet.' : '.')
           : '')
-        // Smoothing is off by default because most filters do not need it.
-        // The ones that do should say so where the noise is visible, rather
+        // Averaging is off by default because most filters do not need it.
+        // The ones that do should say so where the speckle is visible, rather
         // than leaving the row to be found — but only while it IS off.
-        + (readState().denoise === 'off' && lensReadsHue(lensFilter.lens)
-          ? ' Speckled indoors? This one reads hue, which sensor noise swings hard — try Smoothing.'
+        + (readState().frameAverage === 'off' && lensReadsHue(lensFilter.lens)
+          ? ' Speckle changing every frame? This one reads hue, which sensor noise '
+            + 'swings hard — try Frame averaging.'
           : '')
     : '';
   setText('v2FilterNote', rec
@@ -1084,9 +1087,9 @@ let queuedTextRender = 0;
 function renderTextPanels(): void {
   renderHud();
   renderGuides();
-  renderDenoise();
   renderCoach();
   renderDiagnostics();
+  renderFrameAverage();
   // The picker's shortcut names the ACTIVE lens, so it follows the strip.
   renderPickerLensRow();
 }
@@ -1359,7 +1362,7 @@ async function toggleRecording(): Promise<void> {
     // preview loop holds this target until stop.
     if (!renderer.uploadFrame(video)
       || !renderer.render(activeFilter, geometry.recordInput,
-        undefined, { denoise: denoiseRadius(readState().denoise) })) {
+        undefined, { frames: frameAverageCount(readState().frameAverage) })) {
       setText('v2RecordSummary', 'No frame to start the recording from.');
       return;
     }
@@ -1424,7 +1427,7 @@ async function takePhoto(): Promise<void> {
       return capturePhoto(renderer, video, readState().activeFilter, {
         ...photo,
         reason: CAPTURE_REASONS[escalation]
-      }, denoiseRadius(readState().denoise));
+      });
     }, { now: () => performance.now() });
     if (outcome.still) {
       updateState({
@@ -2389,16 +2392,17 @@ byId('v2LegacyLink').addEventListener('click', () => {
 });
 
 buildGuides();
-buildDenoise();
+buildFrameAverage();
 try {
   const stored = localStorage.getItem(GUIDE_STORE_KEY);
   if (stored && guideById(stored)) updateState({ guide: stored });
   updateState({ reticle: localStorage.getItem(RETICLE_STORE_KEY) === '1' });
-  const smoothing = localStorage.getItem(DENOISE_STORE_KEY);
-  if (smoothing && denoiseById(smoothing)) updateState({ denoise: smoothing });
+  const averaging = localStorage.getItem(FRAME_AVERAGE_STORE_KEY);
+  if (averaging && frameAverageById(averaging)) updateState({ frameAverage: averaging });
 } catch {
   // Storage is optional; the state's own defaults stand (no guide, no
-  // reticle, and smoothing at whatever render/denoise.ts calls default).
+  // reticle, and averaging at whatever render/frame-average.ts calls
+  // default).
 }
 buildFilterStrip();
 // Custom lenses append AFTER the built-ins, then the Custom + entry.

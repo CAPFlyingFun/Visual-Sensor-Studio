@@ -262,13 +262,14 @@
           <p class="hint" id="v2GuideNote">composition only — captures are always the full frame</p>
         </section>
 
-        <!-- Smoothing: how much sensor noise is averaged away BEFORE a filter
-             measures the frame. It changes what the filters read, never the
-             saved picture's own colour. -->
+        <!-- Frame averaging: how many camera frames are blended before a
+             filter measures the picture. Sensor noise is re-rolled every
+             frame and averages away; a still scene does not. Stills never
+             use it — they already get one good frame. -->
         <section class="section">
-          <div class="section-title"><h2>Smoothing</h2><span class="hint">for the hue-based lenses</span></div>
-          <div class="zoom guides" id="v2DenoiseRow" aria-label="Noise reduction"></div>
-          <p class="hint" id="v2DenoiseNote"></p>
+          <div class="section-title"><h2>Frame averaging</h2><span class="hint">preview &amp; video · steadies the hue lenses</span></div>
+          <div class="zoom guides" id="v2AverageRow" aria-label="Frame averaging"></div>
+          <p class="hint" id="v2AverageNote"></p>
         </section>
 
         <section class="section">

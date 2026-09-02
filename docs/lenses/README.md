@@ -38,41 +38,54 @@ The lesson generalises: a second field that can reach zero can erase the
 first one's answer entirely, and the result looks like a simpler lens
 rather than like a fault.
 
-## Smoothing, and why its radii are half-integers (2026-09-02)
+## Frame averaging, and why the blur was the wrong tool (2026-09-02)
 
 Noise is amplified by what a field DOES with it, not by how much of it
 there is. Brightness averages three channels and barely moves. Hue is an
 *argument* between them: at low colour strength a count or two of sensor
 noise decides which channel won, and the hue swings across the whole
 wheel. So the hue-derived fields — `hue`, `chromaEdge`, `rarity`,
-`backgroundDistance`, marked `hueDerived` in `ChannelInfo` — measure
-indoor sensor noise as faithfully as they measure the picture.
+`backgroundDistance`, marked `hueDerived` in `ChannelInfo` — read indoor
+sensor noise as faithfully as they read the picture.
 
-`render/denoise.ts` is the one control. It sets `uDenoise`, and every
-filter reads the frame through the header's `frameAt` / `prevAt` rather
-than sampling `uFrame` itself, so nothing can quietly opt out. Two
-exceptions, both deliberate: RGB is the raw frame by definition, and the
-`scene` colour a mask or swap HANDS BACK stays raw — smoothing changes
-what a filter measures, never the colour it keeps.
+The first attempt at this was a SPATIAL blur, and it was the wrong tool.
+Joshua's diagnosis is why: "each little motion my phone makes even like
+0.2° will grab a new frame/pixel... the still images are fine because it
+has a chance to grab one good frame and not moving." The speckle is
+**temporal**. A spatial blur cannot reach it — it throws away detail
+from the one frame it can see, and on device it *dimmed* the picture as
+well, because softening a frame lowers its saturation and the colour
+fields' own colourfulness gates then close.
 
-The radii are 0.5 and 1.5 rather than 1 and 2, and that is the whole
-trick. The shader takes four taps and each is cheap only because the
-GPU's bilinear filter averages the texels it falls between. A tap at a
-whole number of texels lands on a texel centre and averages *nothing*.
-Measured against pure noise (sd 35.1 raw):
+`render/frame-average.ts` is the replacement and the one owner. Sensor
+noise is independent frame to frame, so averaging over TIME drops it as
+1/√frames while anything actually standing still is identical in every
+frame and survives untouched — no softening, no dimming. The cost is
+movement: a moving thing is in a different place in each frame and
+smears. That trade is why it is a control and not a default.
 
-| radius | 0 | 0.5 | 0.75 | 1 | 1.25 | 1.5 | 2 | 3 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| noise sd | 35.1 | 13.4 | 12.4 | 17.8 | 11.3 | 9.1 | 17.4 | 17.7 |
-| edge px | 0 | 2 | 2 | 2 | 4 | 4 | 4 | 6 |
+Three things worth keeping:
 
-The first ladder written here was 1, 2 and 3 — every one a worst case,
-and the level above Medium did not reduce noise at all. There is no
-level above 1.5 now: four bilinear taps average at most sixteen pixels
-and by 1.5 they already do, so a wider radius smears the same sixteen
-samples further apart. A stronger level needs more taps, which means
-compiling the tap count into the shader instead of passing it as a
-uniform.
+- **It is a rolling average, not a hold.** The preview updates on every
+  camera frame; "5 frames" means each frame shown carries as much of the
+  last five as an average of five would, not that the screen refreshes
+  five times a second.
+- **The weight is 2/(N+1), not 1/N.** It is an exponential average — one
+  texture, not N, because a ten-frame stack at record size is ten
+  full-resolution buffers and this device has already lost a GPU context
+  to memory once. An EMA's variance is `α/(2−α)` of its input's, so
+  `α = 2/(N+1)` is where it removes exactly as much noise as a true
+  N-frame average. The obvious guess, `1/N`, quietly does about twice
+  the smoothing the label promises.
+- **Stills never use it.** A photo already gets one good frame, by
+  Joshua's own observation; blending a moving frame into it would only
+  smear a picture that was sharp. `capturePhoto` passes no frame count,
+  on purpose.
 
-Off is the default (Joshua, 2026-09-02): most filters show little noise,
-and the ones that do now say so in their own note while smoothing is off.
+The display pass, the state pass and the history copy all read the frame
+through one `sourceTexture` accessor. Three separate bindings would let
+an averaged present be compared against a raw past, which reads as
+motion everywhere.
+
+Off is the default (Joshua): most filters show little noise, and the
+ones that do say so in their own note while averaging is off.

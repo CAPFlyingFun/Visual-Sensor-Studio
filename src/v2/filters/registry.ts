@@ -77,34 +77,6 @@ float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 // the WHOLE picture; a filter that ignores them costs nothing for them.
 uniform sampler2D uHistogram;
 uniform vec3 uDominant;
-// SMOOTHING, in texels of the render target — see render/denoise.ts. Every
-// filter reads the frame through frameAt/prevAt rather than sampling it
-// directly, so one control reaches all of them and none can quietly opt out.
-//
-// Four taps, each half a texel off-centre on both axes: the GPU's bilinear
-// filter averages four pixels per tap for free. At 0 the branch collapses to
-// the single tap every filter used before smoothing existed, so OFF is not an
-// approximation of the old behaviour — it IS the old behaviour.
-uniform float uDenoise;
-vec3 frameAt(vec2 uv) {
-  if (uDenoise <= 0.0) return texture2D(uFrame, uv).rgb;
-  vec2 d = uTexel * uDenoise;
-  return 0.25 * (texture2D(uFrame, uv + d).rgb
-    + texture2D(uFrame, uv - d).rgb
-    + texture2D(uFrame, uv + vec2(d.x, -d.y)).rgb
-    + texture2D(uFrame, uv - vec2(d.x, -d.y)).rgb);
-}
-// The SAME treatment for the remembered frame. A filter that compares now
-// against before must smooth both or neither: smoothing one side alone leaves
-// a permanent sharp-minus-blurred residue that reads as motion everywhere.
-vec3 prevAt(vec2 uv) {
-  if (uDenoise <= 0.0) return texture2D(uPrevious, uv).rgb;
-  vec2 d = uTexel * uDenoise;
-  return 0.25 * (texture2D(uPrevious, uv + d).rgb
-    + texture2D(uPrevious, uv - d).rgb
-    + texture2D(uPrevious, uv + vec2(d.x, -d.y)).rgb
-    + texture2D(uPrevious, uv - vec2(d.x, -d.y)).rgb);
-}
 `;
 const HEADER = SHADER_HEADER;
 
@@ -113,12 +85,12 @@ const HEADER = SHADER_HEADER;
  * runs the SAME estimator (Rule 4) rather than a second one.
  */
 export const SPEED_STATE = HEADER + `void main() {
-  float now = luma(frameAt(vUv));
-  float before = luma(prevAt(vUv));
-  float dx = luma(frameAt(vUv + uTexel * vec2(1.0, 0.0)))
-           - luma(frameAt(vUv - uTexel * vec2(1.0, 0.0)));
-  float dy = luma(frameAt(vUv + uTexel * vec2(0.0, 1.0)))
-           - luma(frameAt(vUv - uTexel * vec2(0.0, 1.0)));
+  float now = luma(texture2D(uFrame, vUv).rgb);
+  float before = luma(texture2D(uPrevious, vUv).rgb);
+  float dx = luma(texture2D(uFrame, vUv + uTexel * vec2(1.0, 0.0)).rgb)
+           - luma(texture2D(uFrame, vUv - uTexel * vec2(1.0, 0.0)).rgb);
+  float dy = luma(texture2D(uFrame, vUv + uTexel * vec2(0.0, 1.0)).rgb)
+           - luma(texture2D(uFrame, vUv - uTexel * vec2(0.0, 1.0)).rgb);
   float grad = length(vec2(dx, dy)) * 0.5;
   float dt = abs(now - before);
   float flow = dt * smoothstep(0.01, 0.05, dt) / (grad + 0.02);
@@ -127,10 +99,33 @@ export const SPEED_STATE = HEADER + `void main() {
   gl_FragColor = vec4(s, s, s, 1.0);
 }`;
 
+/**
+ * The FRAME-AVERAGE pass: this camera frame mixed into the running average of
+ * the last few, so every filter measures one steadier picture instead of a
+ * fresh roll of sensor noise. Renderer machinery rather than a filter — it
+ * produces no product of its own — but it lives HERE because every fragment
+ * shader in V2 does, and a shader kept somewhere else is the first half of a
+ * second filter path (Rule 4).
+ *
+ * The renderer runs it with the OFFSCREEN vertex shader. Flipping here would
+ * average each frame against a mirror of the one before it — the same trap
+ * that turned every temporal filter into a kaleidoscope (2026-09-01).
+ */
+export const AVERAGE_FRAGMENT = `precision mediump float;
+varying vec2 vUv;
+uniform sampler2D uFrame;
+uniform sampler2D uAverage;
+uniform float uWeight;
+void main() {
+  vec3 now = texture2D(uFrame, vUv).rgb;
+  vec3 before = texture2D(uAverage, vUv).rgb;
+  gl_FragColor = vec4(mix(before, now, uWeight), 1.0);
+}`;
+
 export const FILTERS: readonly FilterDefinition[] = [
   {
     id: 'rgb',
-    note: 'The camera\'s own picture, unfiltered — the reference every other filter is a departure from. Smoothing does not touch it: this one is the raw frame by definition.',
+    note: 'The camera\'s own picture, unfiltered — the reference every other filter is a departure from.',
     name: 'RGB',
     family: 'view',
     temporal: false,
@@ -152,7 +147,7 @@ export const FILTERS: readonly FilterDefinition[] = [
     // luminance, not temperature — the honesty rule from the legacy app rides
     // along with the ramp itself.
     fragment: HEADER + `void main() {
-  float y = luma(frameAt(vUv));
+  float y = luma(texture2D(uFrame, vUv).rgb);
   gl_FragColor = vec4(texture2D(uRamp, vec2(y, 0.5)).rgb, 1.0);
 }`
   },
@@ -173,8 +168,8 @@ export const FILTERS: readonly FilterDefinition[] = [
     // resolution, stated in the UI. The 4x gain is a display choice
     // (tuning, not measurement): small real motion reads as visible warmth.
     fragment: HEADER + `void main() {
-  float now = luma(frameAt(vUv));
-  float before = luma(prevAt(vUv));
+  float now = luma(texture2D(uFrame, vUv).rgb);
+  float before = luma(texture2D(uPrevious, vUv).rgb);
   float change = clamp(abs(now - before) * 4.0, 0.0, 1.0);
   gl_FragColor = vec4(texture2D(uRamp, vec2(change, 0.5)).rgb, 1.0);
 }`
@@ -214,8 +209,8 @@ export const FILTERS: readonly FilterDefinition[] = [
     // itself lives in the state texture at ANALYSIS resolution; the
     // legacy app's constant-memory trail buffer, made a shader.
     state: HEADER + `void main() {
-  float now = luma(frameAt(vUv));
-  float before = luma(prevAt(vUv));
+  float now = luma(texture2D(uFrame, vUv).rgb);
+  float before = luma(texture2D(uPrevious, vUv).rgb);
   float change = clamp(abs(now - before) * 4.0, 0.0, 1.0);
   float t = max(change, texture2D(uState, vUv).r * 0.94);
   gl_FragColor = vec4(t, t, t, 1.0);
@@ -236,14 +231,14 @@ export const FILTERS: readonly FilterDefinition[] = [
     // Sobel on luma. uTexel is one texel at the RENDER size, supplied by the
     // renderer from the target geometry — the shader owns no resolution.
     fragment: HEADER + `void main() {
-  float tl = luma(frameAt(vUv + uTexel * vec2(-1.0, -1.0)));
-  float  l = luma(frameAt(vUv + uTexel * vec2(-1.0,  0.0)));
-  float bl = luma(frameAt(vUv + uTexel * vec2(-1.0,  1.0)));
-  float tr = luma(frameAt(vUv + uTexel * vec2( 1.0, -1.0)));
-  float  r = luma(frameAt(vUv + uTexel * vec2( 1.0,  0.0)));
-  float br = luma(frameAt(vUv + uTexel * vec2( 1.0,  1.0)));
-  float  t = luma(frameAt(vUv + uTexel * vec2( 0.0, -1.0)));
-  float  b = luma(frameAt(vUv + uTexel * vec2( 0.0,  1.0)));
+  float tl = luma(texture2D(uFrame, vUv + uTexel * vec2(-1.0, -1.0)).rgb);
+  float  l = luma(texture2D(uFrame, vUv + uTexel * vec2(-1.0,  0.0)).rgb);
+  float bl = luma(texture2D(uFrame, vUv + uTexel * vec2(-1.0,  1.0)).rgb);
+  float tr = luma(texture2D(uFrame, vUv + uTexel * vec2( 1.0, -1.0)).rgb);
+  float  r = luma(texture2D(uFrame, vUv + uTexel * vec2( 1.0,  0.0)).rgb);
+  float br = luma(texture2D(uFrame, vUv + uTexel * vec2( 1.0,  1.0)).rgb);
+  float  t = luma(texture2D(uFrame, vUv + uTexel * vec2( 0.0, -1.0)).rgb);
+  float  b = luma(texture2D(uFrame, vUv + uTexel * vec2( 0.0,  1.0)).rgb);
   float gx = (tr + 2.0 * r + br) - (tl + 2.0 * l + bl);
   float gy = (bl + 2.0 * b + br) - (tl + 2.0 * t + tr);
   float g = clamp(length(vec2(gx, gy)), 0.0, 1.0);
