@@ -783,6 +783,43 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
       assert.deepEqual(after.colors, [...before].reverse(), 'reverse flips the ramp order');
       assert.deepEqual(after.positions, [0, 1], 'the ends stay the ends');
 
+      // Guides: composition overlays, chosen from the registry row.
+      const guideIds = await page.evaluate(() =>
+        [...document.querySelectorAll('#v2GuideRow [data-guide]')].map((b) => b.dataset.guide));
+      assert.deepEqual(guideIds, ['off', 'center', 'thirds', 'phi', 'diagonals', 'grid4', 'square']);
+      assert.equal(await page.evaluate(() => document.getElementById('v2Guides').hidden), true,
+        'Off draws nothing at all');
+      await page.click('[data-guide="thirds"]');
+      await page.waitForTimeout(300);
+      const thirds = await page.evaluate(() => ({
+        hidden: document.getElementById('v2Guides').hidden,
+        lines: [...document.querySelectorAll('#v2Guides line')].map((l) => l.getAttribute('x1')),
+        note: document.getElementById('v2GuideNote').textContent
+      }));
+      assert.equal(thirds.hidden, false);
+      assert.equal(thirds.lines.length, 4, 'four lines make the thirds');
+      assert.match(thirds.note, /Rule of thirds/);
+
+      // The centre guide shows the reticle, and its ring is the sample patch.
+      await page.click('[data-guide="center"]');
+      await page.waitForTimeout(300);
+      const centre = await page.evaluate(() => {
+        const ring = document.getElementById('v2PatchRing');
+        const box = document.getElementById('v2Viewfinder');
+        return {
+          reticle: !document.getElementById('v2Reticle').hidden,
+          ringWidth: ring.getBoundingClientRect().width,
+          ringHeight: ring.getBoundingClientRect().height,
+          boxW: box.clientWidth,
+          boxH: box.clientHeight
+        };
+      });
+      assert.equal(centre.reticle, true, 'the centre guide shows the reticle');
+      assert.ok(Math.abs(centre.ringWidth - centre.ringHeight) < 1.5,
+        `the ring is square on screen: ${centre.ringWidth} × ${centre.ringHeight}`);
+      assert.ok(centre.ringWidth > 0 && centre.ringWidth < centre.boxW / 4,
+        'the ring is the small patch it claims to be');
+
       // The colour picker reads the CAMERA FRAME through the cover crop.
       await page.click('#v2PickColor');
       await page.waitForTimeout(150);
@@ -823,6 +860,15 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
       }));
       assert.equal(added.stops, stopsBefore + 1, 'the sample joins the ramp');
       assert.ok(added.colors.includes(picked.hex.toLowerCase()), 'with the colour that was read');
+      // "Sample centre" reads the middle of the frame — the reticle's spot.
+      await page.evaluate(() => {
+        document.getElementById('v2PickerHex').textContent = '—';
+      });
+      await page.click('#v2PickerCentre');
+      await page.waitForTimeout(200);
+      assert.match(await page.textContent('#v2PickerHex'), /^#[0-9A-F]{6}$/,
+        'the centre button samples without a tap');
+
       await page.click('#v2PickerClose');
       await page.waitForTimeout(100);
       assert.equal(await page.evaluate(() =>
@@ -844,9 +890,12 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
       // Lenses survive a reload — the strip is built from storage.
       await page.reload();
       await page.waitForTimeout(400);
-      const again = await page.evaluate(() =>
-        [...document.querySelectorAll('#v2FilterStrip [data-filter^="lens:"]')].map((b) => b.textContent));
-      assert.deepEqual(again, ['Coloring Book Style', 'Probe lens']);
+      const again = await page.evaluate(() => ({
+        lenses: [...document.querySelectorAll('#v2FilterStrip [data-filter^="lens:"]')].map((b) => b.textContent),
+        guide: document.querySelector('#v2GuideRow .active')?.dataset.guide ?? ''
+      }));
+      assert.deepEqual(again.lenses, ['Coloring Book Style', 'Probe lens']);
+      assert.equal(again.guide, 'center', 'the chosen guide is remembered');
       await page.close();
       await context.close();
     });

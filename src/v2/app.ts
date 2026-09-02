@@ -37,7 +37,11 @@ import {
   CHANNELS, MAX_STOPS, MIN_STOPS, channelInfo, describeLens, rampToCss, toHex,
   type ChannelId, type CustomLens
 } from '../vision/lens.js';
-import { averageRgb, patchRect, tapToSource, type SampledColor } from './capture/color-sampler.js';
+import {
+  averageRgb, patchBoxPercent, patchRect, tapToSource,
+  type Point, type SampledColor
+} from './capture/color-sampler.js';
+import { GUIDES, guideById } from './render/guides.js';
 import { deleteLens, loadLenses, newLensId, sanitiseLens, saveLens } from '../vision/lens-store.js';
 import { RAMP_PRESETS } from '../vision/lens-preview.js';
 import { GlRenderer } from './render/gl-renderer.js';
@@ -472,6 +476,75 @@ function renderStreamTiers(): void {
   }
 }
 
+/* --- Viewfinder guides: composition only, never a capture decision ------- */
+
+const GUIDE_STORE_KEY = 'vss.v2.guide.v1';
+
+function buildGuides(): void {
+  const holder = byId('v2GuideRow');
+  for (const guide of GUIDES) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = guide.label;
+    button.dataset.guide = guide.id;
+    if (guide.id === readState().guide) button.classList.add('active');
+    button.addEventListener('click', () => {
+      updateState({ guide: guide.id });
+      try {
+        localStorage.setItem(GUIDE_STORE_KEY, guide.id);
+      } catch {
+        // Storage is optional; the choice still stands for this session.
+      }
+    });
+    holder.appendChild(button);
+  }
+}
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+let renderedGuideKey = '';
+function renderGuides(): void {
+  const { guide: guideId, viewfinder, source, camera: status } = readState();
+  const guide = guideById(guideId);
+  // The box's shape is the only thing a guide can need, and it comes from
+  // the state's measured viewfinder — never a second display read.
+  const boxAspect = viewfinder && viewfinder.height > 0 ? viewfinder.width / viewfinder.height : 1;
+  const live = status?.state === 'live';
+  const ring = source && viewfinder ? patchBoxPercent(viewfinder, source, PICK_PATCH) : null;
+  const showReticle = live && (pickerActive || (guide?.centerSpot ?? false));
+  const key = `${guideId}|${boxAspect.toFixed(3)}|${live}|${showReticle}|${ring ? ring.width.toFixed(3) : '-'}`;
+  if (key === renderedGuideKey) return;
+  renderedGuideKey = key;
+
+  const svg = byId('v2Guides');
+  const lines = live && guide ? guide.lines(boxAspect) : [];
+  svg.hidden = lines.length === 0;
+  svg.replaceChildren(...lines.map(({ x1, y1, x2, y2 }) => {
+    const element = document.createElementNS(SVG_NS, 'line');
+    element.setAttribute('x1', String(x1));
+    element.setAttribute('y1', String(y1));
+    element.setAttribute('x2', String(x2));
+    element.setAttribute('y2', String(y2));
+    return element;
+  }));
+
+  const reticle = byId('v2Reticle');
+  reticle.hidden = !showReticle;
+  const ringElement = byId('v2PatchRing');
+  if (ring) {
+    // The ring IS the patch: the same square, expressed on each axis.
+    ringElement.style.width = `${ring.width}%`;
+    ringElement.style.height = `${ring.height}%`;
+    ringElement.hidden = false;
+  } else {
+    ringElement.hidden = true;
+  }
+
+  for (const button of byId('v2GuideRow').querySelectorAll<HTMLButtonElement>('[data-guide]')) {
+    button.classList.toggle('active', button.dataset.guide === guideId);
+  }
+  setText('v2GuideNote', guide?.note || 'composition only — captures are always the full frame');
+}
+
 /* --- Zoom: presets derived from the engine's own reported range ---------- */
 
 /**
@@ -772,6 +845,7 @@ let queuedTextRender = 0;
 
 function renderTextPanels(): void {
   renderHud();
+  renderGuides();
   renderDiagnostics();
 }
 
@@ -1653,6 +1727,8 @@ let pickCanvas: HTMLCanvasElement | null = null;
 
 function setPickerActive(on: boolean): void {
   pickerActive = on;
+  renderedGuideKey = '';
+  renderGuides();
   byId('v2PickerCard').hidden = !on;
   byId('v2Viewfinder').classList.toggle('picking', on);
   byId<HTMLButtonElement>('v2PickColor').classList.toggle('active', on);
@@ -1683,13 +1759,9 @@ function renderPickedColor(): void {
   addStop.disabled = !lensDraft || lensDraft.stops.length >= MAX_STOPS;
 }
 
-function samplePoint(tapX: number, tapY: number, boxWidth: number, boxHeight: number): void {
+function sampleAtSource(point: Point): void {
   const source = readState().source;
   if (!source || video.videoWidth === 0) return;
-  const point = tapToSource({ x: tapX, y: tapY },
-    { width: boxWidth, height: boxHeight },
-    { width: source.width, height: source.height });
-  if (!point) return;
   const patch = patchRect(point, { width: source.width, height: source.height }, PICK_PATCH);
   pickCanvas ??= document.createElement('canvas');
   pickCanvas.width = patch.width;
@@ -1707,14 +1779,35 @@ function samplePoint(tapX: number, tapY: number, boxWidth: number, boxHeight: nu
   renderPickedColor();
 }
 
+/** A tap: mapped through the cover crop into the frame's own pixels. */
+function sampleTap(tapX: number, tapY: number, boxWidth: number, boxHeight: number): void {
+  const source = readState().source;
+  if (!source) return;
+  const point = tapToSource({ x: tapX, y: tapY },
+    { width: boxWidth, height: boxHeight },
+    { width: source.width, height: source.height });
+  if (point) sampleAtSource(point);
+}
+
+/**
+ * The centre of the FRAME — which the cover crop always shows at the centre
+ * of the box, so the reticle marks exactly the pixels this reads.
+ */
+function sampleCentre(): void {
+  const source = readState().source;
+  if (!source) return;
+  sampleAtSource({ x: (source.width - 1) / 2, y: (source.height - 1) / 2 });
+}
+
 byId('v2Viewfinder').addEventListener('pointerdown', (event) => {
   if (!pickerActive) return;
   const target = event.currentTarget as HTMLElement;
   // offsetX/offsetY and the element's own client box locate a POINT inside
   // the viewfinder; they decide no size, so this is not a second geometry
   // authority (measureViewfinder remains the one display read for sizing).
-  samplePoint(event.offsetX, event.offsetY, target.clientWidth, target.clientHeight);
+  sampleTap(event.offsetX, event.offsetY, target.clientWidth, target.clientHeight);
 });
+byId('v2PickerCentre').addEventListener('click', sampleCentre);
 
 byId('v2PickColor').addEventListener('click', () => setPickerActive(!pickerActive));
 byId('v2PickerClose').addEventListener('click', () => setPickerActive(false));
@@ -1792,6 +1885,13 @@ byId('v2LegacyLink').addEventListener('click', () => {
   location.href = back.toString();
 });
 
+buildGuides();
+try {
+  const stored = localStorage.getItem(GUIDE_STORE_KEY);
+  if (stored && guideById(stored)) updateState({ guide: stored });
+} catch {
+  // Storage is optional; the default guide (off) stands.
+}
 buildFilterStrip();
 // Custom lenses append AFTER the built-ins, then the Custom + entry.
 loadLensList();

@@ -50,6 +50,16 @@
     .viewfinder canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 2; }
     /* The capture flash: the mode renegotiation happens behind it, so the
        shutter pause reads as intentional rather than a hiccup. */
+    #v2Guides { position: absolute; inset: 0; z-index: 3; width: 100%; height: 100%; pointer-events: none; }
+    #v2Guides line { stroke: rgba(255, 255, 255, .55); stroke-width: .35; vector-effect: non-scaling-stroke; }
+    #v2Reticle {
+      position: absolute; z-index: 3; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: 46px; height: 46px; border: 1px solid rgba(140, 188, 255, .85); border-radius: 6px;
+      display: grid; place-items: center; pointer-events: none;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, .35), inset 0 0 0 1px rgba(0, 0, 0, .25);
+    }
+    /* The ring is sized from the measured patch, never from taste. */
+    #v2PatchRing { display: block; border: 1px solid rgba(255, 255, 255, .95); border-radius: 50%; box-shadow: 0 0 2px rgba(0, 0, 0, .8); }
     #v2ShutterFlash { position: absolute; inset: 0; z-index: 4; background: #fff; opacity: 0; pointer-events: none; transition: opacity .18s ease; }
     #v2ShutterFlash.firing { opacity: .85; }
     .capture button.recording { color: #ff5c5c; border-color: #ff5c5c; box-shadow: 0 0 0 1px rgba(255, 92, 92, .35); }
@@ -193,6 +203,13 @@
       <div class="viewfinder" id="v2Viewfinder">
         <video id="cameraVideo" autoplay muted playsinline></video>
         <canvas id="v2PreviewCanvas" hidden></canvas>
+        <!-- Composition guides: percent-space lines stretched to the box, so
+             they need no display read. Purely an overlay — nothing captured
+             is changed by them. -->
+        <svg id="v2Guides" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true" hidden></svg>
+        <!-- The reticle: an outer aiming frame, and inside it a ring that is
+             the TRUE size of the colour picker's patch. -->
+        <div id="v2Reticle" aria-hidden="true" hidden><i id="v2PatchRing"></i></div>
         <div id="v2ShutterFlash" aria-hidden="true"></div>
         <button class="enable-overlay" id="v2EnableCamera" type="button">Enable Camera</button>
         <div class="rec-hud" id="v2RecHud" hidden></div>
@@ -222,6 +239,11 @@
         </section>
 
         <section class="section">
+          <div class="section-title"><h2>Guides</h2><span class="hint" id="v2GuideNote">composition only — captures are always the full frame</span></div>
+          <div class="zoom guides" id="v2GuideRow" aria-label="Viewfinder guides"></div>
+        </section>
+
+        <section class="section">
           <div class="section-title"><h2>Filters &amp; Lenses</h2><span class="hint">Swipe &rarr; · one shader for preview and photo</span></div>
           <div class="filters" id="v2FilterStrip"></div>
           <p class="hint" id="v2FilterNote"></p>
@@ -246,6 +268,7 @@
             </div>
           </div>
           <div class="button-row">
+            <button type="button" class="btn" id="v2PickerCentre">✛ Sample centre</button>
             <button type="button" class="btn" id="v2PickerCopy" disabled>Copy hex</button>
             <button type="button" class="btn" id="v2PickerAddStop" disabled>Add as ramp stop</button>
             <button type="button" class="btn" id="v2PickerClose">Close</button>

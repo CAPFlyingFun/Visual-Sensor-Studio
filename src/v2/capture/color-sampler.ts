@@ -83,6 +83,21 @@ export function patchRect(center: Point, source: Box, size: number): PatchRect {
   return { x, y, width: side, height: side };
 }
 
+/**
+ * The sample patch's size on screen, as a percentage of the viewfinder box
+ * on each axis. Both percentages describe the SAME square — the box is in
+ * device pixels and so is the scale, so the device-pixel ratio cancels and
+ * no display read is needed. Null where nothing is measured yet.
+ *
+ * This is what lets the reticle show the truth: the ring is exactly the
+ * patch that will be averaged, not a decorative circle.
+ */
+export function patchBoxPercent(box: Box, source: Box, patch: number): Box | null {
+  if (box.width <= 0 || box.height <= 0 || source.width <= 0 || source.height <= 0) return null;
+  const side = patch * coverScale(box, source);
+  return { width: (side / box.width) * 100, height: (side / box.height) * 100 };
+}
+
 /** Mean RGB over an RGBA buffer, with the luminance the shaders compute. */
 export function averageRgb(data: ArrayLike<number>): SampledColor {
   const pixels = Math.floor(data.length / 4);

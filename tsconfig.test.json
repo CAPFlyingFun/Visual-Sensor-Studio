@@ -64,6 +64,7 @@
     "src/v2/capture/encoder-envelope.ts",
     "src/v2/capture/encoder-probe.ts",
     "src/v2/filters/registry.ts",
+    "src/v2/render/guides.ts",
     "src/v2/filters/lens-shader.ts",
     "src/v2/filters/starter-lenses.ts"
   ]

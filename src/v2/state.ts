@@ -113,6 +113,8 @@ export interface V2State {
   captureActive: boolean;
   /** The chosen CAMERA STREAM tier id; the registry defines what it means. */
   streamTier: string;
+  /** The chosen viewfinder guide id; the guides registry defines it. */
+  guide: string;
   /** Non-null while a clip is being recorded. */
   recording: ActiveRecording | null;
   /** ENCODED: what the last clip's file really contained. */
@@ -146,6 +148,7 @@ const state: V2State = {
   lastPhoto: null,
   captureActive: false,
   streamTier: '720',
+  guide: 'off',
   recording: null,
   lastClip: null,
   encoderEnvelope: ASSUMED_ENVELOPE

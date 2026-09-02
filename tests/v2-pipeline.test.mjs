@@ -27,8 +27,9 @@ import {
   reverseStops
 } from '../.test-build/v2/filters/lens-shader.js';
 import {
-  averageRgb, coverScale, patchRect, tapToSource
+  averageRgb, coverScale, patchBoxPercent, patchRect, tapToSource
 } from '../.test-build/v2/capture/color-sampler.js';
+import { GUIDES, DEFAULT_GUIDE, guideById } from '../.test-build/v2/render/guides.js';
 import { allFilters, setCustomFilters } from '../.test-build/v2/filters/registry.js';
 import { STARTER_LENSES } from '../.test-build/v2/filters/starter-lenses.js';
 import { buildRampLut, describeLens } from '../.test-build/vision/lens.js';
@@ -838,4 +839,65 @@ test('the colour picker maps a tap through the object-fit: cover crop', () => {
   const two = new Uint8ClampedArray([0, 0, 0, 255, 200, 100, 50, 255]);
   assert.deepEqual(averageRgb(two), { r: 100, g: 50, b: 25, luma: Math.round(0.2126 * 100 + 0.7152 * 50 + 0.0722 * 25) });
   assert.deepEqual(averageRgb(new Uint8ClampedArray(0)), { r: 0, g: 0, b: 0, luma: 0 });
+});
+
+test('viewfinder guides are one registry of percent-space lines', () => {
+  assert.equal(new Set(GUIDES.map((g) => g.id)).size, GUIDES.length, 'guide ids must be unique');
+  assert.equal(GUIDES[0].id, DEFAULT_GUIDE, 'the default is first and draws nothing');
+  assert.equal(readState().guide, DEFAULT_GUIDE, 'the state boots on the registry default');
+  assert.deepEqual(guideById('off').lines(1.2), [], 'Off is genuinely nothing');
+  assert.equal(guideById('nope'), null);
+
+  for (const guide of GUIDES) {
+    assert.ok(guide.label.length > 0);
+    for (const line of guide.lines(1.19)) {
+      for (const value of [line.x1, line.y1, line.x2, line.y2]) {
+        assert.ok(value >= 0 && value <= 100, `${guide.id}: percent-space only, got ${value}`);
+      }
+    }
+  }
+
+  // Thirds: two verticals and two horizontals, on the thirds.
+  const thirds = guideById('thirds').lines(1.19);
+  assert.equal(thirds.length, 4);
+  const verticals = thirds.filter((l) => l.x1 === l.x2).map((l) => Number(l.x1.toFixed(2)));
+  assert.deepEqual(verticals, [33.33, 66.67]);
+  // Golden: the 1 : 0.618 : 1 section, which is NOT the thirds.
+  const phi = guideById('phi').lines(1.19);
+  const phiVerticals = phi.filter((l) => l.x1 === l.x2).map((l) => Number(l.x1.toFixed(1)));
+  assert.deepEqual(phiVerticals, [38.2, 61.8]);
+  assert.equal(guideById('grid4').lines(1).length, 6, 'a 4×4 grid is three lines each way');
+  assert.equal(guideById('diagonals').lines(1).length, 2);
+
+  // Only the centre guide claims the sample ring, and it says what the ring is.
+  assert.deepEqual(GUIDES.filter((g) => g.centerSpot).map((g) => g.id), ['center']);
+  assert.match(guideById('center').note, /ring/i);
+
+  // The 1:1 guide really is square in real pixels, at either box shape, and
+  // says plainly that nothing is cropped.
+  for (const box of [{ width: 430, height: 360 }, { width: 360, height: 640 }]) {
+    const square = guideById('square').lines(box.width / box.height);
+    assert.equal(square.length, 4);
+    const xs = square.flatMap((l) => [l.x1, l.x2]);
+    const ys = square.flatMap((l) => [l.y1, l.y2]);
+    const widthPx = (Math.max(...xs) - Math.min(...xs)) / 100 * box.width;
+    const heightPx = (Math.max(...ys) - Math.min(...ys)) / 100 * box.height;
+    assert.ok(Math.abs(widthPx - heightPx) < 0.001,
+      `a square guide must be square: ${widthPx} × ${heightPx}`);
+    assert.ok(Math.abs(widthPx - Math.min(box.width, box.height)) < 0.001, 'the largest centred square');
+  }
+  assert.match(guideById('square').note, /full frame/i, 'a crop guide must not imply a crop');
+});
+
+test('the sample ring on screen is the sample patch, on both axes', () => {
+  const box = { width: 430, height: 360 };
+  const source = { width: 720, height: 960 };
+  const ring = patchBoxPercent(box, source, 9);
+  // One square, two percentages: the same size in real pixels either way.
+  const widthPx = ring.width / 100 * box.width;
+  const heightPx = ring.height / 100 * box.height;
+  assert.ok(Math.abs(widthPx - heightPx) < 1e-9, `${widthPx} vs ${heightPx}`);
+  assert.ok(Math.abs(widthPx - 9 * coverScale(box, source)) < 1e-9,
+    'the ring is nine source pixels at the cover scale — not a decorative size');
+  assert.equal(patchBoxPercent({ width: 0, height: 0 }, source, 9), null);
 });
