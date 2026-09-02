@@ -758,7 +758,9 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
       });
       assert.ok(book.creamShare > 0.2, `flat regions paint the cream foot of the ramp, got ${book.creamShare.toFixed(2)}`);
       assert.equal(book.photoEnabled, true, 'an edges lens takes stills');
-      assert.match(book.note, /edge strength, 0–254, curve 1\.6/, 'the note is the lens described');
+      // The strip leads with the lens's own sentence; the technical reading
+      // moved to the workbench, next to the numbers it describes.
+      assert.match(book.note, /Ink lines on cream/, 'the strip says what the lens DOES');
       assert.equal(book.editVisible, true);
 
       // Custom +: a new draft becomes the active filter at once; the number
@@ -987,11 +989,11 @@ test('colour lenses: mask keeps the camera\'s colour, swap recolours, both take 
       });
 
       for (const [id, expect] of [
-        ['lens:lens-v2-colour-splash', /keeping the camera’s colour where it matches/],
-        ['lens:lens-v2-paper-pink', /recolouring matches toward/],
-        ['lens:lens-v2-hue-map', /Colour from hue/i],
-        ['lens:lens-v2-rare-colour', /whole frame’s colours/],
-        ['lens:lens-v2-background-subtract', /whole frame’s colours/]
+        ['lens:lens-v2-colour-splash', /Keeps one colour and greys the rest/],
+        ['lens:lens-v2-paper-pink', /paper white becomes pink/],
+        ['lens:lens-v2-hue-map', /Every hue gets its own colour/],
+        ['lens:lens-v2-rare-colour', /little else in view shares.*whole frame’s colours/s],
+        ['lens:lens-v2-background-subtract', /prevailing colour.*whole frame’s colours/s]
       ]) {
         await page.click(`[data-filter="${id}"]`);
         await page.waitForTimeout(700);
@@ -1057,6 +1059,46 @@ test('colour lenses: mask keeps the camera\'s colour, swap recolours, both take 
       assert.ok(splash.coloured < raw.coloured,
         `mask mutes what does not match: ${splash.coloured.toFixed(3)} vs raw ${raw.coloured.toFixed(3)}`);
 
+      // Each lens describes ITSELF: three of these share a coaching tip, and
+      // the note and title must still change with the lens.
+      const described = [];
+      for (const id of ['lens-v2-rare-colour', 'lens-v2-background-subtract', 'lens-v2-rarity-map']) {
+        await page.click(`[data-filter="lens:${id}"]`);
+        await page.waitForTimeout(450);
+        described.push(await page.evaluate(() =>
+          document.getElementById('v2FilterNote').textContent));
+      }
+      assert.equal(new Set(described).size, 3,
+        `each lens has its own description, got ${JSON.stringify(described)}`);
+
+      // "Save as new" leaves the original alone.
+      await page.click('[data-filter="lens:lens-v2-rarity-map"]');
+      await page.waitForTimeout(300);
+      await page.click('#v2LensEdit');
+      await page.waitForTimeout(300);
+      assert.equal(await page.isVisible('#v2LensOrigin'), true, 'a starter says it is one');
+      await page.fill('#v2LensNote', 'my own words');
+      await page.dispatchEvent('#v2LensNote', 'input');
+      await page.click('#v2LensSaveAsNew');
+      await page.waitForTimeout(500);
+      const copied = await page.evaluate(() => {
+        const stored = JSON.parse(localStorage.getItem('vss.lenses.v1') ?? '[]');
+        return {
+          names: stored.map((l) => l.name),
+          originalNote: stored.find((l) => l.id === 'lens-v2-rarity-map')?.note ?? '',
+          copyNote: stored.find((l) => l.name === 'Rarity Map copy')?.note ?? '',
+          editingCopy: document.getElementById('v2LensName').value
+        };
+      });
+      assert.ok(copied.names.includes('Rarity Map copy'), 'the copy is saved');
+      assert.ok(copied.names.includes('Rarity Map'), 'and the original is still there');
+      assert.match(copied.originalNote, /How unusual each colour is/,
+        'with its own note untouched');
+      assert.equal(copied.copyNote, 'my own words', 'while the copy carries the edit');
+      assert.equal(copied.editingCopy, 'Rarity Map copy', 'and editing continues on the copy');
+      await page.click('#v2LensClose');
+      await page.waitForTimeout(200);
+
       // A two-field lens renders, and the workbench can edit both fields.
       await page.click('[data-filter="lens:lens-v2-camouflage-breaker"]');
       await page.waitForTimeout(800);
@@ -1099,6 +1141,8 @@ test('colour lenses: mask keeps the camera\'s colour, swap recolours, both take 
       assert.equal(rows.reference, true, 'a distance lens shows what it measures from');
       assert.equal(rows.target, false, 'and no swap target it does not use');
       assert.equal(rows.refValue, '#c81e28');
+      assert.match(await page.textContent('#v2LensDescribe'), /Colour from distance from a colour/i,
+        'the technical reading lives in the workbench, beside the numbers');
 
       await page.click('#v2PickColor');
       await page.waitForTimeout(150);
@@ -1111,6 +1155,32 @@ test('colour lenses: mask keeps the camera\'s colour, swap recolours, both take 
         document.getElementById('v2LensReference').value), hex,
         'the sampled colour becomes the reference');
       assert.match(await page.textContent('#v2LensDescribe'), /measured from/);
+      await page.close();
+      await context.close();
+    });
+  });
+
+test('the coach names the lens in hand, even when three share one tip (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    // Rare Colour, Background Subtract and Rarity Map all raise the same
+    // 'lens-histogram' tip. Keying the render on the tip alone left Rare
+    // Colour's title above the other two (Joshua, 2026-09-02).
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({ viewport: { width: 430, height: 932 } });
+      const page = await context.newPage();
+      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.waitForTimeout(400);
+      const titles = [];
+      for (const id of ['lens-v2-rare-colour', 'lens-v2-background-subtract', 'lens-v2-rarity-map']) {
+        await page.click(`[data-filter="lens:${id}"]`);
+        await page.waitForTimeout(400);
+        assert.equal(await page.isVisible('#v2Coach'), true, `${id} is coached`);
+        titles.push(await page.textContent('#v2CoachTitle'));
+      }
+      assert.match(titles[0], /^Rare Colour:/);
+      assert.match(titles[1], /^Background Subtract:/, 'not the lens before it');
+      assert.match(titles[2], /^Rarity Map:/);
+      assert.equal(new Set(titles).size, 3);
       await page.close();
       await context.close();
     });

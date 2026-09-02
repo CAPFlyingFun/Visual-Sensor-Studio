@@ -913,7 +913,10 @@ function renderFilterStrip(): void {
   const lensNote = lensFilter?.lens
     ? lensFilter.unavailableReason
       ? lensFilter.unavailableReason
-      : `${describeLens(lensFilter.lens)}.`
+      // The lens's own sentence first — what it DOES — and the measured
+      // detail after it. describeLens stays the technical reading, and lives
+      // in the workbench where someone is editing those very numbers.
+      : `${lensFilter.lens.note ? `${lensFilter.lens.note}` : `${describeLens(lensFilter.lens)}.`}`
         + (lensFilter.supportsPhoto ? '' : ' Stills are declined — this channel lives at ANALYSIS resolution.')
         + (lensFilter.needsHistogram
           ? ' Measured against the whole frame’s colours, re-counted a few times a second — point the camera elsewhere and the reading moves.'
@@ -951,9 +954,14 @@ const closedTips = new Set<string>();
 let renderedCoachKey = 'unrendered';
 
 function renderCoach(): void {
-  const tip = tipFor(filterById(readState().activeFilter));
+  const { activeFilter } = readState();
+  const tip = tipFor(filterById(activeFilter));
   const show = tip !== null && !closedTips.has(tip.id) && !mutedTips().has(tip.id);
-  const key = show && tip ? tip.id : 'none';
+  // The FILTER is part of the key, not just the tip: three lenses share the
+  // 'lens-histogram' tip, and keying on the tip alone left Rare Colour's
+  // title above Background Subtract (Joshua, 2026-09-02). Dismissal is still
+  // per tip — one "don't show again" silences the family, as it should.
+  const key = show && tip ? `${activeFilter}|${tip.id}` : 'none';
   if (key === renderedCoachKey) return;
   renderedCoachKey = key;
   const card = byId('v2Coach');
@@ -1786,6 +1794,16 @@ function openLensWorkbench(existing: CustomLens | null): void {
     presets.appendChild(button);
   }
   byId<HTMLButtonElement>('v2LensDelete').hidden = lensDraftIsNew;
+  byId<HTMLInputElement>('v2LensNote').value = draft.note ?? '';
+  // Editing one of the lenses the app ships with is fine — but say so, and
+  // point at the button that keeps the original intact.
+  const origin = byId('v2LensOrigin');
+  const isStarter = STARTER_LENSES.some((starter) => starter.id === draft.id);
+  origin.hidden = !isStarter;
+  if (isStarter) {
+    setText('v2LensOrigin',
+      'This is one of the lenses the app ships with. “Save” changes it; “Save as new” keeps this one and starts your own copy.');
+  }
   setText('v2LensStatus', '');
   renderLensBindings();
   renderLensStops();
@@ -1899,6 +1917,12 @@ async function importLensFile(file: File): Promise<void> {
 byId('v2LensName').addEventListener('input', () => {
   if (lensDraft) lensDraft.name = byId<HTMLInputElement>('v2LensName').value;
 });
+byId('v2LensNote').addEventListener('input', () => {
+  if (!lensDraft) return;
+  const text = byId<HTMLInputElement>('v2LensNote').value.trim();
+  lensDraft.note = text || undefined;
+  lensDraftChanged();
+});
 byId<HTMLSelectElement>('v2LensChannel').addEventListener('change', () => {
   const draft = lensDraft;
   if (!draft) return;
@@ -1969,6 +1993,30 @@ byId('v2LensReverse').addEventListener('click', () => {
   lensDraftChanged();
 });
 byId('v2LensSave').addEventListener('click', saveLensDraft);
+byId('v2LensSaveAsNew').addEventListener('click', () => {
+  const draft = lensDraft;
+  if (!draft) return;
+  // A copy is a NEW document: its own id, so saving it can never overwrite
+  // the one it came from (Joshua, 2026-09-02: "save as new to not override
+  // the defaults"). The name says where it came from.
+  const source = draft.name.trim() || 'Lens';
+  const copy = sanitiseLens({
+    ...JSON.parse(JSON.stringify(draft)),
+    id: newLensId(),
+    name: `${source} copy`.slice(0, 40)
+  });
+  const result = saveLens(localStorage, lenses, copy);
+  lenses = result.lenses;
+  if (!result.saved) {
+    setText('v2LensStatus', result.error ?? 'Could not save.');
+    return;
+  }
+  syncCustomFilters();
+  rebuildLensEntries();
+  showToast(`Saved “${copy.name}” — the original is untouched`);
+  // Carry on editing the copy, which is what someone who pressed this wants.
+  openLensWorkbench(copy);
+});
 byId('v2LensDelete').addEventListener('click', deleteLensDraft);
 byId('v2LensExport').addEventListener('click', exportLensDraft);
 byId('v2LensClose').addEventListener('click', closeLensWorkbench);

@@ -311,6 +311,8 @@
         <div class="card" id="v2LensWorkbench" hidden>
           <h3 id="v2LensTitle">Custom lens</h3>
           <input class="lens-name" id="v2LensName" type="text" maxlength="40" placeholder="Lens name" />
+          <input class="lens-name" id="v2LensNote" type="text" maxlength="120" placeholder="What it does, in a line" />
+          <p class="hint" id="v2LensOrigin" hidden></p>
           <div class="lens-field">
             <label for="v2LensChannel">Colour from</label>
             <select id="v2LensChannel"></select>
@@ -361,6 +363,7 @@
           <p class="lens-describe" id="v2LensDescribe"></p>
           <div class="button-row">
             <button type="button" class="btn" id="v2LensSave">Save</button>
+            <button type="button" class="btn" id="v2LensSaveAsNew">Save as new</button>
             <button type="button" class="btn" id="v2LensExport">Export</button>
             <button type="button" class="btn" id="v2LensDelete">Delete</button>
             <button type="button" class="btn" id="v2LensClose">Close</button>

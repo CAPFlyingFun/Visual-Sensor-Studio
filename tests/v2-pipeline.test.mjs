@@ -1013,6 +1013,15 @@ test('the three output modes are one lens document away from each other', () => 
 
 test('the starter pack is valid, unique, and describes itself honestly', () => {
   assert.equal(new Set(STARTER_LENSES.map((l) => l.id)).size, STARTER_LENSES.length);
+  // Every lens says what it does in its own words — the same sentence the
+  // strip shows, so no two lenses can share a description by accident
+  // (three of them did, through a stale render key).
+  const notes = STARTER_LENSES.map((lens) => lens.note ?? '');
+  assert.ok(notes.every((note) => note.length > 20), 'every starter carries a note');
+  assert.equal(new Set(notes).size, notes.length, 'and no two notes are the same');
+  for (const lens of STARTER_LENSES) {
+    assert.ok((lens.note ?? '').length <= 120, `${lens.name}'s note stays one line`);
+  }
   for (const lens of STARTER_LENSES) {
     assert.deepEqual(JSON.parse(JSON.stringify(sanitiseLens(lens))), JSON.parse(JSON.stringify(lens)),
       `${lens.name} survives a save/load round trip unchanged`);
@@ -1205,4 +1214,18 @@ test('two fields at once: the combination the ideas list kept asking for', () =>
   const greyShadow = rgbToHsvValues(38, 38, 40);
   assert.ok(apple[1] > 0.7, 'a lit apple is highly saturated');
   assert.ok(greyShadow[1] < 0.1, 'a neutral shadow is not');
+});
+
+test('a copy is a new document, so a starter can never be overwritten by it', () => {
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+  const copyBlock = appTs.slice(appTs.indexOf("v2LensSaveAsNew"));
+  assert.match(copyBlock, /id: newLensId\(\)/, 'a copy gets its own id');
+  assert.match(copyBlock, /name: `\$\{source\} copy`/, 'and a name that says where it came from');
+  assert.match(copyBlock, /openLensWorkbench\(copy\)/, 'and editing continues on the copy');
+  // sanitiseLens is what makes the copy a document rather than a reference.
+  const copied = sanitiseLens({ ...STARTER_LENSES[0], id: 'copy-1', name: 'Mine' });
+  assert.notEqual(copied.id, STARTER_LENSES[0].id);
+  assert.deepEqual(copied.stops, STARTER_LENSES[0].stops);
+  copied.stops[0].color = '#ff0000';
+  assert.notEqual(STARTER_LENSES[0].stops[0].color, '#ff0000', 'and edits cannot reach the original');
 });
