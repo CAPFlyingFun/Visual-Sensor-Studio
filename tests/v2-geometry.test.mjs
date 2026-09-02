@@ -719,7 +719,8 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
       // A fresh device carries the starter lens and the Custom + entry.
       const STARTERS = ['Coloring Book Style', 'Colour Splash', 'Colour Hide',
         'Paper → Pink', 'Hue Map', 'Colour Strength', 'Rare Colour',
-        'Background Subtract', 'Rarity Map', 'Red Channel'];
+        'Background Subtract', 'Rarity Map', 'Inverted Brightness',
+        'Camouflage Breaker', 'Colour Edges', 'Red Channel'];
       const strip = await page.evaluate(() => ({
         lenses: [...document.querySelectorAll('#v2FilterStrip [data-filter^="lens:"]')].map((b) => b.textContent),
         custom: Boolean(document.querySelector('#v2FilterStrip [data-lens-new]')),
@@ -1055,6 +1056,32 @@ test('colour lenses: mask keeps the camera\'s colour, swap recolours, both take 
       const raw = await look();
       assert.ok(splash.coloured < raw.coloured,
         `mask mutes what does not match: ${splash.coloured.toFixed(3)} vs raw ${raw.coloured.toFixed(3)}`);
+
+      // A two-field lens renders, and the workbench can edit both fields.
+      await page.click('[data-filter="lens:lens-v2-camouflage-breaker"]');
+      await page.waitForTimeout(800);
+      const breaker = await look();
+      assert.ok(!/shader failed/i.test(breaker.stage), `two fields compile, got "${breaker.stage}"`);
+      // No assertion on how much it lights up: a camouflage breaker that finds
+      // nothing unusual in a synthetic scene is CORRECT when it stays dark,
+      // and a test demanding pixels would be demanding a false positive.
+      await page.click('#v2LensEdit');
+      await page.waitForTimeout(300);
+      const twoFields = await page.evaluate(() => ({
+        bright: document.getElementById('v2LensBrightChannel').value,
+        fields: document.querySelectorAll('#v2LensBrightBindings input[type="number"]').length
+      }));
+      assert.equal(twoFields.bright, 'chromaEdge', 'the second field is shown as what it is');
+      assert.equal(twoFields.fields, 3, 'with its own exact-number controls');
+      // Removing it is one choice, and the lens keeps working.
+      await page.selectOption('#v2LensBrightChannel', '');
+      await page.waitForTimeout(400);
+      assert.equal(await page.evaluate(() =>
+        document.querySelectorAll('#v2LensBrightBindings input').length), 0);
+      const single = await look();
+      assert.ok(!/shader failed/i.test(single.stage), 'and recompiles without it');
+      await page.click('#v2LensClose');
+      await page.waitForTimeout(200);
 
       // The workbench shows the rows the lens actually uses, and the picker's
       // sample can become the reference it measures against.

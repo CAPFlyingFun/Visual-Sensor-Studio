@@ -29,7 +29,7 @@ export const V2_CHANNELS: readonly ChannelId[] = [
   // The colour fields — one pass over the frame, no state, no history.
   'hue', 'saturation', 'red', 'green', 'blue', 'colourDistance',
   // Fed by the frame histogram the shell measures each few frames.
-  'rarity', 'backgroundDistance'
+  'rarity', 'backgroundDistance', 'chromaEdge'
 ];
 
 /** A hex colour as HSV, each 0..1 — the shader's own convention. */
@@ -115,6 +115,23 @@ function channelGlsl(id: ChannelId): string {
       return `float ch_hue(vec2 uv) { return rgb2hsv(texture2D(uFrame, uv).rgb).x * 360.0; }`;
     case 'saturation':
       return `float ch_saturation(vec2 uv) { return rgb2hsv(texture2D(uFrame, uv).rgb).y * 255.0; }`;
+    case 'chromaEdge':
+      // Sobel is a subtraction, and hue is a circle, so the differences are
+      // taken the short way round. A grey pixel has no hue, so a "hue edge"
+      // across grey is not an edge at all — the strength gates it.
+      return `float hueGap(float a, float b) {
+  float d = abs(a - b);
+  return min(d, 1.0 - d) * 2.0;
+}
+float ch_chromaEdge(vec2 uv) {
+  vec3 here = rgb2hsv(texture2D(uFrame, uv).rgb);
+  float acc = hueGap(here.x, rgb2hsv(texture2D(uFrame, uv + uTexel * vec2(1.0, 0.0)).rgb).x)
+    + hueGap(here.x, rgb2hsv(texture2D(uFrame, uv - uTexel * vec2(1.0, 0.0)).rgb).x)
+    + hueGap(here.x, rgb2hsv(texture2D(uFrame, uv + uTexel * vec2(0.0, 1.0)).rgb).x)
+    + hueGap(here.x, rgb2hsv(texture2D(uFrame, uv - uTexel * vec2(0.0, 1.0)).rgb).x);
+  float colourful = smoothstep(0.10, 0.25, here.y);
+  return clamp(acc * 0.5 * colourful, 0.0, 1.0) * 255.0;
+}`;
     case 'rarity':
       // One minus the share of the frame that carries this hue. A grey pixel
       // has no hue to be rare in, so it is reported as ordinary rather than
@@ -208,7 +225,8 @@ export function compileLens(lens: CustomLens): FilterDefinition {
   const output = lens.output ?? 'paint';
   const needsGap = [...channels].some((c) => c === 'colourDistance' || c === 'backgroundDistance');
   const needsHsv = needsGap || output === 'swap'
-    || [...channels].some((c) => c === 'hue' || c === 'saturation' || c === 'rarity');
+    || [...channels].some((c) => c === 'hue' || c === 'saturation' || c === 'rarity'
+      || c === 'chromaEdge');
   const needsReference = [...channels].some((c) => channelInfo(c).needsReference);
   const needsHistogram = [...channels].some((c) => channelInfo(c).needsHistogram);
   const reference = rgbToHsv(lens.reference ?? '#ffffff');

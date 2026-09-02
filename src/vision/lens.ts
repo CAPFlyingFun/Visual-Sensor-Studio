@@ -41,7 +41,8 @@ export type ChannelId =
   | 'blue'
   | 'colourDistance'
   | 'rarity'
-  | 'backgroundDistance';
+  | 'backgroundDistance'
+  | 'chromaEdge';
 
 export interface ChannelInfo {
   id: ChannelId;
@@ -219,6 +220,16 @@ export const CHANNELS: readonly ChannelInfo[] = [
     temporal: false,
     gpuOnly: true,
     needsHistogram: true
+  },
+  {
+    id: 'chromaEdge',
+    label: 'Colour edge',
+    meaning: 'A boundary between two colours, found by hue rather than by brightness. Two areas of the same lightness — a red shape on an equally bright green — have no brightness edge at all, and this finds them.',
+    unit: '0–255',
+    low: 0,
+    high: 140,
+    temporal: false,
+    gpuOnly: true
   },
   {
     id: 'backgroundDistance',

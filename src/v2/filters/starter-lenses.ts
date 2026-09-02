@@ -134,6 +134,45 @@ export const STARTER_LENSES: readonly CustomLens[] = [
     sceneBlend: 0
   },
   {
+    // The lens Joshua described while making a saturation one: dark places
+    // bright, bright places dark. This is brightness with the range run
+    // backwards — a true inversion, where colour strength only resembles one.
+    version: 1,
+    id: 'lens-v2-inverted-brightness',
+    name: 'Inverted Brightness',
+    color: { channel: 'luma', low: 255, high: 0, gamma: 1 },
+    stops: MONO,
+    base: 'black',
+    sceneBlend: 0
+  },
+  {
+    // The Lens Pack's Adaptive Camouflage Breaker, which was never one field:
+    // colour from how UNUSUAL a pixel's hue is, brightness from whether it
+    // sits on a colour boundary. A thing hiding by matching its background
+    // fails both tests at once.
+    version: 1,
+    id: 'lens-v2-camouflage-breaker',
+    name: 'Camouflage Breaker',
+    color: { channel: 'rarity', low: 90, high: 255, gamma: 1 },
+    brightness: { channel: 'chromaEdge', low: 10, high: 120, gamma: 1 },
+    stops: [
+      { at: 0, color: '#0b1420' },
+      { at: 0.6, color: '#3dfaff' },
+      { at: 1, color: '#ffffff' }
+    ],
+    base: 'black',
+    sceneBlend: 0
+  },
+  {
+    version: 1,
+    id: 'lens-v2-chroma-edge',
+    name: 'Colour Edges',
+    color: { channel: 'chromaEdge', low: 0, high: 140, gamma: 1 },
+    stops: MONO,
+    base: 'black',
+    sceneBlend: 0
+  },
+  {
     version: 1,
     id: 'lens-v2-red-solo',
     name: 'Red Channel',

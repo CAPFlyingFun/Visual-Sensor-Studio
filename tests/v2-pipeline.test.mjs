@@ -920,7 +920,7 @@ test('the sample ring on screen is the sample patch, on both axes', () => {
 
 test('colour fields are shared as data but offered only by the engine that measures them', () => {
   const colour = ['hue', 'saturation', 'red', 'green', 'blue', 'colourDistance',
-    'rarity', 'backgroundDistance'];
+    'rarity', 'backgroundDistance', 'chromaEdge'];
   for (const id of colour) {
     const info = channelInfo(id);
     assert.equal(info.id, id, `${id} is a real channel, not a fallback to luma`);
@@ -944,7 +944,7 @@ test('colour fields are shared as data but offered only by the engine that measu
   for (const id of ['luma', 'speed', 'change', 'edges', 'relief', 'age', 'novelty']) {
     assert.ok(!channelInfo(id).gpuOnly, `${id} stays available to both engines`);
   }
-  assert.equal(CHANNELS.length, 15);
+  assert.equal(CHANNELS.length, 16);
 });
 
 test('rgbToHsv agrees with the shader convention', () => {
@@ -1166,4 +1166,43 @@ test('a filter that needs a step says so, derived from what it needs', () => {
   assert.equal(tipFor(filterById('edges')), null);
   assert.equal(tipFor(compileLens(STARTER_LENSES[0])), null, 'the edges lens needs no step');
   assert.equal(tipFor(null), null);
+});
+
+test('two fields at once: the combination the ideas list kept asking for', () => {
+  // Adaptive Camouflage Breaker was never one field: something hiding by
+  // matching its background fails an unusualness test AND a colour-boundary
+  // test at once. The lens document always allowed a second field driving
+  // brightness; nothing in V2 could reach it until now.
+  const breaker = STARTER_LENSES.find((l) => l.id === 'lens-v2-camouflage-breaker');
+  assert.equal(breaker.color.channel, 'rarity');
+  assert.equal(breaker.brightness.channel, 'chromaEdge');
+  const compiled = compileLens(breaker);
+  assert.match(compiled.fragment, /normBright\(ch_chromaEdge\(vUv\)\)/,
+    'the second field multiplies the first');
+  assert.equal(compiled.needsHistogram, true, 'and it still asks for the census it reads');
+  assert.equal(compiled.supportsPhoto, true, 'neither field needs history');
+
+  // A colour edge is found by hue, so it survives where brightness gives out.
+  assert.match(compileLens(STARTER_LENSES.find((l) => l.id === 'lens-v2-chroma-edge')).fragment,
+    /float hueGap\(float a, float b\)/);
+  assert.match(channelInfo('chromaEdge').meaning, /same lightness/,
+    'and the field says what it is for');
+
+  // The workbench can actually reach the second field now.
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+  assert.match(appTs, /v2LensBrightChannel/, 'a control for the second field exists');
+  assert.match(appTs, /draft\.brightness = \{ channel: chosen/, 'and it writes the document');
+
+  // The lens Joshua described while making a saturation one.
+  const inverted = STARTER_LENSES.find((l) => l.id === 'lens-v2-inverted-brightness');
+  assert.equal(inverted.color.channel, 'luma');
+  assert.ok(inverted.color.high < inverted.color.low, 'brightness with the range run backwards');
+  assert.equal(normaliseBinding(0, inverted.color), 1, 'black reads full');
+  assert.equal(normaliseBinding(255, inverted.color), 0, 'and white reads none');
+  // Which is NOT what colour strength does: a lit red apple is colourful and
+  // bright at once, so saturation lights it up where an inversion darkens it.
+  const apple = rgbToHsvValues(200, 35, 40);
+  const greyShadow = rgbToHsvValues(38, 38, 40);
+  assert.ok(apple[1] > 0.7, 'a lit apple is highly saturated');
+  assert.ok(greyShadow[1] < 0.1, 'a neutral shadow is not');
 });

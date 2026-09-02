@@ -1640,6 +1640,44 @@ function renderLensBindings(): void {
   byId<HTMLSelectElement>('v2LensOutput').value = draft.output ?? 'paint';
   setText('v2LensUnit', info.unit);
   setText('v2LensChannelMeaning', info.meaning + (channelAvailability(info.id).available ? '' : ` ${channelAvailability(info.id).reason}`));
+  // The SECOND field. The lens document has always had one — a field driving
+  // brightness while another drives colour — and until now nothing in V2
+  // could reach it, so every two-field lens on the ideas list was out of
+  // reach for a UI reason rather than a real one.
+  const brightSelect = byId<HTMLSelectElement>('v2LensBrightChannel');
+  brightSelect.replaceChildren();
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = '— none —';
+  brightSelect.appendChild(none);
+  for (const option of CHANNELS) {
+    if (!channelAvailability(option.id).available) continue;
+    const element = document.createElement('option');
+    element.value = option.id;
+    element.textContent = option.label;
+    brightSelect.appendChild(element);
+  }
+  brightSelect.value = draft.brightness?.channel ?? '';
+  const brightHolder = byId('v2LensBrightBindings');
+  brightHolder.replaceChildren();
+  if (draft.brightness) {
+    const brightInfo = channelInfo(draft.brightness.channel);
+    setText('v2LensBrightUnit', brightInfo.unit);
+    const brightSpan = Math.max(brightInfo.high, Math.abs(brightInfo.low)) * 1.5 || 1;
+    const brightStep = brightSpan > 20 ? 1 : 0.001;
+    bindingField(brightHolder, 'v2LensBrightLow', 'Dim at',
+      { min: 0, max: brightSpan, step: brightStep },
+      () => draft.brightness?.low ?? 0, (v) => { if (draft.brightness) draft.brightness.low = v; });
+    bindingField(brightHolder, 'v2LensBrightHigh', 'Full at',
+      { min: 0, max: brightSpan, step: brightStep },
+      () => draft.brightness?.high ?? 0, (v) => { if (draft.brightness) draft.brightness.high = v; });
+    bindingField(brightHolder, 'v2LensBrightGamma', 'Curve', { min: 0.2, max: 3, step: 0.01 },
+      () => draft.brightness?.gamma ?? 1,
+      (v) => { if (draft.brightness) draft.brightness.gamma = v > 0 ? v : 1; });
+  } else {
+    setText('v2LensBrightUnit', '');
+  }
+
   const blend = byId('v2LensBlend');
   blend.replaceChildren();
   bindingField(blend, 'v2LensBlendField', 'Picture', { min: 0, max: 1, step: 0.01 },
@@ -1873,6 +1911,19 @@ byId<HTMLSelectElement>('v2LensChannel').addEventListener('change', () => {
 byId<HTMLSelectElement>('v2LensBase').addEventListener('change', () => {
   if (!lensDraft) return;
   lensDraft.base = byId<HTMLSelectElement>('v2LensBase').value as CustomLens['base'];
+  lensDraftChanged();
+});
+byId<HTMLSelectElement>('v2LensBrightChannel').addEventListener('change', () => {
+  const draft = lensDraft;
+  if (!draft) return;
+  const chosen = byId<HTMLSelectElement>('v2LensBrightChannel').value as ChannelId | '';
+  if (!chosen) {
+    delete draft.brightness;
+  } else {
+    const info = channelInfo(chosen);
+    draft.brightness = { channel: chosen, low: info.low, high: info.high, gamma: 1 };
+  }
+  renderLensBindings();
   lensDraftChanged();
 });
 byId<HTMLSelectElement>('v2LensOutput').addEventListener('change', () => {
