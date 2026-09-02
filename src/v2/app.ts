@@ -1247,17 +1247,6 @@ function renderFilterStrip(): void {
       // detail after it. describeLens stays the technical reading, and lives
       // in the workbench where someone is editing those very numbers.
       : `${lensFilter.lens.note ? `${lensFilter.lens.note}` : `${describeLens(lensFilter.lens)}.`}`
-        // WHY a still is declined differs, and the difference matters: a
-        // temporal field's meaning IS its live history, so a saved frame
-        // would be claiming information it never had rather than merely
-        // showing it at the wrong size (ChatGPT's point, 2026-09-02).
-        + (lensFilter.supportsPhoto ? ''
-          : channelInfo(lensFilter.lens.color.channel).temporal
-            || (lensFilter.lens.brightness
-              && channelInfo(lensFilter.lens.brightness.channel).temporal)
-            ? ' Stills are declined: this field is built from live history, so a '
-              + 'single saved frame could not have measured it.'
-            : ' Stills are declined — this channel lives at ANALYSIS resolution.')
         + (lensFilter.needsHistogram
           ? ' Measured against the whole frame’s colours, re-counted a few times a second — point the camera elsewhere and the reading moves.'
           : '')

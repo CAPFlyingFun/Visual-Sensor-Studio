@@ -362,9 +362,11 @@ ${blend > 0 ? `  c = mix(c, vec3(sceneY), ${glslFloat(blend)});\n` : ''}\
     name: lens.name,
     family: 'custom',
     temporal,
-    // Stills are honest only when every channel is recomputed at full size;
-    // change and speed live at ANALYSIS resolution and are declined.
-    supportsPhoto: !temporal,
+    // EVERY lens that renders can save a still, at the full sensor like any
+    // other filter. A temporal field's memory lives at ANALYSIS resolution,
+    // so its photo enlarges that rather than adding detail — but refusing the
+    // shutter was the worse answer (Joshua, 2026-09-02).
+    supportsPhoto: true,
     supportsVideo: true,
     fragment,
     state: stateful[0] === 'speed' ? SPEED_STATE

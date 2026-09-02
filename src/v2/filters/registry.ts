@@ -248,15 +248,16 @@ export const FILTERS: readonly FilterDefinition[] = [
   },
   {
     id: 'difference',
-    note: 'Change between frames through the ramp — history held at ANALYSIS resolution. Video is this filter’s product; stills are declined rather than upscaled.',
+    note: 'Change between frames through the ramp — history held at ANALYSIS resolution. A still is the frame you were shown; the trail behind it lives at ANALYSIS resolution.',
     name: 'Motion',
     family: 'motion',
     temporal: true,
-    // A still of frame-to-frame change would render from history that lives
-    // at ANALYSIS resolution — upscaling it to photo size and calling it
-    // detail is exactly what the camera rule forbids. Video is the honest
-    // product of this filter.
-    supportsPhoto: false,
+    // A still is saved like every other filter's, at the full sensor. The
+    // trail itself lives at ANALYSIS resolution, so a photo of it is that
+    // memory enlarged rather than new detail — but refusing the shutter was
+    // the worse answer, and it is the same picture you were looking at
+    // (Joshua, 2026-09-02).
+    supportsPhoto: true,
     supportsVideo: true,
     // Change between THIS frame and the PREVIOUS one, through the ramp.
     // uPrevious is the renderer's history texture — bounded at analysis
@@ -271,11 +272,11 @@ export const FILTERS: readonly FilterDefinition[] = [
   },
   {
     id: 'speed',
-    note: 'Motion along the brightness gradient (normal flow), smoothed over frames — texels per frame at ANALYSIS resolution, not a velocity. Stills are declined.',
+    note: 'Motion along the brightness gradient (normal flow), smoothed over frames — texels per frame at ANALYSIS resolution, not a velocity.',
     name: 'Speed',
     family: 'motion',
     temporal: true,
-    supportsPhoto: false,
+    supportsPhoto: true,
     supportsVideo: true,
     // NORMAL FLOW: motion along the brightness gradient, from the optical
     // flow constraint |dI/dt| / |∇I| — texels per frame at ANALYSIS
@@ -292,11 +293,11 @@ export const FILTERS: readonly FilterDefinition[] = [
   },
   {
     id: 'trails',
-    note: 'Motion that fades over about half a second — the trail lives at ANALYSIS resolution. Stills are declined.',
+    note: 'Motion that fades over about half a second — the trail lives at ANALYSIS resolution, so a still enlarges that memory rather than adding detail.',
     name: 'Trails',
     family: 'motion',
     temporal: true,
-    supportsPhoto: false,
+    supportsPhoto: true,
     supportsVideo: true,
     // Motion that FADES: each frame's change (the same measure Motion shows)
     // is kept as the maximum of "now" and the previous trail decayed by

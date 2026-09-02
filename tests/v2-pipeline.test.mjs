@@ -512,8 +512,8 @@ test('FILTERS is the one list: unique ids, honest metadata, real shaders', () =>
       assert.ok(stateBody.includes('uState'), `${filter.id}: a state pass reads its own previous output`);
       assert.ok(filter.fragment.slice(filter.fragment.indexOf('void main')).includes('uState'),
         `${filter.id}: the display pass must sample the state it computes`);
-      assert.equal(filter.supportsPhoto, false,
-        `${filter.id}: state at ANALYSIS resolution cannot honestly fill a still`);
+      assert.equal(filter.supportsPhoto, true,
+        `${filter.id}: a still is the frame you were shown, like any other filter`);
     }
     const body = filter.fragment.split('void main')[1] ?? '';
     const stateSamplesHistory = filter.state
@@ -526,18 +526,20 @@ test('FILTERS is the one list: unique ids, honest metadata, real shaders', () =>
   // state pass, at ANALYSIS resolution, and decline stills like Motion.
   for (const id of ['speed', 'trails']) {
     const filter = filterById(id);
-    assert.ok(filter?.state && filter.temporal && !filter.supportsPhoto && filter.supportsVideo,
-      `${id} is a stateful, temporal, video-only filter`);
+    assert.ok(filter?.state && filter.temporal && filter.supportsPhoto && filter.supportsVideo,
+      `${id} is a stateful, temporal filter that can still save and record`);
   }
   assert.equal(filterById('difference')?.state, undefined, 'Motion needs no state — it compares two frames');
   assert.equal(filterById('rgb')?.name, 'RGB');
   assert.equal(filterById('nope'), null);
 
-  // Motion's honesty contract: history at analysis resolution means video is
-  // its product and stills are declined, in the metadata itself (Rule 10).
+  // Motion's history lives at analysis resolution, so video is its natural
+  // product — but a still is no longer refused for it. The trade is STATED in
+  // the note rather than enforced by taking the shutter away.
   const motion = filterById('difference');
-  assert.ok(motion && motion.temporal && !motion.supportsPhoto && motion.supportsVideo,
-    'Motion declines stills rather than upscaling analysis-resolution history');
+  assert.ok(motion && motion.temporal && motion.supportsPhoto && motion.supportsVideo,
+    'Motion can be photographed and recorded like any other filter');
+  assert.match(motion.note, /ANALYSIS resolution/, 'and the note says where the detail comes from');
 });
 
 test('one filter implementation: fragment shaders exist only in the registry', () => {
@@ -768,7 +770,7 @@ test('lens channels: temporal ones decline stills, speed reuses the Speed state,
   const base = STARTER_LENSES[0];
   const change = compileLens(sanitiseLens({ ...base, id: 'c', color: { channel: 'change', low: 0, high: 40, gamma: 1 } }));
   assert.equal(change.temporal, true);
-  assert.equal(change.supportsPhoto, false, 'change lives at ANALYSIS resolution — no still');
+  assert.equal(change.supportsPhoto, true, 'and it can still be photographed');
   assert.match(change.fragment, /uPrevious/);
   const speed = compileLens(sanitiseLens({ ...base, id: 's', color: { channel: 'speed', low: 0, high: 0.35, gamma: 1 } }));
   assert.equal(speed.temporal, true);
@@ -776,9 +778,8 @@ test('lens channels: temporal ones decline stills, speed reuses the Speed state,
   assert.equal(speed.state, filterById('speed').state, 'ONE speed estimator (Rule 4)');
   assert.match(speed.fragment, /uFps/, 'widths per second need the delivered rate');
   assert.match(speed.fragment, /uAnalysisWidth/);
-  // Brightness from a temporal channel also declines stills.
   const lit = compileLens(sanitiseLens({ ...base, id: 'l', brightness: { channel: 'change', low: 0, high: 40, gamma: 1 } }));
-  assert.equal(lit.supportsPhoto, false);
+  assert.equal(lit.supportsPhoto, true);
   assert.match(lit.fragment, /normBright/);
   // AN UNAVAILABLE LENS IS NEVER A STAND-IN. relief, age and novelty used to
   // be the case here — they were the channels V2 had not built, and Joshua
@@ -1744,8 +1745,7 @@ test('relief, age and novelty are wired, so no lens reads "not built in V2 yet"'
     const f = compileLens(lens({ channel: id, low: 0, high: 60, gamma: 1 }));
     assert.equal(f.unavailableReason, undefined);
     assert.ok(f.state, `${id} carries a state pass`);
-    assert.equal(f.supportsPhoto, false,
-      `${id} lives at ANALYSIS resolution, so a still would be upscaled memory`);
+    assert.equal(f.supportsPhoto, true, `${id} can be photographed like any other filter`);
   }
 });
 
@@ -1897,3 +1897,46 @@ test('Reverse never writes to the lens document or to storage', () => {
   setReversedFilters([]);
   setCustomFilters([]);
 });
+
+test('every renderable filter can save a still — and says what kind of still', () => {
+  // "Make sure all filters can take a picture or video. I believe it was the
+  // NNH1 that was unavailable for a picture" (Joshua, 2026-09-02). NNH is the
+  // novelty channel, and the temporal filters used to refuse the shutter:
+  // their memory lives at ANALYSIS resolution, so a full-sensor still of one
+  // enlarges that memory rather than adding detail.
+  //
+  // Refusing was the wrong answer. Every filter saves at the full sensor like
+  // any other, and the note says where the detail comes from — the trade is
+  // stated, not enforced.
+  for (const filter of FILTERS) {
+    assert.equal(filter.supportsPhoto, true, `${filter.name} must be able to save a still`);
+    assert.equal(filter.supportsVideo, true, `${filter.name} must be able to record`);
+  }
+
+  const lens = (channel, high) => compileLens(sanitiseLens({
+    version: 1, id: `p-${channel}`, name: channel,
+    color: { channel, low: 0, high, gamma: 1 },
+    stops: [{ at: 0, color: '#000000' }, { at: 1, color: '#ffffff' }],
+    base: 'black', sceneBlend: 0
+  }));
+  // NNH itself, plus the rest of the temporal family, and the per-pixel ones.
+  for (const [channel, high] of [
+    ['novelty', 60], ['age', 6], ['change', 40], ['speed', 3], ['relief', 255], ['luma', 255]
+  ]) {
+    const f = lens(channel, high);
+    assert.equal(f.supportsPhoto, true, `a ${channel} lens can save a still`);
+    assert.equal(f.supportsVideo, true, `a ${channel} lens can record`);
+  }
+
+  // The ONE filter that still refuses is the one that renders nothing at all.
+  const broken = compileLens(sanitiseLens({
+    version: 1, id: 'broken', name: 'Broken',
+    color: { channel: 'speed', low: 0, high: 3, gamma: 1 },
+    brightness: { channel: 'age', low: 0, high: 6, gamma: 1 },
+    stops: [{ at: 0, color: '#000000' }, { at: 1, color: '#ffffff' }],
+    base: 'black', sceneBlend: 0
+  }));
+  assert.ok(broken.unavailableReason);
+  assert.equal(broken.supportsPhoto, false, 'a lens that cannot run cannot save one either');
+});
+

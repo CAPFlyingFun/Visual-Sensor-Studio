@@ -441,8 +441,11 @@ test('Milestone D: Motion renders honest frame change on the GPU (fake device)',
       });
       assert.equal(offRamp.length, 0,
         `Motion pixels sit on the ramp, off: ${JSON.stringify(offRamp.slice(0, 3))}`);
-      assert.ok(seen.photoDisabled,
-        'stills are declined by metadata — history cannot honestly fill a photo');
+      // The shutter is NOT taken away any more. Motion's history lives at
+      // ANALYSIS resolution, so a full-sensor still of it enlarges that memory
+      // rather than adding detail — the note says so, and the choice is the
+      // photographer's (Joshua, 2026-09-02: "still want pictures enabled").
+      assert.equal(seen.photoDisabled, false, 'a still can be taken like any other filter');
       assert.match(seen.analysisRow, /holding frame history/,
         'the ANALYSIS row says its buffer is in use');
 
@@ -608,7 +611,7 @@ test('Milestone D: Speed and Trails carry their memory in a state pass at ANALYS
         const offRamp = seen.pixels.filter((p) => !onRamp(p));
         assert.equal(offRamp.length, 0,
           `${id}: every pixel is a point on the ramp — nothing but measured state, off-ramp: ${JSON.stringify(offRamp.slice(0, 3))}`);
-        assert.equal(seen.photoDisabled, true, `${id} declines stills by metadata`);
+        assert.equal(seen.photoDisabled, false, `${id} can save a still like any other filter`);
         assert.match(seen.analysisRow, /holding frame history/, `${id} states where its history lives`);
         assert.match(seen.note, /ANALYSIS resolution/, `${id}'s note names its resolution`);
       }
