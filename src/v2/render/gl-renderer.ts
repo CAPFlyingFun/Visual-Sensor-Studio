@@ -13,7 +13,7 @@
  * same filters is exactly what Rule 4 exists to prevent.
  */
 
-import { FILTERS, ironbowLut, type FilterDefinition } from '../filters/registry.js';
+import { FILTERS, filterById, ironbowLut, type FilterDefinition } from '../filters/registry.js';
 
 const VERTEX = `attribute vec2 aPosition;
 varying vec2 vUv;
@@ -63,6 +63,10 @@ export class GlRenderer {
   private stateSize = { width: 0, height: 0 };
   private stateRead = 0;
   private stateOwner = '';
+  /** Per-filter ramp textures (custom lenses), keyed by filter id; re-uploaded when rampKey changes. */
+  private rampTextures = new Map<string, { key: string; texture: WebGLTexture }>();
+  /** Which program key each filter id currently owns, so an edited lens frees its old program. */
+  private programKeys = new Map<string, string>();
   private failure = '';
 
   constructor(private readonly canvas: HTMLCanvasElement) {
@@ -118,6 +122,8 @@ export class GlRenderer {
     this.stateFramebuffer = null;
     this.stateSize = { width: 0, height: 0 };
     this.stateOwner = '';
+    this.rampTextures.clear();
+    this.programKeys.clear();
     this.failure = '';
   }
 
@@ -155,9 +161,19 @@ export class GlRenderer {
   private program(filter: FilterDefinition, pass: 'display' | 'state' | 'copy' = 'display'): WebGLProgram | null {
     const gl = this.gl;
     if (!gl) return null;
-    const key = pass === 'display' ? filter.id : `${filter.id}:${pass}`;
+    const base = pass === 'display' ? filter.id : `${filter.id}:${pass}`;
+    // A custom lens edited live changes its shader: the revision is part of
+    // the key, and the previous revision's program is released.
+    const key = filter.revision ? `${base}@${filter.revision}` : base;
     const cached = this.programs.get(key);
     if (cached) return cached;
+    const previous = this.programKeys.get(base);
+    if (previous && previous !== key) {
+      const stale = this.programs.get(previous);
+      if (stale) gl.deleteProgram(stale);
+      this.programs.delete(previous);
+    }
+    this.programKeys.set(base, key);
     const source = pass === 'state' ? filter.state : filter.fragment;
     if (!source) return null;
 
@@ -270,10 +286,15 @@ export class GlRenderer {
    * authority via the caller — passing it here is what keeps the renderer
    * from owning a resolution opinion of its own.
    */
-  render(filterId: string, target: RenderTargetSize, stateSize?: RenderTargetSize): boolean {
+  render(
+    filterId: string,
+    target: RenderTargetSize,
+    stateSize?: RenderTargetSize,
+    extras: { fps?: number } = {}
+  ): boolean {
     const gl = this.gl;
-    const filter = FILTERS.find((f) => f.id === filterId);
-    if (!gl || gl.isContextLost() || !filter) return false;
+    const filter = filterById(filterId);
+    if (!gl || gl.isContextLost() || !filter || filter.unavailableReason) return false;
     const program = this.program(filter);
     if (!program) return false;
     // A stateful filter advances its memory first, at the ANALYSIS size the
@@ -291,7 +312,7 @@ export class GlRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.frameTexture);
     gl.uniform1i(gl.getUniformLocation(program, 'uFrame'), 0);
     gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, this.rampTexture);
+    gl.bindTexture(gl.TEXTURE_2D, this.rampFor(filter));
     gl.uniform1i(gl.getUniformLocation(program, 'uRamp'), 1);
     if (this.historyTexture) {
       gl.activeTexture(gl.TEXTURE2);
@@ -304,9 +325,26 @@ export class GlRenderer {
       gl.uniform1i(gl.getUniformLocation(program, 'uState'), 3);
     }
     gl.uniform2f(gl.getUniformLocation(program, 'uTexel'), 1 / target.width, 1 / target.height);
+    // Unit conversions a lens may need: a missing location is simply ignored.
+    gl.uniform1f(gl.getUniformLocation(program, 'uFps'), extras.fps ?? 0);
+    gl.uniform1f(gl.getUniformLocation(program, 'uAnalysisWidth'), stateSize?.width ?? 0);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     return true;
+  }
+
+  /** The filter's own ramp texture, uploaded when its rampKey changes; else the Ironbow ramp. */
+  private rampFor(filter: FilterDefinition): WebGLTexture | null {
+    const gl = this.gl;
+    if (!gl || !filter.ramp) return this.rampTexture;
+    const key = filter.rampKey ?? '';
+    const held = this.rampTextures.get(filter.id);
+    if (held && held.key === key) return held.texture;
+    const texture = held?.texture ?? this.makeTexture(gl);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, filter.ramp);
+    this.rampTextures.set(filter.id, { key, texture });
+    return texture;
   }
 
   /**

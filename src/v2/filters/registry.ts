@@ -15,6 +15,7 @@
  */
 
 import { ironbowColor } from '../../vision/motion-ironbow.js';
+import type { CustomLens } from '../../vision/lens.js';
 
 export type FilterFamily = 'view' | 'motion' | 'time' | 'night' | 'custom';
 
@@ -39,9 +40,19 @@ export interface FilterDefinition {
    * killed a GPU context on device is never approached.
    */
   state?: string;
+  /** A per-filter ramp (256 RGBA texels); absent = the Ironbow ramp. */
+  ramp?: Uint8Array;
+  /** Changes whenever `ramp` changes, so the renderer re-uploads exactly then. */
+  rampKey?: string;
+  /** Changes whenever the shader text changes (custom lenses are edited live). */
+  revision?: string;
+  /** Set when the filter cannot run here — shown, never made to look functional. */
+  unavailableReason?: string;
+  /** The lens document a custom filter was compiled from. */
+  lens?: CustomLens;
 }
 
-const HEADER = `precision mediump float;
+export const SHADER_HEADER = `precision mediump float;
 varying vec2 vUv;
 uniform sampler2D uFrame;
 uniform sampler2D uRamp;
@@ -50,6 +61,26 @@ uniform sampler2D uState;
 uniform vec2 uTexel;
 float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 `;
+const HEADER = SHADER_HEADER;
+
+/**
+ * The Speed state pass, exported so a custom lens bound to the speed channel
+ * runs the SAME estimator (Rule 4) rather than a second one.
+ */
+export const SPEED_STATE = HEADER + `void main() {
+  float now = luma(texture2D(uFrame, vUv).rgb);
+  float before = luma(texture2D(uPrevious, vUv).rgb);
+  float dx = luma(texture2D(uFrame, vUv + uTexel * vec2(1.0, 0.0)).rgb)
+           - luma(texture2D(uFrame, vUv - uTexel * vec2(1.0, 0.0)).rgb);
+  float dy = luma(texture2D(uFrame, vUv + uTexel * vec2(0.0, 1.0)).rgb)
+           - luma(texture2D(uFrame, vUv - uTexel * vec2(0.0, 1.0)).rgb);
+  float grad = length(vec2(dx, dy)) * 0.5;
+  float dt = abs(now - before);
+  float flow = dt * smoothstep(0.01, 0.05, dt) / (grad + 0.02);
+  float target = clamp(flow / 8.0, 0.0, 1.0);
+  float s = mix(texture2D(uState, vUv).r, target, 0.35);
+  gl_FragColor = vec4(s, s, s, 1.0);
+}`;
 
 export const FILTERS: readonly FilterDefinition[] = [
   {
@@ -114,20 +145,7 @@ export const FILTERS: readonly FilterDefinition[] = [
     // floor on the temporal difference keeps flat, static regions dark, and
     // an exponential average over frames (0.35 per frame) steadies it.
     // Full scale = 8 texels/frame — display tuning, not a measurement.
-    state: HEADER + `void main() {
-  float now = luma(texture2D(uFrame, vUv).rgb);
-  float before = luma(texture2D(uPrevious, vUv).rgb);
-  float dx = luma(texture2D(uFrame, vUv + uTexel * vec2(1.0, 0.0)).rgb)
-           - luma(texture2D(uFrame, vUv - uTexel * vec2(1.0, 0.0)).rgb);
-  float dy = luma(texture2D(uFrame, vUv + uTexel * vec2(0.0, 1.0)).rgb)
-           - luma(texture2D(uFrame, vUv - uTexel * vec2(0.0, 1.0)).rgb);
-  float grad = length(vec2(dx, dy)) * 0.5;
-  float dt = abs(now - before);
-  float flow = dt * smoothstep(0.01, 0.05, dt) / (grad + 0.02);
-  float target = clamp(flow / 8.0, 0.0, 1.0);
-  float s = mix(texture2D(uState, vUv).r, target, 0.35);
-  gl_FragColor = vec4(s, s, s, 1.0);
-}`,
+    state: SPEED_STATE,
     fragment: HEADER + `void main() {
   float s = texture2D(uState, vUv).r;
   gl_FragColor = vec4(texture2D(uRamp, vec2(s, 0.5)).rgb, 1.0);
@@ -183,8 +201,23 @@ export const FILTERS: readonly FilterDefinition[] = [
   }
 ];
 
+/**
+ * Custom lenses join the SAME registry as data-driven entries (Rule 5): the
+ * strip, the capability checks and the renderer read one list. The shell
+ * replaces this set whenever the saved lenses or the lens being edited change.
+ */
+let customFilters: readonly FilterDefinition[] = [];
+
+export function setCustomFilters(filters: readonly FilterDefinition[]): void {
+  customFilters = filters;
+}
+
+export function allFilters(): readonly FilterDefinition[] {
+  return [...FILTERS, ...customFilters];
+}
+
 export function filterById(id: string): FilterDefinition | null {
-  return FILTERS.find((filter) => filter.id === id) ?? null;
+  return allFilters().find((filter) => filter.id === id) ?? null;
 }
 
 /**

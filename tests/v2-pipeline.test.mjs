@@ -22,6 +22,13 @@ import {
   ASSUMED_ENVELOPE, envelopeFromMeasurement, largestEncodable, measurementFromRows
 } from '../.test-build/v2/capture/encoder-envelope.js';
 import { countMp4Frames } from '../.test-build/v2/capture/mp4-frames.js';
+import {
+  V2_CHANNELS, channelAvailability, compileLens, lensFilterId, lensRampRgba, lensRevision
+} from '../.test-build/v2/filters/lens-shader.js';
+import { allFilters, setCustomFilters } from '../.test-build/v2/filters/registry.js';
+import { STARTER_LENSES } from '../.test-build/v2/filters/starter-lenses.js';
+import { buildRampLut, describeLens } from '../.test-build/vision/lens.js';
+import { sanitiseLens } from '../.test-build/vision/lens-store.js';
 
 /*
  * V2 Milestone B: the geometry authority and the filter registry, tested as
@@ -519,7 +526,7 @@ test('one filter implementation: fragment shaders exist only in the registry', (
   };
   walk(v2Root);
   const offenders = files.filter((path) =>
-    !path.endsWith('filters/registry.ts') && /gl_FragColor/.test(readFileSync(path, 'utf8')));
+    !/filters\/(registry|lens-shader)\.ts$/.test(path) && /gl_FragColor/.test(readFileSync(path, 'utf8')));
   assert.deepEqual(offenders, [], 'fragment shaders belong to the registry alone');
 });
 
@@ -676,4 +683,96 @@ test('countMp4Frames reads the video track\'s sample tables, flat and fragmented
   assert.equal(countMp4Frames(new Uint8Array(Buffer.from('\x1aE\xdf\xa3webm-ish garbage'))), null);
   assert.equal(countMp4Frames(new Uint8Array(box('mdat', Buffer.alloc(64)))), null);
   assert.equal(countMp4Frames(new Uint8Array(0)), null);
+});
+
+/* --- Milestone E: a lens is data compiled to the one filter shape ---------- */
+
+test('a custom lens compiles to a V2 filter in legacy units, with its own ramp', () => {
+  const [book] = STARTER_LENSES;
+  assert.equal(book.name, 'Coloring Book Style');
+  assert.deepEqual(JSON.parse(JSON.stringify(sanitiseLens(book))), JSON.parse(JSON.stringify(book)),
+    'the starter is already a clean document');
+  const filter = compileLens(book);
+  assert.equal(filter.id, lensFilterId(book));
+  assert.equal(filter.family, 'custom');
+  assert.equal(filter.lens, book);
+  assert.equal(filter.unavailableReason, undefined);
+  // Edges at full size: a still is honest, so photos are allowed; video too.
+  assert.equal(filter.temporal, false);
+  assert.equal(filter.supportsPhoto, true);
+  assert.equal(filter.supportsVideo, true);
+  assert.equal(filter.state, undefined);
+  // The shader carries the document's numbers in the legacy 0–255 units and
+  // the exact gamma — 254 stays 254, never a slider's near miss.
+  assert.match(filter.fragment, /float high = 254\.0000;/);
+  assert.match(filter.fragment, /float low = 0\.0000;/);
+  assert.match(filter.fragment, /pow\(t, 1\.6000\)/);
+  assert.match(filter.fragment, /\* 255\.0/, 'edges are measured in the legacy 0–255 scale');
+  assert.match(filter.fragment, /ch_edges\(vUv\)/);
+  const body = filter.fragment.slice(filter.fragment.indexOf('void main'));
+  assert.doesNotMatch(body, /uState|uPrevious/, 'an edges lens needs no history');
+  // The ramp IS the legacy LUT (Rule 6), with alpha added.
+  const legacy = buildRampLut(book.stops);
+  const rgba = lensRampRgba(book);
+  assert.equal(rgba.length, 256 * 4);
+  for (let i = 0; i < 256; i++) {
+    assert.equal(rgba[i * 4], legacy[i * 3]);
+    assert.equal(rgba[i * 4 + 1], legacy[i * 3 + 1]);
+    assert.equal(rgba[i * 4 + 2], legacy[i * 3 + 2]);
+    assert.equal(rgba[i * 4 + 3], 255);
+  }
+  assert.deepEqual(filter.ramp, rgba);
+  assert.match(describeLens(book), /edge strength, 0–254, curve 1\.6/);
+
+  // The revision fingerprints what changes the shader or the ramp — and only that.
+  const renamed = { ...book, name: 'Other' };
+  assert.equal(lensRevision(renamed), lensRevision(book), 'a name is not a shader change');
+  const retuned = { ...book, color: { ...book.color, high: 255 } };
+  assert.notEqual(lensRevision(retuned), lensRevision(book));
+  assert.match(compileLens(retuned).fragment, /float high = 255\.0000;/);
+  const recoloured = { ...book, stops: [{ at: 0, color: '#000000' }, { at: 1, color: '#ffffff' }] };
+  assert.notEqual(compileLens(recoloured).rampKey, filter.rampKey, 'a new ramp means a new upload');
+});
+
+test('lens channels: temporal ones decline stills, speed reuses the Speed state, missing ones say so', () => {
+  assert.deepEqual([...V2_CHANNELS], ['luma', 'edges', 'change', 'speed']);
+  const base = STARTER_LENSES[0];
+  const change = compileLens(sanitiseLens({ ...base, id: 'c', color: { channel: 'change', low: 0, high: 40, gamma: 1 } }));
+  assert.equal(change.temporal, true);
+  assert.equal(change.supportsPhoto, false, 'change lives at ANALYSIS resolution — no still');
+  assert.match(change.fragment, /uPrevious/);
+  const speed = compileLens(sanitiseLens({ ...base, id: 's', color: { channel: 'speed', low: 0, high: 0.35, gamma: 1 } }));
+  assert.equal(speed.temporal, true);
+  assert.ok(speed.state, 'a speed lens runs the same Speed state pass');
+  assert.equal(speed.state, filterById('speed').state, 'ONE speed estimator (Rule 4)');
+  assert.match(speed.fragment, /uFps/, 'widths per second need the delivered rate');
+  assert.match(speed.fragment, /uAnalysisWidth/);
+  // Brightness from a temporal channel also declines stills.
+  const lit = compileLens(sanitiseLens({ ...base, id: 'l', brightness: { channel: 'change', low: 0, high: 40, gamma: 1 } }));
+  assert.equal(lit.supportsPhoto, false);
+  assert.match(lit.fragment, /normBright/);
+  // A channel V2 does not compute compiles to an UNAVAILABLE filter — never a stand-in.
+  for (const id of ['relief', 'age', 'novelty']) {
+    assert.equal(channelAvailability(id).available, false);
+    const missing = compileLens(sanitiseLens({ ...base, id: `m-${id}`, color: { channel: id, low: 0, high: 1, gamma: 1 } }));
+    assert.match(missing.unavailableReason ?? '', /not built in V2 yet/);
+    assert.equal(missing.supportsPhoto, false);
+    assert.equal(missing.supportsVideo, false);
+  }
+  // Scene blend and base follow the legacy definition: blend mixes with scene luma.
+  const blended = compileLens(sanitiseLens({ ...base, id: 'b', base: 'scene', sceneBlend: 0.5 }));
+  assert.match(blended.fragment, /mix\(c, vec3\(sceneY\), 0\.5000\)/);
+  assert.match(blended.fragment, /vec3 base = vec3\(sceneY\);/);
+});
+
+test('custom lenses join the one registry as data entries', () => {
+  const builtIn = allFilters().map((f) => f.id);
+  assert.deepEqual(builtIn, FILTERS.map((f) => f.id), 'no custom entries until the shell sets them');
+  const book = compileLens(STARTER_LENSES[0]);
+  setCustomFilters([book]);
+  assert.deepEqual(allFilters().map((f) => f.id), [...FILTERS.map((f) => f.id), book.id]);
+  assert.equal(filterById(book.id), book, 'filterById resolves a lens like any filter');
+  assert.equal(filterById('rgb')?.id, 'rgb', 'built-ins are untouched');
+  setCustomFilters([]);
+  assert.equal(filterById(book.id), null);
 });

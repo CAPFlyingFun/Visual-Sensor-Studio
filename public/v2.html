@@ -126,6 +126,24 @@
     .thumb-difference { background: linear-gradient(135deg, #07124a 0 38%, #d52078 52%, #ff5c37 60%, #07124a 74%); }
     .thumb-speed { background: linear-gradient(90deg, #07124a 0 30%, #51118c 45%, #ff5c37 62%, #ffd93d 72%, #fff 78%, #07124a 84%); }
     .thumb-trails { background: linear-gradient(135deg, #07124a 0 20%, #2a0e5c 35%, #7a1a6a 50%, #d52078 65%, #ff9a3d 80%, #ffd93d 90%); }
+    .thumb.custom { display: grid; place-items: center; font-size: 26px; color: #8cbcff; }
+    .filter.unavailable { opacity: .45; }
+    /* The lens workbench: every slider has a paired number field — the number
+       is the value, the slider is a way to reach it (Joshua, 2026-09-01). */
+    .lens-field { display: grid; grid-template-columns: 82px minmax(0, 1fr) 76px; gap: 8px; align-items: center; margin: 6px 0; font-size: 12px; }
+    .lens-field label { color: var(--muted); }
+    .lens-field input[type="range"] { width: 100%; min-width: 0; }
+    .lens-field input[type="number"], .lens-field select, .lens-name { min-height: 36px; padding: 0 8px; border: 1px solid var(--line2); border-radius: 9px; background: #0b151f; color: var(--text); font-size: 13px; width: 100%; }
+    .lens-name { margin-bottom: 4px; }
+    .lens-stops { display: grid; gap: 6px; margin: 8px 0; }
+    .lens-stop { display: grid; grid-template-columns: 44px 76px minmax(0, 1fr) 36px; gap: 8px; align-items: center; }
+    .lens-stop input[type="color"] { width: 44px; height: 36px; padding: 0; border: 1px solid var(--line2); border-radius: 8px; background: transparent; }
+    .lens-stop input[type="number"] { min-height: 36px; padding: 0 8px; border: 1px solid var(--line2); border-radius: 9px; background: #0b151f; color: var(--text); width: 100%; }
+    .lens-stop button { min-height: 36px; border: 1px solid var(--line2); border-radius: 9px; background: #0d1a26; }
+    .lens-swatch { height: 18px; border-radius: 6px; border: 1px solid var(--line); }
+    .lens-presets { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+    .lens-presets button { min-height: 30px; padding: 0 10px; border: 1px solid var(--line2); border-radius: 8px; background: #0d1a26; font-size: 11px; }
+    .lens-describe { font-size: 11px; color: var(--muted); margin: 8px 0 0; }
     .filter small { display: block; font-size: 10px; color: #d9e3eb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
     .placeholder { margin: 10px 11px 0; padding: 18px 14px; border: 1px dashed #345064; border-radius: 14px; color: #9fb0bf; font-size: 12px; text-align: center; }
@@ -198,7 +216,48 @@
           <div class="section-title"><h2>Filters &amp; Lenses</h2><span class="hint">Swipe &rarr; · one shader for preview and photo</span></div>
           <div class="filters" id="v2FilterStrip"></div>
           <p class="hint" id="v2FilterNote"></p>
+          <div class="button-row" id="v2LensActions" hidden>
+            <button type="button" class="btn" id="v2LensEdit">Edit lens</button>
+            <button type="button" class="btn" id="v2LensImportButton">Import .lens.json</button>
+          </div>
         </section>
+
+        <!-- The lens workbench (Milestone E). Built from data: the channel list,
+             the bindings and the ramp stops are the lens document itself, and
+             the preview IS the lens running as the active filter. -->
+        <div class="card" id="v2LensWorkbench" hidden>
+          <h3 id="v2LensTitle">Custom lens</h3>
+          <input class="lens-name" id="v2LensName" type="text" maxlength="40" placeholder="Lens name" />
+          <div class="lens-field">
+            <label for="v2LensChannel">Colour from</label>
+            <select id="v2LensChannel"></select>
+            <span class="hint" id="v2LensUnit"></span>
+          </div>
+          <p class="hint" id="v2LensChannelMeaning"></p>
+          <div id="v2LensBindings"></div>
+          <div class="lens-swatch" id="v2LensSwatch"></div>
+          <div class="lens-presets" id="v2LensPresets"></div>
+          <div class="lens-stops" id="v2LensStops"></div>
+          <div class="button-row"><button type="button" class="btn" id="v2LensAddStop">+ Stop</button></div>
+          <div class="lens-field">
+            <label for="v2LensBase">Base</label>
+            <select id="v2LensBase">
+              <option value="black">black</option>
+              <option value="grey">grey</option>
+              <option value="scene">camera picture</option>
+            </select>
+            <span></span>
+          </div>
+          <div id="v2LensBlend"></div>
+          <p class="lens-describe" id="v2LensDescribe"></p>
+          <div class="button-row">
+            <button type="button" class="btn" id="v2LensSave">Save</button>
+            <button type="button" class="btn" id="v2LensExport">Export</button>
+            <button type="button" class="btn" id="v2LensDelete">Delete</button>
+            <button type="button" class="btn" id="v2LensClose">Close</button>
+          </div>
+          <p class="stage-note" id="v2LensStatus"></p>
+        </div>
 
         <!-- The main screen shows RESULTS, not instruments (Joshua, 2026-09-01:
              "hide all the diagnostics in settings, not in the main app"). The
@@ -213,6 +272,7 @@
           <p class="hint">Full measurements for every capture are under More.</p>
         </div>
       </div>
+      <input type="file" id="v2LensImport" accept=".json,application/json" hidden />
 
       <div id="v2MoreRoute" hidden>
         <div class="card">

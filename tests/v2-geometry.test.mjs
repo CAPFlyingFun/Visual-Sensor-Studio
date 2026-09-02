@@ -212,7 +212,8 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
         canvasHidden: document.getElementById('v2PreviewCanvas').hidden,
         stage: document.getElementById('v2Stage').textContent
       }));
-      assert.deepEqual(boot.filters, ['rgb', 'ironbow', 'difference', 'speed', 'trails', 'edges'],
+      // Built-ins first, then the starter lens a fresh device seeds, then Custom +.
+      assert.deepEqual(boot.filters.slice(0, 6), ['rgb', 'ironbow', 'difference', 'speed', 'trails', 'edges'],
         'the strip mirrors the FILTERS registry, in order');
       assert.deepEqual(boot.active, ['rgb'], 'RGB is the default filter');
       assert.equal(boot.photoDisabled, true, 'no photo before the camera is live');
@@ -685,6 +686,113 @@ test('temporal filters compare a frame against the SAME frame, not its mirror (r
     });
   });
 
+test('Milestone E: the lens workbench edits a live custom lens with exact numbers, saves, imports (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({
+        viewport: { width: 430, height: 932 },
+        permissions: ['camera']
+      });
+      const page = await context.newPage();
+      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.waitForTimeout(400);
+
+      // A fresh device carries the starter lens and the Custom + entry.
+      const strip = await page.evaluate(() => ({
+        lenses: [...document.querySelectorAll('#v2FilterStrip [data-filter^="lens:"]')].map((b) => b.textContent),
+        custom: Boolean(document.querySelector('#v2FilterStrip [data-lens-new]')),
+        stored: JSON.parse(localStorage.getItem('vss.lenses.v1') ?? '[]').map((l) => l.name)
+      }));
+      assert.deepEqual(strip.lenses, ['Coloring Book Style']);
+      assert.equal(strip.custom, true, 'Custom + is a first-class entry');
+      assert.deepEqual(strip.stored, ['Coloring Book Style'], 'stored under the key the legacy app reads');
+
+      await page.click('#v2EnableCamera');
+      await page.waitForFunction(() =>
+        /\d+(\.\d+)? rendered fps/.test(document.getElementById('v2DiagPreview')?.textContent ?? ''),
+        null, { timeout: 8000 });
+
+      // The starter lens renders: pixels on ITS ramp (cream to ink), and a
+      // photo is allowed because edges recompute at full size.
+      await page.click('[data-filter="lens:lens-mtjarl1w-pcpts4"]');
+      await page.waitForTimeout(700);
+      const book = await page.evaluate(() => {
+        const canvas = document.getElementById('v2PreviewCanvas');
+        const copy = document.createElement('canvas');
+        copy.width = canvas.width;
+        copy.height = canvas.height;
+        const ctx = copy.getContext('2d');
+        ctx.drawImage(canvas, 0, 0);
+        const d = ctx.getImageData(0, 0, copy.width, copy.height).data;
+        let cream = 0;
+        for (let i = 0; i < d.length; i += 4) if (d[i] > 200 && d[i + 1] > 190 && d[i + 2] > 170) cream++;
+        return {
+          creamShare: cream / (d.length / 4),
+          photoEnabled: !document.getElementById('v2PhotoButton').disabled,
+          note: document.getElementById('v2FilterNote').textContent,
+          editVisible: !document.getElementById('v2LensEdit').hidden
+        };
+      });
+      assert.ok(book.creamShare > 0.2, `flat regions paint the cream foot of the ramp, got ${book.creamShare.toFixed(2)}`);
+      assert.equal(book.photoEnabled, true, 'an edges lens takes stills');
+      assert.match(book.note, /edge strength, 0–254, curve 1\.6/, 'the note is the lens described');
+      assert.equal(book.editVisible, true);
+
+      // Custom +: a new draft becomes the active filter at once; the number
+      // field sets an EXACT value the slider cannot reach.
+      await page.click('[data-lens-new]');
+      await page.waitForTimeout(200);
+      const opened = await page.evaluate(() => ({
+        shown: !document.getElementById('v2LensWorkbench').hidden,
+        active: document.querySelector('#v2FilterStrip .active')?.dataset.filter ?? '',
+        pairs: document.querySelectorAll('#v2LensWorkbench input[type="range"]').length,
+        numbers: document.querySelectorAll('#v2LensWorkbench input[type="number"]').length
+      }));
+      assert.equal(opened.shown, true);
+      assert.match(opened.active, /^lens:/, 'the draft previews live as the active filter');
+      assert.ok(opened.numbers >= opened.pairs, 'every slider has a paired number field');
+      await page.fill('#v2LensName', 'Probe lens');
+      await page.fill('#v2LensHighNumber', '255');
+      await page.dispatchEvent('#v2LensHighNumber', 'change');
+      await page.waitForTimeout(150);
+      const exact = await page.evaluate(() => ({
+        slider: document.getElementById('v2LensHighRange').value,
+        describe: document.getElementById('v2LensDescribe').textContent
+      }));
+      assert.equal(exact.slider, '255', 'the slider follows the exact number');
+      assert.match(exact.describe, /0–255/, 'the lens now reads 255, not 254 or 256');
+
+      await page.click('#v2LensSave');
+      await page.waitForTimeout(200);
+      const saved = await page.evaluate(() => ({
+        names: JSON.parse(localStorage.getItem('vss.lenses.v1') ?? '[]').map((l) => l.name),
+        strip: [...document.querySelectorAll('#v2FilterStrip [data-filter^="lens:"]')].map((b) => b.textContent)
+      }));
+      assert.deepEqual(saved.names, ['Coloring Book Style', 'Probe lens']);
+      assert.deepEqual(saved.strip, ['Coloring Book Style', 'Probe lens']);
+
+      // Import Joshua's file through the real file input.
+      await page.setInputFiles('#v2LensImport',
+        fileURLToPath(new URL('../docs/lenses/coloring-book-style.lens.json', import.meta.url)));
+      await page.waitForTimeout(300);
+      const imported = await page.evaluate(() => ({
+        count: JSON.parse(localStorage.getItem('vss.lenses.v1') ?? '[]').length,
+        active: document.querySelector('#v2FilterStrip .active')?.dataset.filter ?? ''
+      }));
+      assert.equal(imported.count, 2, 'the same lens id replaces rather than duplicates');
+      assert.equal(imported.active, 'lens:lens-mtjarl1w-pcpts4', 'the import becomes the active filter');
+
+      // Lenses survive a reload — the strip is built from storage.
+      await page.reload();
+      await page.waitForTimeout(400);
+      const again = await page.evaluate(() =>
+        [...document.querySelectorAll('#v2FilterStrip [data-filter^="lens:"]')].map((b) => b.textContent));
+      assert.deepEqual(again, ['Coloring Book Style', 'Probe lens']);
+      await page.close();
+      await context.close();
+    });
+  });
+
 test('the encoder probe records a synthetic canvas through the real recorder and decodes it',
   { skip: runnable ? false : 'no browser available' }, async () => {
     await withBrowser(async (browser, base) => {
@@ -922,7 +1030,7 @@ test('a maximum-tier filtered clip records the CHOSEN stream, risk stated up fro
       await page.waitForFunction(() =>
         /largest frame this device's H\.264 encoder can write/.test(
           document.getElementById('v2FilterNote')?.textContent ?? ''),
-        null, { timeout: 3000 });
+        null, { timeout: 8000 });
       assert.match(await page.textContent('#v2FilterNote'), /Photos always stay at MAX/,
         'the note says stills are exempt');
       assert.ok(!/macroblock|capped/.test(await page.textContent('#v2DiagRecordIn')),

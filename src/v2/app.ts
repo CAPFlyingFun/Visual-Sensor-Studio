@@ -30,7 +30,15 @@ import {
   envelopeFromMeasurement, measurementFromRows, type EnvelopeMeasurement
 } from './capture/encoder-envelope.js';
 import { STREAM_TIERS, tierAvailable, tierById } from './camera/stream-tiers.js';
-import { FILTERS, filterById } from './filters/registry.js';
+import { FILTERS, allFilters, filterById, setCustomFilters } from './filters/registry.js';
+import { compileLens, channelAvailability, lensFilterId } from './filters/lens-shader.js';
+import { STARTER_LENSES } from './filters/starter-lenses.js';
+import {
+  CHANNELS, MAX_STOPS, MIN_STOPS, channelInfo, describeLens, rampToCss,
+  type ChannelId, type CustomLens
+} from '../vision/lens.js';
+import { deleteLens, loadLenses, newLensId, sanitiseLens, saveLens } from '../vision/lens-store.js';
+import { RAMP_PRESETS } from '../vision/lens-preview.js';
 import { GlRenderer } from './render/gl-renderer.js';
 import { capturePhoto } from './capture/photo.js';
 
@@ -163,7 +171,7 @@ function renderPreview(now: number): void {
   const target = recording?.path === 'filtered' ? recording.input : resolved.preview;
   // Stateful filters (Speed, Trails) advance their memory at the ANALYSIS
   // size — the same bounded size the frame history uses.
-  if (renderer.render(activeFilter, target, resolved.analysis)) {
+  if (renderer.render(activeFilter, target, resolved.analysis, { fps: readState().deliveredFps })) {
     if (recording?.path === 'filtered') {
       framesFedThisClip += 1;
       const second = Math.max(0, Math.floor((now - clipStartedAt) / 1000));
@@ -731,9 +739,17 @@ function renderFilterStrip(): void {
     ? `Clips at this stream size record at ${cap} — held under the encoder's frame limit `
       + '(RECORD IN names why). Photos stay at the full sensor.'
     : '';
+  const lensFilter = filterById(activeFilter);
+  const lensNote = lensFilter?.lens
+    ? lensFilter.unavailableReason
+      ? lensFilter.unavailableReason
+      : `${describeLens(lensFilter.lens)}.${lensFilter.supportsPhoto ? '' : ' Stills are declined — this channel lives at ANALYSIS resolution.'}`
+    : '';
   setText('v2FilterNote', rec
     ? 'Recording — stop to change filters.'
-    : `${FILTER_NOTES[activeFilter] ?? ''} ${capNote || warning}`.trim());
+    : `${lensNote || (FILTER_NOTES[activeFilter] ?? '')} ${capNote || warning}`.trim());
+  byId('v2LensActions').hidden = rec;
+  byId('v2LensEdit').hidden = !lensFilter?.lens;
 }
 
 /**
@@ -1201,6 +1217,414 @@ function showRoute(id: string): void {
   }
 }
 
+
+/* --- Milestone E: the lens workbench ------------------------------------- */
+
+/**
+ * A custom lens is the legacy DATA document, compiled to a V2 filter
+ * (filters/lens-shader.ts). This section owns the list of lenses (the same
+ * localStorage key the legacy app uses, so lenses authored there appear
+ * here), the draft being edited, and the workbench controls — every slider
+ * with a paired exact-number field. The preview is the lens itself running
+ * as the active filter; nothing here draws.
+ */
+const LENSES_SEEDED_KEY = 'vss.v2.lensesSeeded.v1';
+let lenses: CustomLens[] = [];
+let lensDraft: CustomLens | null = null;
+let lensDraftIsNew = false;
+
+function loadLensList(): void {
+  lenses = loadLenses(localStorage);
+  try {
+    if (lenses.length === 0 && !localStorage.getItem(LENSES_SEEDED_KEY)) {
+      for (const starter of STARTER_LENSES) lenses = saveLens(localStorage, lenses, starter).lenses;
+      localStorage.setItem(LENSES_SEEDED_KEY, '1');
+    }
+  } catch {
+    // Storage is optional; starters simply are not seeded.
+  }
+}
+
+/** The registry's custom entries: saved lenses, with the draft standing in for its own id. */
+function syncCustomFilters(): void {
+  const list = lensDraft
+    ? [...lenses.filter((lens) => lens.id !== lensDraft?.id), lensDraft]
+    : lenses;
+  setCustomFilters(list.map(compileLens));
+}
+
+function lensFromFilterId(id: string): CustomLens | null {
+  return filterById(id)?.lens ?? null;
+}
+
+/** Rebuild ONLY the custom entries of the strip (list changes, not slider moves). */
+function rebuildLensEntries(): void {
+  const strip = byId('v2FilterStrip');
+  for (const stale of strip.querySelectorAll('[data-filter^="lens:"], [data-lens-new]')) stale.remove();
+  for (const filter of allFilters().filter((f) => f.lens)) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'filter';
+    button.dataset.filter = filter.id;
+    if (filter.unavailableReason) button.classList.add('unavailable');
+    if (filter.id === readState().activeFilter) button.classList.add('active');
+    const thumb = document.createElement('div');
+    thumb.className = 'thumb';
+    thumb.style.background = rampToCss(filter.lens?.stops ?? []).replace('90deg', '135deg');
+    const label = document.createElement('small');
+    label.textContent = filter.name;
+    button.append(thumb, label);
+    button.addEventListener('click', () => {
+      // An unavailable lens never looks functional: the tap explains.
+      if (filter.unavailableReason) {
+        showToast(filter.unavailableReason);
+        return;
+      }
+      updateState({ activeFilter: filter.id });
+      renderPreview(performance.now());
+    });
+    strip.appendChild(button);
+  }
+  const custom = document.createElement('button');
+  custom.type = 'button';
+  custom.className = 'filter';
+  custom.dataset.lensNew = '1';
+  const thumb = document.createElement('div');
+  thumb.className = 'thumb custom';
+  thumb.textContent = '＋';
+  const label = document.createElement('small');
+  label.textContent = 'Custom +';
+  custom.append(thumb, label);
+  custom.addEventListener('click', () => openLensWorkbench(null));
+  strip.appendChild(custom);
+  renderedFilterKey = '';
+}
+
+/** One binding row: a slider and a number field that always agree; the number is exact. */
+function bindingField(
+  holder: HTMLElement, id: string, label: string,
+  range: { min: number; max: number; step: number },
+  read: () => number, write: (value: number) => void
+): void {
+  const row = document.createElement('div');
+  row.className = 'lens-field';
+  const text = document.createElement('label');
+  text.htmlFor = `${id}Number`;
+  text.textContent = label;
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.id = `${id}Range`;
+  slider.min = String(range.min);
+  slider.max = String(range.max);
+  slider.step = String(range.step);
+  const number = document.createElement('input');
+  number.type = 'number';
+  number.id = `${id}Number`;
+  number.inputMode = 'decimal';
+  number.step = 'any';
+  const show = () => {
+    const value = read();
+    // The number is the value; the slider must always be able to stand on
+    // it. A typed value beyond the slider's span widens the span rather
+    // than being clamped back to a near miss.
+    if (value > Number(slider.max)) slider.max = String(value);
+    if (value < Number(slider.min)) slider.min = String(value);
+    slider.value = String(value);
+    number.value = String(Number(value.toFixed(4)));
+  };
+  slider.addEventListener('input', () => {
+    write(Number(slider.value));
+    show();
+    lensDraftChanged();
+  });
+  number.addEventListener('change', () => {
+    const value = Number(number.value);
+    if (!Number.isFinite(value)) { show(); return; }
+    write(value);
+    show();
+    lensDraftChanged();
+  });
+  show();
+  row.append(text, slider, number);
+  holder.appendChild(row);
+}
+
+function renderLensBindings(): void {
+  const draft = lensDraft;
+  if (!draft) return;
+  const info = channelInfo(draft.color.channel);
+  const holder = byId('v2LensBindings');
+  holder.replaceChildren();
+  // Slider spans come from the channel's own default range with headroom;
+  // the number field is unbounded, so an exact value outside the slider's
+  // reach is one tap of typing away.
+  const span = Math.max(info.high, Math.abs(info.low)) * 1.5 || 1;
+  const step = span > 20 ? 1 : 0.001;
+  bindingField(holder, 'v2LensLow', 'Low', { min: 0, max: span, step },
+    () => draft.color.low, (v) => { draft.color.low = v; });
+  bindingField(holder, 'v2LensHigh', 'High', { min: 0, max: span, step },
+    () => draft.color.high, (v) => { draft.color.high = v; });
+  bindingField(holder, 'v2LensGamma', 'Curve', { min: 0.2, max: 3, step: 0.01 },
+    () => draft.color.gamma, (v) => { draft.color.gamma = v > 0 ? v : 1; });
+  setText('v2LensUnit', info.unit);
+  setText('v2LensChannelMeaning', info.meaning + (channelAvailability(info.id).available ? '' : ` ${channelAvailability(info.id).reason}`));
+  const blend = byId('v2LensBlend');
+  blend.replaceChildren();
+  bindingField(blend, 'v2LensBlendField', 'Picture', { min: 0, max: 1, step: 0.01 },
+    () => draft.sceneBlend, (v) => { draft.sceneBlend = Math.min(1, Math.max(0, v)); });
+}
+
+function renderLensStops(): void {
+  const draft = lensDraft;
+  if (!draft) return;
+  const holder = byId('v2LensStops');
+  holder.replaceChildren();
+  draft.stops.forEach((stop, index) => {
+    const row = document.createElement('div');
+    row.className = 'lens-stop';
+    const color = document.createElement('input');
+    color.type = 'color';
+    color.value = stop.color;
+    color.addEventListener('input', () => { stop.color = color.value; lensDraftChanged(); });
+    const at = document.createElement('input');
+    at.type = 'number';
+    at.inputMode = 'decimal';
+    at.step = 'any';
+    at.min = '0';
+    at.max = '1';
+    at.value = String(stop.at);
+    at.addEventListener('change', () => {
+      const value = Number(at.value);
+      stop.at = Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : stop.at;
+      at.value = String(stop.at);
+      lensDraftChanged();
+    });
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = '0';
+    slider.max = '1';
+    slider.step = '0.001';
+    slider.value = String(stop.at);
+    slider.addEventListener('input', () => { stop.at = Number(slider.value); at.value = slider.value; lensDraftChanged(); });
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = '−';
+    remove.disabled = draft.stops.length <= MIN_STOPS;
+    remove.addEventListener('click', () => {
+      draft.stops.splice(index, 1);
+      renderLensStops();
+      lensDraftChanged();
+    });
+    row.append(color, at, slider, remove);
+    holder.appendChild(row);
+  });
+  byId<HTMLButtonElement>('v2LensAddStop').disabled = draft.stops.length >= MAX_STOPS;
+}
+
+/** Every edit: recompile the draft's filter, refresh the swatch and the description. */
+function lensDraftChanged(): void {
+  const draft = lensDraft;
+  if (!draft) return;
+  syncCustomFilters();
+  byId('v2LensSwatch').style.background = rampToCss(draft.stops);
+  setText('v2LensDescribe', describeLens(draft));
+  renderedFilterKey = '';
+  renderFilterStrip();
+  renderPreview(performance.now());
+}
+
+function openLensWorkbench(existing: CustomLens | null): void {
+  if (readState().recording) return;
+  lensDraftIsNew = existing === null;
+  lensDraft = existing
+    ? sanitiseLens(JSON.parse(JSON.stringify(existing)))
+    : sanitiseLens({
+      id: newLensId(), name: 'New lens',
+      color: { channel: 'edges', low: 0, high: 255, gamma: 1 },
+      stops: RAMP_PRESETS.find((p) => p.name === 'Mono')?.stops ?? [{ at: 0, color: '#000000' }, { at: 1, color: '#ffffff' }],
+      base: 'black', sceneBlend: 0
+    });
+  const draft = lensDraft;
+  setText('v2LensTitle', lensDraftIsNew ? 'New custom lens' : `Edit “${draft.name}”`);
+  byId<HTMLInputElement>('v2LensName').value = draft.name;
+  const channel = byId<HTMLSelectElement>('v2LensChannel');
+  channel.replaceChildren();
+  for (const info of CHANNELS) {
+    const option = document.createElement('option');
+    option.value = info.id;
+    const availability = channelAvailability(info.id);
+    option.textContent = availability.available ? info.label : `${info.label} (not in V2 yet)`;
+    option.disabled = !availability.available;
+    channel.appendChild(option);
+  }
+  channel.value = draft.color.channel;
+  byId<HTMLSelectElement>('v2LensBase').value = draft.base;
+  const presets = byId('v2LensPresets');
+  presets.replaceChildren();
+  for (const preset of RAMP_PRESETS) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = preset.name;
+    button.style.background = rampToCss(preset.stops);
+    button.style.color = '#fff';
+    button.style.textShadow = '0 0 3px #000';
+    button.addEventListener('click', () => {
+      draft.stops = preset.stops.map((s) => ({ ...s }));
+      renderLensStops();
+      lensDraftChanged();
+    });
+    presets.appendChild(button);
+  }
+  byId<HTMLButtonElement>('v2LensDelete').hidden = lensDraftIsNew;
+  setText('v2LensStatus', '');
+  renderLensBindings();
+  renderLensStops();
+  byId('v2LensWorkbench').hidden = false;
+  syncCustomFilters();
+  rebuildLensEntries();
+  updateState({ activeFilter: lensFilterId(draft) });
+  lensDraftChanged();
+}
+
+function closeLensWorkbench(): void {
+  const draft = lensDraft;
+  lensDraft = null;
+  byId('v2LensWorkbench').hidden = true;
+  syncCustomFilters();
+  // An unsaved new lens leaves with the workbench; the strip follows.
+  if (draft && !lenses.some((lens) => lens.id === draft.id) && readState().activeFilter === lensFilterId(draft)) {
+    updateState({ activeFilter: 'rgb' });
+  }
+  rebuildLensEntries();
+  renderPreview(performance.now());
+}
+
+function saveLensDraft(): void {
+  const draft = lensDraft;
+  if (!draft) return;
+  draft.name = byId<HTMLInputElement>('v2LensName').value.trim() || draft.name;
+  const result = saveLens(localStorage, lenses, draft);
+  lenses = result.lenses;
+  if (!result.saved) {
+    setText('v2LensStatus', result.error ?? 'Could not save.');
+    return;
+  }
+  lensDraftIsNew = false;
+  byId<HTMLButtonElement>('v2LensDelete').hidden = false;
+  setText('v2LensTitle', `Edit “${draft.name}”`);
+  showToast(`Saved “${draft.name}”`);
+  syncCustomFilters();
+  rebuildLensEntries();
+}
+
+function deleteLensDraft(): void {
+  const draft = lensDraft;
+  if (!draft) return;
+  lenses = deleteLens(localStorage, lenses, draft.id);
+  lensDraft = null;
+  byId('v2LensWorkbench').hidden = true;
+  if (readState().activeFilter === lensFilterId(draft)) updateState({ activeFilter: 'rgb' });
+  syncCustomFilters();
+  rebuildLensEntries();
+  showToast(`Deleted “${draft.name}”`);
+  renderPreview(performance.now());
+}
+
+/** The export is the same document shape Joshua's .lens.json carries. */
+function exportLensDraft(): void {
+  const draft = lensDraft;
+  if (!draft) return;
+  const name = `${draft.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase() || 'lens'}.lens.json`;
+  const file = new File([JSON.stringify({ lenses: [draft] }, null, 2)], name, { type: 'application/json' });
+  const nav = navigator as Navigator & {
+    canShare?: (data: { files: File[] }) => boolean;
+    share?: (data: { files: File[] }) => Promise<void>;
+  };
+  if (typeof nav.share === 'function' && nav.canShare?.({ files: [file] }) !== false) {
+    void nav.share({ files: [file] }).catch(() => undefined);
+    return;
+  }
+  const url = URL.createObjectURL(file);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = name;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** Accepts {lenses:[...]}, a bare array, or one lens — every item sanitised on the way in. */
+function importLensDocuments(text: string): CustomLens[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  const items = Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === 'object' && Array.isArray((parsed as { lenses?: unknown }).lenses)
+      ? (parsed as { lenses: unknown[] }).lenses
+      : [parsed];
+  return items.map(sanitiseLens);
+}
+
+async function importLensFile(file: File): Promise<void> {
+  const imported = importLensDocuments(await file.text());
+  if (imported.length === 0) {
+    showToast('That file did not contain a lens.');
+    return;
+  }
+  for (const lens of imported) lenses = saveLens(localStorage, lenses, lens).lenses;
+  syncCustomFilters();
+  rebuildLensEntries();
+  updateState({ activeFilter: lensFilterId(imported[0]) });
+  showToast(`Imported ${imported.length === 1 ? `“${imported[0].name}”` : `${imported.length} lenses`}`);
+  renderPreview(performance.now());
+}
+
+byId('v2LensName').addEventListener('input', () => {
+  if (lensDraft) lensDraft.name = byId<HTMLInputElement>('v2LensName').value;
+});
+byId<HTMLSelectElement>('v2LensChannel').addEventListener('change', () => {
+  const draft = lensDraft;
+  if (!draft) return;
+  const channel = byId<HTMLSelectElement>('v2LensChannel').value as ChannelId;
+  const info = channelInfo(channel);
+  draft.color = { channel, low: info.low, high: info.high, gamma: draft.color.gamma };
+  renderLensBindings();
+  lensDraftChanged();
+});
+byId<HTMLSelectElement>('v2LensBase').addEventListener('change', () => {
+  if (!lensDraft) return;
+  lensDraft.base = byId<HTMLSelectElement>('v2LensBase').value as CustomLens['base'];
+  lensDraftChanged();
+});
+byId('v2LensAddStop').addEventListener('click', () => {
+  const draft = lensDraft;
+  if (!draft || draft.stops.length >= MAX_STOPS) return;
+  draft.stops.push({ at: 0.5, color: '#ff5c37' });
+  renderLensStops();
+  lensDraftChanged();
+});
+byId('v2LensSave').addEventListener('click', saveLensDraft);
+byId('v2LensDelete').addEventListener('click', deleteLensDraft);
+byId('v2LensExport').addEventListener('click', exportLensDraft);
+byId('v2LensClose').addEventListener('click', closeLensWorkbench);
+byId('v2LensImportButton').addEventListener('click', () => byId<HTMLInputElement>('v2LensImport').click());
+byId('v2LensEdit').addEventListener('click', () => {
+  const lens = lensFromFilterId(readState().activeFilter);
+  if (lens) openLensWorkbench(lens);
+});
+byId<HTMLInputElement>('v2LensImport').addEventListener('change', () => {
+  const input = byId<HTMLInputElement>('v2LensImport');
+  const file = input.files?.[0];
+  input.value = '';
+  if (file) void importLensFile(file);
+});
+
+
 /* --- Wiring -------------------------------------------------------------- */
 
 byId('v2EnableCamera').addEventListener('click', () => void startCamera());
@@ -1253,6 +1677,10 @@ byId('v2LegacyLink').addEventListener('click', () => {
 });
 
 buildFilterStrip();
+// Custom lenses append AFTER the built-ins, then the Custom + entry.
+loadLensList();
+syncCustomFilters();
+rebuildLensEntries();
 buildStreamTiers();
 buildDock();
 showRoute('camera');
