@@ -2350,7 +2350,10 @@ function populateChannelSelect(select: HTMLSelectElement, includeNone: boolean):
     none.textContent = 'Nothing (flat)';
     select.append(none);
   }
-  for (const channel of CHANNELS) {
+  // The lens FORMAT is shared with V2, but this engine measures only the
+  // greyscale fields; a colour field would render blank here, so it is not
+  // offered here. (V2's GPU pipeline measures them and offers them.)
+  for (const channel of CHANNELS.filter((c) => !c.gpuOnly)) {
     const option = document.createElement('option');
     option.value = channel.id;
     option.textContent = channel.label;
@@ -2369,7 +2372,7 @@ function populateChannelSelect(select: HTMLSelectElement, includeNone: boolean):
 function renderChannelButtons(): void {
   const container = byId('lensColorChannels');
   container.textContent = '';
-  for (const channel of CHANNELS) {
+  for (const channel of CHANNELS.filter((c) => !c.gpuOnly)) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'lens-channel';

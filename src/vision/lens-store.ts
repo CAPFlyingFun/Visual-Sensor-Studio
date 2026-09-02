@@ -29,7 +29,7 @@ import {
   MIN_STOPS,
   type ChannelId,
   type CustomLens,
-  type LensBase,
+  type LensBase, type LensOutput,
   type LensBinding,
   type LensStop
 } from './lens.js';
@@ -84,6 +84,14 @@ function sanitiseStops(raw: unknown): LensStop[] {
   return stops.sort((a, b) => a.at - b.at);
 }
 
+const OUTPUTS = new Set(['paint', 'mask', 'swap']);
+
+/** A colour or nothing — never a half-parsed string reaching a shader. */
+function hexOrUndefined(raw: unknown): string | undefined {
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  return /^#[0-9a-f]{6}$/i.test(text) ? text.toLowerCase() : undefined;
+}
+
 export function newLensId(): string {
   const random = Math.random().toString(36).slice(2, 8);
   return `lens-${Date.now().toString(36)}-${random}`;
@@ -110,7 +118,10 @@ export function sanitiseLens(raw: unknown): CustomLens {
     stops: sanitiseStops(source.stops),
     brightness: hasBrightness ? sanitiseBinding(source.brightness, 'luma') : undefined,
     base: BASES.has(String(source.base)) ? (source.base as LensBase) : 'black',
-    sceneBlend: clamp(finite(source.sceneBlend, 0), 0, 1)
+    sceneBlend: clamp(finite(source.sceneBlend, 0), 0, 1),
+    output: OUTPUTS.has(String(source.output)) ? (source.output as LensOutput) : undefined,
+    reference: hexOrUndefined(source.reference),
+    target: hexOrUndefined(source.target)
   };
 }
 

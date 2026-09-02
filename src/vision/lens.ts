@@ -30,7 +30,16 @@ export type ChannelId =
   | 'edges'
   | 'relief'
   | 'age'
-  | 'novelty';
+  | 'novelty'
+  // Colour fields (V2, on the GPU). Everything above is greyscale; these are
+  // the first fields that read the picture's COLOUR, which is what most of
+  // the lens-pack ideas were actually asking for.
+  | 'hue'
+  | 'saturation'
+  | 'red'
+  | 'green'
+  | 'blue'
+  | 'colourDistance';
 
 export interface ChannelInfo {
   id: ChannelId;
@@ -45,6 +54,16 @@ export interface ChannelInfo {
   high: number;
   /** True when the field needs a previous frame, so it is blank when still. */
   temporal: boolean;
+  /**
+   * Measured only by V2's GPU pipeline. The lens FORMAT is shared, but the
+   * fields an engine can actually measure differ, and an engine offers only
+   * what it measures — the same capability-metadata rule the filter registry
+   * follows. The legacy CPU pipeline leaves these out of its editor rather
+   * than offering a field it would render blank.
+   */
+  gpuOnly?: boolean;
+  /** Needs the lens's reference colour to mean anything. */
+  needsReference?: boolean;
 }
 
 /**
@@ -121,6 +140,67 @@ export const CHANNELS: readonly ChannelInfo[] = [
     low: 0,
     high: 60,
     temporal: true
+  },
+  {
+    id: 'hue',
+    label: 'Hue',
+    meaning: 'Where this pixel sits on the colour wheel. A grey pixel has no meaningful hue, so pair it with colour strength.',
+    unit: 'degrees',
+    low: 0,
+    high: 360,
+    temporal: false,
+    gpuOnly: true
+  },
+  {
+    id: 'saturation',
+    label: 'Colour strength',
+    meaning: 'How far this pixel is from grey.',
+    unit: '0–255',
+    low: 0,
+    high: 255,
+    temporal: false,
+    gpuOnly: true
+  },
+  {
+    id: 'red',
+    label: 'Red channel',
+    meaning: 'The sensor’s red channel on its own.',
+    unit: '0–255',
+    low: 0,
+    high: 255,
+    temporal: false,
+    gpuOnly: true
+  },
+  {
+    id: 'green',
+    label: 'Green channel',
+    meaning: 'The sensor’s green channel on its own.',
+    unit: '0–255',
+    low: 0,
+    high: 255,
+    temporal: false,
+    gpuOnly: true
+  },
+  {
+    id: 'blue',
+    label: 'Blue channel',
+    meaning: 'The sensor’s blue channel on its own.',
+    unit: '0–255',
+    low: 0,
+    high: 255,
+    temporal: false,
+    gpuOnly: true
+  },
+  {
+    id: 'colourDistance',
+    label: 'Distance from a colour',
+    meaning: 'How far this pixel is from the reference colour — hue, strength and brightness together. 0 is an exact match. Hue counts for less where either colour is nearly grey, because grey has no hue to compare.',
+    unit: '0–255',
+    low: 0,
+    high: 70,
+    temporal: false,
+    gpuOnly: true,
+    needsReference: true
   }
 ];
 
@@ -154,6 +234,22 @@ export interface LensBinding {
 /** What shows through where the lens paints nothing. */
 export type LensBase = 'black' | 'grey' | 'scene';
 
+/**
+ * What the lens DOES with the field it measures.
+ *
+ *   paint  the original: field → ramp colour. A false-colour map.
+ *   mask   keep the camera's own colour where the field reads high, and drop
+ *          to grey where it reads low. Colour Isolation and Colour Hide are
+ *          this one mode with the range the other way round.
+ *   swap   recolour the matched pixels toward a target colour, keeping each
+ *          pixel's own brightness so texture and shading survive. White paper
+ *          to pink is this.
+ *
+ * `paint` is the default, so every lens written before this existed still
+ * means exactly what it meant.
+ */
+export type LensOutput = 'paint' | 'mask' | 'swap';
+
 export interface CustomLens {
   /** Document format, so an old export can be recognised rather than guessed. */
   version: 1;
@@ -169,6 +265,12 @@ export interface CustomLens {
   base: LensBase;
   /** How much of the camera picture shows under the colour, 0..1. */
   sceneBlend: number;
+  /** What the lens does with the field. Absent means 'paint'. */
+  output?: LensOutput;
+  /** '#rrggbb' — the colour `colourDistance` measures against. */
+  reference?: string;
+  /** '#rrggbb' — what `swap` recolours matched pixels toward. */
+  target?: string;
 }
 
 export const MAX_STOPS = 8;
@@ -205,7 +307,12 @@ export function describeLens(lens: CustomLens): string {
     parts.push(`brightness from ${b.label.toLowerCase()},`
       + ` ${bLo.toFixed(bDigits)}–${bHi.toFixed(bDigits)}${bUnit}${bInverted ? ' (inverted)' : ''}`);
   }
-  parts.push(`${lens.stops.length} colour stops`);
+  if (lens.reference && channelInfo(lens.color.channel).needsReference) {
+    parts.push(`measured from ${lens.reference}`);
+  }
+  if (lens.output === 'mask') parts.push('keeping the camera’s colour where it matches, grey elsewhere');
+  else if (lens.output === 'swap') parts.push(`recolouring matches toward ${lens.target ?? '#ffffff'}`);
+  else parts.push(`${lens.stops.length} colour stops`);
   if (lens.sceneBlend > 0) parts.push(`${Math.round(lens.sceneBlend * 100)}% picture showing through`);
   parts.push(`over ${lens.base === 'scene' ? 'the camera picture' : lens.base}`);
   return parts.join(' · ');

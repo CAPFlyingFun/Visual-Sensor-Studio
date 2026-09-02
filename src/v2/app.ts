@@ -1320,20 +1320,37 @@ function showRoute(id: string): void {
  * with a paired exact-number field. The preview is the lens itself running
  * as the active filter; nothing here draws.
  */
-const LENSES_SEEDED_KEY = 'vss.v2.lensesSeeded.v1';
+const LENSES_SEEDED_KEY = 'vss.v2.lensesSeeded.v2';
 let lenses: CustomLens[] = [];
 let lensDraft: CustomLens | null = null;
 let lensDraftIsNew = false;
 
+/**
+ * Seeding is remembered PER STARTER, not as one flag: a device that was
+ * seeded before a new starter existed still receives it, and a starter the
+ * user deleted stays deleted. The record is the ids ever offered.
+ */
 function loadLensList(): void {
   lenses = loadLenses(localStorage);
+  let seeded: string[] = [];
   try {
-    if (lenses.length === 0 && !localStorage.getItem(LENSES_SEEDED_KEY)) {
-      for (const starter of STARTER_LENSES) lenses = saveLens(localStorage, lenses, starter).lenses;
-      localStorage.setItem(LENSES_SEEDED_KEY, '1');
-    }
+    const raw: unknown = JSON.parse(localStorage.getItem(LENSES_SEEDED_KEY) ?? '[]');
+    seeded = Array.isArray(raw) ? raw.filter((id): id is string => typeof id === 'string') : [];
   } catch {
-    // Storage is optional; starters simply are not seeded.
+    seeded = [];
+  }
+  const offered = new Set(seeded);
+  for (const starter of STARTER_LENSES) {
+    if (offered.has(starter.id)) continue;
+    offered.add(starter.id);
+    if (!lenses.some((lens) => lens.id === starter.id)) {
+      lenses = saveLens(localStorage, lenses, starter).lenses;
+    }
+  }
+  try {
+    localStorage.setItem(LENSES_SEEDED_KEY, JSON.stringify([...offered]));
+  } catch {
+    // Storage is optional; the starters are in memory for this session.
   }
 }
 
@@ -1458,6 +1475,17 @@ function renderLensBindings(): void {
     () => draft.color.high, (v) => { draft.color.high = v; });
   bindingField(holder, 'v2LensGamma', 'Curve', { min: 0.2, max: 3, step: 0.01 },
     () => draft.color.gamma, (v) => { draft.color.gamma = v > 0 ? v : 1; });
+  // The colour fields need two more things: what to measure against, and
+  // (for a swap) what to become. Both are rows that appear only when the
+  // lens actually uses them.
+  const referenceRow = byId('v2LensReferenceRow');
+  referenceRow.hidden = !info.needsReference;
+  byId<HTMLInputElement>('v2LensReference').value = draft.reference ?? '#ffffff';
+  byId<HTMLButtonElement>('v2LensUseSample').disabled = pickedColor === null;
+  const targetRow = byId('v2LensTargetRow');
+  targetRow.hidden = (draft.output ?? 'paint') !== 'swap';
+  byId<HTMLInputElement>('v2LensTarget').value = draft.target ?? '#ffffff';
+  byId<HTMLSelectElement>('v2LensOutput').value = draft.output ?? 'paint';
   setText('v2LensUnit', info.unit);
   setText('v2LensChannelMeaning', info.meaning + (channelAvailability(info.id).available ? '' : ` ${channelAvailability(info.id).reason}`));
   const blend = byId('v2LensBlend');
@@ -1695,6 +1723,33 @@ byId<HTMLSelectElement>('v2LensBase').addEventListener('change', () => {
   lensDraft.base = byId<HTMLSelectElement>('v2LensBase').value as CustomLens['base'];
   lensDraftChanged();
 });
+byId<HTMLSelectElement>('v2LensOutput').addEventListener('change', () => {
+  const draft = lensDraft;
+  if (!draft) return;
+  draft.output = byId<HTMLSelectElement>('v2LensOutput').value as CustomLens['output'];
+  renderLensBindings();
+  lensDraftChanged();
+});
+byId<HTMLInputElement>('v2LensReference').addEventListener('input', () => {
+  if (!lensDraft) return;
+  lensDraft.reference = byId<HTMLInputElement>('v2LensReference').value;
+  lensDraftChanged();
+});
+byId<HTMLInputElement>('v2LensTarget').addEventListener('input', () => {
+  if (!lensDraft) return;
+  lensDraft.target = byId<HTMLInputElement>('v2LensTarget').value;
+  lensDraftChanged();
+});
+byId('v2LensUseSample').addEventListener('click', () => {
+  const colour = pickedColor;
+  if (!lensDraft || !colour) return;
+  // The picker's reading becomes the thing the lens measures against — the
+  // two halves of the Colour Picker Lens card, joined.
+  lensDraft.reference = toHex([colour.r, colour.g, colour.b]);
+  renderLensBindings();
+  lensDraftChanged();
+  showToast(`Measuring from ${lensDraft.reference}`);
+});
 byId('v2LensAddStop').addEventListener('click', () => {
   const draft = lensDraft;
   if (!draft || draft.stops.length >= MAX_STOPS) return;
@@ -1774,6 +1829,8 @@ function renderPickedColor(): void {
     + `mean of a ${PICK_PATCH}×${PICK_PATCH} patch of camera pixels`);
   copy.disabled = false;
   addStop.disabled = !lensDraft || lensDraft.stops.length >= MAX_STOPS;
+  const useSample = document.getElementById('v2LensUseSample');
+  if (useSample instanceof HTMLButtonElement) useSample.disabled = lensDraft === null;
 }
 
 function sampleAtSource(point: Point): void {

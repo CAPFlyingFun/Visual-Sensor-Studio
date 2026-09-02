@@ -300,6 +300,25 @@
             <span class="hint" id="v2LensUnit"></span>
           </div>
           <p class="hint" id="v2LensChannelMeaning"></p>
+          <div class="lens-field">
+            <label for="v2LensOutput">Does</label>
+            <select id="v2LensOutput">
+              <option value="paint">paint false colour</option>
+              <option value="mask">keep colour where it matches</option>
+              <option value="swap">recolour the matches</option>
+            </select>
+            <span></span>
+          </div>
+          <div class="lens-field" id="v2LensReferenceRow" hidden>
+            <label for="v2LensReference">Reference</label>
+            <input type="color" id="v2LensReference" />
+            <button type="button" class="chip" id="v2LensUseSample">Use sample</button>
+          </div>
+          <div class="lens-field" id="v2LensTargetRow" hidden>
+            <label for="v2LensTarget">Recolour to</label>
+            <input type="color" id="v2LensTarget" />
+            <span></span>
+          </div>
           <div id="v2LensBindings"></div>
           <div class="lens-swatch" id="v2LensSwatch"></div>
           <div class="lens-presets" id="v2LensPresets"></div>

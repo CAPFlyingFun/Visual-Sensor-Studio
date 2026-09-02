@@ -717,14 +717,16 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
       await page.waitForTimeout(400);
 
       // A fresh device carries the starter lens and the Custom + entry.
+      const STARTERS = ['Coloring Book Style', 'Colour Splash', 'Colour Hide',
+        'Paper → Pink', 'Hue Map', 'Colour Strength', 'Red Channel'];
       const strip = await page.evaluate(() => ({
         lenses: [...document.querySelectorAll('#v2FilterStrip [data-filter^="lens:"]')].map((b) => b.textContent),
         custom: Boolean(document.querySelector('#v2FilterStrip [data-lens-new]')),
         stored: JSON.parse(localStorage.getItem('vss.lenses.v1') ?? '[]').map((l) => l.name)
       }));
-      assert.deepEqual(strip.lenses, ['Coloring Book Style']);
+      assert.deepEqual(strip.lenses, STARTERS, 'the whole starter pack is offered');
       assert.equal(strip.custom, true, 'Custom + is a first-class entry');
-      assert.deepEqual(strip.stored, ['Coloring Book Style'], 'stored under the key the legacy app reads');
+      assert.deepEqual(strip.stored, STARTERS, 'stored under the key the legacy app reads');
 
       await page.click('#v2EnableCamera');
       await page.waitForFunction(() =>
@@ -787,8 +789,8 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
         names: JSON.parse(localStorage.getItem('vss.lenses.v1') ?? '[]').map((l) => l.name),
         strip: [...document.querySelectorAll('#v2FilterStrip [data-filter^="lens:"]')].map((b) => b.textContent)
       }));
-      assert.deepEqual(saved.names, ['Coloring Book Style', 'Probe lens']);
-      assert.deepEqual(saved.strip, ['Coloring Book Style', 'Probe lens']);
+      assert.deepEqual(saved.names, [...STARTERS, 'Probe lens']);
+      assert.deepEqual(saved.strip, [...STARTERS, 'Probe lens']);
 
       // 🔄 Reverse: the same colours, read the other way.
       const before = await page.evaluate(() =>
@@ -925,7 +927,7 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
         count: JSON.parse(localStorage.getItem('vss.lenses.v1') ?? '[]').length,
         active: document.querySelector('#v2FilterStrip .active')?.dataset.filter ?? ''
       }));
-      assert.equal(imported.count, 2, 'the same lens id replaces rather than duplicates');
+      assert.equal(imported.count, STARTERS.length + 1, 'the same lens id replaces rather than duplicates');
       assert.equal(imported.active, 'lens:lens-mtjarl1w-pcpts4', 'the import becomes the active filter');
 
       // Lenses survive a reload — the strip is built from storage.
@@ -936,9 +938,104 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
         guide: document.querySelector('#v2GuideRow .active')?.dataset.guide ?? '',
         reticle: document.getElementById('v2ReticleToggle').classList.contains('active')
       }));
-      assert.deepEqual(again.lenses, ['Coloring Book Style', 'Probe lens']);
+      assert.deepEqual(again.lenses, [...STARTERS, 'Probe lens']);
       assert.equal(again.guide, 'center', 'the chosen guide is remembered');
       assert.equal(again.reticle, false, 'and so is leaving the reticle off');
+      await page.close();
+      await context.close();
+    });
+  });
+
+test('colour lenses: mask keeps the camera\'s colour, swap recolours, both take stills (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({
+        viewport: { width: 430, height: 932 },
+        permissions: ['camera']
+      });
+      const page = await context.newPage();
+      await page.goto(`${base}/v2.html?scene=v2`);
+      await page.waitForTimeout(400);
+      await page.click('#v2EnableCamera');
+      await page.waitForFunction(() =>
+        /\d+(\.\d+)? rendered fps/.test(document.getElementById('v2DiagPreview')?.textContent ?? ''),
+        null, { timeout: 8000 });
+
+      const look = () => page.evaluate(() => {
+        const canvas = document.getElementById('v2PreviewCanvas');
+        const copy = document.createElement('canvas');
+        copy.width = canvas.width;
+        copy.height = canvas.height;
+        copy.getContext('2d').drawImage(canvas, 0, 0);
+        const d = copy.getContext('2d').getImageData(0, 0, copy.width, copy.height).data;
+        let drawn = 0;
+        let coloured = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          if (d[i] + d[i + 1] + d[i + 2] > 0) drawn++;
+          // A pixel whose channels differ is carrying colour, not grey.
+          if (Math.max(d[i], d[i + 1], d[i + 2]) - Math.min(d[i], d[i + 1], d[i + 2]) > 12) coloured++;
+        }
+        return {
+          drawn: drawn / (d.length / 4),
+          coloured: coloured / (d.length / 4),
+          photo: !document.getElementById('v2PhotoButton').disabled,
+          note: document.getElementById('v2FilterNote').textContent,
+          stage: document.getElementById('v2Stage').textContent
+        };
+      });
+
+      for (const [id, expect] of [
+        ['lens:lens-v2-colour-splash', /keeping the camera’s colour where it matches/],
+        ['lens:lens-v2-paper-pink', /recolouring matches toward/],
+        ['lens:lens-v2-hue-map', /Colour from hue/i]
+      ]) {
+        await page.click(`[data-filter="${id}"]`);
+        await page.waitForTimeout(700);
+        const seen = await look();
+        assert.ok(!/shader failed/i.test(seen.stage), `${id}: compiles, got "${seen.stage}"`);
+        assert.ok(seen.drawn > 0.5, `${id}: draws a picture`);
+        assert.equal(seen.photo, true, `${id}: a colour field is per-pixel, so stills are honest`);
+        assert.match(seen.note, expect, `${id}: the note describes what the lens does`);
+      }
+
+      // Colour Splash is the mask mode: mostly grey, with matched colour kept.
+      await page.click('[data-filter="lens:lens-v2-colour-splash"]');
+      await page.waitForTimeout(700);
+      const splash = await look();
+      await page.click('[data-filter="rgb"]');
+      await page.waitForTimeout(500);
+      const raw = await look();
+      assert.ok(splash.coloured < raw.coloured,
+        `mask mutes what does not match: ${splash.coloured.toFixed(3)} vs raw ${raw.coloured.toFixed(3)}`);
+
+      // The workbench shows the rows the lens actually uses, and the picker's
+      // sample can become the reference it measures against.
+      await page.click('[data-filter="lens:lens-v2-colour-splash"]');
+      await page.waitForTimeout(300);
+      await page.click('#v2LensEdit');
+      await page.waitForTimeout(300);
+      const rows = await page.evaluate(() => ({
+        output: document.getElementById('v2LensOutput').value,
+        reference: !document.getElementById('v2LensReferenceRow').hidden,
+        target: !document.getElementById('v2LensTargetRow').hidden,
+        refValue: document.getElementById('v2LensReference').value
+      }));
+      assert.equal(rows.output, 'mask');
+      assert.equal(rows.reference, true, 'a distance lens shows what it measures from');
+      assert.equal(rows.target, false, 'and no swap target it does not use');
+      assert.equal(rows.refValue, '#c81e28');
+
+      await page.click('#v2PickColor');
+      await page.waitForTimeout(150);
+      await page.mouse.click(215, 300);
+      await page.waitForTimeout(250);
+      const hex = (await page.textContent('#v2PickerHex')).toLowerCase();
+      await page.click('#v2LensUseSample');
+      await page.waitForTimeout(300);
+      assert.equal(await page.evaluate(() =>
+        document.getElementById('v2LensReference').value), hex,
+        'the sampled colour becomes the reference');
+      assert.match(await page.textContent('#v2LensDescribe'), /measured from/);
       await page.close();
       await context.close();
     });

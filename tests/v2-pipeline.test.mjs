@@ -24,7 +24,7 @@ import {
 import { countMp4Frames } from '../.test-build/v2/capture/mp4-frames.js';
 import {
   V2_CHANNELS, channelAvailability, compileLens, lensFilterId, lensRampRgba, lensRevision,
-  reverseStops
+  reverseStops, rgbToHsv
 } from '../.test-build/v2/filters/lens-shader.js';
 import {
   averageRgb, coverScale, patchBoxPercent, patchRect, tapToSource
@@ -32,7 +32,7 @@ import {
 import { GUIDES, DEFAULT_GUIDE, guideById } from '../.test-build/v2/render/guides.js';
 import { allFilters, setCustomFilters } from '../.test-build/v2/filters/registry.js';
 import { STARTER_LENSES } from '../.test-build/v2/filters/starter-lenses.js';
-import { buildRampLut, describeLens } from '../.test-build/vision/lens.js';
+import { CHANNELS, buildRampLut, channelInfo, describeLens } from '../.test-build/vision/lens.js';
 import { sanitiseLens } from '../.test-build/vision/lens-store.js';
 
 /*
@@ -740,7 +740,8 @@ test('a custom lens compiles to a V2 filter in legacy units, with its own ramp',
 });
 
 test('lens channels: temporal ones decline stills, speed reuses the Speed state, missing ones say so', () => {
-  assert.deepEqual([...V2_CHANNELS], ['luma', 'edges', 'change', 'speed']);
+  assert.deepEqual([...V2_CHANNELS].slice(0, 4), ['luma', 'edges', 'change', 'speed'],
+    'the greyscale fields, then the colour ones');
   const base = STARTER_LENSES[0];
   const change = compileLens(sanitiseLens({ ...base, id: 'c', color: { channel: 'change', low: 0, high: 40, gamma: 1 } }));
   assert.equal(change.temporal, true);
@@ -905,4 +906,112 @@ test('the sample ring on screen is the sample patch, on both axes', () => {
   assert.ok(Math.abs(widthPx - 9 * coverScale(box, source)) < 1e-9,
     'the ring is nine source pixels at the cover scale — not a decorative size');
   assert.equal(patchBoxPercent({ width: 0, height: 0 }, source, 9), null);
+});
+
+/* --- The colour fields: one batch, most of the Lens Pack falls out -------- */
+
+test('colour fields are shared as data but offered only by the engine that measures them', () => {
+  const colour = ['hue', 'saturation', 'red', 'green', 'blue', 'colourDistance'];
+  for (const id of colour) {
+    const info = channelInfo(id);
+    assert.equal(info.id, id, `${id} is a real channel, not a fallback to luma`);
+    assert.equal(info.gpuOnly, true, `${id} is measured by V2's GPU pipeline`);
+    assert.equal(info.temporal, false, 'a colour field reads one frame');
+    assert.ok(info.meaning.length > 20, `${id} says what it physically is`);
+    assert.ok(V2_CHANNELS.includes(id), `${id} is offered in V2`);
+    assert.equal(channelAvailability(id).available, true);
+  }
+  assert.equal(channelInfo('colourDistance').needsReference, true);
+  assert.ok(colour.every((id) => !channelInfo(id).needsReference || id === 'colourDistance'));
+  // The legacy engine measures none of them, and its editor says so by
+  // leaving them out rather than offering a field it renders blank.
+  const legacy = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const offers = legacy.match(/for \(const channel of CHANNELS.*/g) ?? [];
+  assert.ok(offers.length >= 2, 'the legacy editor builds its channel list twice');
+  for (const line of offers) {
+    assert.match(line, /gpuOnly/, `the legacy editor must filter GPU-only fields: ${line}`);
+  }
+  // Greyscale fields are untouched by the addition.
+  for (const id of ['luma', 'speed', 'change', 'edges', 'relief', 'age', 'novelty']) {
+    assert.ok(!channelInfo(id).gpuOnly, `${id} stays available to both engines`);
+  }
+  assert.equal(CHANNELS.length, 13);
+});
+
+test('rgbToHsv agrees with the shader convention', () => {
+  const near = (a, b) => Math.abs(a - b) < 1e-6;
+  const [rh, rs, rv] = rgbToHsv('#ff0000');
+  assert.ok(near(rh, 0) && near(rs, 1) && near(rv, 1), 'red sits at the wheel\'s origin');
+  const [gh] = rgbToHsv('#00ff00');
+  assert.ok(near(gh, 1 / 3), 'green is a third of the way round');
+  const [bh] = rgbToHsv('#0000ff');
+  assert.ok(near(bh, 2 / 3));
+  const [, ws, wv] = rgbToHsv('#ffffff');
+  assert.ok(near(ws, 0) && near(wv, 1), 'white has no colour strength');
+  const [, ks, kv] = rgbToHsv('#000000');
+  assert.ok(near(ks, 0) && near(kv, 0), 'black is defined, not a divide by zero');
+});
+
+test('the three output modes are one lens document away from each other', () => {
+  const splash = STARTER_LENSES.find((l) => l.id === 'lens-v2-colour-splash');
+  const hide = STARTER_LENSES.find((l) => l.id === 'lens-v2-colour-hide');
+  // Isolate and Hide are the SAME lens with the range the other way round.
+  assert.equal(splash.output, 'mask');
+  assert.equal(hide.output, 'mask');
+  assert.deepEqual(
+    { low: splash.color.low, high: splash.color.high },
+    { low: hide.color.high, high: hide.color.low },
+    'one mode, two features, by the direction of the range');
+
+  const mask = compileLens(splash).fragment;
+  assert.match(mask, /mix\(vec3\(sceneY\), scene, t\)/, 'mask keeps the scene where it matches');
+  assert.match(mask, /rgb2hsv/, 'a colour distance needs HSV');
+  assert.match(mask, /const vec3 REF_HSV = vec3\(0\.99\d+, 0\.8\d+, 0\.78\d+\)/,
+    'the reference colour is baked in as the measured HSV of #c81e28');
+  assert.doesNotMatch(mask, /hsv2rgb/, 'nothing is written back to colour here');
+
+  const swap = compileLens(STARTER_LENSES.find((l) => l.id === 'lens-v2-paper-pink')).fragment;
+  assert.match(swap, /hsv2rgb\(vec3\(TARGET_HSV\.x, TARGET_HSV\.y, rgb2hsv\(scene\)\.z\)\)/,
+    'a swap takes the target hue and keeps each pixel\'s own brightness');
+  assert.match(swap, /const vec3 TARGET_HSV/);
+
+  const paint = compileLens(STARTER_LENSES.find((l) => l.id === 'lens-v2-hue-map')).fragment;
+  assert.match(paint, /texture2D\(uRamp, vec2\(t, 0\.5\)\)/, 'paint is still the ramp');
+  assert.doesNotMatch(paint, /hsv2rgb/);
+  assert.match(paint, /rgb2hsv/, 'but hue needs HSV to be measured at all');
+
+  // A lens written before output modes existed still means what it meant.
+  const book = STARTER_LENSES[0];
+  assert.equal(book.output, undefined);
+  assert.match(compileLens(book).fragment, /texture2D\(uRamp, vec2\(t, 0\.5\)\)/);
+  assert.doesNotMatch(compileLens(book).fragment, /rgb2hsv/, 'and pays for nothing it does not use');
+
+  // The shader changes when any of the new fields change.
+  const base = lensRevision(splash);
+  assert.notEqual(lensRevision({ ...splash, output: 'paint' }), base);
+  assert.notEqual(lensRevision({ ...splash, reference: '#00ff00' }), base);
+  assert.notEqual(lensRevision({ ...splash, target: '#00ff00' }), base);
+
+  // Colour lenses read one frame, so a still is honest.
+  for (const id of ['lens-v2-colour-splash', 'lens-v2-paper-pink', 'lens-v2-hue-map',
+    'lens-v2-colour-strength', 'lens-v2-red-solo']) {
+    const filter = compileLens(STARTER_LENSES.find((l) => l.id === id));
+    assert.equal(filter.supportsPhoto, true, `${id} takes stills`);
+    assert.equal(filter.temporal, false);
+    assert.equal(filter.unavailableReason, undefined);
+  }
+});
+
+test('the starter pack is valid, unique, and describes itself honestly', () => {
+  assert.equal(new Set(STARTER_LENSES.map((l) => l.id)).size, STARTER_LENSES.length);
+  for (const lens of STARTER_LENSES) {
+    assert.deepEqual(JSON.parse(JSON.stringify(sanitiseLens(lens))), JSON.parse(JSON.stringify(lens)),
+      `${lens.name} survives a save/load round trip unchanged`);
+    assert.ok(channelAvailability(lens.color.channel).available,
+      `${lens.name} uses a field V2 measures`);
+  }
+  assert.match(describeLens(STARTER_LENSES.find((l) => l.id === 'lens-v2-colour-splash')),
+    /measured from #c81e28.*keeping the camera’s colour/);
+  assert.match(describeLens(STARTER_LENSES.find((l) => l.id === 'lens-v2-paper-pink')),
+    /recolouring matches toward #ff5ca8/);
 });

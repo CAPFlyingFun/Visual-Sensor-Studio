@@ -17,13 +17,36 @@
  */
 
 import {
-  buildRampLut, channelInfo,
+  buildRampLut, channelInfo, parseHex,
   type ChannelId, type CustomLens, type LensBinding, type LensStop
 } from '../../vision/lens.js';
 import { SHADER_HEADER, SPEED_STATE, type FilterDefinition } from './registry.js';
 
 /** Channels V2 computes on the GPU, in legacy units. */
-export const V2_CHANNELS: readonly ChannelId[] = ['luma', 'edges', 'change', 'speed'];
+export const V2_CHANNELS: readonly ChannelId[] = [
+  'luma', 'edges', 'change', 'speed',
+  // The colour fields — one pass over the frame, no state, no history.
+  'hue', 'saturation', 'red', 'green', 'blue', 'colourDistance'
+];
+
+/** Hue 0..1, saturation 0..1, value 0..1 — the shader's own convention. */
+export function rgbToHsv(hex: string): [number, number, number] {
+  const [r255, g255, b255] = parseHex(hex);
+  const r = r255 / 255;
+  const g = g255 / 255;
+  const b = b255 / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const span = max - min;
+  let hue = 0;
+  if (span > 0) {
+    if (max === r) hue = ((g - b) / span + 6) % 6;
+    else if (max === g) hue = (b - r) / span + 2;
+    else hue = (r - g) / span + 4;
+    hue /= 6;
+  }
+  return [hue, max > 0 ? span / max : 0, max];
+}
 
 export function channelAvailability(id: ChannelId): { available: boolean; reason: string } {
   if (V2_CHANNELS.includes(id)) return { available: true, reason: '' };
@@ -50,7 +73,10 @@ export function lensFilterId(lens: CustomLens): string {
 
 /** A short fingerprint of everything that changes the shader or the ramp. */
 export function lensRevision(lens: CustomLens): string {
-  const text = JSON.stringify([lens.color, lens.brightness ?? null, lens.stops, lens.base, lens.sceneBlend]);
+  const text = JSON.stringify([
+    lens.color, lens.brightness ?? null, lens.stops, lens.base, lens.sceneBlend,
+    lens.output ?? 'paint', lens.reference ?? '', lens.target ?? ''
+  ]);
   let hash = 5381;
   for (let i = 0; i < text.length; i++) hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
   return hash.toString(16);
@@ -86,6 +112,33 @@ function channelGlsl(id: ChannelId): string {
     case 'change':
       return `float ch_change(vec2 uv) {
   return abs(luma(texture2D(uFrame, uv).rgb) - luma(texture2D(uPrevious, uv).rgb)) * 255.0;
+}`;
+    case 'red':
+      return `float ch_red(vec2 uv) { return texture2D(uFrame, uv).r * 255.0; }`;
+    case 'green':
+      return `float ch_green(vec2 uv) { return texture2D(uFrame, uv).g * 255.0; }`;
+    case 'blue':
+      return `float ch_blue(vec2 uv) { return texture2D(uFrame, uv).b * 255.0; }`;
+    case 'hue':
+      // Degrees around the wheel. Grey pixels have no hue; the field says so
+      // by sitting at 0, and a hue lens is meant to be paired with strength.
+      return `float ch_hue(vec2 uv) { return rgb2hsv(texture2D(uFrame, uv).rgb).x * 360.0; }`;
+    case 'saturation':
+      return `float ch_saturation(vec2 uv) { return rgb2hsv(texture2D(uFrame, uv).rgb).y * 255.0; }`;
+    case 'colourDistance':
+      // Distance from the reference in hue, strength and brightness together.
+      // The hue term is weighted by how colourful BOTH colours are, because
+      // the hue of a grey pixel is arithmetic, not a measurement. The weights
+      // are display tuning, stated as such.
+      return `float ch_colourDistance(vec2 uv) {
+  vec3 hsv = rgb2hsv(texture2D(uFrame, uv).rgb);
+  float dh = abs(hsv.x - REF_HSV.x);
+  dh = min(dh, 1.0 - dh) * 2.0;
+  float ds = abs(hsv.y - REF_HSV.y);
+  float dv = abs(hsv.z - REF_HSV.z);
+  float hueWeight = min(hsv.y, REF_HSV.y);
+  float d = sqrt(dh * dh * hueWeight + ds * ds * 0.5 + dv * dv * 0.35);
+  return clamp(d, 0.0, 1.0) * 255.0;
 }`;
     case 'speed':
       // The Speed state holds normal flow / 8 (texels per frame at analysis
@@ -147,13 +200,46 @@ export function compileLens(lens: CustomLens): FilterDefinition {
   if (lens.brightness) channels.add(lens.brightness.channel);
   const temporal = [...channels].some((c) => channelInfo(c).temporal);
   const needsSpeed = channels.has('speed');
+  const output = lens.output ?? 'paint';
+  const needsHsv = [...channels].some((c) => c === 'hue' || c === 'saturation' || c === 'colourDistance')
+    || output === 'swap';
+  const needsReference = [...channels].some((c) => channelInfo(c).needsReference);
+  const reference = rgbToHsv(lens.reference ?? '#ffffff');
+  const target = rgbToHsv(lens.target ?? '#ffffff');
   const base = lens.base === 'scene'
     ? 'vec3(sceneY)'
     : lens.base === 'grey' ? 'vec3(28.0 / 255.0)' : 'vec3(0.0)';
   const blend = Math.min(1, Math.max(0, lens.sceneBlend));
 
+  // The three outputs, each one line. `t` is the lens's own normalised
+  // reading, so the range direction (low above high inverts it) is what
+  // turns Isolate into Hide — one mode, not two features.
+  const paint = {
+    paint: 'vec3 c = texture2D(uRamp, vec2(t, 0.5)).rgb;',
+    mask: '  // Keep the camera\'s colour where it reads high; grey elsewhere.\n'
+      + '  vec3 c = mix(vec3(sceneY), scene, t);',
+    swap: '  // The target\'s hue and strength, each pixel\'s own brightness.\n'
+      + '  vec3 c = mix(scene, hsv2rgb(vec3(TARGET_HSV.x, TARGET_HSV.y, rgb2hsv(scene).z)), t);'
+  }[output];
+
   const fragment = SHADER_HEADER
     + (needsSpeed ? 'uniform float uFps;\nuniform float uAnalysisWidth;\n' : '')
+    + (needsHsv ? `vec3 rgb2hsv(vec3 c) {
+  vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+  vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+  vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+  float d = q.x - min(q.w, q.y);
+  return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + 1e-10)), d / (q.x + 1e-10), q.x);
+}
+` : '')
+    + (output === 'swap' ? `vec3 hsv2rgb(vec3 c) {
+  vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+  vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+  return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+` : '')
+    + (needsReference ? `const vec3 REF_HSV = vec3(${reference.map(glslFloat).join(', ')});\n` : '')
+    + (output === 'swap' ? `const vec3 TARGET_HSV = vec3(${target.map(glslFloat).join(', ')});\n` : '')
     + [...channels].map(channelGlsl).join('\n') + '\n'
     + normaliseGlsl('normColour', lens.color) + '\n'
     + (lens.brightness ? normaliseGlsl('normBright', lens.brightness) + '\n' : '')
@@ -164,7 +250,7 @@ export function compileLens(lens: CustomLens): FilterDefinition {
   float raw = ch_${lens.color.channel}(vUv);
 ${lens.color.channel === 'speed' ? `  if (raw <= 0.0) { gl_FragColor = vec4(base, 1.0); return; }\n` : ''}\
   float t = normColour(raw);
-  vec3 c = texture2D(uRamp, vec2(t, 0.5)).rgb;
+  ${paint}
 ${lens.brightness ? `  c *= normBright(ch_${lens.brightness.channel}(vUv));\n` : ''}\
 ${blend > 0 ? `  c = mix(c, vec3(sceneY), ${glslFloat(blend)});\n` : ''}\
   gl_FragColor = vec4(c, 1.0);
