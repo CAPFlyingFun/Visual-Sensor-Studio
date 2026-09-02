@@ -20,6 +20,12 @@
  * thing is in a different place in each averaged frame, so it smears. That is
  * the honest trade, and it is why this is a control rather than a default.
  *
+ * THE LADDER IS SHORT ON PURPOSE. It first went 3 / 5 / 10 and every rung
+ * was too long: ten frames carries a third of a second of the past and the
+ * picture swims (Joshua, 2026-09-02). Two to four frames is where the noise
+ * falls without the world lagging behind the phone. Ten survives as Dizzy,
+ * relabelled as the effect it turned out to be.
+ *
  * IT IS A ROLLING AVERAGE, NOT A HOLD. The preview still updates on every
  * camera frame; "5 frames" means each frame shown carries as much of the last
  * five as an average of five would, not that the screen refreshes five times
@@ -39,6 +45,18 @@ export interface FrameAverageLevel {
   frames: number;
   /** What it does to the picture, in the one sentence under the row. */
   note: string;
+  /**
+   * Chosen for the LOOK rather than for the reading.
+   *
+   * Dizzy is here because the first ladder went to ten frames, which was far
+   * too much for steadying a picture and turned out to be a lovely effect
+   * (Joshua, 2026-09-02: "the effect it gives is like a dizzy/drunk look
+   * where you can see but it's a little blurred... could save this method").
+   * The flag keeps the honest levels honest — an effect must not read as a
+   * recommendation for a noisier room — while costing no second mechanism:
+   * it is the same average, asked for on purpose.
+   */
+  effect?: boolean;
 }
 
 export const FRAME_AVERAGE_LEVELS: readonly FrameAverageLevel[] = [
@@ -46,29 +64,38 @@ export const FRAME_AVERAGE_LEVELS: readonly FrameAverageLevel[] = [
     id: 'off',
     label: 'Off',
     frames: 1,
-    note: 'Every frame exactly as the sensor delivered it — including the '
+    note: 'One frame, exactly as the sensor delivered it — including the '
       + 'speckle that changes on every one of them.'
   },
   {
     id: 'low',
-    label: '3 frames',
-    frames: 3,
-    note: 'Blends about three frames. Cuts the frame-to-frame speckle roughly '
-      + 'in half with almost no smear on anything that moves.'
+    label: '2 frames',
+    frames: 2,
+    note: 'Blends about two frames. Takes the hardest edge off the speckle '
+      + 'and you will not see it on anything that moves.'
   },
   {
     id: 'medium',
-    label: '5 frames',
-    frames: 5,
-    note: 'Blends about five frames. For a dim room, where hue is mostly '
-      + 'noise; a hand moving through the picture leaves a short trail.'
+    label: '3 frames',
+    frames: 3,
+    note: 'Blends about three frames — roughly a tenth of a second at 30 fps. '
+      + 'Steadies the hue lenses with a barely visible trail on movement.'
   },
   {
     id: 'high',
-    label: '10 frames',
+    label: '4 frames',
+    frames: 4,
+    note: 'Blends about four frames. The steadiest reading that still looks '
+      + 'like a live picture; a hand waved through it leaves a short trail.'
+  },
+  {
+    id: 'dizzy',
+    label: '😵‍💫 Dizzy',
     frames: 10,
-    note: 'Blends about ten frames — a third of a second at 30 fps. Steadiest '
-      + 'reading of a still scene, and anything moving smears badly.'
+    effect: true,
+    note: 'Ten frames — a third of a second of the past in every one. Far too '
+      + 'much to steady a reading, which is the point: everything stays '
+      + 'legible but swims. Try it on RGB.'
   }
 ];
 

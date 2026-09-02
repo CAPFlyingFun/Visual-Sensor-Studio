@@ -1338,10 +1338,27 @@ test('frame averaging is one ladder, and its weights mean what they say', () => 
   assert.equal(frameAverageCount('nonsense'), 1, 'and an unknown id averages nothing either');
   const frames = FRAME_AVERAGE_LEVELS.map((l) => l.frames);
   assert.deepEqual(frames, [...frames].sort((a, b) => a - b), 'the row reads as a dial');
-  assert.deepEqual(frames, [1, 3, 5, 10], 'the ladder Joshua asked for');
+  assert.deepEqual(frames, [1, 2, 3, 4, 10], 'the ladder Joshua asked for, plus Dizzy');
   for (const level of FRAME_AVERAGE_LEVELS) {
     assert.ok(level.note.length > 20, `${level.label} says what it does`);
   }
+
+  // THE READING LEVELS ARE SHORT. The first ladder went 3/5/10 and every rung
+  // was too long — ten frames carries a third of a second of the past and the
+  // picture swims. Anything above four is an EFFECT, chosen for the look, and
+  // must be marked so it cannot read as a recommendation for a noisier room.
+  for (const level of FRAME_AVERAGE_LEVELS) {
+    if (level.effect) continue;
+    assert.ok(level.frames <= 4,
+      `${level.label} steadies a reading, so it cannot lag by ${level.frames} frames`);
+  }
+  const dizzy = frameAverageById('dizzy');
+  assert.equal(dizzy?.effect, true, 'Dizzy is the same average, asked for on purpose');
+  assert.equal(dizzy?.frames, 10);
+  assert.match(dizzy?.label ?? '', /Dizzy/);
+  // One mechanism, not a second: an effect is a level, not a filter.
+  assert.equal(new Set(FRAME_AVERAGE_LEVELS.map((l) => l.frames)).size,
+    FRAME_AVERAGE_LEVELS.length);
 
   // THE WEIGHT IS 2/(N+1), NOT 1/N. An EMA's variance is alpha / (2 - alpha)
   // of its input's, so 2/(N+1) is the weight at which it removes exactly as

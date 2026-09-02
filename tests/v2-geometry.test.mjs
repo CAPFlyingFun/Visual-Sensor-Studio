@@ -1767,13 +1767,27 @@ test('frame averaging steadies a still scene without softening it (fake device)'
       assert.match(await page.textContent('#v2AverageNote'), /every one of them/);
 
       await page.click('[data-average="high"]');
-      // Long enough for the average to fill: ten frames at ~30fps.
-      await page.waitForTimeout(1200);
+      await page.waitForTimeout(900);
       const averaged = await drift();
       assert.ok(!/shader failed/i.test(averaged.stage), 'averaging renders');
-      assert.ok(averaged.moved < raw.moved * 0.8,
+      assert.ok(averaged.moved < raw.moved * 0.85,
         `averaging must damp frame-to-frame change: ${averaged.moved} vs ${raw.moved}`);
-      assert.match(await page.textContent('#v2AverageNote'), /ten frames/);
+      assert.match(await page.textContent('#v2AverageNote'), /four frames/);
+
+      // Dizzy is the same mechanism asked for on purpose, and it damps hardest
+      // of all — it is set apart in the row so it cannot read as a stronger
+      // reading rather than as the effect it is.
+      await page.click('[data-average="dizzy"]');
+      await page.waitForTimeout(1200);
+      const dizzy = await drift();
+      assert.ok(dizzy.moved < averaged.moved,
+        `Dizzy carries the most of the past: ${dizzy.moved} vs ${averaged.moved}`);
+      assert.match(await page.textContent('#v2AverageNote'), /swims/);
+      assert.equal(await page.evaluate(() =>
+        document.querySelector('[data-average="dizzy"]').dataset.effect), 'true');
+      assert.equal(await page.evaluate(() =>
+        document.querySelectorAll('#v2AverageRow [data-effect]').length), 1,
+        'only the effect is marked as one');
 
       // PRIMED, NOT FADED IN. Switching it on must not darken the picture
       // while it fills — a black start would look like a fault.

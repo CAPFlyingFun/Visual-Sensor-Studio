@@ -64,6 +64,14 @@ frame and survives untouched — no softening, no dimming. The cost is
 movement: a moving thing is in a different place in each frame and
 smears. That trade is why it is a control and not a default.
 
+The ladder is short — off, 2, 3, 4 frames — because the first one
+(3/5/10) was too long at every rung: ten frames carries a third of a
+second of the past and the picture swims. Ten survives as **Dizzy**,
+relabelled as the effect it turned out to be (Joshua: "like a
+dizzy/drunk look where you can see but it's a little blurred"). It is
+the same average asked for on purpose, marked `effect: true` so it reads
+as a look rather than as the top of the ladder, and set apart in the row.
+
 Three things worth keeping:
 
 - **It is a rolling average, not a hold.** The preview updates on every

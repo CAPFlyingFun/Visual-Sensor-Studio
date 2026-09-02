@@ -607,6 +607,9 @@ function buildFrameAverage(): void {
     button.type = 'button';
     button.textContent = level.label;
     button.dataset.average = level.id;
+    // An effect is not a stronger setting, so it is marked rather than left
+    // to look like the end of the ladder.
+    if (level.effect) button.dataset.effect = 'true';
     button.addEventListener('click', () => {
       updateState({ frameAverage: level.id });
       remember(FRAME_AVERAGE_STORE_KEY, level.id);
