@@ -117,6 +117,19 @@ export interface V2State {
   /** The chosen viewfinder guide id; the guides registry defines it. */
   guide: string;
   /**
+   * VIEWING AIDS — the chosen zebra and focus-peaking levels; the overlays
+   * registry defines what each means. They change what the PREVIEW shows and
+   * nothing else: the photo and recording paths ask the renderer for none.
+   */
+  zebra: string;
+  peaking: string;
+  /**
+   * Whether the exposure readout is on screen. It gates a census, so it is
+   * state rather than a CSS class: an instrument nobody is looking at should
+   * not be costing a frame read.
+   */
+  exposureShown: boolean;
+  /**
    * FRAME AVERAGING: the chosen level id; render/frame-average.ts defines what
    * each one means. One owner for every filter, because it changes the PICTURE
    * they all measure — a per-filter copy would let two of them disagree about
@@ -163,6 +176,9 @@ const state: V2State = {
   captureActive: false,
   streamTier: '720',
   guide: 'off',
+  zebra: 'off',
+  peaking: 'off',
+  exposureShown: false,
   frameAverage: DEFAULT_FRAME_AVERAGE,
   reticle: false,
   recording: null,

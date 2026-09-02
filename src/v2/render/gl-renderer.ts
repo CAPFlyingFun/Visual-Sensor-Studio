@@ -99,6 +99,8 @@ export class GlRenderer {
   private averageRead = 0;
   private averaging = false;
   private averagePrimed = false;
+  /** The camera frame's own size, so the aids measure at sensor scale. */
+  private frameSize = { width: 0, height: 0 };
   /** Which program key each filter id currently owns, so an edited lens frees its old program. */
   private programKeys = new Map<string, string>();
   private failure = '';
@@ -432,6 +434,7 @@ export class GlRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.frameTexture);
     try {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+      this.frameSize = { width: video.videoWidth, height: video.videoHeight };
     } catch {
       // A mid-switch video element can briefly refuse; the next frame recovers.
       return false;
@@ -453,6 +456,12 @@ export class GlRenderer {
       histogram?: { bins: Uint8Array; dominant: [number, number, number]; version: number };
       /** Frames to average together — see render/frame-average.ts. 1 = none. */
       frames?: number;
+      /**
+       * VIEWING AIDS, thresholds from render/overlays.ts. 0 is off, and off
+       * is what the photo and recording paths pass: an aid must never reach a
+       * file. Only the preview asks for them.
+       */
+      aids?: { zebra?: number; peaking?: number };
     } = {}
   ): boolean {
     const gl = this.gl;
@@ -491,6 +500,14 @@ export class GlRenderer {
       gl.uniform1i(gl.getUniformLocation(program, 'uState'), 3);
     }
     gl.uniform2f(gl.getUniformLocation(program, 'uTexel'), 1 / target.width, 1 / target.height);
+    // The aids sample the CAMERA frame, so their texel is the frame's, not
+    // the target's: peaking must find the same edges whatever size this is
+    // being drawn at, or the preview and a still would disagree about focus.
+    const frame = this.frameSize.width > 0 ? this.frameSize : target;
+    gl.uniform2f(gl.getUniformLocation(program, 'uAidTexel'),
+      1 / frame.width, 1 / frame.height);
+    gl.uniform1f(gl.getUniformLocation(program, 'uZebra'), extras.aids?.zebra ?? 0);
+    gl.uniform1f(gl.getUniformLocation(program, 'uPeak'), extras.aids?.peaking ?? 0);
     // Unit conversions a lens may need: a missing location is simply ignored.
     gl.uniform1f(gl.getUniformLocation(program, 'uFps'), extras.fps ?? 0);
     gl.uniform1f(gl.getUniformLocation(program, 'uAnalysisWidth'), stateSize?.width ?? 0);

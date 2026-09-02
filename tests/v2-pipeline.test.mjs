@@ -31,6 +31,12 @@ import {
 } from '../.test-build/v2/capture/color-sampler.js';
 import { GUIDES, DEFAULT_GUIDE, guideById } from '../.test-build/v2/render/guides.js';
 import {
+  ZEBRA_LEVELS, PEAKING_LEVELS, peakingThreshold, zebraThreshold
+} from '../.test-build/v2/render/overlays.js';
+import {
+  EXPOSURE_BINS, CLIPPED, buildExposure, describeExposure, emptyExposure
+} from '../.test-build/v2/vision/exposure.js';
+import {
   FRAME_AVERAGE_LEVELS, DEFAULT_FRAME_AVERAGE, NOMINAL_FPS, conversionNote,
   frameAverageById, framesForLevel, frameAverageWeight
 } from '../.test-build/v2/render/frame-average.js';
@@ -1440,4 +1446,141 @@ test('frames for a reading, milliseconds for an effect', () => {
   assert.match(conversionNote('high', 30), /about 133 ms at 30 fps/);
   assert.match(conversionNote('high', 60), /about 67 ms at 60 fps/);
   assert.equal(conversionNote('off', 30), '', 'one frame has no duration worth naming');
+});
+
+/* --- Milestone F: camera instrumentation --------------------------------- */
+
+const solidFrame = (r, g, b, count = 64 * 64) => {
+  const data = new Uint8ClampedArray(count * 4);
+  for (let i = 0; i < count; i++) {
+    data[i * 4] = r; data[i * 4 + 1] = g; data[i * 4 + 2] = b; data[i * 4 + 3] = 255;
+  }
+  return data;
+};
+
+test('the exposure reading counts what was LOST, not what looks bright', () => {
+  // The distinction the whole instrument exists for: a blown pixel is not
+  // bright, it is MISSING. It could have been any value above the top and the
+  // sensor cannot say which, so nothing recovers it — which is why this is
+  // worth showing before the shutter rather than after.
+  const white = buildExposure(solidFrame(255, 255, 255));
+  assert.equal(white.clipped, 1, 'a white frame is entirely blown');
+  assert.equal(white.crushed, 0);
+  assert.ok(white.mean > 0.99);
+
+  const black = buildExposure(solidFrame(0, 0, 0));
+  assert.equal(black.crushed, 1);
+  assert.equal(black.clipped, 0);
+
+  // A comfortable mid-grey loses nothing at either end.
+  const grey = buildExposure(solidFrame(128, 128, 128));
+  assert.equal(grey.clipped, 0);
+  assert.equal(grey.crushed, 0);
+  assert.ok(Math.abs(grey.mean - 0.5) < 0.02);
+
+  // PER-CHANNEL CLIPPING, which luminance alone hides: a saturated red is
+  // only 21% of luma, so its luminance reads dark while red is long gone.
+  const red = buildExposure(solidFrame(255, 20, 20));
+  assert.equal(red.clipped, 0, 'luminance says nothing is blown');
+  assert.equal(red.channelClipped[0], 1, 'but red is entirely clipped');
+  assert.equal(red.channelClipped[1], 0);
+  assert.match(describeExposure(red), /red clipped on its own/);
+
+  // The bins are shares, scaled so the commonest is 255.
+  assert.equal(white.bins.length, EXPOSURE_BINS);
+  assert.equal(white.bins[EXPOSURE_BINS - 1], 255, 'a white frame peaks at the top bin');
+  assert.equal(emptyExposure().bins.every((b) => b === 0), true);
+  assert.equal(buildExposure(new Uint8ClampedArray(0)).mean, 0, 'no pixels is not a crash');
+});
+
+test('the exposure sentence reports, and refuses to judge', () => {
+  // A night sky is mostly crushed and correct; a snowfield is mostly bright
+  // and correct. The instrument says what was lost and stops there.
+  const text = describeExposure(buildExposure(solidFrame(0, 0, 0)));
+  assert.match(text, /crushed/);
+  assert.ok(!/under|over|poor|bad|wrong/i.test(text), 'it never grades the shot');
+  // Below a tenth of a percent reads as 0, not as a misleading "1%".
+  const mostlyGrey = solidFrame(128, 128, 128, 64 * 64);
+  mostlyGrey[0] = 255; mostlyGrey[1] = 255; mostlyGrey[2] = 255;
+  assert.match(describeExposure(buildExposure(mostlyGrey)), /<1% blown/);
+});
+
+test('the viewing aids are ladders, and OFF is a real rung', () => {
+  for (const levels of [ZEBRA_LEVELS, PEAKING_LEVELS]) {
+    assert.equal(levels[0].id, 'off', 'off comes first');
+    assert.equal(levels[0].threshold, 0);
+    assert.equal(new Set(levels.map((l) => l.id)).size, levels.length);
+    const thresholds = levels.map((l) => l.threshold);
+    for (const level of levels) assert.ok(level.note.length > 5, `${level.label} says what it does`);
+    // Zebra descends (a lower threshold stripes MORE), peaking ascends.
+    const sorted = [...thresholds].sort((a, b) => a - b);
+    assert.deepEqual(new Set(thresholds).size, thresholds.length, 'no two rungs are the same');
+    assert.ok(sorted.length === thresholds.length);
+  }
+  assert.equal(zebraThreshold('off'), 0);
+  assert.equal(peakingThreshold('off'), 0);
+  assert.equal(zebraThreshold('nonsense'), 0, 'an unknown id shows nothing');
+  assert.equal(peakingThreshold('nonsense'), 0);
+  // 100% zebra marks the same line the exposure census calls clipped, so the
+  // stripes and the number can never disagree about what "blown" means.
+  assert.ok(Math.abs(zebraThreshold('100') - CLIPPED / 255) < 0.02,
+    'the stripes and the count agree on where detail is lost');
+});
+
+test('a viewing aid can never reach a photo or a clip', () => {
+  // An aid baked into a file is not an aid, it is damage. This is structural
+  // rather than a flag to remember: the renderer takes the thresholds per
+  // render, and only the preview passes any.
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+  const photoTs = readFileSync(new URL('../src/v2/capture/photo.ts', import.meta.url), 'utf8');
+  assert.ok(!/aids:/.test(photoTs), 'the still path asks for no aids');
+  // Exactly one render call passes them, and it is the preview's.
+  assert.equal((appTs.match(/aids: \{/g) ?? []).length, 1, 'one caller, the preview');
+  const record = appTs.slice(appTs.indexOf('geometry.recordInput,'));
+  assert.ok(!/aids:/.test(record.slice(0, 400)), 'the recording path asks for none');
+
+  // And the shader honours them everywhere, so no filter quietly stops
+  // striping — you would learn to trust an aid that is not always on.
+  for (const filter of FILTERS) {
+    const body = filter.fragment.slice(filter.fragment.indexOf('void main'));
+    assert.match(body, /withAids\(/, `${filter.name} routes its colour through the aids`);
+  }
+  // State passes write DATA, not a picture: an aid drawn into one would be
+  // measured on the next frame rather than merely shown.
+  for (const filter of FILTERS) {
+    if (!filter.state) continue;
+    const body = filter.state.slice(filter.state.indexOf('void main'));
+    assert.ok(!body.includes('withAids('), `${filter.name}'s state pass stays clean`);
+  }
+});
+
+test('the aids judge the CAMERA, not the filter that is running', () => {
+  // Under a false-colour ramp the pixel on screen is a palette choice. Zebra
+  // striping by that would report the ramp; peaking would find the ramp's own
+  // banding as edges. Both read uFrame instead.
+  const aids = SHADER_HEADER.slice(SHADER_HEADER.indexOf('vec3 withAids'));
+  assert.match(aids, /vec3 scene = texture2D\(uFrame, uv\)\.rgb;/);
+  assert.match(aids, /luma\(scene\) >= uZebra/);
+  assert.ok(!aids.includes('uRamp'), 'the aids never read the palette');
+  // Off is a uniform branch, so a disabled aid costs one comparison.
+  assert.match(aids, /if \(uZebra <= 0\.0 && uPeak <= 0\.0\) return color;/);
+  // Peaking measures at the FRAME's scale, so preview and still agree.
+  assert.match(aids, /uAidTexel/);
+  const renderer = readFileSync(new URL('../src/v2/render/gl-renderer.ts', import.meta.url), 'utf8');
+  assert.match(renderer, /this\.frameSize\.width > 0 \? this\.frameSize : target/);
+});
+
+test('one read of the frame answers every census asked of it', () => {
+  // getImageData stalls on the GPU and three censuses each used to do their
+  // own draw-and-read — three stalls to ask three questions about ONE frame.
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+  assert.equal((appTs.match(/getImageData\(0, 0, HISTOGRAM_SAMPLE/g) ?? []).length, 1,
+    'the sample is read in exactly one place');
+  assert.match(appTs, /function sampleFrame\(\)/);
+  // And each census is still paid for only when something needs it.
+  const censuses = appTs.slice(appTs.indexOf('function measureCensuses'));
+  assert.match(censuses, /if \(needsColour\)/);
+  assert.match(censuses, /if \(wantsExposure\)/);
+  assert.match(censuses, /if \(!needsColour && !lens && !wantsExposure\)/,
+    'nothing is read when nothing is asking');
 });

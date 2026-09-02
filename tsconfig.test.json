@@ -65,6 +65,8 @@
     "src/v2/capture/encoder-probe.ts",
     "src/v2/filters/registry.ts",
     "src/v2/render/guides.ts",
+    "src/v2/render/overlays.ts",
+    "src/v2/vision/exposure.ts",
     "src/v2/vision/frame-histogram.ts",
     "src/v2/vision/colour-gap.ts",
     "src/v2/ui/coach.ts",

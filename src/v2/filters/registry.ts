@@ -77,6 +77,51 @@ float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 // the WHOLE picture; a filter that ignores them costs nothing for them.
 uniform sampler2D uHistogram;
 uniform vec3 uDominant;
+
+/*
+ * VIEWING AIDS — zebra and focus peaking (see render/overlays.ts).
+ *
+ * They live in the HEADER, and every filter ends by passing its colour
+ * through withAids(), because an aid that only some filters honour is worse
+ * than none: you would learn to trust stripes that quietly stop appearing.
+ *
+ * NEVER CAPTURED. Both uniforms are 0 unless the caller asks for them, and
+ * only the preview asks — the photo and recording paths pass nothing, so
+ * stripes cannot be baked into a file. Structural, not a flag to remember.
+ *
+ * Off costs one uniform comparison per pixel. Peaking's Sobel is eight taps
+ * and is paid for only while it is on.
+ */
+uniform float uZebra;
+uniform float uPeak;
+uniform vec2 uAidTexel;
+vec3 withAids(vec3 color, vec2 uv) {
+  if (uZebra <= 0.0 && uPeak <= 0.0) return color;
+  // Judged on the CAMERA's luminance, not on the filter's output: under a
+  // false-colour ramp the pixel on screen is a palette choice, and striping
+  // by that would report the ramp rather than the exposure.
+  vec3 scene = texture2D(uFrame, uv).rgb;
+  if (uZebra > 0.0 && luma(scene) >= uZebra) {
+    // Diagonal stripes in SCREEN space, so they read as an overlay rather
+    // than as texture belonging to the picture.
+    float stripe = fract((gl_FragCoord.x + gl_FragCoord.y) / 12.0);
+    if (stripe < 0.5) color = mix(color, vec3(1.0, 0.1, 0.1), 0.65);
+  }
+  if (uPeak > 0.0) {
+    float tl = luma(texture2D(uFrame, uv + uAidTexel * vec2(-1.0, -1.0)).rgb);
+    float  l = luma(texture2D(uFrame, uv + uAidTexel * vec2(-1.0,  0.0)).rgb);
+    float bl = luma(texture2D(uFrame, uv + uAidTexel * vec2(-1.0,  1.0)).rgb);
+    float tr = luma(texture2D(uFrame, uv + uAidTexel * vec2( 1.0, -1.0)).rgb);
+    float  r = luma(texture2D(uFrame, uv + uAidTexel * vec2( 1.0,  0.0)).rgb);
+    float br = luma(texture2D(uFrame, uv + uAidTexel * vec2( 1.0,  1.0)).rgb);
+    float  t = luma(texture2D(uFrame, uv + uAidTexel * vec2( 0.0, -1.0)).rgb);
+    float  b = luma(texture2D(uFrame, uv + uAidTexel * vec2( 0.0,  1.0)).rgb);
+    float gx = (tr + 2.0 * r + br) - (tl + 2.0 * l + bl);
+    float gy = (bl + 2.0 * b + br) - (tl + 2.0 * t + tr);
+    if (length(vec2(gx, gy)) >= uPeak) color = vec3(0.2, 1.0, 0.3);
+  }
+  return color;
+}
 `;
 const HEADER = SHADER_HEADER;
 
@@ -132,7 +177,7 @@ export const FILTERS: readonly FilterDefinition[] = [
     supportsPhoto: true,
     supportsVideo: true,
     fragment: HEADER + `void main() {
-  gl_FragColor = vec4(texture2D(uFrame, vUv).rgb, 1.0);
+  gl_FragColor = vec4(withAids(texture2D(uFrame, vUv).rgb, vUv), 1.0);
 }`
   },
   {
@@ -148,7 +193,7 @@ export const FILTERS: readonly FilterDefinition[] = [
     // along with the ramp itself.
     fragment: HEADER + `void main() {
   float y = luma(texture2D(uFrame, vUv).rgb);
-  gl_FragColor = vec4(texture2D(uRamp, vec2(y, 0.5)).rgb, 1.0);
+  gl_FragColor = vec4(withAids(texture2D(uRamp, vec2(y, 0.5)).rgb, vUv), 1.0);
 }`
   },
   {
@@ -171,7 +216,7 @@ export const FILTERS: readonly FilterDefinition[] = [
   float now = luma(texture2D(uFrame, vUv).rgb);
   float before = luma(texture2D(uPrevious, vUv).rgb);
   float change = clamp(abs(now - before) * 4.0, 0.0, 1.0);
-  gl_FragColor = vec4(texture2D(uRamp, vec2(change, 0.5)).rgb, 1.0);
+  gl_FragColor = vec4(withAids(texture2D(uRamp, vec2(change, 0.5)).rgb, vUv), 1.0);
 }`
   },
   {
@@ -192,7 +237,7 @@ export const FILTERS: readonly FilterDefinition[] = [
     state: SPEED_STATE,
     fragment: HEADER + `void main() {
   float s = texture2D(uState, vUv).r;
-  gl_FragColor = vec4(texture2D(uRamp, vec2(s, 0.5)).rgb, 1.0);
+  gl_FragColor = vec4(withAids(texture2D(uRamp, vec2(s, 0.5)).rgb, vUv), 1.0);
 }`
   },
   {
@@ -217,7 +262,7 @@ export const FILTERS: readonly FilterDefinition[] = [
 }`,
     fragment: HEADER + `void main() {
   float t = texture2D(uState, vUv).r;
-  gl_FragColor = vec4(texture2D(uRamp, vec2(t, 0.5)).rgb, 1.0);
+  gl_FragColor = vec4(withAids(texture2D(uRamp, vec2(t, 0.5)).rgb, vUv), 1.0);
 }`
   },
   {
@@ -242,7 +287,7 @@ export const FILTERS: readonly FilterDefinition[] = [
   float gx = (tr + 2.0 * r + br) - (tl + 2.0 * l + bl);
   float gy = (bl + 2.0 * b + br) - (tl + 2.0 * t + tr);
   float g = clamp(length(vec2(gx, gy)), 0.0, 1.0);
-  gl_FragColor = vec4(vec3(g), 1.0);
+  gl_FragColor = vec4(withAids(vec3(g), vUv), 1.0);
 }`
   }
 ];

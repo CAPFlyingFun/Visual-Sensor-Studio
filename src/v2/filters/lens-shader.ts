@@ -280,12 +280,12 @@ export function compileLens(lens: CustomLens): FilterDefinition {
   float sceneY = luma(scene);
   vec3 base = ${base};
   float raw = ch_${lens.color.channel}(vUv);
-${lens.color.channel === 'speed' ? `  if (raw <= 0.0) { gl_FragColor = vec4(base, 1.0); return; }\n` : ''}\
+${lens.color.channel === 'speed' ? `  if (raw <= 0.0) { gl_FragColor = vec4(withAids(base, vUv), 1.0); return; }\n` : ''}\
   float t = normColour(raw);
   ${paint}
 ${lens.brightness ? `  c *= mix(${glslFloat(floor)}, 1.0, normBright(ch_${lens.brightness.channel}(vUv)));\n` : ''}\
 ${blend > 0 ? `  c = mix(c, vec3(sceneY), ${glslFloat(blend)});\n` : ''}\
-  gl_FragColor = vec4(c, 1.0);
+  gl_FragColor = vec4(withAids(c, vUv), 1.0);
 }`;
 
   return {

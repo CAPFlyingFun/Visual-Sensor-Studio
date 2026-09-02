@@ -49,6 +49,12 @@ import { GUIDES, guideById } from './render/guides.js';
 import {
   FRAME_AVERAGE_LEVELS, conversionNote, frameAverageById, framesForLevel
 } from './render/frame-average.js';
+import {
+  ZEBRA_LEVELS, PEAKING_LEVELS, peakingById, peakingThreshold, zebraById, zebraThreshold
+} from './render/overlays.js';
+import {
+  EXPOSURE_BINS, buildExposure, describeExposure, emptyExposure, type ExposureReading
+} from './vision/exposure.js';
 import { buildHistogram, emptyHistogram } from './vision/frame-histogram.js';
 import { matchShare } from './vision/colour-gap.js';
 import { tipFor } from './ui/coach.js';
@@ -181,42 +187,63 @@ let histogramCanvas: HTMLCanvasElement | null = null;
  * broken lens.
  */
 let matchingShare: number | null = null;
+let exposure: ExposureReading = emptyExposure();
 
-function measureHistogram(): void {
-  if (video.videoWidth === 0) return;
+/**
+ * ONE READ OF THE FRAME, several questions asked of it.
+ *
+ * Three censuses now want the same small sample — the colour histogram, the
+ * exposure reading and a reference lens's match share — and each used to draw
+ * and read the video itself. getImageData is the expensive half of that (it
+ * stalls on the GPU), so doing it three times cost three stalls to answer
+ * three questions about ONE frame. This takes the sample; the questions are
+ * pure functions over it.
+ */
+function sampleFrame(): Uint8ClampedArray | null {
+  if (video.videoWidth === 0) return null;
   histogramCanvas ??= document.createElement('canvas');
   histogramCanvas.width = HISTOGRAM_SAMPLE;
   histogramCanvas.height = HISTOGRAM_SAMPLE;
   const context = histogramCanvas.getContext('2d', { willReadFrequently: true });
-  if (!context) return;
+  if (!context) return null;
   try {
-    // The sample is stretched to a square: a colour census counts pixels, and
-    // a uniform stretch leaves every colour's share of the frame unchanged.
+    // Stretched to a square: every census counts SHARES, and a uniform
+    // stretch leaves each pixel's weight — and so each share — unchanged.
     context.drawImage(video, 0, 0, HISTOGRAM_SAMPLE, HISTOGRAM_SAMPLE);
-    histogram = buildHistogram(
-      context.getImageData(0, 0, HISTOGRAM_SAMPLE, HISTOGRAM_SAMPLE).data);
-    histogramVersion += 1;
+    return context.getImageData(0, 0, HISTOGRAM_SAMPLE, HISTOGRAM_SAMPLE).data;
   } catch {
     // A mid-switch video element can refuse a draw; the next pass recovers.
+    return null;
   }
 }
 
-/** The same small sample, asked a different question. */
-function measureMatchShare(lens: CustomLens): void {
-  if (video.videoWidth === 0) return;
-  histogramCanvas ??= document.createElement('canvas');
-  histogramCanvas.width = HISTOGRAM_SAMPLE;
-  histogramCanvas.height = HISTOGRAM_SAMPLE;
-  const context = histogramCanvas.getContext('2d', { willReadFrequently: true });
-  if (!context) return;
-  try {
-    context.drawImage(video, 0, 0, HISTOGRAM_SAMPLE, HISTOGRAM_SAMPLE);
-    const data = context.getImageData(0, 0, HISTOGRAM_SAMPLE, HISTOGRAM_SAMPLE).data;
-    matchingShare = matchShare(data, rgbToHsv(lens.reference ?? '#ffffff'),
-      (gap) => normaliseBinding(gap, lens.color));
-  } catch {
+/**
+ * Take the sample and answer whichever questions are being asked this frame.
+ *
+ * Each census is paid for only when something needs it: the colour histogram
+ * when the active lens reads it, the match share when a reference lens is
+ * running, exposure when an exposure instrument is on screen.
+ */
+function measureCensuses(needsColour: boolean, lens: CustomLens | null): void {
+  const wantsExposure = readState().exposureShown;
+  if (!needsColour && !lens && !wantsExposure) {
     matchingShare = null;
+    return;
   }
+  const data = sampleFrame();
+  if (!data) {
+    if (lens) matchingShare = null;
+    return;
+  }
+  if (needsColour) {
+    histogram = buildHistogram(data);
+    histogramVersion += 1;
+  }
+  if (wantsExposure) exposure = buildExposure(data);
+  matchingShare = lens
+    ? matchShare(data, rgbToHsv(lens.reference ?? '#ffffff'),
+      (gap) => normaliseBinding(gap, lens.color))
+    : null;
 }
 
 function renderPreview(now: number): void {
@@ -246,20 +273,23 @@ function renderPreview(now: number): void {
   // frames; every other filter never triggers the measurement at all.
   const active = filterById(activeFilter);
   if ((active?.needsHistogram || active?.lens) && framesSinceHistogram++ % HISTOGRAM_EVERY === 0) {
-    if (active.needsHistogram) measureHistogram();
     // A reference lens reports what it is currently catching.
-    if (active.lens && channelInfo(active.lens.color.channel).needsReference) {
-      measureMatchShare(active.lens);
-    } else {
-      matchingShare = null;
-    }
+    const reference = active.lens
+      && channelInfo(active.lens.color.channel).needsReference ? active.lens : null;
+    measureCensuses(active.needsHistogram === true, reference);
   }
   // Stateful filters (Speed, Trails) advance their memory at the ANALYSIS
   // size — the same bounded size the frame history uses.
   if (renderer.render(activeFilter, target, resolved.analysis, {
     fps: readState().deliveredFps,
     histogram: { bins: histogram.bins, dominant: histogram.dominant, version: histogramVersion },
-    frames: framesForLevel(readState().frameAverage, readState().deliveredFps)
+    frames: framesForLevel(readState().frameAverage, readState().deliveredFps),
+    // VIEWING AIDS reach the preview and nothing else. The photo and clip
+    // paths below pass none, so stripes can never be baked into a file.
+    aids: {
+      zebra: zebraThreshold(readState().zebra),
+      peaking: peakingThreshold(readState().peaking)
+    }
   })) {
     if (recording?.path === 'filtered') {
       framesFedThisClip += 1;
@@ -570,6 +600,8 @@ function renderStreamTiers(): void {
 const GUIDE_STORE_KEY = 'vss.v2.guide.v1';
 const RETICLE_STORE_KEY = 'vss.v2.reticle.v1';
 const FRAME_AVERAGE_STORE_KEY = 'vss.v2.frameAverage.v1';
+const ZEBRA_STORE_KEY = 'vss.v2.zebra.v1';
+const PEAKING_STORE_KEY = 'vss.v2.peaking.v1';
 
 function remember(key: string, value: string): void {
   try {
@@ -623,6 +655,86 @@ function buildFrameAverage(): void {
     });
     holder.appendChild(button);
   }
+}
+
+/**
+ * The two viewing aids, built from their registries like every other row.
+ *
+ * They sit on the MAIN screen rather than under More because they are
+ * shooting aids: the only way to choose a threshold is to watch the picture
+ * while changing it, which is the same reason the guides live here.
+ */
+function buildAids(): void {
+  for (const [holderId, levels, key] of [
+    ['v2ZebraRow', ZEBRA_LEVELS, 'zebra'],
+    ['v2PeakingRow', PEAKING_LEVELS, 'peaking']
+  ] as const) {
+    const holder = byId(holderId);
+    const caption = document.createElement('span');
+    caption.textContent = key === 'zebra' ? 'Zebra' : 'Peaking';
+    caption.style.cssText = 'align-self:center;font-size:11px;color:#7f91a0;padding-right:4px';
+    holder.appendChild(caption);
+    for (const level of levels) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = level.label;
+      button.dataset[key] = level.id;
+      button.addEventListener('click', () => {
+        updateState(key === 'zebra' ? { zebra: level.id } : { peaking: level.id });
+        remember(key === 'zebra' ? ZEBRA_STORE_KEY : PEAKING_STORE_KEY, level.id);
+      });
+      holder.appendChild(button);
+    }
+  }
+  byId('v2ExposureToggle').addEventListener('click', () => {
+    // Closing it stops the census: an instrument nobody is looking at should
+    // not be reading a frame every few frames to answer nobody.
+    updateState({ exposureShown: !readState().exposureShown });
+  });
+}
+
+let renderedAidKey = '';
+function renderAids(): void {
+  const { zebra, peaking, exposureShown } = readState();
+  const key = `${zebra}|${peaking}|${exposureShown}`;
+  if (key === renderedAidKey) return;
+  renderedAidKey = key;
+  for (const button of byId('v2ZebraRow').querySelectorAll<HTMLButtonElement>('[data-zebra]')) {
+    button.classList.toggle('active', button.dataset.zebra === zebra);
+  }
+  for (const button of byId('v2PeakingRow').querySelectorAll<HTMLButtonElement>('[data-peaking]')) {
+    button.classList.toggle('active', button.dataset.peaking === peaking);
+  }
+  setText('v2ZebraNote', zebraById(zebra)?.note ?? '');
+  setText('v2PeakingNote', peakingById(peaking)?.note ?? '');
+  const toggle = byId<HTMLButtonElement>('v2ExposureToggle');
+  toggle.textContent = exposureShown ? '▮ Hide histogram' : '▮ Show histogram';
+  toggle.setAttribute('aria-expanded', exposureShown ? 'true' : 'false');
+  byId('v2ExposurePanel').hidden = !exposureShown;
+}
+
+/**
+ * The histogram, drawn from the measurement — and the clipping counts under
+ * it, which are the part that decides whether a shot is recoverable.
+ */
+function renderExposure(): void {
+  if (!readState().exposureShown) return;
+  const canvas = byId<HTMLCanvasElement>('v2ExposureGraph');
+  const context = canvas.getContext('2d');
+  if (!context) return;
+  const { width, height } = canvas;
+  context.clearRect(0, 0, width, height);
+  const step = width / EXPOSURE_BINS;
+  for (let i = 0; i < EXPOSURE_BINS; i++) {
+    const share = exposure.bins[i] / 255;
+    // The ends are coloured because they are the ones that mean loss: the
+    // shape in the middle is information, the ends are missing information.
+    context.fillStyle = i === 0 ? '#4b6b8a'
+      : i === EXPOSURE_BINS - 1 ? '#ff5c5c' : '#86b7ff';
+    context.fillRect(i * step, height - share * height, Math.max(1, step - 1), share * height);
+  }
+  setText('v2ExposureNote', describeExposure(exposure)
+    + ' · a blown pixel could have been any value above the top, so nothing recovers it');
 }
 
 let renderedAverageKey = '';
@@ -1106,6 +1218,8 @@ function renderTextPanels(): void {
   renderCoach();
   renderDiagnostics();
   renderFrameAverage();
+  renderAids();
+  renderExposure();
   // The picker's shortcut names the ACTIVE lens, so it follows the strip.
   renderPickerLensRow();
 }
@@ -2413,12 +2527,17 @@ setText('v2Badge', `v${APP_VERSION}${isStandalone() ? ' · PWA' : ''}`);
 
 buildGuides();
 buildFrameAverage();
+buildAids();
 try {
   const stored = localStorage.getItem(GUIDE_STORE_KEY);
   if (stored && guideById(stored)) updateState({ guide: stored });
   updateState({ reticle: localStorage.getItem(RETICLE_STORE_KEY) === '1' });
   const averaging = localStorage.getItem(FRAME_AVERAGE_STORE_KEY);
   if (averaging && frameAverageById(averaging)) updateState({ frameAverage: averaging });
+  const stripes = localStorage.getItem(ZEBRA_STORE_KEY);
+  if (stripes && zebraById(stripes)) updateState({ zebra: stripes });
+  const peak = localStorage.getItem(PEAKING_STORE_KEY);
+  if (peak && peakingById(peak)) updateState({ peaking: peak });
 } catch {
   // Storage is optional; the state's own defaults stand (no guide, no
   // reticle, and averaging at whatever render/frame-average.ts calls

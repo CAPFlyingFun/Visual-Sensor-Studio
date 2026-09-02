@@ -1721,8 +1721,24 @@ test('a starter that shipped wrong is corrected; one the user edited is not (fak
     });
   });
 
-test('frame averaging steadies a still scene without softening it (fake device)',
+test('frame averaging is reachable, compiles, and never fades the picture up (fake device)',
   { skip: runnable ? false : 'no browser available' }, async () => {
+    /*
+     * WHAT THIS TEST DELIBERATELY DOES NOT DO: measure how much noise the
+     * averaging removes. The fake camera delivers a clean synthetic pattern
+     * that rolls steadily and carries no noise at all, and an EMA passes
+     * steady motion through at the same speed — so every frame-to-frame
+     * statistic here reports where in the roll the two samples landed, not
+     * what the control did. Two attempts at such an assertion each flipped
+     * direction between runs before this comment replaced them. How much
+     * noise each depth removes is exact arithmetic (an EMA at 2/(N+1) has
+     * 1/N of the input's variance) and is pinned in the unit tests.
+     *
+     * What a browser CAN show is everything below: the control is reachable,
+     * every level compiles, the choice survives a reload, and — the real
+     * regression guard — switching it on does not darken the picture while
+     * the average fills.
+     */
     await withBrowser(async (browser, base) => {
       const context = await browser.newContext({
         viewport: { width: 430, height: 932 },
@@ -1737,85 +1753,7 @@ test('frame averaging steadies a still scene without softening it (fake device)'
         null, { timeout: 8000 });
       assert.equal(await page.isVisible('#v2AverageRow'), true, 'a shooting control, not a diagnostic');
 
-      /*
-       * The measurement that matters is TEMPORAL, which is the whole point:
-       * "each little motion my phone makes even like 0.2° will grab a new
-       * frame/pixel" (Joshua, 2026-09-02). So this measures how much the
-       * PREVIEW changes between two moments, not how sharp any one frame is —
-       * a spatial statistic would say nothing about the thing being fixed.
-       *
-       * The fake camera's pattern rolls, so there is real movement in every
-       * frame; averaging must damp what arrives between two samples.
-       */
-      const drift = () => page.evaluate(async () => {
-        const canvas = document.getElementById('v2PreviewCanvas');
-        const grab = () => {
-          const copy = document.createElement('canvas');
-          copy.width = canvas.width;
-          copy.height = canvas.height;
-          copy.getContext('2d').drawImage(canvas, 0, 0);
-          return copy.getContext('2d').getImageData(0, 0, copy.width, copy.height).data;
-        };
-        const before = grab();
-        await new Promise((resolve) => setTimeout(resolve, 120));
-        const after = grab();
-        let sum = 0;
-        for (let i = 0; i < before.length; i += 4) sum += Math.abs(after[i] - before[i]);
-        return {
-          moved: sum / (before.length / 4),
-          stage: document.getElementById('v2Stage').textContent
-        };
-      });
-
-      await page.click('[data-filter="ironbow"]');
-      await page.waitForTimeout(600);
-      await page.click('[data-average="off"]');
-      await page.waitForTimeout(600);
-      const raw = await drift();
-      assert.ok(!/shader failed/i.test(raw.stage), 'OFF renders');
-      assert.ok(raw.moved > 1, `the test pattern really is moving: ${raw.moved}`);
-      assert.match(await page.textContent('#v2AverageNote'), /every one of them/);
-
-      await page.click('[data-average="high"]');
-      await page.waitForTimeout(900);
-      const averaged = await drift();
-      assert.ok(!/shader failed/i.test(averaged.stage), 'averaging renders');
-      assert.ok(averaged.moved < raw.moved * 0.85,
-        `averaging must damp frame-to-frame change: ${averaged.moved} vs ${raw.moved}`);
-      assert.match(await page.textContent('#v2AverageNote'), /four frames/);
-      // A reading level counts frames, so the note prints the DURATION it
-      // works out to at the rate the camera is actually delivering.
-      assert.match(await page.textContent('#v2AverageNote'), /about \d+ ms at \d+ fps/);
-
-      // Dizzy is the same mechanism asked for on purpose, and it is set apart
-      // in the row so it cannot read as a stronger reading rather than as the
-      // effect it is.
-      //
-      // NO ORDERING IS ASSERTED BETWEEN TWO AVERAGING DEPTHS. The fake camera
-      // rolls a clean synthetic pattern with no noise in it, and an EMA passes
-      // steady motion through at the same speed — lagged, not slowed — so
-      // deeper averaging does not reduce this statistic and measuring it here
-      // would be measuring the content, not the control. How much noise each
-      // depth removes is exact arithmetic and is pinned in the unit tests
-      // (an EMA at 2/(N+1) has 1/N of the input's variance).
-      await page.click('[data-average="dizzy"]');
-      await page.waitForTimeout(1200);
-      const dizzy = await drift();
-      assert.ok(!/shader failed/i.test(dizzy.stage), 'Dizzy renders');
-      assert.match(await page.textContent('#v2AverageNote'), /swims/);
-      // An effect holds a DURATION, so its note prints the frame count that
-      // duration works out to instead — the conversion runs both ways and is
-      // visible either way.
-      assert.match(await page.textContent('#v2AverageNote'), /about \d+ frames at \d+ fps/);
-      assert.equal(await page.evaluate(() =>
-        document.querySelector('[data-average="dizzy"]').dataset.effect), 'true');
-      assert.equal(await page.evaluate(() =>
-        document.querySelectorAll('#v2AverageRow [data-effect]').length), 1,
-        'only the effect is marked as one');
-
-      // PRIMED, NOT FADED IN. Switching it on must not darken the picture
-      // while it fills — a black start would look like a fault.
-      const brightness = () => page.evaluate(() => {
+      const look = () => page.evaluate(() => {
         const canvas = document.getElementById('v2PreviewCanvas');
         const copy = document.createElement('canvas');
         copy.width = canvas.width;
@@ -1824,16 +1762,58 @@ test('frame averaging steadies a still scene without softening it (fake device)'
         const d = copy.getContext('2d').getImageData(0, 0, copy.width, copy.height).data;
         let sum = 0;
         for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2];
-        return sum / (d.length / 4) / 3;
+        return {
+          lit: sum / (d.length / 4) / 3,
+          stage: document.getElementById('v2Stage').textContent
+        };
       });
+
+      await page.click('[data-filter="ironbow"]');
+      await page.waitForTimeout(500);
       await page.click('[data-average="off"]');
       await page.waitForTimeout(500);
-      const litRaw = await brightness();
-      await page.click('[data-average="medium"]');
-      await page.waitForTimeout(120);
-      const litJustOn = await brightness();
-      assert.ok(litJustOn > litRaw * 0.75,
-        `switching averaging on must not fade the picture up: ${litJustOn} vs ${litRaw}`);
+      const off = await look();
+      assert.ok(!/shader failed/i.test(off.stage), 'OFF renders');
+      assert.match(await page.textContent('#v2AverageNote'), /every one of them/);
+
+      // PRIMED, NOT FADED IN. The average starts from the current frame, so
+      // switching it on must not darken the picture while it fills — a black
+      // start would look like a fault, and it is the one thing here that is
+      // content-independent enough to assert.
+      for (const [level, expected] of [
+        ['low', /two frames/], ['medium', /three frames/],
+        ['high', /four frames/], ['dizzy', /swims/]
+      ]) {
+        await page.click(`[data-average="${level}"]`);
+        // Brightness is read IMMEDIATELY, because the claim is about the
+        // moment the average starts filling — a black start would show here
+        // and nowhere else.
+        await page.waitForTimeout(140);
+        const justOn = await look();
+        assert.ok(!/shader failed/i.test(justOn.stage), `${level} compiles`);
+        assert.ok(justOn.lit > off.lit * 0.75,
+          `${level} must not fade the picture up: ${justOn.lit} vs ${off.lit}`);
+        // The note is read AFTER the text throttle. Reading it at 140ms got
+        // the previous level's sentence and failed intermittently: the human-
+        // readable panels are deliberately rewritten at most every 250ms,
+        // because nobody can read 120 rewrites a second and the DOM churn
+        // left iOS controls dead to touch.
+        await page.waitForTimeout(350);
+        assert.match(await page.textContent('#v2AverageNote'), expected);
+      }
+      // A reading level counts frames, so its note prints the DURATION that
+      // works out to; an effect holds a duration and prints the frame count.
+      await page.click('[data-average="high"]');
+      await page.waitForTimeout(300);
+      assert.match(await page.textContent('#v2AverageNote'), /about \d+ ms at \d+ fps/);
+      await page.click('[data-average="dizzy"]');
+      await page.waitForTimeout(300);
+      assert.match(await page.textContent('#v2AverageNote'), /about \d+ frames at \d+ fps/);
+      assert.equal(await page.evaluate(() =>
+        document.querySelector('[data-average="dizzy"]').dataset.effect), 'true');
+      assert.equal(await page.evaluate(() =>
+        document.querySelectorAll('#v2AverageRow [data-effect]').length), 1,
+        'only the effect is marked as one');
 
       // The choice survives a reload, like the guide and reticle before it.
       await page.click('[data-average="low"]');
@@ -1842,6 +1822,118 @@ test('frame averaging steadies a still scene without softening it (fake device)'
       await page.waitForTimeout(700);
       assert.equal(await page.evaluate(() =>
         document.querySelector('[data-average="low"]').classList.contains('active')), true);
+
+      await page.close();
+      await context.close();
+    });
+  });
+
+test('zebra and peaking draw on the preview, and clear again (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({
+        viewport: { width: 430, height: 932 },
+        permissions: ['camera']
+      });
+      const page = await context.newPage();
+      await page.goto(`${base}/index.html`);
+      await page.waitForTimeout(400);
+      await page.click('#v2EnableCamera');
+      await page.waitForFunction(() =>
+        /\d+(\.\d+)? rendered fps/.test(document.getElementById('v2DiagPreview')?.textContent ?? ''),
+        null, { timeout: 8000 });
+
+      /*
+       * Each aid is counted by the mark it actually leaves, measured rather
+       * than guessed at: peaking REPLACES the pixel with vec3(0.2, 1.0, 0.3),
+       * so it is an exact colour; zebra MIXES 65% toward red, so its result
+       * depends on what was underneath and only the red shift is reliable.
+       * A first attempt counted "greenish" pixels and matched the fake
+       * camera's own green scene 15% of the time.
+       */
+      const marks = () => page.evaluate(() => {
+        const canvas = document.getElementById('v2PreviewCanvas');
+        const copy = document.createElement('canvas');
+        copy.width = canvas.width;
+        copy.height = canvas.height;
+        copy.getContext('2d').drawImage(canvas, 0, 0);
+        const d = copy.getContext('2d').getImageData(0, 0, copy.width, copy.height).data;
+        let peak = 0;
+        let stripe = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          if (Math.abs(d[i] - 51) < 6 && Math.abs(d[i + 1] - 255) < 6 && Math.abs(d[i + 2] - 77) < 6) peak++;
+          if (d[i] - Math.max(d[i + 1], d[i + 2]) > 60) stripe++;
+        }
+        const n = d.length / 4;
+        return {
+          peak: peak / n,
+          stripe: stripe / n,
+          stage: document.getElementById('v2Stage').textContent
+        };
+      });
+
+      await page.click('[data-filter="rgb"]');
+      await page.click('[data-peaking="off"]');
+      await page.click('[data-zebra="off"]');
+      await page.waitForTimeout(600);
+      const clean = await marks();
+      assert.ok(!/shader failed/i.test(clean.stage), 'the aids compile into every shader');
+      assert.equal(clean.peak, 0, 'nothing is marked while both are off');
+      assert.equal(clean.stripe, 0);
+
+      await page.click('[data-peaking="low"]');
+      await page.waitForTimeout(600);
+      const peaked = await marks();
+      assert.ok(peaked.peak > 0.002, `peaking marks edges: ${peaked.peak}`);
+      assert.match(await page.textContent('#v2PeakingNote'), /dim light/);
+      // NO ORDERING between thresholds is asserted: the fake camera's pattern
+      // rolls, so how much of it is edge changes between two samples by more
+      // than the thresholds separate them. What each threshold means is exact
+      // arithmetic and is pinned in the unit tests.
+
+      await page.click('[data-peaking="off"]');
+      await page.waitForTimeout(600);
+      assert.equal((await marks()).peak, 0, 'and turning it off clears it completely');
+
+      // Zebra rides the same hook. COUNTED ON RGB, because the red-shift it
+      // leaves can only be told apart from the picture on a scene with no red
+      // in it — counting it over Ironbow measured the ramp's own oranges and
+      // "cleared" never came true.
+      await page.click('[data-zebra="70"]');
+      await page.waitForTimeout(600);
+      const striped = await marks();
+      assert.ok(striped.stripe > 0.005, `zebra stripes the bright areas: ${striped.stripe}`);
+      assert.match(await page.textContent('#v2ZebraNote'), /skin tones/);
+      await page.click('[data-zebra="off"]');
+      await page.waitForTimeout(600);
+      assert.ok((await marks()).stripe < 0.002, 'and it clears');
+
+      // Under a false-colour ramp only the COMPILE is checked here: that the
+      // stripes judge the camera's luminance rather than the palette is a
+      // property of the shader text, and is asserted where that can be read.
+      await page.click('[data-filter="ironbow"]');
+      await page.click('[data-zebra="70"]');
+      await page.waitForTimeout(600);
+      assert.ok(!/shader failed/i.test((await marks()).stage), 'zebra compiles under a ramp too');
+      await page.click('[data-zebra="off"]');
+      await page.click('[data-filter="rgb"]');
+      await page.waitForTimeout(400);
+
+      // The histogram is an instrument you OPEN, and it costs nothing closed.
+      assert.equal(await page.isVisible('#v2ExposurePanel'), false);
+      await page.click('#v2ExposureToggle');
+      await page.waitForTimeout(700);
+      assert.equal(await page.isVisible('#v2ExposurePanel'), true);
+      const note = await page.textContent('#v2ExposureNote');
+      assert.match(note, /mean \d+% · .*blown · .*crushed/);
+      assert.match(note, /nothing recovers it/);
+      // The choice survives a reload, like every other shooting control.
+      await page.click('[data-peaking="medium"]');
+      await page.waitForTimeout(300);
+      await page.reload();
+      await page.waitForTimeout(700);
+      assert.equal(await page.evaluate(() =>
+        document.querySelector('[data-peaking="medium"]').classList.contains('active')), true);
 
       await page.close();
       await context.close();

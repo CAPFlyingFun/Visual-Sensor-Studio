@@ -225,7 +225,7 @@
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
-    <span class="pill" id="v2Badge">v0.40.1</span>
+    <span class="pill" id="v2Badge">v0.40.2</span>
   </header>
 
   <div class="camera-layout">
@@ -275,6 +275,24 @@
           </div>
           <div class="zoom guides" id="v2GuideRow" aria-label="Viewfinder guides"></div>
           <p class="hint" id="v2GuideNote">composition only — captures are always the full frame</p>
+        </section>
+
+        <!-- Milestone F's instruments. Zebra and peaking are VIEWING AIDS:
+             they change the preview and never reach a photo or a clip. The
+             exposure readout gates its own census, so it costs nothing while
+             it is closed. -->
+        <section class="section">
+          <div class="section-title"><h2>Exposure &amp; focus</h2><span class="hint">viewing aids · never captured</span></div>
+          <div class="zoom guides" id="v2ZebraRow" aria-label="Zebra"></div>
+          <p class="hint" id="v2ZebraNote"></p>
+          <div class="zoom guides" id="v2PeakingRow" aria-label="Focus peaking"></div>
+          <p class="hint" id="v2PeakingNote"></p>
+          <button type="button" class="btn" id="v2ExposureToggle" aria-expanded="false">▮ Show histogram</button>
+          <div id="v2ExposurePanel" hidden>
+            <canvas id="v2ExposureGraph" width="256" height="72"
+              style="width:100%;height:72px;display:block;margin-top:8px;border:1px solid var(--line);border-radius:8px;background:#060d14"></canvas>
+            <p class="hint" id="v2ExposureNote"></p>
+          </div>
         </section>
 
         <!-- Frame averaging: how many camera frames are blended before a
