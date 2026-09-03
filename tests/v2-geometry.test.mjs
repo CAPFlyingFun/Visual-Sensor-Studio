@@ -1445,9 +1445,15 @@ test('a maximum-tier filtered clip records the CHOSEN stream, risk stated up fro
         'inside the envelope, no cap pretends to exist');
 
       await page.click('#v2RecordButton');
+      // 3000 ms was the outlier in a test whose every other wait allows 8000
+      // to 20000, and it guards the HEAVIEST step in the file: starting a
+      // filtered recording onto a 3840x2160 render target in a software
+      // renderer. Measured: reproduces reliably on a loaded machine, at
+      // ~18-20s real elapsed against a 3000ms budget — the assertion is
+      // untouched, only the time allowed for it to become true.
       await page.waitForFunction(() =>
         /RECORDING · filtered render/.test(document.getElementById('v2DiagRecordIn')?.textContent ?? ''),
-        null, { timeout: 3000 });
+        null, { timeout: 25000 });
       const during = await page.evaluate(() => ({
         row: document.getElementById('v2DiagRecordIn').textContent,
         canvasW: document.getElementById('v2PreviewCanvas').width,
