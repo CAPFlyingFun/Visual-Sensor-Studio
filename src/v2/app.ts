@@ -1138,6 +1138,82 @@ let nightLastCandidateAt = 0;
 let nightNeedsRestart = true;
 let nightCounters: NightCounters = emptyNightCounters();
 
+/**
+ * THE LOG — Joshua, on the phone, after the countdown worked: "the lowest I
+ * saw hand holding was about 95%... can you add a log that I can copy with a
+ * button to run like 3-5 times to get a good estimation before continuing."
+ * Appended, never overwritten: `nightCounters`/`nightMinSteadiness` are this
+ * run's live numbers; `nightLog` is every run so far, so several attempts can
+ * be compared or pasted out together.
+ *
+ * IT ALL LIVES HERE ON PURPOSE — the type, the formatter and the lookups.
+ * The first attempt at this put the formatter in vision/night-stack.ts as a
+ * new named export, and that is what took the phone down on 2026-09-03: an
+ * installed PWA can boot a FRESH app.js against a CACHED OLDER copy of a
+ * sibling module (or an older index.html), and both skews are fatal —
+ * a missing named export fails the whole module graph before a line runs,
+ * and byId() throws on markup that is not there yet. Either way every
+ * control after the failure is left unwired while the page still LOOKS
+ * complete: "No buttons work… it's all locked up, but everything is there."
+ * Both were reproduced in a real browser before this was rewritten.
+ *
+ * So this feature adds NO new import edge and NO new named export: it reuses
+ * describeNightCounters(), which the shipped build already has, and reaches
+ * its own markup through nightLogElement() below, which returns null instead
+ * of throwing. The worst a skew can now do to Night's log is not show it.
+ */
+interface NightLogEntry {
+  /** 1-based — the order they actually happened in. */
+  index: number;
+  /** False when the test was cancelled before the stack finished. */
+  completed: boolean;
+  /**
+   * The LOWEST steadiness reading seen from the moment the gate armed
+   * (after the countdown) through the end of the attempt — the worst moment
+   * of the hold, which is the number a threshold actually has to clear.
+   * 0..1, or null if the run ended before a single reading was sampled.
+   */
+  minSteadiness: number | null;
+  /** Wall-clock time of day the entry was recorded, e.g. "10:42:07 AM". */
+  at: string;
+  counters: NightCounters;
+}
+
+let nightLog: NightLogEntry[] = [];
+/** Reset on every fresh tap; folded into an entry when the run ends. */
+let nightMinSteadiness: number | null = null;
+
+/**
+ * The log's own markup, looked up WITHOUT byId's throw. See the note above:
+ * a null here must cost the log its panel, never the rest of the app its
+ * event listeners.
+ */
+function nightLogElement<T extends HTMLElement>(id: string): T | null {
+  return document.getElementById(id) as T | null;
+}
+
+/** One line per attempt. The counters half is describeNightCounters(), reused as-is. */
+function describeNightLogEntry(entry: NightLogEntry): string {
+  const mark = entry.completed ? '\u2713' : '\u2717';
+  const status = entry.completed ? 'complete' : 'cancelled';
+  const steadiness = entry.minSteadiness === null
+    ? 'no reading'
+    : `min ${Math.round(entry.minSteadiness * 100)}% steady`;
+  return `#${entry.index} ${mark} ${status} \u00b7 ${entry.at} \u00b7 ${steadiness} \u00b7 `
+    + describeNightCounters(entry.counters);
+}
+
+/** Appended, never truncated — comparing several runs is the whole point. */
+function pushNightLogEntry(completed: boolean): void {
+  nightLog = [...nightLog, {
+    index: nightLog.length + 1,
+    completed,
+    minSteadiness: nightMinSteadiness,
+    at: new Date().toLocaleTimeString(),
+    counters: nightCounters
+  }];
+}
+
 function buildNightTest(): void {
   byId('v2NightTestToggle').addEventListener('click', () => {
     if (nightPhase !== 'idle') {
@@ -1156,13 +1232,39 @@ function buildNightTest(): void {
       // little." This does NOT replace the gate he asked to have reused —
       // it runs BEFORE it, so the gate still has to see an actual steady
       // hold once the countdown ends.
+      nightMinSteadiness = null;
       nightCountdownStartedAt = performance.now();
       nightPhase = 'countdown';
     })();
   });
+  // Non-fatal lookups: a stale cached index.html without this markup must
+  // cost the log its buttons, never the rest of the app its wiring.
+  nightLogElement('v2NightLogCopy')?.addEventListener('click', () => {
+    if (nightLog.length === 0) { showToast('No Night runs logged yet.'); return; }
+    const text = nightLog.map(describeNightLogEntry).join('\n');
+    const clipboard = navigator.clipboard;
+    if (clipboard && typeof clipboard.writeText === 'function') {
+      void clipboard.writeText(text).then(
+        () => showToast(`Copied ${nightLog.length} Night log ${nightLog.length === 1 ? 'entry' : 'entries'}`),
+        () => showToast('This browser refused the clipboard.')
+      );
+      return;
+    }
+    showToast('This browser has no clipboard access.');
+  });
+  nightLogElement('v2NightLogClear')?.addEventListener('click', () => {
+    if (nightLog.length === 0) return;
+    nightLog = [];
+    showToast('Night log cleared.');
+  });
 }
 
 function stopNightTest(): void {
+  // A run that got as far as measuring something is worth a line even when
+  // cut short — comparing attempts is the point. A tap cancelled during the
+  // countdown never armed the gate, so it has nothing to compare and is not
+  // logged.
+  if (nightPhase === 'arming' || nightPhase === 'stacking') pushNightLogEntry(false);
   nightGate.disarm();
   nightAligner.reset();
   nightPhase = 'idle';
@@ -1196,7 +1298,11 @@ function updateNightStack(now: number): void {
     // Reuses the SAME steadiness reading updateSteadyShutter already
     // computes every frame — one measurement, read by three consumers
     // (Alignment's readout, Shoot When Steady, and this gate), never
-    // recomputed.
+    // recomputed. The log's "worst moment of the hold" starts tracking here:
+    // the gate has not fired yet, so this is already part of the hold.
+    nightMinSteadiness = nightMinSteadiness === null
+      ? steadyReading.steadiness
+      : Math.min(nightMinSteadiness, steadyReading.steadiness);
     const progress = nightGate.update(steadyReading.steadiness, now);
     if (!progress.fire) return;
     // Held. Freeze the accumulator's size for the whole capture — the same
@@ -1220,10 +1326,14 @@ function updateNightStack(now: number): void {
 
   // stacking
   if (!nightSize) { nightPhase = 'idle'; return; }
+  nightMinSteadiness = nightMinSteadiness === null
+    ? steadyReading.steadiness
+    : Math.min(nightMinSteadiness, steadyReading.steadiness);
   const elapsed = now - nightStartedAt;
   if (elapsed >= NIGHT_TARGET_MS) {
     renderer.renderNightResult(nightSize);
     nightCounters = { ...nightCounters, elapsedMs: elapsed };
+    pushNightLogEntry(true);
     nightPhase = 'complete';
     return;
   }
@@ -1316,6 +1426,21 @@ function renderNightTest(): void {
       idle: ''
     }[nightPhase]);
   setText('v2NightTestReading', nightPhase === 'idle' ? '' : describeNightCounters(nightCounters));
+  renderNightLog();
+}
+
+function renderNightLog(): void {
+  const empty = nightLog.length === 0;
+  const copy = nightLogElement<HTMLButtonElement>('v2NightLogCopy');
+  if (copy) copy.disabled = empty;
+  const clear = nightLogElement<HTMLButtonElement>('v2NightLogClear');
+  if (clear) clear.disabled = empty;
+  const panel = nightLogElement('v2NightLog');
+  if (panel) {
+    panel.textContent = empty
+      ? 'No runs logged yet \u2014 each Night attempt adds a line here.'
+      : nightLog.map(describeNightLogEntry).join('\n');
+  }
 }
 
 let renderedAidKey = '';

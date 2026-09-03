@@ -358,3 +358,56 @@ test('a large 3/2/1 overlay shows in the viewfinder during the countdown, and on
     'shown ONLY during the countdown — not during arming, stacking or complete');
   assert.match(appTs, /overlay\.textContent = String\(secondsLeft\);/);
 });
+
+test('the Night log appends across runs and can be copied', () => {
+  // Joshua, on the phone, after the countdown worked: "the lowest I saw hand
+  // holding was about 95%... add a log that I can copy with a button to run
+  // like 3-5 times to get a good estimation before continuing."
+  assert.match(v2Html, /id="v2NightLog"/);
+  assert.match(v2Html, /id="v2NightLogCopy"/);
+  assert.match(v2Html, /id="v2NightLogClear"/);
+  assert.match(appTs, /let nightLog: NightLogEntry\[\] = \[\];/,
+    'appended state, not a single overwritten reading like nightCounters');
+  assert.match(appTs, /nightLog = \[\.\.\.nightLog, \{/, 'appends — never replaces prior runs');
+  assert.match(appTs, /pushNightLogEntry\(true\);/, 'a finished stack logs itself');
+
+  // A cancel logs only once something was measured; a countdown cancel does not.
+  const stopBody = appTs.slice(appTs.indexOf('function stopNightTest(): void {'),
+    appTs.indexOf('function stopNightTest(): void {') + 700);
+  assert.match(stopBody, /if \(nightPhase === 'arming' \|\| nightPhase === 'stacking'\) pushNightLogEntry\(false\);/);
+
+  assert.match(appTs, /nightLog\.map\(describeNightLogEntry\)\.join\('\\n'\)/);
+  assert.match(appTs, /navigator\.clipboard/);
+});
+
+test('the Night log can never take the app down with it, however the PWA updates', () => {
+  // THE 2026-09-03 REGRESSION, pinned. An installed PWA can boot a fresh
+  // app.js against a cached older index.html, or against a cached older
+  // sibling module. Both were reproduced in a real browser: byId() throws on
+  // markup that is not there, and a missing named export fails the whole
+  // module graph before a line runs. Either left every control unwired while
+  // the page still looked complete — "No buttons work… it's all locked up,
+  // but everything is there."
+  //
+  // 1. The log's markup is reached WITHOUT byId's throw.
+  assert.match(appTs, /function nightLogElement<T extends HTMLElement>\(id: string\): T \| null \{/);
+  assert.match(appTs, /return document\.getElementById\(id\) as T \| null;/);
+  for (const id of ['v2NightLogCopy', 'v2NightLogClear', 'v2NightLog']) {
+    assert.ok(!new RegExp(`byId(<[^>]*>)?\\('${id}'\\)`).test(appTs),
+      `#${id} must never be reached through byId() — it throws, and one throw here unwires the app`);
+  }
+  assert.match(appTs, /nightLogElement\('v2NightLogCopy'\)\?\.addEventListener/,
+    'the listener is optional-chained, so a missing button costs only the button');
+
+  // 2. The feature adds NO new named export to a shared module, so a stale
+  //    copy of one cannot fail the import graph. The entry type and its
+  //    formatter live in app.ts itself.
+  assert.match(appTs, /^interface NightLogEntry \{/m, 'the entry type is local to app.ts');
+  assert.match(appTs, /^function describeNightLogEntry\(entry: NightLogEntry\): string \{/m,
+    'and so is its formatter');
+  const nightStack = readFileSync(new URL('../src/v2/vision/night-stack.ts', import.meta.url), 'utf8');
+  assert.ok(!/describeNightLogEntry|NightLogEntry/.test(nightStack),
+    'night-stack.ts gains no new export for the log — that is what broke the phone');
+  // It still REUSES the counters formatter the shipped build already has.
+  assert.match(appTs, /\+ describeNightCounters\(entry\.counters\);/);
+});
