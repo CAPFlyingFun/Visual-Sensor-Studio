@@ -975,6 +975,13 @@ function buildAids(): void {
  * pulls is the ordinary one — same escalation to the camera's maximum, same
  * geometry, same file. Nothing about the picture changes; only what decides
  * WHEN.
+ *
+ * AN ADDITION, NEVER A REPLACEMENT (Joshua's standing instruction,
+ * 2026-09-03: "leave it as is. Don't replace manual for automatic"). The
+ * shutter button keeps working exactly as it did, at the full sensor, with no
+ * waiting and no sensor permission — this is a second way to fire it for
+ * whoever wants one, and any later automatic capture (a night stack, say)
+ * is held to the same rule rather than quietly becoming what the button does.
  */
 let steadyReading: SteadyReading = { steadiness: 1, rate: 0, smear: 0 };
 let steadyProgress = 0;
