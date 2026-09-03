@@ -409,6 +409,54 @@ test('Night stacks at the size the TIER chose, not the size the screen is', () =
   assert.match(photoTs, /renderer\.render\(filterId, \{ width: photo\.width, height: photo\.height \}\)/);
 });
 
+test('Night measures its own result, then lifts it, then saves what it lifted', () => {
+  // Joshua, 2026-09-03: "wiring it up so I can see if the images it takes
+  // line up and actually make a darker scene brighter and/or enhance
+  // daylight similar to HDR." Two jobs, one measurement, nothing by taste.
+  const renderTs = readFileSync(new URL('../src/v2/render/gl-renderer.ts', import.meta.url), 'utf8');
+
+  // MEASURED, through the same census the histogram panel already uses —
+  // not a second exposure implementation.
+  assert.match(appTs, /function measureNightResult\(\): ExposureReading \| null \{/);
+  assert.match(appTs, /buildExposure\(context\.getImageData\(/,
+    'the reading comes from vision/exposure.ts, one definition of the census');
+  assert.match(appTs, /context\.drawImage\(renderer\.targetCanvas,/,
+    'it measures the STACK, not the frame arriving now');
+
+  // Never darkens, and a well-exposed frame is left alone.
+  assert.match(appTs, /Math\.max\(1, NIGHT_TARGET_MEAN \/ Math\.max\(reading\.mean, 0\.01\)\)/);
+  assert.match(appTs, /const lift = 1 \+ Math\.min\(0\.6, reading\.crushed \* 3\);/,
+    'the shadow open is driven by the CRUSHED share, so daylight gets it too');
+
+  // The curve cannot clip or wash out: white point = gain means 1.0 -> 1.0
+  // at every gain, and gain 1.0 makes the whole curve an identity. It lives
+  // in the REGISTRY with every other fragment shader — Rule 4 is enforced
+  // structurally, and putting it beside the renderer broke that test.
+  const registryTs = readFileSync(new URL('../src/v2/filters/registry.ts', import.meta.url), 'utf8');
+  assert.match(registryTs, /float w = max\(uGain, 1\.0\);/);
+  assert.match(registryTs, /c = c \* \(1\.0 \+ c \/ \(w \* w\)\) \/ \(1\.0 \+ c\);/);
+  assert.match(renderTs, /NIGHT_RECOVERY_FRAGMENT/, 'the renderer imports it rather than restating it');
+
+  // RAW first (so there is something to measure), then the lift it asked for.
+  const done = appTs.indexOf('if (elapsed >= NIGHT_TARGET_MS) {');
+  const block = appTs.slice(done, done + 1400);
+  const raw = block.indexOf('renderer.renderNightResult(nightSize);');
+  const measured = block.indexOf('measureNightResult()');
+  const lifted = block.indexOf('renderer.renderNightResult(nightSize, recovery);');
+  assert.ok(raw > -1 && measured > raw && lifted > measured,
+    'raw draw, then measure, then draw again through the measured lift');
+
+  // The SAVE takes the canvas as it stands. Re-rendering would save the one
+  // frame arriving now and discard the four seconds of stacking.
+  assert.match(appTs, /\{ preRendered: true, label: 'night' \}/);
+  const photoTs = readFileSync(new URL('../src/v2/capture/photo.ts', import.meta.url), 'utf8');
+  assert.match(photoTs, /if \(!options\.preRendered\) \{/);
+  // And the preview stays frozen while the canvas is being encoded.
+  const savePoint = appTs.indexOf("nightPhase = 'complete';\n    nightSaved");
+  assert.ok(savePoint > -1 && appTs.indexOf('void saveNightPhoto(nightSize);') > savePoint,
+    'the phase freezes renderPreview BEFORE the encode starts');
+});
+
 test('the Night log appends across runs and can be copied', () => {
   // Joshua, on the phone, after the countdown worked: "the lowest I saw hand
   // holding was about 95%... add a log that I can copy with a button to run

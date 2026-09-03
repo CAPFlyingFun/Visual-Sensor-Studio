@@ -79,7 +79,7 @@ import { matchShare } from './vision/colour-gap.js';
 import { tipFor } from './ui/coach.js';
 import { deleteLens, loadLenses, newLensId, sanitiseLens, saveLens } from '../vision/lens-store.js';
 import { RAMP_PRESETS } from '../vision/lens-preview.js';
-import { GlRenderer } from './render/gl-renderer.js';
+import { GlRenderer, type NightRecovery } from './render/gl-renderer.js';
 import { capturePhoto } from './capture/photo.js';
 import {
   NIGHT_COUNTDOWN_MS, NIGHT_TARGET_FRAMES, NIGHT_TARGET_MS, NIGHT_TICK_MS,
@@ -1203,6 +1203,92 @@ function describeNightLogEntry(entry: NightLogEntry): string {
     + describeNightCounters(entry.counters);
 }
 
+/**
+ * THE LIFT THE STACK EARNED, resolved from the stacked frame's OWN reading.
+ *
+ * Joshua, 2026-09-03: "so I can see if the images it takes line up and
+ * actually make a darker scene brighter and/or enhance daylight similar to
+ * HDR." Those are two different jobs and this returns both, from one
+ * measurement, with nothing chosen by taste:
+ *
+ * GAIN answers the dark scene. A mean of N frames is not brighter than one
+ * frame — it is the same brightness with about sqrt(N) less noise — so the
+ * brightening has to be done here, and the stack is what makes it affordable.
+ * The multiplier is whatever brings the measured mean to TARGET_MEAN, floored
+ * at 1.0 so Night can only ever brighten, and capped so a nearly black frame
+ * cannot ask for a multiply that would only magnify what noise remains.
+ *
+ * LIFT answers daylight. It is driven by the CRUSHED share — the pixels the
+ * exposure reading found at the bottom of the range with their detail already
+ * gone — so a bright scene with blocked-up shadows still gets them opened
+ * even though its gain comes out at exactly 1.0.
+ *
+ * Neither can clip or wash out: the renderer's curve is Reinhard with its
+ * white point set to the gain, so an input of 1.0 lands on exactly 1.0
+ * whatever the gain, and a gain of 1.0 makes the whole curve an identity.
+ */
+const NIGHT_TARGET_MEAN = 0.42;
+const NIGHT_MAX_GAIN = 6;
+
+function nightRecoveryFor(reading: ExposureReading): NightRecovery {
+  const gain = Math.min(NIGHT_MAX_GAIN,
+    Math.max(1, NIGHT_TARGET_MEAN / Math.max(reading.mean, 0.01)));
+  // Crushed is a share, 0..1. A frame with a tenth of itself blocked up asks
+  // for a noticeable open; one with none asks for nothing.
+  const lift = 1 + Math.min(0.6, reading.crushed * 3);
+  return { gain, lift };
+}
+
+/**
+ * Measure the FINISHED stack, through the same census the histogram panel
+ * uses. It samples the rendered canvas rather than the video, because the
+ * question is about the accumulation, not about the frame arriving now.
+ */
+function measureNightResult(): ExposureReading | null {
+  nightSampleCanvas ??= document.createElement('canvas');
+  nightSampleCanvas.width = HISTOGRAM_SAMPLE;
+  nightSampleCanvas.height = HISTOGRAM_SAMPLE;
+  const context = nightSampleCanvas.getContext('2d', { willReadFrequently: true });
+  if (!context) return null;
+  try {
+    context.drawImage(renderer.targetCanvas, 0, 0, HISTOGRAM_SAMPLE, HISTOGRAM_SAMPLE);
+    return buildExposure(context.getImageData(0, 0, HISTOGRAM_SAMPLE, HISTOGRAM_SAMPLE).data);
+  } catch {
+    return null;
+  }
+}
+let nightSampleCanvas: HTMLCanvasElement | null = null;
+
+/**
+ * Save what the stack produced — the canvas AS IT STANDS, never a fresh
+ * frame. capturePhoto is told preRendered for exactly that reason: uploading
+ * the frame arriving right now would save one ordinary picture and throw away
+ * the four seconds of stacking that just happened.
+ *
+ * MAX MEANS MAX applies unchanged: the accumulator was frozen at the photo
+ * row when stacking began, so this saves at the size the chosen tier decided.
+ */
+async function saveNightPhoto(size: FrameSize): Promise<void> {
+  const still = await capturePhoto(renderer, video, 'rgb', {
+    width: size.width,
+    height: size.height,
+    aspect: size.width / size.height,
+    reason: 'the Night stack, at the size the chosen tier resolved'
+  }, { preRendered: true, label: 'night' });
+  if (!still) {
+    setText('v2NightTestNote', 'The stack rendered but could not be encoded.');
+    return;
+  }
+  updateState({ lastPhoto: { width: still.width, height: still.height, bytes: still.bytes } });
+  offerShare('v2SharePhoto',
+    new File([still.blob], still.fileName, { type: 'image/jpeg' }), 'v2PhotoResult');
+  setText('v2PhotoResult', `Saved ${still.width}×${still.height} · `
+    + `${(still.bytes / 1e6).toFixed(2)} MB JPEG · ${still.reason}`);
+  nightSaved = `saved ${still.width}×${still.height}, ${(still.bytes / 1e6).toFixed(2)} MB`;
+}
+/** What the last completed Night capture wrote, for the note. */
+let nightSaved = '';
+
 /** Appended, never truncated — comparing several runs is the whole point. */
 function pushNightLogEntry(completed: boolean): void {
   nightLog = [...nightLog, {
@@ -1233,6 +1319,7 @@ function buildNightTest(): void {
       // it runs BEFORE it, so the gate still has to see an actual steady
       // hold once the countdown ends.
       nightMinSteadiness = null;
+      nightSaved = '';
       nightCountdownStartedAt = performance.now();
       nightPhase = 'countdown';
     })();
@@ -1364,10 +1451,27 @@ function updateNightStack(now: number): void {
     : Math.min(nightMinSteadiness, steadyReading.steadiness);
   const elapsed = now - nightStartedAt;
   if (elapsed >= NIGHT_TARGET_MS) {
+    // RAW first, so there is something to measure: the stack as it stands,
+    // through plain RGB with no lift at all.
     renderer.renderNightResult(nightSize);
-    nightCounters = { ...nightCounters, elapsedMs: elapsed };
+    const reading = measureNightResult();
+    const recovery = reading ? nightRecoveryFor(reading) : { gain: 1, lift: 1 };
+    // Then again, through the lift that reading just asked for.
+    renderer.renderNightResult(nightSize, recovery);
+    nightCounters = {
+      ...nightCounters,
+      elapsedMs: elapsed,
+      meanBefore: reading?.mean ?? 0,
+      gain: recovery.gain,
+      lift: recovery.lift
+    };
     pushNightLogEntry(true);
+    // The phase goes to complete BEFORE the save, because renderPreview is
+    // frozen on that phase — the canvas being encoded must not have a live
+    // frame drawn over it while toBlob is still working.
     nightPhase = 'complete';
+    nightSaved = 'saving…';
+    void saveNightPhoto(nightSize);
     return;
   }
   if (now - nightLastCandidateAt < NIGHT_TICK_MS) return;
@@ -1460,8 +1564,10 @@ function renderNightTest(): void {
       arming: 'Hold the phone steady — the stack begins once it settles.',
       stacking: `Gathering roughly one frame every ${NIGHT_TICK_MS} ms for about `
         + `${(NIGHT_TARGET_MS / 1000).toFixed(0)}s.`,
-      complete: 'Held on screen so you can inspect it. Tap the button to clear it '
-        + 'and try again.',
+      complete: nightSaved
+        ? `Held on screen, and ${nightSaved}. Tap the button to clear it and try again.`
+        : 'Held on screen so you can inspect it. Tap the button to clear it '
+          + 'and try again.',
       idle: ''
     }[nightPhase]);
   setText('v2NightTestReading', nightPhase === 'idle' ? '' : describeNightCounters(nightCounters));

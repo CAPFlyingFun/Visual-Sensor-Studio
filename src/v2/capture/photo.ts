@@ -26,11 +26,24 @@ export interface PhotoResult {
 /** Copy target, reused across captures; photo sizes dwarf preview sizes. */
 let photoCanvas: HTMLCanvasElement | null = null;
 
+export interface CaptureOptions {
+  /**
+   * The target canvas ALREADY holds the picture to save, so this must not
+   * upload a live frame over it. Night's four-second stack is the case: the
+   * result is an accumulation of many frames, and re-rendering the current
+   * one would save the single frame that happened to be arriving instead.
+   */
+  preRendered?: boolean;
+  /** Names the file in place of the filter id (e.g. 'night'). */
+  label?: string;
+}
+
 export async function capturePhoto(
   renderer: GlRenderer,
   video: HTMLVideoElement,
   filterId: string,
-  photo: SizedWithReason
+  photo: SizedWithReason,
+  options: CaptureOptions = {}
 ): Promise<PhotoResult | null> {
   // FRAME AVERAGING is deliberately NOT applied to a still, and Joshua named
   // the reason (2026-09-02): "the still images are fine because it has a
@@ -39,8 +52,10 @@ export async function capturePhoto(
   // no such problem, and blending a moving frame into it would only smear a
   // picture that was already sharp. render() below asks for none, on purpose.
   const t0 = performance.now();
-  if (!renderer.uploadFrame(video)) return null;
-  if (!renderer.render(filterId, { width: photo.width, height: photo.height })) return null;
+  if (!options.preRendered) {
+    if (!renderer.uploadFrame(video)) return null;
+    if (!renderer.render(filterId, { width: photo.width, height: photo.height })) return null;
+  }
 
   photoCanvas ??= document.createElement('canvas');
   photoCanvas.width = photo.width;
@@ -58,7 +73,7 @@ export async function capturePhoto(
   const encodeDone = performance.now();
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const fileName = `visual-sensor-v2-${filterId}-${photo.width}x${photo.height}-${stamp}.jpg`;
+  const fileName = `visual-sensor-v2-${options.label ?? filterId}-${photo.width}x${photo.height}-${stamp}.jpg`;
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;

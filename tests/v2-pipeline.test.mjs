@@ -1585,9 +1585,25 @@ test('one read of the frame answers every census asked of it', () => {
   // getImageData stalls on the GPU and three censuses each used to do their
   // own draw-and-read — three stalls to ask three questions about ONE frame.
   const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
-  assert.equal((appTs.match(/getImageData\(0, 0, HISTOGRAM_SAMPLE/g) ?? []).length, 1,
-    'the sample is read in exactly one place');
+  // The rule is about the FRAME path: sampleFrame() is the only thing that
+  // reads the video, and it is read once per frame however many censuses ask.
+  const sampleFn = appTs.slice(appTs.indexOf('function sampleFrame()'),
+    appTs.indexOf('function sampleFrame()') + 900);
+  assert.equal((sampleFn.match(/getImageData\(/g) ?? []).length, 1,
+    'the frame sample is read in exactly one place');
+  assert.match(sampleFn, /context\.drawImage\(video,/, 'and it is the VIDEO it reads');
   assert.match(appTs, /function sampleFrame\(\)/);
+  // Night's own read is a DIFFERENT surface (the rendered canvas) at a
+  // different cadence (once when a four-second capture finishes, never per
+  // frame), so it does not reintroduce the per-frame stall this guards
+  // against. Pinned so it cannot quietly migrate onto the frame loop.
+  const nightRead = appTs.slice(appTs.indexOf('function measureNightResult()'),
+    appTs.indexOf('function measureNightResult()') + 900);
+  assert.match(nightRead, /context\.drawImage\(renderer\.targetCanvas,/);
+  const frameLoop = appTs.slice(appTs.indexOf('renderPreview(frame.now);'),
+    appTs.indexOf('renderPreview(frame.now);') + 400);
+  assert.ok(!/measureNightResult/.test(frameLoop),
+    'the Night measurement must never be called from the delivery loop');
   // And each census is still paid for only when something needs it.
   const censuses = appTs.slice(appTs.indexOf('function measureCensuses'));
   assert.match(censuses, /if \(needsColour\)/);
@@ -2023,14 +2039,17 @@ test('Night has its OWN accumulator, not a share of the live one', () => {
   assert.ok(!/emaWeight\(/.test(nightFn), 'does not call the live ladder\'s EMA formula');
 });
 
-test('the Night result is drawn with the plain RGB program, aids forced off', () => {
-  // "No brightness recovery, no lens" (Joshua, 2026-09-03) — reusing RGB's
-  // own compiled program is what makes that true structurally: RGB's whole
-  // fragment body is one texture read, so there is no ramp, no state, no
-  // lens math this draw call could apply even by accident.
+test('the RAW Night draw is plain RGB with aids off; the lift is its own program', () => {
+  // The raw draw is what gets MEASURED, so it must carry nothing of its own:
+  // reusing RGB's compiled program makes that structural — RGB's whole
+  // fragment body is one texture read, so there is no ramp, no state and no
+  // lens math this draw call could apply even by accident. The measured lift
+  // is then a SECOND draw through its own program (2026-09-03, Joshua:
+  // "actually make a darker scene brighter and/or enhance daylight similar
+  // to HDR"), so the picture being measured is never the lifted one.
   const renderer = readFileSync(new URL('../src/v2/render/gl-renderer.ts', import.meta.url), 'utf8');
   const resultFn = renderer.slice(
-    renderer.indexOf('renderNightResult('), renderer.indexOf('renderNightResult(') + 1400);
+    renderer.indexOf('renderNightResult('), renderer.indexOf('renderNightResult(') + 2600);
   assert.match(resultFn, /filterById\('rgb'\)/);
   assert.match(resultFn, /this\.nightTextures\[this\.nightRead\]/, 'reads NIGHT\'s texture, not the camera\'s');
   // Forced to 0 explicitly, not left to whatever the program's uniform state
@@ -2040,6 +2059,41 @@ test('the Night result is drawn with the plain RGB program, aids forced off', ()
   // view this milestone is supposed to be clean.
   assert.match(resultFn, /uniform1f\(gl\.getUniformLocation\(program, 'uZebra'\), 0\);/);
   assert.match(resultFn, /uniform1f\(gl\.getUniformLocation\(program, 'uPeak'\), 0\);/);
+  // The lift only ever applies when a recovery was actually measured.
+  assert.match(resultFn, /if \(recovery\) \{/);
+  assert.match(resultFn, /this\.buildProgram\(VERTEX, NIGHT_RECOVERY_FRAGMENT\)/);
+});
+
+test('the recovery curve cannot clip, wash out, or touch a well-exposed frame', () => {
+  // Reinhard with its white point set to the gain. Three properties, each
+  // load-bearing and each checkable by reading the shader: an input of 1.0
+  // lands on exactly 1.0 at every gain (white stays white), gain 1.0 makes
+  // the whole expression an identity (a correctly exposed frame is not
+  // re-graded for a lift it never asked for), and it is asymptotically
+  // bounded so no gain can clip what the stack spent four seconds keeping.
+  const registry = readFileSync(new URL('../src/v2/filters/registry.ts', import.meta.url), 'utf8');
+  const shader = registry.slice(registry.indexOf('export const NIGHT_RECOVERY_FRAGMENT'),
+    registry.indexOf('export const NIGHT_RECOVERY_FRAGMENT') + 1200);
+  assert.match(shader, /float w = max\(uGain, 1\.0\);/);
+  assert.match(shader, /c = c \* \(1\.0 \+ c \/ \(w \* w\)\) \/ \(1\.0 \+ c\);/);
+  // Checked as arithmetic, not just as text: the same expression, evaluated.
+  const curve = (v, gain, lift) => {
+    const c = v * gain; const w = Math.max(gain, 1);
+    return Math.pow((c * (1 + c / (w * w))) / (1 + c), 1 / lift);
+  };
+  for (const gain of [1, 1.5, 2, 3, 4, 6]) {
+    assert.ok(Math.abs(curve(1, gain, 1) - 1) < 1e-9, `white stays white at gain ${gain}`);
+    let previous = -1;
+    for (let i = 0; i <= 50; i++) {
+      const out = curve(i / 50, gain, 1);
+      assert.ok(out <= 1 + 1e-9, `gain ${gain} cannot exceed 1.0`);
+      assert.ok(out >= previous, `gain ${gain} stays monotonic`);
+      previous = out;
+    }
+  }
+  for (const v of [0, 0.25, 0.5, 0.75, 1]) {
+    assert.ok(Math.abs(curve(v, 1, 1) - v) < 1e-9, 'gain 1.0 with no lift is an identity');
+  }
 });
 
 test('Night reuses the alignment weight formula\'s SHAPE (mix-blend) but not its instances', () => {
@@ -2066,20 +2120,40 @@ test('Night reuses the alignment weight formula\'s SHAPE (mix-blend) but not its
     'no rotation math reimplemented here — it all goes through StackAligner');
 });
 
-test('Milestone 1 saves nothing — no photo, no JPEG, no lens, no brightness curve', () => {
-  // "DO NOT SAVE A FILE in the first Night test... If an action is presented
-  // as a photo/save while MAX is selected, I don't want another exception
-  // where that saved photo is knowingly below MAX." (Joshua, 2026-09-03).
+test('Night saves the STACK, at the tier\'s size, and still consults no lens', () => {
+  // Milestone 1 deliberately saved nothing. The board's next step is "save
+  // one clean low-light still", and Joshua asked for it plainly: "It's not
+  // wiring it up so I can see if the images it takes line up and actually
+  // make a darker scene brighter." So this now saves — and what it saves is
+  // the thing that must not drift.
   const app = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
   const nightBlock = app.slice(app.indexOf("/* --- Night, Milestone 1"), app.indexOf('let renderedAidKey'));
-  assert.ok(!/capturePhoto\(|takePhoto\(|toBlob|JPEG|jpeg/.test(nightBlock),
-    'nothing in the Night block encodes or saves a file');
-  assert.ok(!/filterById\(readState\(\)\.activeFilter\)|lensFilterId|compileLens/.test(nightBlock),
+
+  // THE CANVAS AS IT STANDS. Re-rendering would upload the frame arriving
+  // now and save one ordinary picture, throwing away the whole capture —
+  // the single most damaging thing this path could get wrong.
+  assert.match(nightBlock, /\{ preRendered: true, label: 'night' \}/);
+  const photo = readFileSync(new URL('../src/v2/capture/photo.ts', import.meta.url), 'utf8');
+  assert.match(photo, /if \(!options\.preRendered\) \{[\s\S]{0,200}uploadFrame/,
+    'the upload and the re-render are BOTH skipped for a pre-rendered save');
+
+  // MAX MEANS MAX is unchanged: the size saved is the accumulator's own
+  // frozen size, which is the photo row the tier resolved — never a
+  // separately chosen number.
+  assert.match(nightBlock, /saveNightPhoto\(nightSize\)/);
+  assert.ok(!/geometry\.preview|previewBoxShortSide/.test(nightBlock),
+    'the save never reaches for the viewfinder-sized row');
+
+  // The lens is STILL not consulted — composing Night under a lens is a
+  // later step on the board, and until then nothing here may quietly do it.
+  assert.ok(!/lensFilterId|compileLens/.test(nightBlock),
     'the selected lens is never consulted here');
-  // The renderer side is equally silent about saving — renderNightResult
-  // draws to the CANVAS only, never reads it back.
-  const renderer = readFileSync(new URL('../src/v2/render/gl-renderer.ts', import.meta.url), 'utf8');
-  const resultFn = renderer.slice(
-    renderer.indexOf('renderNightResult('), renderer.indexOf('renderNightResult(') + 1400);
-  assert.ok(!/toBlob|toDataURL|readPixels/i.test(resultFn), 'the result is shown, never read back or encoded');
+  assert.match(nightBlock, /capturePhoto\(renderer, video, 'rgb',/,
+    'and the save goes through plain RGB, not the active filter');
+
+  // The preview must be frozen before the encode: a live frame drawn over
+  // the canvas mid-toBlob would save the wrong picture.
+  const freeze = nightBlock.indexOf("nightPhase = 'complete';");
+  assert.ok(freeze > -1 && nightBlock.indexOf('void saveNightPhoto(') > freeze,
+    'renderPreview is frozen before the canvas is encoded');
 });

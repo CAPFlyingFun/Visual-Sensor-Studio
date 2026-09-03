@@ -81,7 +81,7 @@ test('the readout states every number Joshua asked for, and nothing it did not m
     stackCount: 8, restarts: 1, offsetPixels: 2.4, maxOffsetPixels: 61.2,
     tierLabel: '1080', streamWidth: 1080, streamHeight: 1440,
     stackedWidth: 924, stackedHeight: 1232, sensorWidth: 3024, sensorHeight: 4032,
-    actualCadenceMs: 253.1
+    actualCadenceMs: 253.1, meanBefore: 0.118, gain: 3.56, lift: 1.42
   };
   const line = describeNightCounters(counters);
   assert.match(line, /3\.8s/, 'elapsed');
@@ -103,6 +103,14 @@ test('the readout states every number Joshua asked for, and nothing it did not m
   assert.match(line, /stream 1080×1440/, 'what the camera granted under it');
   assert.match(line, /stacked 924×1232/, 'what Night actually accumulated');
   assert.match(line, /sensor 3024×4032/, 'what a MAX photo would have to be');
+
+  // THE RECOVERY, reported as what it measured and what it then did.
+  assert.match(line, /lift 3\.56× gain, 1\.42 shadows \(mean 0\.118\)/);
+  // A frame that needed nothing says so plainly rather than reporting a 1x
+  // lift as though something happened.
+  const untouched = describeNightCounters({ ...counters, gain: 1, lift: 1, meanBefore: 0.44 });
+  assert.match(untouched, /no lift needed \(mean 0\.440\)/);
+  assert.ok(!/1\.00×/.test(untouched), 'an identity lift is not dressed up as an adjustment');
 
   // Plural restarts, and no "(0 restarts)" clutter when there were none.
   const many = describeNightCounters({ ...counters, restarts: 2 });

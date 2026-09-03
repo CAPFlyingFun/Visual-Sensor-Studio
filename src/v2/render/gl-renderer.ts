@@ -14,7 +14,8 @@
  */
 
 import {
-  AVERAGE_FRAGMENT, FILTERS, filterById, ironbowLut, type FilterDefinition
+  AVERAGE_FRAGMENT, FILTERS, NIGHT_RECOVERY_FRAGMENT, filterById, ironbowLut,
+  type FilterDefinition
 } from '../filters/registry.js';
 import { frameAverageWeight as emaWeight } from './frame-average.js';
 
@@ -42,7 +43,11 @@ void main() {
   gl_Position = vec4(aPosition, 0.0, 1.0);
 }`;
 
-
+/** What the recovery pass was told to do — every number measured, none assumed. */
+export interface NightRecovery {
+  gain: number;
+  lift: number;
+}
 
 /**
  * The EMA weight that removes as much noise as a true average of N frames.
@@ -95,6 +100,7 @@ export class GlRenderer {
   private averageTextures: [WebGLTexture, WebGLTexture] | null = null;
   private averageFramebuffer: WebGLFramebuffer | null = null;
   private averageProgram: WebGLProgram | null = null;
+  private nightRecoveryProgram: WebGLProgram | null = null;
   private averageSize = { width: 0, height: 0 };
   private averageRead = 0;
   private averaging = false;
@@ -520,11 +526,22 @@ export class GlRenderer {
    * still be sitting in this program's uniform state and bake itself into
    * what is supposed to be an unfiltered diagnostic view.
    */
-  renderNightResult(target: RenderTargetSize): boolean {
+  renderNightResult(target: RenderTargetSize, recovery?: NightRecovery): boolean {
     const gl = this.gl;
-    const rgb = filterById('rgb');
-    if (!gl || gl.isContextLost() || !rgb || !this.nightPrimed || !this.nightTextures) return false;
-    const program = this.program(rgb);
+    if (!gl || gl.isContextLost() || !this.nightPrimed || !this.nightTextures) return false;
+    // WITH a recovery, the stack goes through the lift it measured for
+    // itself; WITHOUT one, through plain RGB — which is how the raw stack is
+    // drawn in order to be measured in the first place. Same texture, same
+    // target size; only the program differs.
+    let program: WebGLProgram | null;
+    if (recovery) {
+      this.nightRecoveryProgram ??= this.buildProgram(VERTEX, NIGHT_RECOVERY_FRAGMENT);
+      program = this.nightRecoveryProgram;
+    } else {
+      const rgb = filterById('rgb');
+      if (!rgb) return false;
+      program = this.program(rgb);
+    }
     if (!program) return false;
 
     if (this.canvas.width !== target.width) this.canvas.width = target.width;
@@ -536,9 +553,16 @@ export class GlRenderer {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.nightTextures[this.nightRead]);
     gl.uniform1i(gl.getUniformLocation(program, 'uFrame'), 0);
-    gl.uniform2f(gl.getUniformLocation(program, 'uTexel'), 1 / target.width, 1 / target.height);
-    gl.uniform1f(gl.getUniformLocation(program, 'uZebra'), 0);
-    gl.uniform1f(gl.getUniformLocation(program, 'uPeak'), 0);
+    if (recovery) {
+      gl.uniform1f(gl.getUniformLocation(program, 'uGain'), recovery.gain);
+      gl.uniform1f(gl.getUniformLocation(program, 'uLift'), recovery.lift);
+    } else {
+      gl.uniform2f(gl.getUniformLocation(program, 'uTexel'), 1 / target.width, 1 / target.height);
+      // The aids are forced off: a zebra stripe or a peaking edge is a
+      // VIEWING aid and must never reach a measurement or a file.
+      gl.uniform1f(gl.getUniformLocation(program, 'uZebra'), 0);
+      gl.uniform1f(gl.getUniformLocation(program, 'uPeak'), 0);
+    }
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     return true;
   }

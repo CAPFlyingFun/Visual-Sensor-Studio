@@ -136,6 +136,16 @@ export interface NightCounters {
   sensorHeight: number;
   /** Measured mean interval between candidate ticks, ms — the "roughly 0.25s" claim, checked. */
   actualCadenceMs: number;
+  /**
+   * THE RECOVERY, measured from the finished stack rather than chosen.
+   * `meanBefore` is the stacked frame's own mean luma (0..1); `gain` and
+   * `lift` are what that reading asked for. gain 1.0 with lift 1.0 means the
+   * frame was already well exposed and nothing was done to it — which is a
+   * result, not a failure, and the readout says so plainly.
+   */
+  meanBefore: number;
+  gain: number;
+  lift: number;
 }
 
 export function emptyNightCounters(): NightCounters {
@@ -144,7 +154,7 @@ export function emptyNightCounters(): NightCounters {
     stackCount: 0, restarts: 0, offsetPixels: 0, maxOffsetPixels: 0,
     tierLabel: '', streamWidth: 0, streamHeight: 0,
     stackedWidth: 0, stackedHeight: 0, sensorWidth: 0, sensorHeight: 0,
-    actualCadenceMs: 0
+    actualCadenceMs: 0, meanBefore: 0, gain: 1, lift: 1
   };
 }
 
@@ -164,5 +174,9 @@ export function describeNightCounters(counters: NightCounters): string {
     + `actual cadence ${cadence} · `
     + `tier ${counters.tierLabel || '—'} · stream ${size(counters.streamWidth, counters.streamHeight)} · `
     + `stacked ${size(counters.stackedWidth, counters.stackedHeight)} · `
-    + `sensor ${size(counters.sensorWidth, counters.sensorHeight)}`;
+    + `sensor ${size(counters.sensorWidth, counters.sensorHeight)} · `
+    + (counters.gain > 1.001 || counters.lift > 1.001
+      ? `lift ${counters.gain.toFixed(2)}× gain, ${counters.lift.toFixed(2)} shadows `
+        + `(mean ${counters.meanBefore.toFixed(3)})`
+      : `no lift needed (mean ${counters.meanBefore.toFixed(3)})`);
 }

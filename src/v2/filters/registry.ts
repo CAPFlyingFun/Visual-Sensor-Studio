@@ -165,6 +165,62 @@ export const SPEED_STATE = HEADER + `void main() {
  * average each frame against a mirror of the one before it — the same trap
  * that turned every temporal filter into a kaleidoscope (2026-09-01).
  */
+/**
+ * NIGHT RECOVERY — the lift a finished stack has EARNED.
+ *
+ * A mean of N aligned frames is not brighter than one frame; it is the same
+ * brightness with about sqrt(N) less noise. That suppressed noise is exactly
+ * what makes lifting affordable: raising a single dark frame raises its grain
+ * with it, and raising a fifteen-frame mean does not. So the gain belongs
+ * here, AFTER the stack, and nowhere else.
+ *
+ * Three measured uniforms, all resolved from the stacked frame's own
+ * exposure reading (vision/exposure.ts) rather than chosen by taste:
+ *
+ * - uGain  a straight multiply, never below 1.0. Night may brighten and may
+ *          not darken; a daylight frame that already sits at a good mean
+ *          gets 1.0 and passes through the multiply untouched.
+ * - uGain  a straight multiply, never below 1.0. Night may brighten and may
+ *          not darken; a daylight frame already at a good mean gets exactly
+ *          1.0, and at 1.0 the whole curve below collapses to an identity.
+ * - uLift  a shadow gamma driven by how much of the frame measured CRUSHED.
+ *          This is the half that answers daylight: it opens the dark end
+ *          without touching white, which is the "HDR" of the ask.
+ *
+ * The tone curve is Reinhard with its WHITE POINT SET TO THE GAIN, which is
+ * what makes the gain safe to be large. Written out, out = c(1 + c/w²)/(1 + c)
+ * for c = value × gain and w = gain. Three properties earn it its place:
+ *
+ *   - An input of 1.0 maps to exactly 1.0 at EVERY gain, so white stays white
+ *     and no amount of lift can wash the picture out.
+ *   - At gain 1.0 the whole expression reduces to c, an exact identity — a
+ *     correctly exposed frame is not quietly re-graded for a lift it never
+ *     asked for.
+ *   - It is monotonic and asymptotically bounded, so it cannot clip: whatever
+ *     the stack preserved at the top stays distinguishable instead of
+ *     becoming one flat white.
+ *
+ * A fixed knee was tried first and rejected on its own numbers: at gain 6 it
+ * squashed everything above 0.25 into the 0.92-0.98 band, which is brighter
+ * and milky rather than brighter and legible. The white point keeps the
+ * midtone separation the stacking was spent earning.
+ */
+export const NIGHT_RECOVERY_FRAGMENT = `precision mediump float;
+varying vec2 vUv;
+uniform sampler2D uFrame;
+uniform float uGain;
+uniform float uLift;
+void main() {
+  vec3 c = texture2D(uFrame, vUv).rgb * uGain;
+  // Reinhard, white point = the gain. At uGain 1.0 this is exactly c.
+  float w = max(uGain, 1.0);
+  c = c * (1.0 + c / (w * w)) / (1.0 + c);
+  // SHADOWS. A gamma of 1.0 is an identity; above it the dark end opens and
+  // white stays where it is.
+  c = pow(max(c, 0.0), vec3(1.0 / max(uLift, 0.0001)));
+  gl_FragColor = vec4(c, 1.0);
+}`;
+
 export const AVERAGE_FRAGMENT = `precision mediump float;
 varying vec2 vUv;
 uniform sampler2D uFrame;
