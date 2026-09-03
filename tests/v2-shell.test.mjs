@@ -358,3 +358,32 @@ test('a large 3/2/1 overlay shows in the viewfinder during the countdown, and on
     'shown ONLY during the countdown — not during arming, stacking or complete');
   assert.match(appTs, /overlay\.textContent = String\(secondsLeft\);/);
 });
+
+test('the Night log appends across runs, with a copy button and structural markup', () => {
+  // Joshua, on the phone, after the countdown worked: "the lowest I saw hand
+  // holding was about 95%... add a log that I can copy with a button to run
+  // like 3-5 times to get a good estimation before continuing."
+  assert.match(v2Html, /id="v2NightLog"/);
+  assert.match(v2Html, /id="v2NightLogCopy"/);
+  assert.match(v2Html, /id="v2NightLogClear"/);
+  assert.match(appTs, /let nightLog: NightLogEntry\[\] = \[\];/,
+    'appended state, never a single overwritten reading like nightCounters');
+  assert.match(appTs, /function pushNightLogEntry\(completed: boolean\): void \{/);
+  assert.match(appTs, /nightLog = \[\.\.\.nightLog, \{/, 'appends — never truncates or replaces prior runs');
+
+  // A finished stack logs itself as it completes; a cancel logs itself only
+  // once something was actually measured (arming or stacking), never for a
+  // tap cancelled during the countdown with nothing to compare yet.
+  assert.match(appTs, /pushNightLogEntry\(true\);/);
+  const stopBody = appTs.slice(appTs.indexOf('function stopNightTest(): void {'),
+    appTs.indexOf('function stopNightTest(): void {') + 600);
+  assert.match(stopBody, /if \(nightPhase === 'arming' \|\| nightPhase === 'stacking'\) pushNightLogEntry\(false\);/);
+
+  // The copy button uses the SAME clipboard idiom already established for
+  // the colour picker's copy button, rather than a second implementation.
+  const copyHandler = appTs.slice(appTs.indexOf("byId('v2NightLogCopy')"),
+    appTs.indexOf("byId('v2NightLogCopy')") + 500);
+  assert.match(copyHandler, /navigator\.clipboard/);
+  assert.match(copyHandler, /writeText/);
+  assert.match(copyHandler, /nightLog\.map\(describeNightLogEntry\)\.join\('\\n'\)/);
+});

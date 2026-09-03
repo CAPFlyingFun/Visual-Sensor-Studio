@@ -140,3 +140,46 @@ export function describeNightCounters(counters: NightCounters): string {
     + `offset ${counters.offsetPixels.toFixed(1)} px (max ${counters.maxOffsetPixels.toFixed(1)} px) · `
     + `${counters.sourceWidth}×${counters.sourceHeight} · actual cadence ${cadence}`;
 }
+
+/**
+ * THE LOG — Joshua, on the phone, after the countdown worked: "the lowest I
+ * saw hand holding was about 95%... can you add a log that I can copy with a
+ * button to run like 3-5 times to get a good estimation before continuing."
+ *
+ * One line per attempt, appended (never overwritten the way the live reading
+ * is) so several runs can be compared side by side, or pasted somewhere else
+ * entirely. It reuses describeNightCounters() rather than restating any of
+ * its formatting — the only thing genuinely new to a log ENTRY is which
+ * attempt it was, whether it actually completed, and the worst steadiness
+ * seen along the way (the number he was watching by hand before this
+ * existed).
+ */
+export interface NightLogEntry {
+  /** 1-based — the order they actually happened in. */
+  index: number;
+  /** False when the test was cancelled before the stack finished. */
+  completed: boolean;
+  /**
+   * The LOWEST steadiness reading seen from the moment the gate armed
+   * (after the countdown, before it fired) through the end of the attempt —
+   * the worst moment of the hold, which is the number a threshold actually
+   * has to clear. 0..1, or null on the (practically instantaneous) case
+   * where the run was cancelled before a single reading was sampled. A
+   * cancel during the countdown itself is not logged at all — the gate
+   * never armed, so there is nothing yet to compare against other runs.
+   */
+  minSteadiness: number | null;
+  /** Wall-clock time of day the entry was recorded, e.g. "10:42:07 AM". */
+  at: string;
+  counters: NightCounters;
+}
+
+export function describeNightLogEntry(entry: NightLogEntry): string {
+  const mark = entry.completed ? '✓' : '✗';
+  const status = entry.completed ? 'complete' : 'cancelled';
+  const steadiness = entry.minSteadiness === null
+    ? 'no reading'
+    : `min ${Math.round(entry.minSteadiness * 100)}% steady`;
+  return `#${entry.index} ${mark} ${status} · ${entry.at} · ${steadiness} · `
+    + describeNightCounters(entry.counters);
+}

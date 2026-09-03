@@ -247,7 +247,7 @@
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
-    <span class="pill" id="v2Badge">v0.41.2</span>
+    <span class="pill" id="v2Badge">v0.41.3</span>
   </header>
 
   <div class="camera-layout">
@@ -370,6 +370,15 @@
           <button type="button" class="btn" id="v2NightTestToggle" aria-pressed="false">🌙 Night — Test</button>
           <p class="hint" id="v2NightTestNote"></p>
           <p class="hint" id="v2NightTestReading"></p>
+          <!-- Joshua, on the phone, after the countdown worked: "add a log
+               that I can copy with a button to run like 3-5 times to get a
+               good estimation before continuing." One line per attempt,
+               appended — never overwritten the way the reading above is. -->
+          <div class="button-row">
+            <button type="button" class="btn" id="v2NightLogCopy">📋 Copy log</button>
+            <button type="button" class="btn" id="v2NightLogClear">🗑️ Clear log</button>
+          </div>
+          <p class="probe-out" id="v2NightLog">No runs logged yet — each Night attempt adds a line here.</p>
         </section>
 
         <section class="section">

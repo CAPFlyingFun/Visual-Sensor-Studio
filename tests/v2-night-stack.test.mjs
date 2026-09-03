@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   NIGHT_COUNTDOWN_MS, NIGHT_TARGET_FRAMES, NIGHT_TARGET_MS, NIGHT_TICK_MS,
-  describeNightCounters, emptyNightCounters, nightCountdownSecondsLeft,
-  nightStackWeight
+  describeNightCounters, describeNightLogEntry, emptyNightCounters,
+  nightCountdownSecondsLeft, nightStackWeight
 } from '../.test-build/v2/vision/night-stack.js';
 
 /*
@@ -131,4 +131,39 @@ test('the displayed countdown reads 3, 2, 1 — never 0, never negative', () => 
   // a negative number if it ever were.
   assert.equal(nightCountdownSecondsLeft(3000), 1);
   assert.equal(nightCountdownSecondsLeft(5000), 1);
+});
+
+test('a log entry states which attempt it was, whether it finished, and the worst steadiness seen', () => {
+  // Joshua, on the phone, after the countdown worked: "the lowest I saw hand
+  // holding was about 95%... add a log that I can copy with a button to run
+  // like 3-5 times." The entry's own fields are the only new thing here —
+  // the counters half of the line is describeNightCounters(), reused rather
+  // than restated.
+  const counters = {
+    elapsedMs: 4000, candidateFrames: 16, acceptedFrames: 16, rejectedFrames: 0,
+    stackCount: 16, restarts: 0, offsetPixels: 1.1, maxOffsetPixels: 3.4,
+    sourceWidth: 682, sourceHeight: 384, actualCadenceMs: 251
+  };
+  const finished = describeNightLogEntry({
+    index: 1, completed: true, minSteadiness: 0.95, at: '10:42:07 AM', counters
+  });
+  assert.match(finished, /^#1 ✓/, 'ordered, and marked complete');
+  assert.match(finished, /complete/);
+  assert.match(finished, /10:42:07 AM/);
+  assert.match(finished, /min 95% steady/, 'the worst moment of the hold, as a percentage');
+  assert.match(finished, /16 accepted/, 'reuses describeNightCounters rather than restating it');
+
+  const cancelled = describeNightLogEntry({
+    index: 2, completed: false, minSteadiness: 0.62, at: '10:43:01 AM', counters
+  });
+  assert.match(cancelled, /^#2 ✗/, 'marked NOT complete, distinctly from #1');
+  assert.match(cancelled, /cancelled/);
+  assert.match(cancelled, /min 62% steady/);
+
+  // Cancelled before the gate ever recorded a reading: no invented number.
+  const noReading = describeNightLogEntry({
+    index: 3, completed: false, minSteadiness: null, at: '10:43:05 AM', counters
+  });
+  assert.match(noReading, /no reading/);
+  assert.ok(!/min \d/.test(noReading), 'null steadiness must not render as a fabricated percentage');
 });
