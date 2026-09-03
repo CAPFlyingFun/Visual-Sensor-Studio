@@ -144,3 +144,40 @@ only way to hand the encoder a frame it can write.
 
 Photos are untouched by any of this: JPEG has no such level, and the
 shutter still saves the sensor's full 3024×4032.
+
+## MAX means MAX, for every filter, with no exceptions
+
+**A still saves at the photo geometry the authority resolved. No filter,
+mode or effect gets a smaller one on its own account.** On MAX, every one
+of them saves at MAX, exactly like the rest.
+
+This is written down because it has been proposed twice and rejected
+twice, both times by Joshua, and both times the argument for shrinking
+sounded reasonable from inside the code:
+
+- 2026-09-02, the temporal filters. Their memory lives at ANALYSIS
+  resolution, so a full-sensor still enlarges that memory rather than
+  adding detail — which is true, and was still the wrong conclusion. "I
+  wanted to confirm with you that you aren't messing up the code and only
+  enabling taking pictures like all the other filters." A `photoFrom`
+  field was added and removed again the same day.
+- 2026-09-03, Night. The accumulation would live at preview resolution,
+  so a stacked still would be cleaner but smaller — offered as a trade
+  for him to weigh, three times. "It still will be MAX res if on MAX
+  setting like all the other filters, so stop bring up this resolution
+  stuff."
+
+THE PATTERN, so the next agent recognises it before typing: a filter
+whose internal buffers are small invites the conclusion that its output
+should be small too. It should not. The internal size is an
+implementation fact; the saved size is a promise the MAX setting already
+made to whoever chose it. Where a filter's memory really is coarser than
+the frame it draws, SAY SO in the filter's note and let the photographer
+decide — that is the pattern this project already uses for every other
+honest trade, and it costs the user nothing.
+
+If a save ever comes out below the sensor's full size while MAX is
+selected, that is a BUG to be reported and fixed, not a trade to be
+re-litigated. Joshua watches for it: "if there's an issue saving lower
+quality even though it says MAX, I will let you know."
+
