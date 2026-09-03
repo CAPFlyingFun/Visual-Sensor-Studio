@@ -156,7 +156,7 @@ const renderer = new GlRenderer(byId<HTMLCanvasElement>('v2PreviewCanvas'));
  * ordering: whatever fails further down, the picture can still be turned on.
  *
  * Its own try/catch because this block must not become a new single point of
- * failure — if one of these five elements is missing, the others are still
+ * failure — if one of these four elements is missing, the others are still
  * wired and the banner says what happened.
  */
 try {
