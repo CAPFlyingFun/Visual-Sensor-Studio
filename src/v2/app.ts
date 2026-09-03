@@ -82,6 +82,56 @@ import { RAMP_PRESETS } from '../vision/lens-preview.js';
 import { GlRenderer } from './render/gl-renderer.js';
 import { capturePhoto } from './capture/photo.js';
 
+/**
+ * BOOT MUST NOT FAIL SILENTLY, AND MUST NOT TAKE THE CAMERA WITH IT.
+ *
+ * Joshua, 2026-09-03: "I had lost all the buttons and wasn't able to enable
+ * the camera as all buttons were disabled." That is one failure mode wearing
+ * two symptoms, and the shape of this file is what made it total:
+ *
+ *   - the capture buttons ship `disabled` in the markup and are only ever
+ *     enabled by code that runs later;
+ *   - byId() THROWS when an element is missing;
+ *   - and the whole of boot is one unguarded run of top-level statements,
+ *     with the Enable Camera listener attached near the very end of it.
+ *
+ * So a single throw anywhere in the first three thousand lines left Enable
+ * Camera sitting there looking normal with no listener behind it, and every
+ * other button greyed exactly as the markup shipped them. No message, no
+ * recovery, no way back in — while the page still looked perfectly fine.
+ *
+ * Two things fix that, and neither tries to make failures impossible:
+ * SAY SO, and GET THE CAMERA WIRED FIRST. What broke on his phone is still
+ * unknown — it booted clean in Chromium — so the aim here is not to guess the
+ * cause but to make sure the next one announces itself instead of presenting
+ * as a dead app.
+ */
+let bootComplete = false;
+
+function showBootFailure(detail: string): void {
+  // Built from scratch and appended to <body>, deliberately: a banner that
+  // needed an element from the markup could be taken out by the very failure
+  // it exists to report.
+  const existing = document.getElementById('v2BootFailure');
+  const banner = existing ?? document.createElement('div');
+  banner.id = 'v2BootFailure';
+  banner.style.cssText = 'position:fixed;left:8px;right:8px;top:8px;z-index:99;'
+    + 'padding:10px 12px;border:1px solid #ff5c5c;border-radius:10px;'
+    + 'background:rgba(70,8,14,.94);color:#fff;font:600 12px/1.45 system-ui,sans-serif;';
+  banner.textContent = `Something failed while starting up: ${detail} — `
+    + 'the camera controls are wired before this point, so Enable Camera should '
+    + 'still work; anything further down the page may not. This message is the '
+    + 'part that used to be missing.';
+  if (!existing) document.body.appendChild(banner);
+}
+
+window.addEventListener('error', (event) => {
+  // Only while booting. A stray error later in a long session is a different
+  // thing and does not deserve a banner across the picture.
+  if (bootComplete) return;
+  showBootFailure(event.message || 'no message given');
+});
+
 function byId<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
   if (!element) throw new Error(`V2 markup is missing #${id}`);
@@ -96,6 +146,27 @@ const video = byId<HTMLVideoElement>('cameraVideo');
 const camera = new CameraController(video);
 const meter = new FrameRateMeter();
 const renderer = new GlRenderer(byId<HTMLCanvasElement>('v2PreviewCanvas'));
+
+/**
+ * THE CAMERA CONTROLS, WIRED FIRST — before the three thousand lines of panels,
+ * pickers, lens editors and instruments that used to come before them.
+ *
+ * Every handler here is a hoisted `function` declaration, so attaching this
+ * early costs nothing and asks nothing of the rest of boot. The point is
+ * ordering: whatever fails further down, the picture can still be turned on.
+ *
+ * Its own try/catch because this block must not become a new single point of
+ * failure — if one of these five elements is missing, the others are still
+ * wired and the banner says what happened.
+ */
+try {
+  byId('v2EnableCamera').addEventListener('click', () => void startCamera());
+  byId('v2SwitchCamera').addEventListener('click', () => void switchCamera());
+  byId('v2PhotoButton').addEventListener('click', () => void takePhoto());
+  byId('v2RecordButton').addEventListener('click', () => void toggleRecording());
+} catch (error) {
+  showBootFailure(`the camera controls could not all be wired (${String(error)})`);
+}
 if (renderer.unavailableReason) setText('v2Stage', renderer.unavailableReason);
 
 /* --- Geometry: resolved by the one authority, stored in the one state ----- */
@@ -3010,9 +3081,6 @@ byId('v2PickerAddStop').addEventListener('click', () => {
 
 /* --- Wiring -------------------------------------------------------------- */
 
-byId('v2EnableCamera').addEventListener('click', () => void startCamera());
-byId('v2PhotoButton').addEventListener('click', () => void takePhoto());
-byId('v2RecordButton').addEventListener('click', () => void toggleRecording());
 
 /**
  * The encoder envelope probe: an instrument, not a feature. It runs the
@@ -3066,7 +3134,6 @@ byId('v2ReverseRamp').addEventListener('click', () => {
     ? 'Ramp reversed for this session — the saved lens is untouched.'
     : 'Ramp back to normal.');
 });
-byId('v2SwitchCamera').addEventListener('click', () => void switchCamera());
 
 // The installed app's update path. Promoting this page to the root document
 // made it the thing people INSTALL, and an installed app that cannot notice a
@@ -3120,3 +3187,9 @@ updateState({
   zoom: camera.zoom,
   source: frameSize(camera.diagnostics.videoWidth, camera.diagnostics.videoHeight)
 });
+
+/**
+ * Boot finished. From here an uncaught error is an ordinary runtime fault, not
+ * a half-built app, so it stops raising the startup banner.
+ */
+bootComplete = true;
