@@ -460,28 +460,10 @@ function reconcileCapability(): void {
  */
 camera.subscribe((status: CameraStatus) => {
   const d = camera.diagnostics;
-  const before = readState();
-  // THE LIVE → NOT-LIVE TRANSITION is the only moment these numbers can be
-  // captured: releasing the track zeroes the video element's dimensions, so a
-  // beat later there is nothing left to remember. Taken from the state as it
-  // stands BEFORE this update overwrites it.
-  const leftLive = before.camera?.state === 'live' && status.state !== 'live';
-  const lastLive = leftLive && before.source
-    ? {
-      source: before.source,
-      deliveredFps: before.deliveredFps,
-      capability: before.capability,
-      capabilitySource: before.capabilitySource,
-      preview: before.geometry
-        ? { width: before.geometry.preview.width, height: before.geometry.preview.height }
-        : null
-    }
-    : before.lastLive;
   updateState({
     camera: status,
     zoom: status.zoom,
-    source: frameSize(d.videoWidth, d.videoHeight),
-    lastLive
+    source: frameSize(d.videoWidth, d.videoHeight)
   });
   reconcileCapability();
 });
@@ -975,13 +957,6 @@ function buildAids(): void {
  * pulls is the ordinary one — same escalation to the camera's maximum, same
  * geometry, same file. Nothing about the picture changes; only what decides
  * WHEN.
- *
- * AN ADDITION, NEVER A REPLACEMENT (Joshua's standing instruction,
- * 2026-09-03: "leave it as is. Don't replace manual for automatic"). The
- * shutter button keeps working exactly as it did, at the full sensor, with no
- * waiting and no sensor permission — this is a second way to fire it for
- * whoever wants one, and any later automatic capture (a night stack, say)
- * is held to the same rule rather than quietly becoming what the button does.
  */
 let steadyReading: SteadyReading = { steadiness: 1, rate: 0, smear: 0 };
 let steadyProgress = 0;
@@ -1419,14 +1394,7 @@ function renderHud(): void {
   }
   byId('v2HudDot').dataset.state = status?.state ?? 'idle';
   setText('v2HudState', live ? 'LIVE' : (status?.state ?? 'idle').toUpperCase());
-  // Over a FROZEN FRAME, a bare size reads as the size of the picture you are
-  // looking at — which it is, but it is no longer the size of anything the
-  // camera is producing. "was" is the whole difference, and it costs three
-  // characters next to a state chip already reading SUSPENDED.
-  const wasLive = !live && !source ? readState().lastLive : null;
-  setText('v2HudSource', source
-    ? `${source.width}×${source.height}`
-    : wasLive ? `was ${wasLive.source.width}×${wasLive.source.height}` : '—');
+  setText('v2HudSource', source ? `${source.width}×${source.height}` : '—');
   // A rate is only a measurement while frames are arriving; a suspended
   // camera showing its last number would be a frozen claim, not a reading.
   setText('v2HudFps', live && deliveredFps > 0 ? `${deliveredFps.toFixed(1)} fps` : '— fps');
@@ -1437,7 +1405,7 @@ function renderHud(): void {
 
 function renderDiagnostics(): void {
   const {
-    camera: status, source, capability, deliveredFps, lastLive,
+    camera: status, source, capability, deliveredFps,
     geometry, previewFps, viewfinder, lastPhoto, captureActive
   } = readState();
   const d = camera.diagnostics;
@@ -1446,21 +1414,6 @@ function renderDiagnostics(): void {
   // SOURCE below CAPABILITY is the healthy responsive state, never flagged;
   // the maximum belongs to the shutter's window alone. Rates render only
   // while frames arrive — a suspended camera keeps no frozen numbers.
-  // A SUSPENDED CAMERA IS NOT AN UNSTARTED ONE, and it does not look like one
-  // either: its last frame stays frozen on screen behind Resume, which reads
-  // exactly like a running camera. "not started" was the answer here
-  // (measured 2026-09-03) and it was false — the camera HAD started, had
-  // negotiated a size and had delivered a measured rate. Those are history
-  // now, so they are shown AS history rather than thrown away or, worse,
-  // kept looking current.
-  // TWO DIFFERENT QUESTIONS, and conflating them left half the rows stale
-  // (measured: CAPABILITY and PREVIEW went on reading exactly as they had
-  // while live). `remembered` fills in what releasing the track ERASED;
-  // `stale` marks what merely SURVIVED it — an advertised maximum and a
-  // resolved geometry both outlive the track they describe, and go on looking
-  // current unless something says otherwise.
-  const remembered = !live && !source ? lastLive : null;
-  const stale = !live && lastLive !== null;
   setText('v2DiagSource', source
     ? `${source.width}×${source.height} · ${live && deliveredFps > 0 ? deliveredFps.toFixed(1) : '—'} delivered fps · `
       + (captureActive
@@ -1468,24 +1421,13 @@ function renderDiagnostics(): void {
           ? 'measuring this camera\'s maximum'
           : 'maximum stream for this shot'
         : tierById(readState().streamTier)?.streamLabel ?? 'live stream')
-    : remembered
-      ? `released · last measured ${remembered.source.width}×${remembered.source.height}`
-        + (remembered.deliveredFps > 0
-          ? ` at ${remembered.deliveredFps.toFixed(1)} delivered fps` : '')
-        + ' — a past measurement, not a live one'
-      : 'not started');
-  // The advertised maximum belonged to a track that no longer exists. It is
-  // very probably still true of this camera, but "probably still true" is not
-  // the same claim as "measured now" and the row says which one it is.
-  const rememberedCapability = remembered?.capability ?? null;
-  const shownCapability = capability ?? rememberedCapability;
-  setText('v2DiagCapability', shownCapability
-    ? `${dims(shownCapability)} · ${(capability ? readState().capabilitySource : remembered?.capabilitySource) === 'measured'
+    : 'not started');
+  setText('v2DiagCapability', capability
+    ? `${dims(capability)} · ${readState().capabilitySource === 'measured'
       ? 'measured maximum — scanned on this camera'
       : 'the track\'s advertised maximum'}`
-      + (dims(shownCapability) !== `${shownCapability.width}×${shownCapability.height}`
-        ? ` (reported ${shownCapability.width}×${shownCapability.height})` : '')
-      + (stale ? ' · last known, the track is released' : '')
+      + (dims(capability) !== `${capability.width}×${capability.height}`
+        ? ` (reported ${capability.width}×${capability.height})` : '')
     : scanningCapability
       ? 'measuring — asking this camera for its maximum…'
       : 'not exposed by this browser');
@@ -1499,14 +1441,8 @@ function renderDiagnostics(): void {
       ? 'holding frame history for the active filter'
       : 'independent vision buffer (idle)'}`
     : '—');
-  // The canvas still HOLDS a picture while suspended — that frozen frame is
-  // deliberate and looks professional — but nothing is drawing into it, and a
-  // size beside a dash could be read either way.
-  const previewBox = geometry?.preview ?? remembered?.preview ?? null;
-  setText('v2DiagPreview', previewBox
-    ? `${row(previewBox)} · ${stale
-      ? 'frozen last frame · nothing is rendering into it'
-      : `${live && previewFps > 0 ? previewFps.toFixed(1) : '—'} rendered fps · sized for the viewfinder`}`
+  setText('v2DiagPreview', geometry
+    ? `${row(geometry.preview)} · ${live && previewFps > 0 ? previewFps.toFixed(1) : '—'} rendered fps · sized for the viewfinder`
     : '—');
   setText('v2DiagPhotoPolicy', 'maximum available stream on shutter');
   setText('v2DiagLastPhoto', lastPhoto
@@ -1550,7 +1486,7 @@ function renderDiagnostics(): void {
   setText('v2DiagState', status ? `${status.state} · ${status.stage}` : 'idle');
   setText('v2DiagTrack', d.trackLabel
     ? `${d.trackLabel}${d.trackMuted ? ' · muted' : ''}`
-    : stale ? 'released — a resume requests a new stream' : '—');
+    : '—');
 }
 
 /**

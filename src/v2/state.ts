@@ -68,28 +68,6 @@ export interface SavedClip {
   fedFps: number;
 }
 
-/**
- * What the camera WAS doing at the instant it stopped being live.
- *
- * A suspended camera leaves its last frame frozen on screen, which looks
- * exactly like a running one — so the readouts have to say what is really
- * true, and "not started" is not it. The camera WAS started; it negotiated a
- * size and delivered a measured rate, and throwing those away the moment the
- * track is released turns a history into an absence.
- *
- * Captured ONCE on the live → not-live transition and never updated after, so
- * every number in it is a measurement that really happened rather than a
- * value kept warm. Every row that shows one labels it as past.
- */
-export interface LastLiveState {
-  source: FrameSize;
-  /** Measured from presented frames, right up to the release. */
-  deliveredFps: number;
-  capability: FrameSize | null;
-  capabilitySource: 'advertised' | 'measured' | null;
-  preview: { width: number; height: number } | null;
-}
-
 export interface V2State {
   camera: CameraStatus | null;
   /**
@@ -114,12 +92,6 @@ export interface V2State {
   capabilitySource: 'advertised' | 'measured' | null;
   /** Measured from presented frames. 0 until enough frames have arrived. */
   deliveredFps: number;
-  /**
-   * The last live measurements, kept as HISTORY once the camera is released.
-   * Null until a camera has been live at least once — which is the only state
-   * in which "not started" is the true answer.
-   */
-  lastLive: LastLiveState | null;
   zoom: CameraZoomState | null;
   /**
    * Resolved by the FrameGeometryAuthority whenever source or viewport
@@ -216,7 +188,6 @@ const state: V2State = {
   capability: null,
   capabilitySource: null,
   deliveredFps: 0,
-  lastLive: null,
   zoom: null,
   geometry: null,
   activeFilter: 'rgb',
