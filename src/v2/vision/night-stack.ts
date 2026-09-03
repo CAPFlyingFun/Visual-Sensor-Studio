@@ -111,9 +111,29 @@ export interface NightCounters {
   offsetPixels: number;
   /** The largest predicted drift seen this capture, accepted or not. */
   maxOffsetPixels: number;
-  /** The accumulator's own frozen size — chosen once when stacking begins. */
-  sourceWidth: number;
-  sourceHeight: number;
+  /**
+   * THE RESOLUTION STORY, in the sizes that actually differ (Joshua,
+   * 2026-09-03: "link the resolution to what the setting is like 720, 1080,
+   * 4K, MAX"). They are NOT the same number, and Milestone 2 lives in the
+   * gap between the last two:
+   *
+   * - tierLabel  the SETTING chosen — 720 / 1080 / 2K / 4K / MAX.
+   * - stream     what the camera actually granted under that setting.
+   * - stacked    what Night really accumulated, frozen once when stacking
+   *              begins. Today that is the PREVIEW row, which geometry.ts
+   *              fits to the viewfinder's own device pixels — so past the
+   *              tier that first exceeds the viewfinder it stops growing,
+   *              whatever the setting says.
+   * - sensor     the camera's advertised maximum: what a MAX photo would
+   *              have to be, and so what Milestone 2 has to reach.
+   */
+  tierLabel: string;
+  streamWidth: number;
+  streamHeight: number;
+  stackedWidth: number;
+  stackedHeight: number;
+  sensorWidth: number;
+  sensorHeight: number;
   /** Measured mean interval between candidate ticks, ms — the "roughly 0.25s" claim, checked. */
   actualCadenceMs: number;
 }
@@ -122,7 +142,9 @@ export function emptyNightCounters(): NightCounters {
   return {
     elapsedMs: 0, candidateFrames: 0, acceptedFrames: 0, rejectedFrames: 0,
     stackCount: 0, restarts: 0, offsetPixels: 0, maxOffsetPixels: 0,
-    sourceWidth: 0, sourceHeight: 0, actualCadenceMs: 0
+    tierLabel: '', streamWidth: 0, streamHeight: 0,
+    stackedWidth: 0, stackedHeight: 0, sensorWidth: 0, sensorHeight: 0,
+    actualCadenceMs: 0
   };
 }
 
@@ -134,9 +156,13 @@ export function emptyNightCounters(): NightCounters {
 export function describeNightCounters(counters: NightCounters): string {
   const seconds = (counters.elapsedMs / 1000).toFixed(1);
   const cadence = counters.actualCadenceMs > 0 ? `${counters.actualCadenceMs.toFixed(0)} ms` : '—';
+  const size = (w: number, h: number) => (w > 0 && h > 0 ? `${w}×${h}` : '—');
   return `${seconds}s · ${counters.candidateFrames} candidates · `
     + `${counters.acceptedFrames} accepted · ${counters.rejectedFrames} rejected · `
     + `stack ${counters.stackCount}${counters.restarts > 0 ? ` (${counters.restarts} restart${counters.restarts === 1 ? '' : 's'})` : ''} · `
     + `offset ${counters.offsetPixels.toFixed(1)} px (max ${counters.maxOffsetPixels.toFixed(1)} px) · `
-    + `${counters.sourceWidth}×${counters.sourceHeight} · actual cadence ${cadence}`;
+    + `actual cadence ${cadence} · `
+    + `tier ${counters.tierLabel || '—'} · stream ${size(counters.streamWidth, counters.streamHeight)} · `
+    + `stacked ${size(counters.stackedWidth, counters.stackedHeight)} · `
+    + `sensor ${size(counters.sensorWidth, counters.sensorHeight)}`;
 }

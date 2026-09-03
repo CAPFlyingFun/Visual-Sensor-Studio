@@ -1309,14 +1309,26 @@ function updateNightStack(now: number): void {
     // "frozen at start" pattern RECORD IN already uses, and for the same
     // reason: a size that changed mid-stack would make the running mean a
     // picture of two different rectangles.
-    const { geometry } = readState();
+    const { geometry, capability, source, streamTier } = readState();
     if (!geometry) { nightPhase = 'idle'; return; }
     nightSize = frameSize(geometry.preview.width, geometry.preview.height);
     if (!nightSize) { nightPhase = 'idle'; return; }
     nightAligner.reset();
-    nightCounters = emptyNightCounters();
-    nightCounters.sourceWidth = nightSize.width;
-    nightCounters.sourceHeight = nightSize.height;
+    // The resolution story, recorded at the moment it is decided (Joshua,
+    // 2026-09-03: "link the resolution to what the setting is"). The SETTING,
+    // what the camera GRANTED under it, what Night actually STACKS, and the
+    // sensor's own maximum are four different numbers, and reading one as
+    // another is exactly the confusion Milestone 2 has to avoid.
+    nightCounters = {
+      ...emptyNightCounters(),
+      tierLabel: tierById(streamTier)?.label ?? streamTier,
+      streamWidth: source?.width ?? 0,
+      streamHeight: source?.height ?? 0,
+      stackedWidth: nightSize.width,
+      stackedHeight: nightSize.height,
+      sensorWidth: capability?.width ?? 0,
+      sensorHeight: capability?.height ?? 0
+    };
     nightStartedAt = now;
     nightLastCandidateAt = now;
     nightNeedsRestart = true;
@@ -1384,7 +1396,13 @@ function updateNightStack(now: number): void {
     candidateFrames: candidates,
     acceptedFrames: nightCounters.acceptedFrames + 1,
     stackCount,
-    restarts: nightCounters.restarts + (nightNeedsRestart ? 1 : 0),
+    // A RESTART is the accumulator being thrown away and started over — not
+    // the first prime of a fresh capture, which is simply how a mean begins.
+    // Counting the prime made every clean run report "1 restart" it never
+    // had (caught in Joshua's four device runs, 2026-09-03: stack 15 with 15
+    // accepted proves nothing was ever discarded).
+    restarts: nightCounters.restarts
+      + (nightNeedsRestart && nightCounters.acceptedFrames > 0 ? 1 : 0),
     offsetPixels: decision.shift.distance,
     maxOffsetPixels: maxOffset,
     actualCadenceMs: cadence

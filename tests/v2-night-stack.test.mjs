@@ -79,7 +79,9 @@ test('the readout states every number Joshua asked for, and nothing it did not m
   const counters = {
     elapsedMs: 3800, candidateFrames: 15, acceptedFrames: 12, rejectedFrames: 3,
     stackCount: 8, restarts: 1, offsetPixels: 2.4, maxOffsetPixels: 61.2,
-    sourceWidth: 682, sourceHeight: 384, actualCadenceMs: 253.1
+    tierLabel: '1080', streamWidth: 1080, streamHeight: 1440,
+    stackedWidth: 924, stackedHeight: 1232, sensorWidth: 3024, sensorHeight: 4032,
+    actualCadenceMs: 253.1
   };
   const line = describeNightCounters(counters);
   assert.match(line, /3\.8s/, 'elapsed');
@@ -90,8 +92,17 @@ test('the readout states every number Joshua asked for, and nothing it did not m
   assert.match(line, /1 restart\b/, 'singular for exactly one');
   assert.match(line, /2\.4 px/, 'current offset');
   assert.match(line, /max 61\.2 px/);
-  assert.match(line, /682×384/, 'the frozen source dimensions');
   assert.match(line, /253 ms/, 'the MEASURED cadence, not the assumed 250');
+
+  // THE RESOLUTION STORY (Joshua, 2026-09-03: "link the resolution to what
+  // the setting is like 720, 1080, 4K, MAX"). Four different numbers, each
+  // named for what it actually is — the setting, what the camera granted,
+  // what Night really stacked, and the sensor's own maximum. Reading any one
+  // of these as another is the confusion Milestone 2 has to avoid.
+  assert.match(line, /tier 1080/, 'the SETTING, by its own label');
+  assert.match(line, /stream 1080×1440/, 'what the camera granted under it');
+  assert.match(line, /stacked 924×1232/, 'what Night actually accumulated');
+  assert.match(line, /sensor 3024×4032/, 'what a MAX photo would have to be');
 
   // Plural restarts, and no "(0 restarts)" clutter when there were none.
   const many = describeNightCounters({ ...counters, restarts: 2 });
@@ -102,6 +113,11 @@ test('the readout states every number Joshua asked for, and nothing it did not m
   // A missing cadence measurement (no ticks yet) reads as unmeasured, not zero.
   const fresh = describeNightCounters(emptyNightCounters());
   assert.match(fresh, /cadence —/, 'no ticks yet: the honest answer is unmeasured');
+  // Same for a size nobody has reported: an em dash, never a fabricated 0×0.
+  assert.match(fresh, /stream —/);
+  assert.match(fresh, /sensor —/);
+  assert.match(fresh, /tier —/);
+  assert.ok(!/0×0/.test(fresh), 'an unknown size is never rendered as 0×0');
 });
 
 test('the countdown is a fixed 3s wait BEFORE the gate, not a replacement for it', () => {

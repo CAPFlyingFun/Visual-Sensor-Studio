@@ -359,6 +359,33 @@ test('a large 3/2/1 overlay shows in the viewfinder during the countdown, and on
   assert.match(appTs, /overlay\.textContent = String\(secondsLeft\);/);
 });
 
+test('the first prime of a Night stack is not counted as a restart', () => {
+  // Joshua's four device runs, 2026-09-03, all read "stack 15 (1 restart)"
+  // with 15 accepted and 0 rejected — a restart that never happened. The
+  // accumulator's FIRST prime shares the flag a real restart sets, so it was
+  // being tallied as one. The giveaway is in his own numbers: a genuine
+  // restart leaves stackCount BELOW acceptedFrames, and his were equal.
+  assert.match(appTs,
+    /restarts: nightCounters\.restarts\s*\n\s*\+ \(nightNeedsRestart && nightCounters\.acceptedFrames > 0 \? 1 : 0\),/,
+    'a restart counts only where frames had already been folded in');
+});
+
+test('the log names the resolution SETTING beside what it actually stacked', () => {
+  // Joshua, 2026-09-03: "link the resolution to what the setting is like 720,
+  // 1080, 4K, MAX... let me test one at each of the settings before we build
+  // the night." Four separate numbers, recorded where each is decided.
+  assert.match(appTs, /tierLabel: tierById\(streamTier\)\?\.label \?\? streamTier,/);
+  assert.match(appTs, /streamWidth: source\?\.width \?\? 0,/, 'what the camera granted');
+  assert.match(appTs, /stackedWidth: nightSize\.width,/, 'what Night really accumulated');
+  assert.match(appTs, /sensorWidth: capability\?\.width \?\? 0,/, 'the sensor maximum a MAX photo needs');
+  // Frozen once, with the size, rather than re-read per frame — the same
+  // "decided at the start" rule the accumulator's own size follows.
+  const start = appTs.indexOf("nightSize = frameSize(geometry.preview.width");
+  const stacking = appTs.indexOf("nightPhase = 'stacking';", start);
+  assert.ok(start > 0 && stacking > start);
+  assert.match(appTs.slice(start, stacking), /tierLabel:/, 'recorded when stacking begins');
+});
+
 test('the Night log appends across runs and can be copied', () => {
   // Joshua, on the phone, after the countdown worked: "the lowest I saw hand
   // holding was about 95%... add a log that I can copy with a button to run
