@@ -82,8 +82,9 @@ import { RAMP_PRESETS } from '../vision/lens-preview.js';
 import { GlRenderer } from './render/gl-renderer.js';
 import { capturePhoto } from './capture/photo.js';
 import {
-  NIGHT_TARGET_FRAMES, NIGHT_TARGET_MS, NIGHT_TICK_MS, describeNightCounters,
-  emptyNightCounters, nightStackWeight, type NightCounters
+  NIGHT_COUNTDOWN_MS, NIGHT_TARGET_FRAMES, NIGHT_TARGET_MS, NIGHT_TICK_MS,
+  describeNightCounters, emptyNightCounters, nightCountdownSecondsLeft,
+  nightStackWeight, type NightCounters
 } from './vision/night-stack.js';
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -1128,9 +1129,10 @@ function motionNote(status: V2State['motionStatus']): string {
 const nightAligner = new StackAligner();
 const nightGate = new SteadyShutter();
 
-type NightPhase = 'idle' | 'arming' | 'stacking' | 'complete';
+type NightPhase = 'idle' | 'countdown' | 'arming' | 'stacking' | 'complete';
 let nightPhase: NightPhase = 'idle';
 let nightSize: FrameSize | null = null;
+let nightCountdownStartedAt = 0;
 let nightStartedAt = 0;
 let nightLastCandidateAt = 0;
 let nightNeedsRestart = true;
@@ -1143,9 +1145,19 @@ function buildNightTest(): void {
       return;
     }
     void (async () => {
+      // The permission request MUST happen here, synchronously within the
+      // tap — not later inside the countdown tick. iOS only grants motion
+      // access to a call that traces back to a real user gesture; deferring
+      // it past this handler risks a silent refusal.
       if (!await ensureMotion()) return;
-      nightGate.arm(DEFAULT_STEADY_THRESHOLD);
-      nightPhase = 'arming';
+      // Joshua, on the phone, after Milestone 1 worked: "make a 3s countdown
+      // before it actually starts because if not using a tripod, as soon as
+      // you tap and release your finger, your hands are going to move a
+      // little." This does NOT replace the gate he asked to have reused —
+      // it runs BEFORE it, so the gate still has to see an actual steady
+      // hold once the countdown ends.
+      nightCountdownStartedAt = performance.now();
+      nightPhase = 'countdown';
     })();
   });
 }
@@ -1168,6 +1180,17 @@ function stopNightTest(): void {
  */
 function updateNightStack(now: number): void {
   if (nightPhase === 'idle' || nightPhase === 'complete') return;
+
+  if (nightPhase === 'countdown') {
+    // A fixed, VISIBLE wait — not a steadiness measurement. Its only job is
+    // to put a beat between "finger leaves the screen" and "the gate starts
+    // judging the hold", so the tap's own release motion cannot fail a gate
+    // that only just started watching. The gate itself is unchanged below.
+    if (now - nightCountdownStartedAt < NIGHT_COUNTDOWN_MS) return;
+    nightGate.arm(DEFAULT_STEADY_THRESHOLD);
+    nightPhase = 'arming';
+    return;
+  }
 
   if (nightPhase === 'arming') {
     // Reuses the SAME steadiness reading updateSteadyShutter already
@@ -1264,8 +1287,15 @@ function renderNightTest(): void {
   if (nightPhase === 'stacking') {
     nightCounters = { ...nightCounters, elapsedMs: performance.now() - nightStartedAt };
   }
+  const secondsLeft = nightPhase === 'countdown'
+    ? nightCountdownSecondsLeft(performance.now() - nightCountdownStartedAt)
+    : 0;
+  const overlay = byId('v2NightCountdown');
+  overlay.hidden = nightPhase !== 'countdown';
+  if (nightPhase === 'countdown') overlay.textContent = String(secondsLeft);
   toggle.textContent = {
     idle: '🌙 Night — Test',
+    countdown: `⏱️ Starting in ${secondsLeft}…`,
     arming: '⏳ Night — hold still…',
     stacking: `🌙 Stacking… ${nightCounters.acceptedFrames}/${NIGHT_TARGET_FRAMES}`,
     complete: '🌙 Done — tap to clear'
@@ -1276,6 +1306,8 @@ function renderNightTest(): void {
       + 'No brightness recovery, no lens, and NOTHING IS SAVED — this is a '
       + 'diagnostic view, not a photo. Needs the motion sensor.'
     : motionNote(readState().motionStatus) || {
+      countdown: 'Let go and get comfortable — the release wobble needs a moment '
+        + 'to settle before the hold is measured.',
       arming: 'Hold the phone steady — the stack begins once it settles.',
       stacking: `Gathering roughly one frame every ${NIGHT_TICK_MS} ms for about `
         + `${(NIGHT_TARGET_MS / 1000).toFixed(0)}s.`,

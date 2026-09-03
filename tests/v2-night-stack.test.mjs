@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  NIGHT_TARGET_FRAMES, NIGHT_TARGET_MS, NIGHT_TICK_MS, describeNightCounters,
-  emptyNightCounters, nightStackWeight
+  NIGHT_COUNTDOWN_MS, NIGHT_TARGET_FRAMES, NIGHT_TARGET_MS, NIGHT_TICK_MS,
+  describeNightCounters, emptyNightCounters, nightCountdownSecondsLeft,
+  nightStackWeight
 } from '../.test-build/v2/vision/night-stack.js';
 
 /*
@@ -101,4 +102,33 @@ test('the readout states every number Joshua asked for, and nothing it did not m
   // A missing cadence measurement (no ticks yet) reads as unmeasured, not zero.
   const fresh = describeNightCounters(emptyNightCounters());
   assert.match(fresh, /cadence —/, 'no ticks yet: the honest answer is unmeasured');
+});
+
+test('the countdown is a fixed 3s wait BEFORE the gate, not a replacement for it', () => {
+  // Joshua, on the phone, after Milestone 1 worked: "make a 3s countdown
+  // before it actually starts because if not using a tripod, as soon as
+  // you tap and release your finger, your hands are going to move a
+  // little." A fixed number, not a measurement — it exists purely to give
+  // the tap's own release motion time to settle before anything judges the
+  // hold.
+  assert.equal(NIGHT_COUNTDOWN_MS, 3000);
+});
+
+test('the displayed countdown reads 3, 2, 1 — never 0, never negative', () => {
+  // Ceiling, not rounding: at 2.98s remaining the honest whole-second
+  // answer is still "3", not "2" — rounding down would read as though a
+  // whole second had already passed when it had not.
+  assert.equal(nightCountdownSecondsLeft(0), 3);
+  assert.equal(nightCountdownSecondsLeft(1), 3);
+  assert.equal(nightCountdownSecondsLeft(20), 3);
+  assert.equal(nightCountdownSecondsLeft(1000), 2);
+  assert.equal(nightCountdownSecondsLeft(2000), 1);
+  assert.equal(nightCountdownSecondsLeft(2999), 1);
+  // Right at (or past) the boundary the countdown phase is already over in
+  // app.ts's own tick check (`now - start < NIGHT_COUNTDOWN_MS`), so this
+  // function is never actually called with an elapsed this large in
+  // practice — but it still must not show something nonsensical like "0" or
+  // a negative number if it ever were.
+  assert.equal(nightCountdownSecondsLeft(3000), 1);
+  assert.equal(nightCountdownSecondsLeft(5000), 1);
 });

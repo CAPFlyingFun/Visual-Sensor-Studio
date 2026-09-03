@@ -312,3 +312,49 @@ test('the ordinary shutter, recording, and the existing gyro features are untouc
   assert.match(frameAverage, /export function frameAverageWeight\(frames: number\): number \{/,
     'the live ladder\'s EMA formula is untouched');
 });
+
+test('the countdown sits BEFORE the gate, not in place of it', () => {
+  // Joshua, on the phone: "make a 3s countdown before it actually starts
+  // because if not using a tripod, as soon as you tap and release your
+  // finger, your hands are going to move a little." The gate he explicitly
+  // asked to have reused ("Shoot When Steady can be reused as the gate that
+  // begins the Night stack") must still run — this only delays when it
+  // starts watching.
+  assert.match(appTs, /type NightPhase = 'idle' \| 'countdown' \| 'arming' \| 'stacking' \| 'complete';/);
+  const countdownBlock = appTs.slice(
+    appTs.indexOf("if (nightPhase === 'countdown') {"),
+    appTs.indexOf("if (nightPhase === 'arming') {", appTs.indexOf("if (nightPhase === 'countdown') {")));
+  assert.match(countdownBlock, /now - nightCountdownStartedAt < NIGHT_COUNTDOWN_MS/);
+  // The countdown's own exit is what arms the gate — not a second, separate
+  // arm call elsewhere, and not skipping the gate.
+  assert.match(countdownBlock, /nightGate\.arm\(DEFAULT_STEADY_THRESHOLD\);/);
+  assert.match(countdownBlock, /nightPhase = 'arming';/);
+
+  // The permission request happens in the CLICK handler, before the
+  // countdown is even entered — not deferred into the tick loop. iOS only
+  // grants motion access to a call inside a real user gesture; asking later
+  // risks a silent refusal.
+  const clickHandler = appTs.slice(
+    appTs.indexOf("byId('v2NightTestToggle').addEventListener('click'"),
+    appTs.indexOf("byId('v2NightTestToggle').addEventListener('click'") + 1600);
+  const ensureIdx = clickHandler.indexOf('ensureMotion()');
+  const countdownIdx = clickHandler.indexOf("nightPhase = 'countdown';");
+  assert.ok(ensureIdx > 0 && countdownIdx > ensureIdx,
+    'ensureMotion() is awaited before the countdown starts, inside the same gesture');
+});
+
+test('the countdown readout never reads 0 or negative on screen', () => {
+  assert.match(appTs, /nightCountdownSecondsLeft\(performance\.now\(\) - nightCountdownStartedAt\)/);
+  assert.match(appTs, /countdown: `⏱️ Starting in \$\{secondsLeft\}…`,/);
+});
+
+test('a large 3/2/1 overlay shows in the viewfinder during the countdown, and only then', () => {
+  // "A large 3/2/1 overlay in the viewfinder would be ideal" (Joshua,
+  // 2026-09-03) — the button label alone was the first pass; this is the
+  // follow-up he asked for by name.
+  assert.match(v2Html, /id="v2NightCountdown"/);
+  assert.match(appTs, /const overlay = byId\('v2NightCountdown'\);/);
+  assert.match(appTs, /overlay\.hidden = nightPhase !== 'countdown';/,
+    'shown ONLY during the countdown — not during arming, stacking or complete');
+  assert.match(appTs, /overlay\.textContent = String\(secondsLeft\);/);
+});

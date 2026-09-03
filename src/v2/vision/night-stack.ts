@@ -52,6 +52,33 @@ export const NIGHT_TARGET_MS = 4000;
 export const NIGHT_TARGET_FRAMES = Math.round(NIGHT_TARGET_MS / NIGHT_TICK_MS);
 
 /**
+ * How long to wait, after the tap, before the steadiness gate even starts
+ * watching — Joshua, on the phone, after Milestone 1 worked: "make a 3s
+ * countdown before it actually starts because if not using a tripod, as
+ * soon as you tap and release your finger, your hands are going to move a
+ * little."
+ *
+ * This does NOT replace the gate he asked to have reused ("Shoot When
+ * Steady can be reused as the gate that begins the Night stack") — it sits
+ * BEFORE it. The gate still has to see an actual steady hold before the
+ * stack begins; this only buys the hand a fixed, visible window to stop
+ * moving from the tap itself before that gate starts judging it, so a
+ * shaky first half-second right after release cannot fail the gate before
+ * it settles.
+ */
+export const NIGHT_COUNTDOWN_MS = 3000;
+
+/**
+ * Seconds left to show on the button — always at least 1 while the
+ * countdown is running, so it reads "3… 2… 1…" rather than ever touching
+ * "0" on screen. Ceiling, not rounding: at 2.98s remaining the honest
+ * answer for a whole-second display is still "3", not "2".
+ */
+export function nightCountdownSecondsLeft(elapsedMs: number): number {
+  return Math.max(1, Math.ceil((NIGHT_COUNTDOWN_MS - elapsedMs) / 1000));
+}
+
+/**
  * The converging-mean weight for the n-th frame folded into the CURRENT
  * accumulator (n counted since the last restart, not since the capture
  * began — a restart really is a fresh accumulator with a fresh frame 1).

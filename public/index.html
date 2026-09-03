@@ -81,6 +81,17 @@
     #v2PatchRing { display: block; border: 1px solid rgba(255, 255, 255, .95); border-radius: 50%; box-shadow: 0 0 2px rgba(0, 0, 0, .8); }
     #v2ShutterFlash { position: absolute; inset: 0; z-index: 4; background: #fff; opacity: 0; pointer-events: none; transition: opacity .18s ease; }
     #v2ShutterFlash.firing { opacity: .85; }
+    /* The 3/2/1 countdown, big and centered — "A large 3/2/1 overlay in the
+       viewfinder would be ideal" (Joshua, 2026-09-03). It exists to be seen
+       without reading the small print: the whole point of the countdown is
+       giving a hand-held phone time to stop moving after the tap, and a
+       number you have to hunt for defeats that. */
+    #v2NightCountdown {
+      position: absolute; inset: 0; z-index: 7; display: grid; place-items: center;
+      font-size: 96px; font-weight: 800; color: #fff; pointer-events: none;
+      text-shadow: 0 2px 18px rgba(0, 0, 0, .85), 0 0 40px rgba(0, 0, 0, .6);
+      background: rgba(0, 0, 0, .22);
+    }
     .capture button.recording { color: #ff5c5c; border-color: #ff5c5c; box-shadow: 0 0 0 1px rgba(255, 92, 92, .35); }
     .share-save { margin-top: 9px; min-height: 42px; padding: 0 16px; border-radius: 11px; border: 1px solid var(--blue); background: #10203a; color: #cfe4ff; font-size: 12px; font-weight: 600; }
     .enable-overlay {
@@ -236,7 +247,7 @@
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
-    <span class="pill" id="v2Badge">v0.41.1</span>
+    <span class="pill" id="v2Badge">v0.41.2</span>
   </header>
 
   <div class="camera-layout">
@@ -252,6 +263,11 @@
              the TRUE size of the colour picker's patch. -->
         <div id="v2Reticle" aria-hidden="true" hidden><i id="v2PatchRing"></i></div>
         <div id="v2ShutterFlash" aria-hidden="true"></div>
+        <!-- Night's pre-capture countdown — the tap's own release motion
+             gets a fixed window to settle before the steadiness gate starts
+             judging the hold. Numbers only; the gate's own "hold still" text
+             lives in the panel below once this finishes. -->
+        <div id="v2NightCountdown" aria-hidden="true" hidden></div>
         <button class="enable-overlay" id="v2EnableCamera" type="button">Enable Camera</button>
         <div class="rec-hud" id="v2RecHud" hidden></div>
         <div id="v2SteadyHud" hidden></div>
