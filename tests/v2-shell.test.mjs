@@ -380,10 +380,33 @@ test('the log names the resolution SETTING beside what it actually stacked', () 
   assert.match(appTs, /sensorWidth: capability\?\.width \?\? 0,/, 'the sensor maximum a MAX photo needs');
   // Frozen once, with the size, rather than re-read per frame — the same
   // "decided at the start" rule the accumulator's own size follows.
-  const start = appTs.indexOf("nightSize = frameSize(geometry.preview.width");
+  const start = appTs.indexOf("nightSize = frameSize(geometry.photo.width");
   const stacking = appTs.indexOf("nightPhase = 'stacking';", start);
   assert.ok(start > 0 && stacking > start);
   assert.match(appTs.slice(start, stacking), /tierLabel:/, 'recorded when stacking begins');
+});
+
+test('Night stacks at the size the TIER chose, not the size the screen is', () => {
+  // Joshua, 2026-09-03, after running one capture at every tier: "I want the
+  // output to match the settings so if it's 2K, it will be a 2K output image
+  // not smaller... Not all 924x1232 for anything above 720 since not all
+  // devices or camera will be the same, but the sizes and aspect ratios can
+  // and should be, and match."
+  //
+  // His four runs read stacked 924×1232 at 1080, 2K AND MAX — the preview
+  // row is fitted to the viewfinder's own device pixels, so it reported his
+  // screen rather than his setting, and would report a different arbitrary
+  // number on any other phone. The PHOTO row is the negotiated stream, so
+  // the tier decides the output.
+  assert.match(appTs, /nightSize = frameSize\(geometry\.photo\.width, geometry\.photo\.height\);/);
+  assert.ok(!/nightSize = frameSize\(geometry\.preview/.test(appTs),
+    'the preview row is the viewfinder\'s size, never the capture\'s');
+
+  // The SAME row capture/photo.ts hands the renderer for an ordinary still,
+  // so a Night result and a normal photo cannot disagree about what the
+  // chosen tier means.
+  const photoTs = readFileSync(new URL('../src/v2/capture/photo.ts', import.meta.url), 'utf8');
+  assert.match(photoTs, /renderer\.render\(filterId, \{ width: photo\.width, height: photo\.height \}\)/);
 });
 
 test('the Night log appends across runs and can be copied', () => {

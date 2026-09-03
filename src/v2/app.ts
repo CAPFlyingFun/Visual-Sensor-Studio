@@ -1311,7 +1311,28 @@ function updateNightStack(now: number): void {
     // picture of two different rectangles.
     const { geometry, capability, source, streamTier } = readState();
     if (!geometry) { nightPhase = 'idle'; return; }
-    nightSize = frameSize(geometry.preview.width, geometry.preview.height);
+    // THE PHOTO ROW, exactly as capture/photo.ts uses for the ordinary
+    // shutter — not the preview row this used to take.
+    //
+    // Joshua, 2026-09-03, reading the per-tier runs: "I want the output to
+    // match the settings so if it's 2K, it will be a 2K output image not
+    // smaller... Not all 924x1232 for anything above 720 since not all
+    // devices or camera will be the same, but the sizes and aspect ratios
+    // can and should be, and match." The preview row is fitted to THIS
+    // viewfinder's device pixels, so it pinned every tier above 720 to one
+    // arbitrary 924×1232 — a number that says more about his screen than
+    // about the setting he chose, and a different number on any other phone.
+    // The photo row is the negotiated stream, so the tier is what decides
+    // the output: 2K in, 2K out.
+    //
+    // This costs nothing new to acquire. uploadFrame() already puts the
+    // WHOLE video frame on the GPU at its native size every frame, and
+    // render() already drives this same canvas at geometry.photo for a
+    // still and at geometry.recordInput for a clip — a filtered MAX
+    // recording advances a full-size averaging accumulator today. Night is
+    // simply stopping throwing those pixels away. (Joshua: "if it can do
+    // videos at MAX at around 30fps, NIGHT will have no issues.")
+    nightSize = frameSize(geometry.photo.width, geometry.photo.height);
     if (!nightSize) { nightPhase = 'idle'; return; }
     nightAligner.reset();
     // The resolution story, recorded at the moment it is decided (Joshua,

@@ -120,10 +120,10 @@ export interface NightCounters {
    * - tierLabel  the SETTING chosen — 720 / 1080 / 2K / 4K / MAX.
    * - stream     what the camera actually granted under that setting.
    * - stacked    what Night really accumulated, frozen once when stacking
-   *              begins. Today that is the PREVIEW row, which geometry.ts
-   *              fits to the viewfinder's own device pixels — so past the
-   *              tier that first exceeds the viewfinder it stops growing,
-   *              whatever the setting says.
+   *              begins: the PHOTO row, the same one the ordinary shutter
+   *              saves at, so the tier chosen is the size produced. It read
+   *              the preview row until 2026-09-03, which pinned every tier
+   *              above 720 to one viewfinder-sized rectangle.
    * - sensor     the camera's advertised maximum: what a MAX photo would
    *              have to be, and so what Milestone 2 has to reach.
    */
