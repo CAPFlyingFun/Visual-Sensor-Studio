@@ -1588,6 +1588,175 @@ function renderNightLog(): void {
   }
 }
 
+/* --- Import: a photo from this device, through the same filters --------- */
+
+/**
+ * IMPORT — a picture already on the phone, put through the SAME shader the
+ * camera uses, and written out as a NEW file. The original is only ever read.
+ *
+ * SIDE-EFFECT FREE against the live pipeline, which is what makes it safe to
+ * do while the camera is running. An import render calls render() with no
+ * stateSize and no frame count, so:
+ *   - advanceAverage() returns immediately (it needs frames > 1), so the live
+ *     Stabilization accumulation is untouched;
+ *   - the state pass is skipped entirely, so Speed's and Trails' memory is
+ *     neither read into nor advanced;
+ *   - snapshotHistory() is called only by renderPreview, so the frame history
+ *     a temporal filter compares against is never overwritten.
+ * All it touches is the frame texture and the canvas, and the delivery loop
+ * rewrites both on its very next frame.
+ *
+ * WHICH FILTERS. A filter with a state pass or a temporal comparison builds
+ * its picture from a SEQUENCE, and a single still is not one — applied to an
+ * import it would composite the CAMERA's leftover memory over the imported
+ * picture and look like a result. So they are refused by their own capability
+ * metadata (Rule 10) rather than by a hand-kept list of names, and the note
+ * says why instead of leaving a dead button.
+ */
+let importedImage: HTMLImageElement | null = null;
+let importedName = '';
+let importedUrl = '';
+
+/** Why this filter cannot be applied to a single imported still, or ''. */
+function importRefusal(filterId: string): string {
+  const filter = filterById(filterId);
+  if (!filter) return 'That filter is not available.';
+  if (filter.unavailableReason) return filter.unavailableReason;
+  if (filter.state || filter.temporal) {
+    return `${filter.name} builds its picture from a sequence of frames, so it `
+      + 'has nothing to work from in a single imported still. Pick a filter '
+      + 'that reads one frame — RGB, Ironbow, Edges, or any lens.';
+  }
+  return '';
+}
+
+function clearImport(): void {
+  importedImage = null;
+  importedName = '';
+  importedFilter = '';
+  if (importedUrl) URL.revokeObjectURL(importedUrl);
+  importedUrl = '';
+  byId('v2ImportCanvas').hidden = true;
+  byId('v2ImportSave').hidden = true;
+  byId('v2ImportClear').hidden = true;
+  setText('v2ImportNote', '');
+  setText('v2ImportReading', '');
+}
+
+/**
+ * Draw the import at its OWN full size, then copy that into the on-screen
+ * canvas. The backing store is the file's size, so what is shown and what a
+ * save would write are the same render rather than two different ones.
+ */
+function renderImport(): boolean {
+  const image = importedImage;
+  if (!image) return false;
+  const size = frameSize(image.naturalWidth, image.naturalHeight);
+  if (!size) return false;
+  const { activeFilter } = readState();
+  const refusal = importRefusal(activeFilter);
+  const canvas = byId<HTMLCanvasElement>('v2ImportCanvas');
+  if (refusal) {
+    // The picture comes OFF the screen with the refusal. Leaving the previous
+    // filter's render up while the note explains a different one would show a
+    // result that is not the result of what is selected.
+    canvas.hidden = true;
+    byId('v2ImportSave').hidden = true;
+    setText('v2ImportNote', refusal);
+    setText('v2ImportReading', '');
+    return false;
+  }
+  if (!renderer.uploadStill(image) || !renderer.render(activeFilter, size)) {
+    setText('v2ImportNote', 'That picture could not be rendered.');
+    return false;
+  }
+  canvas.width = size.width;
+  canvas.height = size.height;
+  const context = canvas.getContext('2d');
+  if (!context) return false;
+  context.drawImage(renderer.targetCanvas, 0, 0);
+  canvas.hidden = false;
+  byId('v2ImportSave').hidden = false;
+  setText('v2ImportNote', `${importedName} · through ${filterById(activeFilter)?.name ?? activeFilter}`);
+  setText('v2ImportReading', `${size.width}×${size.height} · the picture's own full size, `
+    + 'not a downscale · the original file is never written to');
+  return true;
+}
+
+async function loadImport(file: File): Promise<void> {
+  clearImport();
+  setText('v2ImportNote', `Opening ${file.name}…`);
+  const url = URL.createObjectURL(file);
+  const image = new Image();
+  try {
+    image.src = url;
+    await image.decode();
+  } catch {
+    URL.revokeObjectURL(url);
+    setText('v2ImportNote', `${file.name} could not be opened as a picture.`);
+    return;
+  }
+  importedImage = image;
+  importedUrl = url;
+  importedName = file.name;
+  importedFilter = readState().activeFilter;
+  byId('v2ImportClear').hidden = false;
+  renderImport();
+}
+
+/**
+ * Save the imported picture as a NEW file, through capturePhoto's preRendered
+ * path — the same encoder and the same naming every other still uses, so an
+ * import is not a second save implementation.
+ */
+async function saveImport(): Promise<void> {
+  const image = importedImage;
+  if (!image) return;
+  const size = frameSize(image.naturalWidth, image.naturalHeight);
+  if (!size || !renderImport()) return;
+  const still = await capturePhoto(renderer, video, readState().activeFilter, {
+    width: size.width,
+    height: size.height,
+    aspect: size.width / size.height,
+    reason: 'an imported picture at its own full size'
+  }, { preRendered: true, label: `import-${readState().activeFilter}` });
+  if (!still) {
+    setText('v2ImportNote', 'The picture rendered but could not be encoded.');
+    return;
+  }
+  offerShare('v2SharePhoto',
+    new File([still.blob], still.fileName, { type: 'image/jpeg' }), 'v2PhotoResult');
+  setText('v2ImportNote', `Saved ${still.width}×${still.height} · `
+    + `${(still.bytes / 1e6).toFixed(2)} MB · ${importedName} is untouched`);
+}
+
+/**
+ * Re-render the import when the FILTER changes, and only then. Rendering a
+ * twelve-megapixel picture on every text tick would be pure waste; a picture
+ * that is already drawn does not change until the shader does.
+ */
+let importedFilter = '';
+function renderImportPanel(): void {
+  if (!importedImage) { importedFilter = ''; return; }
+  const { activeFilter } = readState();
+  if (activeFilter === importedFilter) return;
+  importedFilter = activeFilter;
+  renderImport();
+}
+
+function buildImport(): void {
+  const input = byId<HTMLInputElement>('v2ImportFile');
+  byId('v2ImportPick').addEventListener('click', () => input.click());
+  input.addEventListener('change', () => {
+    const file = input.files?.[0];
+    // Cleared so choosing the SAME file twice still fires a change event.
+    input.value = '';
+    if (file) void loadImport(file);
+  });
+  byId('v2ImportSave').addEventListener('click', () => void saveImport());
+  byId('v2ImportClear').addEventListener('click', () => clearImport());
+}
+
 let renderedAidKey = '';
 function renderAids(): void {
   const { zebra, peaking, exposureShown } = readState();
@@ -2251,6 +2420,7 @@ function renderTextPanels(): void {
   renderSteadyShutter();
   renderSteadyHud();
   renderNightTest();
+  renderImportPanel();
   renderCameraControls();
   renderAids();
   renderExposure();
@@ -3580,6 +3750,7 @@ buildAlignment();
 buildSteadyShutter();
 buildNightTest();
 buildAids();
+buildImport();
 try {
   const stored = localStorage.getItem(GUIDE_STORE_KEY);
   if (stored && guideById(stored)) updateState({ guide: stored });

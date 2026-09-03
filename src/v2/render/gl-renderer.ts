@@ -601,6 +601,30 @@ export class GlRenderer {
   }
 
   /** One upload per camera frame; every product of that frame reuses it. */
+  /**
+   * The same upload, for a STILL that came from a file rather than the camera.
+   *
+   * A separate entry point rather than a widened uploadFrame, because the two
+   * have different emptiness tests — a video reports videoWidth 0 until it has
+   * decoded something, an image reports naturalWidth 0 until it has loaded —
+   * and conflating them would let one's "not ready yet" pass as the other's.
+   * Everything downstream is identical: the same texture, so the same one
+   * program per filter draws it (Rule 4). There is no import-only filter path.
+   */
+  uploadStill(image: HTMLImageElement): boolean {
+    const gl = this.gl;
+    if (!gl || gl.isContextLost() || image.naturalWidth === 0) return false;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.frameTexture);
+    try {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+      this.frameSize = { width: image.naturalWidth, height: image.naturalHeight };
+    } catch {
+      return false;
+    }
+    return true;
+  }
+
   uploadFrame(video: HTMLVideoElement): boolean {
     const gl = this.gl;
     if (!gl || gl.isContextLost() || video.videoWidth === 0) return false;

@@ -457,6 +457,51 @@ test('Night measures its own result, then lifts it, then saves what it lifted', 
     'the phase freezes renderPreview BEFORE the encode starts');
 });
 
+test('an imported photo goes through the SAME filters and saves as a new file', () => {
+  // Joshua, 2026-09-03: "add where you can upload and picture or video and
+  // apply filters and save as new."
+  assert.match(v2Html, /id="v2ImportFile"[^>]*accept="image\/\*"/);
+  assert.match(v2Html, /id="v2ImportPick"/);
+  assert.match(v2Html, /id="v2ImportSave"/);
+  assert.match(v2Html, /id="v2ImportCanvas"/);
+
+  // ONE shader path: the import renders through renderer.render() with the
+  // ACTIVE filter, never a second import-only implementation (Rule 4).
+  assert.match(appTs, /renderer\.uploadStill\(image\) \|\| !renderer\.render\(activeFilter, size\)/);
+  // At the picture's OWN size — an import is not quietly downscaled.
+  assert.match(appTs, /const size = frameSize\(image\.naturalWidth, image\.naturalHeight\);/);
+  // And saved through the one save path, not a second encoder.
+  assert.match(appTs, /label: `import-\$\{readState\(\)\.activeFilter\}`/);
+
+  // A sequence filter is refused BY ITS CAPABILITY METADATA, not by a list of
+  // names (Rule 10) — a single still is not a sequence, and applying one
+  // would composite the camera's leftover memory over the imported picture.
+  assert.match(appTs, /if \(filter\.state \|\| filter\.temporal\) \{/);
+  // The refusal takes the picture off screen rather than leaving the previous
+  // filter's render up under a note about a different one.
+  assert.match(appTs, /canvas\.hidden = true;\n    byId\('v2ImportSave'\)\.hidden = true;/);
+});
+
+test('an import cannot disturb the live camera pipeline', () => {
+  // The whole reason this is safe to do while the camera runs. An import
+  // render passes no stateSize and no frame count, so advanceAverage() bails
+  // (it needs frames > 1), the state pass is skipped, and snapshotHistory()
+  // is never reached — the live Stabilization accumulation, Speed/Trails
+  // memory and frame history are all left exactly as they were.
+  const renderTs = readFileSync(new URL('../src/v2/render/gl-renderer.ts', import.meta.url), 'utf8');
+  assert.match(renderTs, /if \(!gl \|\| !\(frames > 1\) \|\| size\.width <= 0/,
+    'averaging needs more than one frame, so a lone import render cannot advance it');
+  assert.match(renderTs, /filter\.state && stateSize \? this\.advanceState\(filter, stateSize\) : null/,
+    'no stateSize means no state pass');
+  // The import call site really does pass neither.
+  assert.match(appTs, /renderer\.render\(activeFilter, size\)\)/,
+    'the import render takes a size and nothing else');
+  // snapshotHistory stays the delivery loop's business alone.
+  const importBlock = appTs.slice(appTs.indexOf('function renderImport()'),
+    appTs.indexOf('function renderImport()') + 1600);
+  assert.ok(!/snapshotHistory/.test(importBlock));
+});
+
 test('the Night log appends across runs and can be copied', () => {
   // Joshua, on the phone, after the countdown worked: "the lowest I saw hand
   // holding was about 95%... add a log that I can copy with a button to run

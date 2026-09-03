@@ -164,6 +164,10 @@
     .button-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
     .btn { min-height: 42px; padding: 0 14px; border: 1px solid var(--line2); background: #0d1a26; border-radius: 11px; cursor: pointer; }
     .btn[disabled] { opacity: .45; }
+    /* The imported picture, shown at whatever width the panel has. Its
+       BACKING STORE is the file's own size; this only scales the display. */
+    #v2ImportCanvas { display: block; width: 100%; height: auto; margin-top: 10px;
+      border: 1px solid var(--line); border-radius: 12px; background: #04090f; }
     .probe-out { margin: 10px 0 0; font-size: 11px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; color: var(--muted); }
     .stage-note { font-size: 11px; color: #ffc46b; min-height: 1.2em; margin: 8px 0 0; }
     .stage-note.timing { color: #9fb0bf; font-family: ui-monospace, 'SF Mono', Menlo, monospace; white-space: pre-line; min-height: 0; }
@@ -247,7 +251,7 @@
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
-    <span class="pill" id="v2Badge">v0.42.0</span>
+    <span class="pill" id="v2Badge">v0.43.0</span>
   </header>
 
   <div class="camera-layout">
@@ -406,6 +410,23 @@
             <button type="button" class="btn" id="v2PickColor">⌾ Pick colour</button>
           </div>
 
+        </section>
+
+        <!-- IMPORT. A photo already on this device, put through the SAME
+             filter the camera uses and saved as a NEW file — the original is
+             never written to. It renders at the picture's own full size, so
+             an import is not quietly downscaled any more than a capture is. -->
+        <section class="section">
+          <div class="section-title"><h2>Import a photo</h2><span class="hint">same filters · saved as a new file</span></div>
+          <div class="button-row">
+            <button type="button" class="btn" id="v2ImportPick">🖼️ Choose a photo</button>
+            <button type="button" class="btn" id="v2ImportSave" hidden>💾 Save as new</button>
+            <button type="button" class="btn" id="v2ImportClear" hidden>✕ Clear</button>
+          </div>
+          <input type="file" id="v2ImportFile" accept="image/*" hidden />
+          <p class="hint" id="v2ImportNote"></p>
+          <canvas id="v2ImportCanvas" hidden></canvas>
+          <p class="probe-out" id="v2ImportReading"></p>
         </section>
 
         <!-- The colour picker reads the CAMERA FRAME, never the filtered
