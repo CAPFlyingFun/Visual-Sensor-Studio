@@ -251,7 +251,7 @@
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
-    <span class="pill" id="v2Badge">v0.43.0</span>
+    <span class="pill" id="v2Badge">v0.43.1</span>
   </header>
 
   <div class="camera-layout">
@@ -294,6 +294,133 @@
 
     <main class="content">
       <div id="v2CameraRoute">
+        <!-- FILTERS SIT DIRECTLY UNDER THE VIEWFINDER (Joshua, 2026-09-03:
+             "move the filters just under the view, so you don't have to
+             scroll down all the way near the bottom to activate them"). They
+             are the control the picture actually responds to, so they belong
+             beside the picture rather than eight sections below it.
+
+             The colour picker and the lens workbench travel WITH them: both
+             are panels opened by buttons in this section, and leaving them
+             behind would have put a button at the top of the page and the
+             panel it reveals near the bottom — a worse scroll than the one
+             this move removes. -->
+        <section class="section">
+          <div class="section-title"><h2>Filters &amp; Lenses</h2><span class="hint">Swipe &rarr; · one shader for preview and photo</span></div>
+          <div class="filters" id="v2FilterStrip"></div>
+          <p class="hint" id="v2FilterNote"></p>
+          <!-- Shown when the chosen filter needs a step before it can show
+               anything, with a switch to stop showing it. -->
+          <div class="coach" id="v2Coach" hidden>
+            <h3 id="v2CoachTitle"></h3>
+            <ol id="v2CoachSteps"></ol>
+            <div class="button-row">
+              <button type="button" class="btn" id="v2CoachAction" hidden></button>
+              <button type="button" class="btn" id="v2CoachClose">Got it</button>
+              <label class="coach-mute"><input type="checkbox" id="v2CoachMute" /> Don’t show this again</label>
+            </div>
+          </div>
+          <div class="button-row" id="v2LensActions" hidden>
+            <button type="button" class="btn" id="v2ReverseRamp" hidden>🔄 Reverse</button>
+            <button type="button" class="btn" id="v2LensEdit">Edit lens</button>
+            <button type="button" class="btn" id="v2LensImportButton">Import .lens.json</button>
+            <button type="button" class="btn" id="v2PickColor">⌾ Pick colour</button>
+          </div>
+
+        </section>
+
+
+        <!-- The colour picker reads the CAMERA FRAME, never the filtered
+             render: a false colour is the palette's answer, not the scene's. -->
+        <div class="card" id="v2PickerCard" hidden>
+          <h3>Colour picker</h3>
+          <p id="v2PickerHint">Tap the viewfinder to read a colour from the camera frame.</p>
+          <div class="picker-read">
+            <div class="picker-swatch" id="v2PickerSwatch"></div>
+            <div>
+              <div class="picker-hex" id="v2PickerHex">—</div>
+              <div class="hint" id="v2PickerDetail"></div>
+            </div>
+          </div>
+          <div class="button-row">
+            <button type="button" class="btn" id="v2PickerCentre">✛ Sample centre</button>
+            <!-- The shortest path from "that colour there" to "the lens is
+                 now looking for it": no workbench, no round trip. -->
+            <button type="button" class="btn" id="v2PickerUseInLens" hidden></button>
+            <button type="button" class="btn" id="v2PickerCopy" disabled>Copy hex</button>
+            <button type="button" class="btn" id="v2PickerAddStop" disabled>Add as ramp stop</button>
+            <button type="button" class="btn" id="v2PickerClose">Close</button>
+          </div>
+          <p class="hint" id="v2PickerLensNote"></p>
+        </div>
+
+        <!-- The lens workbench (Milestone E). Built from data: the channel list,
+             the bindings and the ramp stops are the lens document itself, and
+             the preview IS the lens running as the active filter. -->
+        <div class="card" id="v2LensWorkbench" hidden>
+          <h3 id="v2LensTitle">Custom lens</h3>
+          <input class="lens-name" id="v2LensName" type="text" maxlength="40" placeholder="Lens name" />
+          <input class="lens-name" id="v2LensNote" type="text" maxlength="280" placeholder="What it does, in a line" />
+          <p class="hint" id="v2LensOrigin" hidden></p>
+          <div class="lens-field">
+            <label for="v2LensChannel">Colour from</label>
+            <select id="v2LensChannel"></select>
+            <span class="hint" id="v2LensUnit"></span>
+          </div>
+          <p class="hint" id="v2LensChannelMeaning"></p>
+          <div class="lens-field">
+            <label for="v2LensOutput">Does</label>
+            <select id="v2LensOutput">
+              <option value="paint">paint false colour</option>
+              <option value="mask">keep colour where it matches</option>
+              <option value="swap">recolour the matches</option>
+            </select>
+            <span></span>
+          </div>
+          <div class="lens-field" id="v2LensReferenceRow" hidden>
+            <label for="v2LensReference">Reference</label>
+            <input type="color" id="v2LensReference" />
+            <button type="button" class="chip" id="v2LensUseSample">Use sample</button>
+          </div>
+          <div class="lens-field" id="v2LensTargetRow" hidden>
+            <label for="v2LensTarget">Recolour to</label>
+            <input type="color" id="v2LensTarget" />
+            <span></span>
+          </div>
+          <div id="v2LensBindings"></div>
+          <div class="lens-field">
+            <label for="v2LensBrightChannel">Brightness</label>
+            <select id="v2LensBrightChannel"></select>
+            <span class="hint" id="v2LensBrightUnit"></span>
+          </div>
+          <div id="v2LensBrightBindings"></div>
+          <div class="lens-swatch" id="v2LensSwatch"></div>
+          <div class="lens-presets" id="v2LensPresets"></div>
+          <div class="button-row"><button type="button" class="btn" id="v2LensReverse">🔄 Reverse colours</button></div>
+          <div class="lens-stops" id="v2LensStops"></div>
+          <div class="button-row"><button type="button" class="btn" id="v2LensAddStop">+ Stop</button></div>
+          <div class="lens-field">
+            <label for="v2LensBase">Base</label>
+            <select id="v2LensBase">
+              <option value="black">black</option>
+              <option value="grey">grey</option>
+              <option value="scene">camera picture</option>
+            </select>
+            <span></span>
+          </div>
+          <div id="v2LensBlend"></div>
+          <p class="lens-describe" id="v2LensDescribe"></p>
+          <div class="button-row">
+            <button type="button" class="btn" id="v2LensSave">Save</button>
+            <button type="button" class="btn" id="v2LensSaveAsNew">Save as new</button>
+            <button type="button" class="btn" id="v2LensExport">Export</button>
+            <button type="button" class="btn" id="v2LensDelete">Delete</button>
+            <button type="button" class="btn" id="v2LensClose">Close</button>
+          </div>
+          <p class="stage-note" id="v2LensStatus"></p>
+        </div>
+
+
         <section class="section">
           <div class="section-title"><h2>Camera Stream</h2><span class="hint">a bigger stream costs delivered fps</span></div>
           <div class="zoom tiers" id="v2StreamTiers" aria-label="Stream tiers"></div>
@@ -388,30 +515,6 @@
           <p class="probe-out" id="v2NightLog">No runs logged yet &mdash; each Night attempt adds a line here.</p>
         </section>
 
-        <section class="section">
-          <div class="section-title"><h2>Filters &amp; Lenses</h2><span class="hint">Swipe &rarr; · one shader for preview and photo</span></div>
-          <div class="filters" id="v2FilterStrip"></div>
-          <p class="hint" id="v2FilterNote"></p>
-          <!-- Shown when the chosen filter needs a step before it can show
-               anything, with a switch to stop showing it. -->
-          <div class="coach" id="v2Coach" hidden>
-            <h3 id="v2CoachTitle"></h3>
-            <ol id="v2CoachSteps"></ol>
-            <div class="button-row">
-              <button type="button" class="btn" id="v2CoachAction" hidden></button>
-              <button type="button" class="btn" id="v2CoachClose">Got it</button>
-              <label class="coach-mute"><input type="checkbox" id="v2CoachMute" /> Don’t show this again</label>
-            </div>
-          </div>
-          <div class="button-row" id="v2LensActions" hidden>
-            <button type="button" class="btn" id="v2ReverseRamp" hidden>🔄 Reverse</button>
-            <button type="button" class="btn" id="v2LensEdit">Edit lens</button>
-            <button type="button" class="btn" id="v2LensImportButton">Import .lens.json</button>
-            <button type="button" class="btn" id="v2PickColor">⌾ Pick colour</button>
-          </div>
-
-        </section>
-
         <!-- IMPORT. A photo already on this device, put through the SAME
              filter the camera uses and saved as a NEW file — the original is
              never written to. It renders at the picture's own full size, so
@@ -428,96 +531,6 @@
           <canvas id="v2ImportCanvas" hidden></canvas>
           <p class="probe-out" id="v2ImportReading"></p>
         </section>
-
-        <!-- The colour picker reads the CAMERA FRAME, never the filtered
-             render: a false colour is the palette's answer, not the scene's. -->
-        <div class="card" id="v2PickerCard" hidden>
-          <h3>Colour picker</h3>
-          <p id="v2PickerHint">Tap the viewfinder to read a colour from the camera frame.</p>
-          <div class="picker-read">
-            <div class="picker-swatch" id="v2PickerSwatch"></div>
-            <div>
-              <div class="picker-hex" id="v2PickerHex">—</div>
-              <div class="hint" id="v2PickerDetail"></div>
-            </div>
-          </div>
-          <div class="button-row">
-            <button type="button" class="btn" id="v2PickerCentre">✛ Sample centre</button>
-            <!-- The shortest path from "that colour there" to "the lens is
-                 now looking for it": no workbench, no round trip. -->
-            <button type="button" class="btn" id="v2PickerUseInLens" hidden></button>
-            <button type="button" class="btn" id="v2PickerCopy" disabled>Copy hex</button>
-            <button type="button" class="btn" id="v2PickerAddStop" disabled>Add as ramp stop</button>
-            <button type="button" class="btn" id="v2PickerClose">Close</button>
-          </div>
-          <p class="hint" id="v2PickerLensNote"></p>
-        </div>
-
-        <!-- The lens workbench (Milestone E). Built from data: the channel list,
-             the bindings and the ramp stops are the lens document itself, and
-             the preview IS the lens running as the active filter. -->
-        <div class="card" id="v2LensWorkbench" hidden>
-          <h3 id="v2LensTitle">Custom lens</h3>
-          <input class="lens-name" id="v2LensName" type="text" maxlength="40" placeholder="Lens name" />
-          <input class="lens-name" id="v2LensNote" type="text" maxlength="280" placeholder="What it does, in a line" />
-          <p class="hint" id="v2LensOrigin" hidden></p>
-          <div class="lens-field">
-            <label for="v2LensChannel">Colour from</label>
-            <select id="v2LensChannel"></select>
-            <span class="hint" id="v2LensUnit"></span>
-          </div>
-          <p class="hint" id="v2LensChannelMeaning"></p>
-          <div class="lens-field">
-            <label for="v2LensOutput">Does</label>
-            <select id="v2LensOutput">
-              <option value="paint">paint false colour</option>
-              <option value="mask">keep colour where it matches</option>
-              <option value="swap">recolour the matches</option>
-            </select>
-            <span></span>
-          </div>
-          <div class="lens-field" id="v2LensReferenceRow" hidden>
-            <label for="v2LensReference">Reference</label>
-            <input type="color" id="v2LensReference" />
-            <button type="button" class="chip" id="v2LensUseSample">Use sample</button>
-          </div>
-          <div class="lens-field" id="v2LensTargetRow" hidden>
-            <label for="v2LensTarget">Recolour to</label>
-            <input type="color" id="v2LensTarget" />
-            <span></span>
-          </div>
-          <div id="v2LensBindings"></div>
-          <div class="lens-field">
-            <label for="v2LensBrightChannel">Brightness</label>
-            <select id="v2LensBrightChannel"></select>
-            <span class="hint" id="v2LensBrightUnit"></span>
-          </div>
-          <div id="v2LensBrightBindings"></div>
-          <div class="lens-swatch" id="v2LensSwatch"></div>
-          <div class="lens-presets" id="v2LensPresets"></div>
-          <div class="button-row"><button type="button" class="btn" id="v2LensReverse">🔄 Reverse colours</button></div>
-          <div class="lens-stops" id="v2LensStops"></div>
-          <div class="button-row"><button type="button" class="btn" id="v2LensAddStop">+ Stop</button></div>
-          <div class="lens-field">
-            <label for="v2LensBase">Base</label>
-            <select id="v2LensBase">
-              <option value="black">black</option>
-              <option value="grey">grey</option>
-              <option value="scene">camera picture</option>
-            </select>
-            <span></span>
-          </div>
-          <div id="v2LensBlend"></div>
-          <p class="lens-describe" id="v2LensDescribe"></p>
-          <div class="button-row">
-            <button type="button" class="btn" id="v2LensSave">Save</button>
-            <button type="button" class="btn" id="v2LensSaveAsNew">Save as new</button>
-            <button type="button" class="btn" id="v2LensExport">Export</button>
-            <button type="button" class="btn" id="v2LensDelete">Delete</button>
-            <button type="button" class="btn" id="v2LensClose">Close</button>
-          </div>
-          <p class="stage-note" id="v2LensStatus"></p>
-        </div>
 
         <!-- The main screen shows RESULTS, not instruments (Joshua, 2026-09-01:
              "hide all the diagnostics in settings, not in the main app"). The

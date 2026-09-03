@@ -457,6 +457,31 @@ test('Night measures its own result, then lifts it, then saves what it lifted', 
     'the phase freezes renderPreview BEFORE the encode starts');
 });
 
+test('the filters sit directly under the viewfinder, with their own panels', () => {
+  // Joshua, 2026-09-03: "move the filters just under the view, so you don't
+  // have to scroll down all the way near the bottom to activate them." They
+  // were the eighth section down.
+  const route = v2Html.indexOf('id="v2CameraRoute"');
+  const strip = v2Html.indexOf('id="v2FilterStrip"');
+  const firstOther = Math.min(
+    ...['Camera Stream', 'Camera controls', 'Exposure &amp; focus', 'Frame averaging',
+      'Shoot when steady', 'Import a photo']
+      .map((title) => v2Html.indexOf(`<h2>${title}</h2>`))
+      .filter((at) => at > -1));
+  assert.ok(strip > route, 'the strip is inside the camera route');
+  assert.ok(strip < firstOther,
+    'nothing else may come between the viewfinder and the filters');
+
+  // The colour picker and the lens workbench are opened by BUTTONS in that
+  // section, so they travel with it. Leaving them behind would put a button
+  // at the top of the page and the panel it reveals near the bottom — a
+  // worse scroll than the one this move removes.
+  const picker = v2Html.indexOf('id="v2PickerCard"');
+  const workbench = v2Html.indexOf('id="v2LensWorkbench"');
+  assert.ok(picker > strip && picker < firstOther, 'the picker panel followed its button');
+  assert.ok(workbench > strip && workbench < firstOther, 'the lens workbench followed its button');
+});
+
 test('an imported photo goes through the SAME filters and saves as a new file', () => {
   // Joshua, 2026-09-03: "add where you can upload and picture or video and
   // apply filters and save as new."
