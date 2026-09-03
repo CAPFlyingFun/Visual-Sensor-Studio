@@ -236,7 +236,7 @@
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
-    <span class="pill" id="v2Badge">v0.41.0</span>
+    <span class="pill" id="v2Badge">v0.41.1</span>
   </header>
 
   <div class="camera-layout">
@@ -342,6 +342,18 @@
           <button type="button" class="btn" id="v2SteadyToggle" aria-pressed="false">🎯 Shoot when steady</button>
           <p class="hint" id="v2SteadyNote"></p>
           <p class="hint" id="v2SteadyReading"></p>
+        </section>
+
+        <!-- NIGHT, MILESTONE 1 ONLY. Tests whether the gyro-aligned finite
+             stack lands correctly — nothing else. No brightness recovery, no
+             lens, and it saves NOTHING: showing a photo/save affordance for a
+             result knowingly below MAX is exactly the exception Joshua ruled
+             out. This is a diagnostic view of the accumulator, not a photo. -->
+        <section class="section">
+          <div class="section-title"><h2>🌙 Night — Test</h2><span class="hint">Milestone 1 · stack only · nothing is saved</span></div>
+          <button type="button" class="btn" id="v2NightTestToggle" aria-pressed="false">🌙 Night — Test</button>
+          <p class="hint" id="v2NightTestNote"></p>
+          <p class="hint" id="v2NightTestReading"></p>
         </section>
 
         <section class="section">

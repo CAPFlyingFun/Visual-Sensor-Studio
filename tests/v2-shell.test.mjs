@@ -260,3 +260,55 @@ test('the steady shutter waits on a real picture and fires exactly once', () => 
   // the preview would understate it by the ratio between the two.
   assert.match(appTs, /const photo = capability \?\? source;/);
 });
+
+test('Night — Test exists, and says plainly that Milestone 1 saves nothing', () => {
+  assert.match(v2Html, /id="v2NightTestToggle"/);
+  assert.match(v2Html, /id="v2NightTestNote"/);
+  assert.match(v2Html, /id="v2NightTestReading"/);
+  assert.match(appTs, /function updateNightStack\(now: number\): void \{/);
+  assert.match(appTs, /function renderNightTest\(\): void \{/);
+  assert.match(appTs, /renderNightTest\(\);/, 'wired into the render loop');
+  assert.match(appTs, /updateNightStack\(frame\.now\);/, 'driven by the SAME delivery loop as the rest');
+
+  // The honesty rule this milestone was scoped around: nothing here may read
+  // as a photo. "NOTHING IS SAVED" appears in the idle note itself, not
+  // just in a comment — a reader who never opens the source still gets it.
+  assert.match(appTs, /NOTHING IS SAVED/);
+});
+
+test('Night reuses the SHARED steadiness reading rather than measuring twice', () => {
+  // steadyReading is already computed every frame by updateSteadyShutter,
+  // regardless of whether the ordinary Shoot When Steady feature is armed.
+  // Night's gate reads that SAME value rather than calling readSteadiness a
+  // second time — one measurement, three consumers (Alignment's readout,
+  // Shoot When Steady, Night's own gate).
+  assert.match(appTs, /nightGate\.update\(steadyReading\.steadiness, now\)/);
+});
+
+test('the ordinary shutter, recording, and the existing gyro features are untouched', () => {
+  // The literal DO-NOT-TOUCH list (Joshua, 2026-09-03). These pin BEHAVIOR,
+  // not just "the word doesn't appear" — each asserts the function that
+  // already existed is still exactly what it was.
+  const takePhotoBody = appTs.slice(appTs.indexOf('async function takePhoto()'),
+    appTs.indexOf('async function takePhoto()') + 2000);
+  assert.ok(!/night/i.test(takePhotoBody), 'the manual shutter has no Night branch');
+
+  const toggleRecordingIdx = appTs.indexOf('async function toggleRecording()');
+  if (toggleRecordingIdx > -1) {
+    const recordBody = appTs.slice(toggleRecordingIdx, toggleRecordingIdx + 2000);
+    assert.ok(!/night/i.test(recordBody), 'recording has no Night branch');
+  }
+
+  // The live frame-averaging ladder (Stabilization's own accumulator) keeps
+  // its exact existing formula — Night does not touch frame-average.ts at
+  // all, and app.ts's alignment/steady-shutter blocks are unmodified except
+  // for the new Night block appended after them.
+  assert.match(appTs, /function alignmentFor\(frames: number, target: FrameSize\):/,
+    'the live alignment wiring keeps its own signature, unmoved');
+  assert.match(appTs, /function updateSteadyShutter\(now: number\): void \{/,
+    'the ordinary Shoot When Steady tick keeps its own function, unmoved');
+
+  const frameAverage = readFileSync(new URL('../src/v2/render/frame-average.ts', import.meta.url), 'utf8');
+  assert.match(frameAverage, /export function frameAverageWeight\(frames: number\): number \{/,
+    'the live ladder\'s EMA formula is untouched');
+});

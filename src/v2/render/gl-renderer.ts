@@ -99,6 +99,24 @@ export class GlRenderer {
   private averageRead = 0;
   private averaging = false;
   private averagePrimed = false;
+  /**
+   * NIGHT'S OWN ACCUMULATOR — Milestone 1, deliberately separate from the
+   * live one above rather than sharing it.
+   *
+   * The two have incompatible update rhythms: the live accumulator advances
+   * on every DISPLAYED frame at a weight that keeps forgetting old content
+   * (frame-average.ts's fixed EMA); Night advances roughly every 250ms at a
+   * weight that CONVERGES (vision/night-stack.ts's 1/n). If they shared one
+   * pair of textures, whichever one last wrote to it would silently corrupt
+   * the other's in-progress picture. Same compiled shader program either
+   * way (AVERAGE_FRAGMENT, already verified for live alignment) — two
+   * accumulators, not two mechanisms.
+   */
+  private nightTextures: [WebGLTexture, WebGLTexture] | null = null;
+  private nightFramebuffer: WebGLFramebuffer | null = null;
+  private nightSize = { width: 0, height: 0 };
+  private nightRead = 0;
+  private nightPrimed = false;
   /** The camera frame's own size, so the aids measure at sensor scale. */
   private frameSize = { width: 0, height: 0 };
   /** Which program key each filter id currently owns, so an edited lens frees its old program. */
@@ -158,6 +176,14 @@ export class GlRenderer {
     this.stateFramebuffer = null;
     this.stateSize = { width: 0, height: 0 };
     this.stateOwner = '';
+    // A lost context invalidates every GL object, Night's accumulator
+    // included — forgotten here so the next capture reallocates rather than
+    // reusing texture handles that belonged to a context that no longer
+    // exists.
+    this.nightTextures = null;
+    this.nightFramebuffer = null;
+    this.nightSize = { width: 0, height: 0 };
+    this.nightPrimed = false;
     this.rampTextures.clear();
     this.programKeys.clear();
     this.histogramTexture = null;
@@ -397,6 +423,124 @@ export class GlRenderer {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.averagePrimed = true;
     this.averaging = true;
+  }
+
+  /**
+   * Fold one candidate frame into Night's OWN accumulator, at an explicit
+   * caller-supplied weight — vision/night-stack.ts's 1/n, not the live
+   * ladder's fixed EMA. Reads `this.frameTexture`, exactly what the ordinary
+   * per-frame preview loop already uploaded a moment earlier — Night does
+   * not upload a second time, it just reads what is already current.
+   *
+   * `restart` re-primes (adopts this frame whole, into both textures) —
+   * used for the very first frame of a fresh capture, and again whenever
+   * vision/alignment.ts's StackAligner reports the drift left the
+   * accumulation behind. Mirrors advanceAverage's own priming branch
+   * exactly, because it is the same situation: starting from black would
+   * fade the picture in and look like a fault.
+   *
+   * Returns whether the accumulator now holds something displayable.
+   */
+  advanceNightStack(
+    size: RenderTargetSize, weight: number, align: [number, number], restart: boolean
+  ): boolean {
+    const gl = this.gl;
+    if (!gl || size.width <= 0 || size.height <= 0) return false;
+
+    this.averageProgram ??= this.buildProgram(VERTEX_OFFSCREEN, AVERAGE_FRAGMENT);
+    const program = this.averageProgram;
+    if (!program) return false;
+    if (!this.nightTextures) this.nightTextures = [this.makeTexture(gl), this.makeTexture(gl)];
+    if (!this.nightFramebuffer) this.nightFramebuffer = gl.createFramebuffer();
+
+    // A size change makes the stored stack meaningless — it is a picture of
+    // a different rectangle — so it starts over rather than stretching.
+    const resized = this.nightSize.width !== size.width || this.nightSize.height !== size.height;
+    if (resized) {
+      this.nightSize = { width: size.width, height: size.height };
+      for (const texture of this.nightTextures) {
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size.width, size.height, 0,
+          gl.RGBA, gl.UNSIGNED_BYTE, null);
+      }
+      this.nightPrimed = false;
+    }
+    if (restart) this.nightPrimed = false;
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.nightFramebuffer);
+    gl.viewport(0, 0, size.width, size.height);
+    gl.useProgram(program);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.frameTexture);
+    gl.uniform1i(gl.getUniformLocation(program, 'uFrame'), 0);
+
+    const priming = !this.nightPrimed;
+    const passes: Array<{ read: WebGLTexture; write: WebGLTexture; weight: number }> = priming
+      ? [
+        { read: this.nightTextures[0], write: this.nightTextures[1], weight: 1 },
+        { read: this.nightTextures[1], write: this.nightTextures[0], weight: 1 }
+      ]
+      : [{
+        read: this.nightTextures[this.nightRead],
+        write: this.nightTextures[1 - this.nightRead],
+        weight
+      }];
+
+    for (const pass of passes) {
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, pass.write, 0);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, pass.read);
+      gl.uniform1i(gl.getUniformLocation(program, 'uAverage'), 1);
+      gl.uniform1f(gl.getUniformLocation(program, 'uWeight'), pass.weight);
+      // Priming defines the reference everything after it aligns TO, so it
+      // must not be offset itself — same reasoning as advanceAverage.
+      const offset = pass.weight >= 1 ? [0, 0] : align;
+      gl.uniform2f(gl.getUniformLocation(program, 'uAlign'), offset[0], offset[1]);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      this.nightRead = pass.write === this.nightTextures[0] ? 0 : 1;
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.nightPrimed = true;
+    return true;
+  }
+
+  /**
+   * Show the current Night accumulator in the viewer — "keep the result in
+   * the viewer after completion so I can inspect it" (Joshua, 2026-09-03).
+   *
+   * Deliberately the plain RGB filter's own compiled program, run once
+   * against Night's texture instead of the camera's: no lens, no brightness
+   * curve, nothing this milestone was told not to apply yet — RGB's whole
+   * fragment body is one texture read, so reusing it here is the identity
+   * draw, not a filter choice. uZebra/uPeak are forced to 0 explicitly:
+   * that program object is the SAME one the live preview already uses, so
+   * without this a zebra or peaking aid left on from a moment ago would
+   * still be sitting in this program's uniform state and bake itself into
+   * what is supposed to be an unfiltered diagnostic view.
+   */
+  renderNightResult(target: RenderTargetSize): boolean {
+    const gl = this.gl;
+    const rgb = filterById('rgb');
+    if (!gl || gl.isContextLost() || !rgb || !this.nightPrimed || !this.nightTextures) return false;
+    const program = this.program(rgb);
+    if (!program) return false;
+
+    if (this.canvas.width !== target.width) this.canvas.width = target.width;
+    if (this.canvas.height !== target.height) this.canvas.height = target.height;
+    gl.viewport(0, 0, target.width, target.height);
+    gl.useProgram(program);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.nightTextures[this.nightRead]);
+    gl.uniform1i(gl.getUniformLocation(program, 'uFrame'), 0);
+    gl.uniform2f(gl.getUniformLocation(program, 'uTexel'), 1 / target.width, 1 / target.height);
+    gl.uniform1f(gl.getUniformLocation(program, 'uZebra'), 0);
+    gl.uniform1f(gl.getUniformLocation(program, 'uPeak'), 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    return true;
   }
 
   /** Compile and link one offscreen program; renderer machinery, not a filter. */

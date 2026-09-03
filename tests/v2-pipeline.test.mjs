@@ -1987,3 +1987,99 @@ test('the averaging pass can be aligned, and refuses to average what was never p
   const photo = readFileSync(new URL('../src/v2/capture/photo.ts', import.meta.url), 'utf8');
   assert.ok(!/align/.test(photo), 'capturePhoto passes no alignment');
 });
+
+test('Night has its OWN accumulator, not a share of the live one', () => {
+  // Two consumers with incompatible update rhythms — the live ladder
+  // advances every DISPLAYED frame at a forgetting weight; Night advances
+  // roughly every 250ms at a converging one — sharing one pair of textures
+  // would have each corrupt the other's in-progress picture. Verified live
+  // (2026-09-03): the live ladder set to "4 frames" kept reporting correctly
+  // throughout a full Night capture that itself hit two rejections and two
+  // restarts under simulated shake, with zero JS errors either side.
+  const renderer = readFileSync(new URL('../src/v2/render/gl-renderer.ts', import.meta.url), 'utf8');
+  assert.match(renderer, /private nightTextures: \[WebGLTexture, WebGLTexture\] \| null = null;/);
+  assert.match(renderer, /private nightFramebuffer: WebGLFramebuffer \| null = null;/);
+  // Reset alongside the OTHER context-loss recoveries — a lost context
+  // invalidates every GL object, and reusing a dead handle after restore
+  // would be the same class of bug this file's own comments warn about
+  // elsewhere (a fresh module running against stale cached state).
+  const initBody = renderer.slice(renderer.indexOf('private initialize()'), renderer.indexOf('get unavailableReason'));
+  assert.match(initBody, /this\.nightTextures = null;/);
+  assert.match(initBody, /this\.nightPrimed = false;/);
+
+  // Same compiled shader either way (one mechanism, two accumulators) —
+  // advanceNightStack must NOT compile a second program.
+  const nightFn = renderer.slice(
+    renderer.indexOf('advanceNightStack('), renderer.indexOf('renderNightResult('));
+  assert.match(nightFn, /this\.averageProgram \?\?= this\.buildProgram\(VERTEX_OFFSCREEN, AVERAGE_FRAGMENT\);/,
+    'reuses the SAME compiled program the live accumulator uses, not a second shader');
+  assert.ok(!/this\.averageTextures/.test(nightFn), 'never touches the live accumulator\'s textures');
+
+  // The caller supplies the weight directly — this is NOT frameAverageWeight
+  // (the fixed EMA); Night's formula lives in vision/night-stack.ts, and the
+  // renderer takes whatever number it is given rather than deriving one.
+  const advanceSig = renderer.slice(renderer.indexOf('advanceNightStack('), renderer.indexOf('advanceNightStack(') + 400);
+  assert.match(advanceSig, /weight: number/);
+  assert.ok(!/emaWeight\(/.test(nightFn), 'does not call the live ladder\'s EMA formula');
+});
+
+test('the Night result is drawn with the plain RGB program, aids forced off', () => {
+  // "No brightness recovery, no lens" (Joshua, 2026-09-03) — reusing RGB's
+  // own compiled program is what makes that true structurally: RGB's whole
+  // fragment body is one texture read, so there is no ramp, no state, no
+  // lens math this draw call could apply even by accident.
+  const renderer = readFileSync(new URL('../src/v2/render/gl-renderer.ts', import.meta.url), 'utf8');
+  const resultFn = renderer.slice(
+    renderer.indexOf('renderNightResult('), renderer.indexOf('renderNightResult(') + 1400);
+  assert.match(resultFn, /filterById\('rgb'\)/);
+  assert.match(resultFn, /this\.nightTextures\[this\.nightRead\]/, 'reads NIGHT\'s texture, not the camera\'s');
+  // Forced to 0 explicitly, not left to whatever the program's uniform state
+  // happens to hold — that program object is the SAME one the live preview
+  // already uses, so a zebra/peaking aid left on a moment earlier would
+  // otherwise still be sitting in it and bake itself into the diagnostic
+  // view this milestone is supposed to be clean.
+  assert.match(resultFn, /uniform1f\(gl\.getUniformLocation\(program, 'uZebra'\), 0\);/);
+  assert.match(resultFn, /uniform1f\(gl\.getUniformLocation\(program, 'uPeak'\), 0\);/);
+});
+
+test('Night reuses the alignment weight formula\'s SHAPE (mix-blend) but not its instances', () => {
+  // Own StackAligner and own SteadyShutter — instancing an already-verified
+  // class twice for two independent lifecycles is not "a second gyro
+  // implementation" (Joshua's explicit worry); importing the same math twice
+  // and reimplementing it WOULD be. Pin that app.ts imports these classes
+  // rather than restating rotation/steadiness maths of its own.
+  const app = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+  assert.match(app, /import \{[\s\S]{0,400}StackAligner[\s\S]{0,200}\} from '\.\/vision\/alignment\.js';/);
+  assert.match(app, /const nightAligner = new StackAligner\(\);/);
+  assert.match(app, /const nightGate = new SteadyShutter\(\);/);
+  // Two SEPARATE instances from the ones the live features already use —
+  // not the same object reused for a second purpose.
+  assert.match(app, /const aligner = new StackAligner\(\);/, 'the live-alignment instance still exists, untouched');
+  assert.match(app, /const steadyShutter = new SteadyShutter\(\);/, 'the ordinary Shoot When Steady instance still exists, untouched');
+
+  // No new rotation/orientation math anywhere in the Night wiring itself —
+  // it reads `latestOrientation`, the SAME shared reading everything else
+  // already uses, and calls `.track()` on its own aligner instance.
+  const nightBlock = app.slice(app.indexOf("/* --- Night, Milestone 1"), app.indexOf('let renderedAidKey'));
+  assert.match(nightBlock, /nightAligner\.track\(/);
+  assert.ok(!/rotationSince\(|multiplyQuaternion|conjugate\(/.test(nightBlock),
+    'no rotation math reimplemented here — it all goes through StackAligner');
+});
+
+test('Milestone 1 saves nothing — no photo, no JPEG, no lens, no brightness curve', () => {
+  // "DO NOT SAVE A FILE in the first Night test... If an action is presented
+  // as a photo/save while MAX is selected, I don't want another exception
+  // where that saved photo is knowingly below MAX." (Joshua, 2026-09-03).
+  const app = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+  const nightBlock = app.slice(app.indexOf("/* --- Night, Milestone 1"), app.indexOf('let renderedAidKey'));
+  assert.ok(!/capturePhoto\(|takePhoto\(|toBlob|JPEG|jpeg/.test(nightBlock),
+    'nothing in the Night block encodes or saves a file');
+  assert.ok(!/filterById\(readState\(\)\.activeFilter\)|lensFilterId|compileLens/.test(nightBlock),
+    'the selected lens is never consulted here');
+  // The renderer side is equally silent about saving — renderNightResult
+  // draws to the CANVAS only, never reads it back.
+  const renderer = readFileSync(new URL('../src/v2/render/gl-renderer.ts', import.meta.url), 'utf8');
+  const resultFn = renderer.slice(
+    renderer.indexOf('renderNightResult('), renderer.indexOf('renderNightResult(') + 1400);
+  assert.ok(!/toBlob|toDataURL|readPixels/i.test(resultFn), 'the result is shown, never read back or encoded');
+});

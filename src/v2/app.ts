@@ -81,6 +81,10 @@ import { deleteLens, loadLenses, newLensId, sanitiseLens, saveLens } from '../vi
 import { RAMP_PRESETS } from '../vision/lens-preview.js';
 import { GlRenderer } from './render/gl-renderer.js';
 import { capturePhoto } from './capture/photo.js';
+import {
+  NIGHT_TARGET_FRAMES, NIGHT_TARGET_MS, NIGHT_TICK_MS, describeNightCounters,
+  emptyNightCounters, nightStackWeight, type NightCounters
+} from './vision/night-stack.js';
 
 function byId<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -289,6 +293,12 @@ function renderPreview(now: number): void {
   // deepens the backlog it is trying to flush — hold the last frame (and the
   // canvas size the encoder was promised) until finalisation completes.
   if (recording?.path === 'filtered' && stoppingClip) return;
+  // Night's finished stack stays exactly as renderNightResult() drew it —
+  // "keep the result in the viewer after completion so I can inspect it"
+  // (Joshua, 2026-09-03) — until the test is cleared. Same freeze shape as
+  // the recording guard above, for the same reason: the ordinary per-frame
+  // draw would otherwise overwrite it on the very next delivered frame.
+  if (nightPhase === 'complete') return;
   const target = recording?.path === 'filtered' ? recording.input : resolved.preview;
   // A fresh census every few frames, for whoever is asking: a lens bound to
   // the whole frame's colours, a reference lens reporting its match share, or
@@ -494,6 +504,9 @@ function startDeliveryMeter(): void {
     // picture the camera is really producing — never into a suspended stream
     // on a timer that kept running.
     updateSteadyShutter(frame.now);
+    // Same delivery loop, same reasoning: Night's tick can only ever act on
+    // a picture the camera is really producing right now.
+    updateNightStack(frame.now);
   });
 }
 
@@ -1090,6 +1103,187 @@ function motionNote(status: V2State['motionStatus']): string {
       + 'the browser: the phone certainly has a gyroscope.';
   }
   return '';
+}
+
+/* --- Night, Milestone 1: does the gyro-aligned finite stack land? -------- */
+
+/**
+ * MILESTONE 1, AND ONLY MILESTONE 1.
+ *
+ * "Milestone 1's question is only: Does the ~0.25-second, gyro-aligned
+ * finite stack work correctly on my actual iPhone PWA?" (Joshua, 2026-09-03,
+ * after the V1/V2 audit). Deliberately not a photo: no brightness recovery,
+ * no lens, no save — "If an action is presented as a photo/save while MAX is
+ * selected, I don't want another exception where that saved photo is
+ * knowingly below MAX." Nothing here claims to be a photo. It shows the
+ * stacked result in the viewer and reports what actually happened.
+ *
+ * TWO OWN INSTANCES of machinery that already exists and is already verified
+ * on his phone — not two implementations of it. `nightAligner` is its own
+ * StackAligner so a Night capture's anchor can never be corrupted by, or
+ * corrupt, the live frame-averaging feature's anchor; `nightGate` is its own
+ * SteadyShutter for the same reason relative to the ordinary "Shoot When
+ * Steady" button. Both classes, both formulas, both shaders: unchanged.
+ */
+const nightAligner = new StackAligner();
+const nightGate = new SteadyShutter();
+
+type NightPhase = 'idle' | 'arming' | 'stacking' | 'complete';
+let nightPhase: NightPhase = 'idle';
+let nightSize: FrameSize | null = null;
+let nightStartedAt = 0;
+let nightLastCandidateAt = 0;
+let nightNeedsRestart = true;
+let nightCounters: NightCounters = emptyNightCounters();
+
+function buildNightTest(): void {
+  byId('v2NightTestToggle').addEventListener('click', () => {
+    if (nightPhase !== 'idle') {
+      stopNightTest();
+      return;
+    }
+    void (async () => {
+      if (!await ensureMotion()) return;
+      nightGate.arm(DEFAULT_STEADY_THRESHOLD);
+      nightPhase = 'arming';
+    })();
+  });
+}
+
+function stopNightTest(): void {
+  nightGate.disarm();
+  nightAligner.reset();
+  nightPhase = 'idle';
+  nightSize = null;
+  nightCounters = emptyNightCounters();
+  if (!readState().align && !readState().autoShot) stopMotion('off');
+}
+
+/**
+ * The tick — run from the SAME per-frame delivery callback renderPreview and
+ * updateSteadyShutter already use, so Night can never run on a clock the
+ * camera itself is not keeping. `now` is that frame's own timestamp; the
+ * 250ms gate below is what turns "every delivered frame" into "roughly every
+ * quarter second" without a second timer racing the real one.
+ */
+function updateNightStack(now: number): void {
+  if (nightPhase === 'idle' || nightPhase === 'complete') return;
+
+  if (nightPhase === 'arming') {
+    // Reuses the SAME steadiness reading updateSteadyShutter already
+    // computes every frame — one measurement, read by three consumers
+    // (Alignment's readout, Shoot When Steady, and this gate), never
+    // recomputed.
+    const progress = nightGate.update(steadyReading.steadiness, now);
+    if (!progress.fire) return;
+    // Held. Freeze the accumulator's size for the whole capture — the same
+    // "frozen at start" pattern RECORD IN already uses, and for the same
+    // reason: a size that changed mid-stack would make the running mean a
+    // picture of two different rectangles.
+    const { geometry } = readState();
+    if (!geometry) { nightPhase = 'idle'; return; }
+    nightSize = frameSize(geometry.preview.width, geometry.preview.height);
+    if (!nightSize) { nightPhase = 'idle'; return; }
+    nightAligner.reset();
+    nightCounters = emptyNightCounters();
+    nightCounters.sourceWidth = nightSize.width;
+    nightCounters.sourceHeight = nightSize.height;
+    nightStartedAt = now;
+    nightLastCandidateAt = now;
+    nightNeedsRestart = true;
+    nightPhase = 'stacking';
+    return;
+  }
+
+  // stacking
+  if (!nightSize) { nightPhase = 'idle'; return; }
+  const elapsed = now - nightStartedAt;
+  if (elapsed >= NIGHT_TARGET_MS) {
+    renderer.renderNightResult(nightSize);
+    nightCounters = { ...nightCounters, elapsedMs: elapsed };
+    nightPhase = 'complete';
+    return;
+  }
+  if (now - nightLastCandidateAt < NIGHT_TICK_MS) return;
+
+  // A genuinely new candidate: this branch only runs once every ~250ms,
+  // driven by real frame delivery, never by re-examining a frame already
+  // considered.
+  const orientation = latestOrientation;
+  if (!orientation) return; // no reading yet; wait for the next tick rather than guessing
+  const sinceLast = now - nightLastCandidateAt;
+  nightLastCandidateAt = now;
+
+  const decision = nightAligner.track(orientation, {
+    focalPixels: nominalFocalPixels(nightSize.width),
+    frameWidth: nightSize.width,
+    frameHeight: nightSize.height,
+    facing: readState().camera?.facing ?? ''
+  });
+
+  const candidates = nightCounters.candidateFrames + 1;
+  const cadence = candidates > 1
+    ? ((nightCounters.actualCadenceMs * (candidates - 1)) + sinceLast) / candidates
+    : sinceLast;
+  const maxOffset = Math.max(nightCounters.maxOffsetPixels, decision.shift.distance);
+
+  if (decision.verdict === 'rejected') {
+    nightNeedsRestart = true;
+    nightCounters = {
+      ...nightCounters,
+      candidateFrames: candidates,
+      rejectedFrames: nightCounters.rejectedFrames + 1,
+      maxOffsetPixels: maxOffset,
+      actualCadenceMs: cadence
+    };
+    return;
+  }
+
+  // Accepted (stacked or still — both are usable samples for the mean).
+  // stackCount resets to 1 across a restart because the accumulator really
+  // did just start over; acceptedFrames does not, because it is a total for
+  // the whole capture, exactly as Joshua asked for both.
+  const stackCount = nightNeedsRestart ? 1 : nightCounters.stackCount + 1;
+  const weight = nightStackWeight(stackCount);
+  renderer.advanceNightStack(nightSize, weight, decision.align, nightNeedsRestart);
+  nightCounters = {
+    ...nightCounters,
+    candidateFrames: candidates,
+    acceptedFrames: nightCounters.acceptedFrames + 1,
+    stackCount,
+    restarts: nightCounters.restarts + (nightNeedsRestart ? 1 : 0),
+    offsetPixels: decision.shift.distance,
+    maxOffsetPixels: maxOffset,
+    actualCadenceMs: cadence
+  };
+  nightNeedsRestart = false;
+}
+
+function renderNightTest(): void {
+  const toggle = byId<HTMLButtonElement>('v2NightTestToggle');
+  if (nightPhase === 'stacking') {
+    nightCounters = { ...nightCounters, elapsedMs: performance.now() - nightStartedAt };
+  }
+  toggle.textContent = {
+    idle: '🌙 Night — Test',
+    arming: '⏳ Night — hold still…',
+    stacking: `🌙 Stacking… ${nightCounters.acceptedFrames}/${NIGHT_TARGET_FRAMES}`,
+    complete: '🌙 Done — tap to clear'
+  }[nightPhase];
+  toggle.setAttribute('aria-pressed', nightPhase === 'idle' ? 'false' : 'true');
+  setText('v2NightTestNote', nightPhase === 'idle'
+    ? 'MILESTONE 1 ONLY: tests whether the gyro-aligned stack lands correctly. '
+      + 'No brightness recovery, no lens, and NOTHING IS SAVED — this is a '
+      + 'diagnostic view, not a photo. Needs the motion sensor.'
+    : motionNote(readState().motionStatus) || {
+      arming: 'Hold the phone steady — the stack begins once it settles.',
+      stacking: `Gathering roughly one frame every ${NIGHT_TICK_MS} ms for about `
+        + `${(NIGHT_TARGET_MS / 1000).toFixed(0)}s.`,
+      complete: 'Held on screen so you can inspect it. Tap the button to clear it '
+        + 'and try again.',
+      idle: ''
+    }[nightPhase]);
+  setText('v2NightTestReading', nightPhase === 'idle' ? '' : describeNightCounters(nightCounters));
 }
 
 let renderedAidKey = '';
@@ -1754,6 +1948,7 @@ function renderTextPanels(): void {
   renderAlignment();
   renderSteadyShutter();
   renderSteadyHud();
+  renderNightTest();
   renderCameraControls();
   renderAids();
   renderExposure();
@@ -3081,6 +3276,7 @@ buildGuides();
 buildFrameAverage();
 buildAlignment();
 buildSteadyShutter();
+buildNightTest();
 buildAids();
 try {
   const stored = localStorage.getItem(GUIDE_STORE_KEY);
