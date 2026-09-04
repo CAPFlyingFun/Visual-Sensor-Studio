@@ -85,6 +85,7 @@ import { deleteLens, loadLenses, newLensId, sanitiseLens, saveLens } from '../vi
 import { RAMP_PRESETS } from '../vision/lens-preview.js';
 import { GlRenderer, type NightRecovery } from './render/gl-renderer.js';
 import { capturePhoto } from './capture/photo.js';
+import { describeFileSize, describeQuality } from './capture/visually-lossless.js';
 import {
   NIGHT_COUNTDOWN_MS, NIGHT_TARGET_FRAMES, NIGHT_TARGET_MS, NIGHT_TICK_MS,
   describeNightCounters, emptyNightCounters, nightCountdownSecondsLeft,
@@ -167,6 +168,7 @@ window.addEventListener('resize', refreshGeometry);
 
 const ENVELOPE_STORE_KEY = 'vss.v2.encoderEnvelope.v1';
 const FORCE_MAX_STORE_KEY = 'vss.v2.forceMaxRecord.v1';
+const LOSSLESS_STORE_KEY = 'vss.v2.visuallyLossless.v1';
 
 function storedEnvelopeMeasurement(): EnvelopeMeasurement | null {
   try {
@@ -217,6 +219,21 @@ function storedForceMaxRecord(): boolean {
   }
 }
 updateState({ forceMaxRecord: storedForceMaxRecord() });
+
+/**
+ * The compression choice is remembered for the same reason: it is a decision
+ * about how this person wants their pictures saved, not a per-session
+ * experiment. DEFAULT ON — a measured quality is strictly better informed
+ * than the flat 1.00 it replaces, and only an explicit 'no' goes back.
+ */
+function storedVisuallyLossless(): boolean {
+  try {
+    return localStorage.getItem(LOSSLESS_STORE_KEY) !== 'no';
+  } catch {
+    return true;
+  }
+}
+updateState({ visuallyLossless: storedVisuallyLossless() });
 
 /* --- The pipeline: one frame in, explicit products out -------------------- */
 
@@ -1449,7 +1466,7 @@ async function saveNightPhoto(size: FrameSize): Promise<void> {
     height: size.height,
     aspect: size.width / size.height,
     reason: 'the Night stack, at the size the chosen tier resolved'
-  }, { preRendered: true, label: 'night' });
+  }, { preRendered: true, label: 'night', visuallyLossless: readState().visuallyLossless });
   if (!still) {
     setText('v2NightTestNote', 'The stack rendered but could not be encoded.');
     return;
@@ -2036,7 +2053,11 @@ async function saveImport(): Promise<void> {
     height: size.height,
     aspect: size.width / size.height,
     reason: 'an imported picture at its own full size'
-  }, { preRendered: true, label: `import-${readState().activeFilter}` });
+  }, {
+    preRendered: true,
+    label: `import-${readState().activeFilter}`,
+    visuallyLossless: readState().visuallyLossless
+  });
   if (!still) {
     setText('v2ImportNote', 'The picture rendered but could not be encoded.');
     return;
@@ -3418,7 +3439,7 @@ async function takePhoto(): Promise<void> {
       return capturePhoto(renderer, video, readState().activeFilter, {
         ...photo,
         reason: CAPTURE_REASONS[escalation]
-      });
+      }, { visuallyLossless: readState().visuallyLossless });
     }, { now: () => performance.now() });
     if (outcome.still) {
       updateState({
@@ -3437,7 +3458,9 @@ async function takePhoto(): Promise<void> {
       : '';
     setText('v2PhotoResult', outcome.still
       ? `Saved ${outcome.still.width}×${outcome.still.height} · `
-        + `${(outcome.still.bytes / 1e6).toFixed(2)} MB JPEG · ${outcome.still.reason}${restoreNote}`
+        + `${describeFileSize(outcome.still.bytes)} JPEG · `
+        + `${describeQuality(outcome.still.choice)} · `
+        + `${outcome.still.reason}${restoreNote}`
       : 'The photo could not be rendered.');
     setText('v2PhotoTiming', shutterTimingReport(outcome));
   } finally {
@@ -3452,7 +3475,7 @@ async function takePhoto(): Promise<void> {
  * fast" becomes "switching took 146 ms, rendering 38, JPEG 91, restore 122".
  */
 function shutterTimingReport(outcome: {
-  still: { timing: { renderMs: number; encodeMs: number } } | null;
+  still: { timing: { renderMs: number; searchMs: number; encodeMs: number } } | null;
   escalation: string;
   restoration: string;
   timing: {
@@ -3475,8 +3498,14 @@ function shutterTimingReport(outcome: {
       : 'Exposure settled — not confirmed (timeout)');
   }
   if (outcome.still) {
-    const renderDone = t.stillDoneMs - outcome.still.timing.encodeMs;
-    lines.push(`GPU render done ${ms(renderDone)}`);
+    // Each stage subtracted from the one after it, so a stage that grows
+    // cannot hide inside its neighbour's label. The quality search was added
+    // between render and encode and briefly did exactly that: it appeared as
+    // a 3-second render becoming an 18-second one.
+    const { searchMs, encodeMs } = outcome.still.timing;
+    const searchStart = t.stillDoneMs - encodeMs - searchMs;
+    lines.push(`GPU render done ${ms(searchStart)}`);
+    if (searchMs > 0) lines.push(`Quality search ${ms(searchStart + searchMs)}`);
     lines.push(`JPEG ready ${ms(t.stillDoneMs)}`);
   } else {
     lines.push(`Render failed ${ms(t.stillDoneMs)}`);
@@ -4364,6 +4393,24 @@ if (forceMaxToggle instanceof HTMLInputElement) {
     // RECORD IN is resolved from the inputs, so the truth table has to be
     // re-read for the new answer to appear rather than waiting for a frame.
     refreshGeometry();
+  });
+}
+
+/**
+ * The compression choice. getElementById for the same reason as the one
+ * above: a missing checkbox must cost only the checkbox.
+ */
+const losslessToggle = document.getElementById('v2VisuallyLossless');
+if (losslessToggle instanceof HTMLInputElement) {
+  losslessToggle.checked = readState().visuallyLossless;
+  losslessToggle.addEventListener('change', () => {
+    const visuallyLossless = losslessToggle.checked;
+    try {
+      localStorage.setItem(LOSSLESS_STORE_KEY, visuallyLossless ? 'yes' : 'no');
+    } catch {
+      // Storage is optional; the session still honours the choice.
+    }
+    updateState({ visuallyLossless });
   });
 }
 

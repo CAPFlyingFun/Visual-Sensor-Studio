@@ -208,7 +208,7 @@ import {
 
 type RecordDetail = 'preview' | 'higher' | 'full' | 'sensor';
 
-const APP_VERSION = '0.67.0';
+const APP_VERSION = '0.68.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 

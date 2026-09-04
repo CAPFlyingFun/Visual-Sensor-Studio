@@ -2183,7 +2183,7 @@ test('Night saves the STACK, at the tier\'s size, and still consults no lens', (
   // THE CANVAS AS IT STANDS. Re-rendering would upload the frame arriving
   // now and save one ordinary picture, throwing away the whole capture —
   // the single most damaging thing this path could get wrong.
-  assert.match(nightBlock, /\{ preRendered: true, label: 'night' \}/);
+  assert.match(nightBlock, /preRendered: true, label: 'night'/);
   const photo = readFileSync(new URL('../src/v2/capture/photo.ts', import.meta.url), 'utf8');
   assert.match(photo, /if \(!options\.preRendered\) \{[\s\S]{0,200}uploadFrame/,
     'the upload and the re-render are BOTH skipped for a pre-rendered save');

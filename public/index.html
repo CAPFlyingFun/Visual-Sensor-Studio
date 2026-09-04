@@ -255,7 +255,7 @@
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
-    <span class="pill" id="v2Badge">v0.67.0</span>
+    <span class="pill" id="v2Badge">v0.68.0</span>
   </header>
 
   <div class="camera-layout">
@@ -575,6 +575,31 @@
             what the camera actually granted &mdash; never the request, never upscaled.
           </p>
           <p class="stage-note timing" id="v2PhotoTiming"></p>
+          <p>
+            <label class="coach-mute"><input type="checkbox" id="v2VisuallyLossless" />
+            <strong>Compress to the measured limit</strong> &mdash; on by default</label>
+            The saved JPEG's quality is <em>measured</em> rather than assumed. At quality
+            1.00 the encoder reproduces sensor noise exactly, which is where most of a
+            large file goes; the last few percent of nominal quality routinely costs
+            several times the bytes for a difference no eye can find. So the busiest
+            256&nbsp;px tile of the frame is encoded at candidate qualities, each decoded
+            and compared with the original by SSIM, and the smallest file still measuring
+            as identical is the one saved. Four small encodes decide it, against one
+            twelve-megapixel one.
+          </p>
+          <p class="hint">
+            The comparison is made at <em>half scale</em>, and that is the load-bearing
+            choice. Measured at 1:1, SSIM punishes the encoder for cleaning grain up
+            &mdash; a flat noisy patch quantising to a flat clean one scores 0.92 &mdash;
+            so a grainy frame would pin at 1.00 and save nothing, which is backwards,
+            since grain is most of what a big file is. Halving forgives that
+            (0.916&nbsp;&rarr;&nbsp;0.978) while a softened edge gets <em>worse</em>
+            (0.942&nbsp;&rarr;&nbsp;0.915): noise forgiven, structure still caught. It is
+            also finer than this screen shows a 3024-wide photo in the first place. The
+            <em>resolution never changes</em> &mdash; MAX still means MAX &mdash; and the
+            readout names the quality and the score it was chosen on. Untick to go back
+            to a flat 1.00.
+          </p>
         </div>
 
         <div class="card">

@@ -349,9 +349,15 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
       // stream had, never a request taken on faith — and the whole timeline
       // is measured.
       await page.click('#v2PhotoButton');
+      // A GENEROUS BUDGET, and the reason is the renderer rather than the app.
+      // The quality search awaits a toBlob and a createImageBitmap per probe,
+      // and every await yields to the preview loop — which in SwiftShader
+      // draws a 3840×2160 frame in well over a second. Measured: the search's
+      // own work is 15 ms in isolation, and 17 SECONDS here, all of it other
+      // people's frames. On hardware those yields are a frame each.
       await page.waitForFunction(() =>
         (document.getElementById('v2PhotoResult')?.textContent ?? '').startsWith('Saved'),
-        null, { timeout: 20000 });
+        null, { timeout: 60000 });
       const line = await page.textContent('#v2PhotoResult');
       const [savedW, savedH] = dims(line.replace(/^Saved /, ''));
       assert.ok(
