@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { deviceOrientationToQuaternion } from '../.test-build/core/math.js';
 import {
   DEFAULT_NOISE_FLOOR_RADIANS, EDGE_BUDGET_SHARE, MAX_SMALL_ANGLE_RADIANS,
@@ -330,4 +331,56 @@ test('reset forgets the anchor entirely', () => {
   const again = aligner.track(upright(20), inputs);
   assert.equal(again.restart, true, 'the next frame is a fresh anchor');
   assert.deepEqual(again.align, [0, 0]);
+});
+
+/*
+ * ZOOM MULTIPLIES THE FOCAL LENGTH, and leaving it out was a real bug.
+ *
+ * Focal length in pixels IS the magnification — it is what turns a rotation
+ * into a pixel displacement. At 10x the same small turn sweeps the image ten
+ * times further, but the frame is still the same width, so an estimate taken
+ * from the width alone does not move when the lens does.
+ *
+ * Measured consequence (Joshua, 2026-09-04, at 10.0x with Stabilization on 2
+ * frames): the correction under-shot by the zoom factor, so averaging two
+ * frames of an unaligned hand-held view SMEARED them, and the picture came
+ * back blurrier with stabilisation than without.
+ */
+test('focal pixels scale with zoom, because zoom is magnification', () => {
+  const wide = nominalFocalPixels(3024);
+  assert.ok(wide > 0);
+
+  // Ten times the zoom, ten times the displacement for the same rotation.
+  assert.ok(Math.abs(nominalFocalPixels(3024, 10) - wide * 10) < 1e-9,
+    'a 10x view moves ten times as far for the same turn');
+  assert.ok(Math.abs(nominalFocalPixels(3024, 2.5) - wide * 2.5) < 1e-9);
+
+  // 1 IS THE IDENTITY, so every 1x reading is exactly what it always was and
+  // an older caller that passes no zoom is unchanged.
+  assert.equal(nominalFocalPixels(3024, 1), wide);
+  assert.equal(nominalFocalPixels(3024), wide);
+
+  // A nonsense reading must not silently zero the prediction — that would
+  // disable alignment entirely rather than degrade it.
+  for (const bad of [0, -3, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.equal(nominalFocalPixels(3024, bad), wide,
+      `zoom ${String(bad)} falls back to 1x rather than breaking the aligner`);
+  }
+  // And no width is still no prediction, whatever the zoom.
+  assert.equal(nominalFocalPixels(0, 10), 0);
+});
+
+test('every consumer of focal pixels is given the zoom', () => {
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+  // Three consumers: live stabilisation, the steady-hand gate, and Night.
+  // The gate judges a hold in PIXELS OF SHAKE, so it was far too lenient at
+  // zoom for exactly the same reason.
+  const calls = [...appTs.matchAll(/nominalFocalPixels\([^)]*\)/g)].map((m) => m[0]);
+  assert.ok(calls.length >= 3, `expected every call site, found ${calls.length}`);
+  for (const call of calls) {
+    assert.match(call, /zoomMagnification\(\)/,
+      `every focal estimate carries the zoom, got: ${call}`);
+  }
+  // A digital crop magnifies exactly as a camera zoom does, so both count.
+  assert.match(appTs, /zoom && zoom\.kind !== 'none' && zoom\.value > 0 \? zoom\.value : 1/);
 });

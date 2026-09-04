@@ -911,6 +911,16 @@ function buildAlignment(): void {
  * averaged, and an orientation has arrived — an aligner with no gyro reading
  * would otherwise anchor itself to nothing and report a confident zero.
  */
+/**
+ * The zoom the aligner and the steady gate must both scale by. A camera zoom
+ * and a digital crop magnify identically as far as pixel motion is concerned,
+ * so both count; 'none' and a missing reading are 1.
+ */
+function zoomMagnification(): number {
+  const zoom = readState().zoom;
+  return zoom && zoom.kind !== 'none' && zoom.value > 0 ? zoom.value : 1;
+}
+
 function alignmentFor(frames: number, target: FrameSize):
 { align?: [number, number]; restartAverage?: boolean } {
   if (!readState().align || !latestOrientation || !(frames > 1)) {
@@ -935,7 +945,7 @@ function alignmentFor(frames: number, target: FrameSize):
     // visual fit yet, so this is the stated stand-in and every reading says
     // so. It sets the scale of the pixel numbers and, with the edge budget,
     // how far the view may drift before the accumulation restarts.
-    focalPixels: nominalFocalPixels(frame.width),
+    focalPixels: nominalFocalPixels(frame.width, zoomMagnification()),
     frameWidth: frame.width,
     frameHeight: frame.height,
     facing: camera?.facing ?? ''
@@ -1070,7 +1080,7 @@ function updateSteadyShutter(now: number): void {
   // shutter escalates to; the negotiated stream otherwise.
   const photo = capability ?? source;
   steadyReading = readSteadiness(
-    turnRate, nominalFocalPixels(photo?.width ?? 0), shutterSeconds()
+    turnRate, nominalFocalPixels(photo?.width ?? 0, zoomMagnification()), shutterSeconds()
   );
   if (!autoShot) {
     steadyProgress = 0;
@@ -1666,7 +1676,7 @@ function updateNightStack(now: number): void {
   nightLastCandidateAt = now;
 
   const decision = nightAligner.track(orientation, {
-    focalPixels: nominalFocalPixels(nightSize.width),
+    focalPixels: nominalFocalPixels(nightSize.width, zoomMagnification()),
     frameWidth: nightSize.width,
     frameHeight: nightSize.height,
     facing: readState().camera?.facing ?? ''

@@ -54,8 +54,28 @@ import type { QuaternionLike } from '../../core/math.js';
  */
 export const NOMINAL_FOCAL_RATIO = 0.5 / Math.tan(35 * Math.PI / 180);
 
-export function nominalFocalPixels(frameWidth: number): number {
-  return frameWidth > 0 ? frameWidth * NOMINAL_FOCAL_RATIO : 0;
+/**
+ * ZOOM MULTIPLIES IT, and leaving that out was a real bug.
+ *
+ * Focal length in pixels IS the magnification: it is what turns a rotation
+ * into a pixel displacement. Zooming to 10x makes the same small turn sweep
+ * the image ten times further, but the frame is still the same 3024 pixels
+ * wide — so a focal estimate taken from the WIDTH alone does not move when
+ * the lens does, and the aligner then predicts a tenth of the real shift.
+ *
+ * Measured consequence (Joshua, 2026-09-04, at 10.0x with Stabilization on
+ * 2 frames): the correction under-shot by the zoom factor, so averaging two
+ * frames of an unaligned hand-held view smeared them instead of steadying
+ * them, and the picture came back BLURRIER with stabilisation than without.
+ * The same error made the steady-hand gate far too lenient at zoom, since it
+ * judges a hold in pixels of shake.
+ *
+ * Optional so an older caller keeps working; 1 is the identity, which is
+ * exactly what every 1x reading was already getting.
+ */
+export function nominalFocalPixels(frameWidth: number, zoom = 1): number {
+  const magnification = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+  return frameWidth > 0 ? frameWidth * NOMINAL_FOCAL_RATIO * magnification : 0;
 }
 
 /** Below this, a rotation is sensor noise unless calibration says otherwise. */
