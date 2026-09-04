@@ -255,7 +255,8 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
         stage: document.getElementById('v2Stage').textContent
       }));
       // Built-ins first, then the starter lens a fresh device seeds, then Custom +.
-      assert.deepEqual(boot.filters.slice(0, 6), ['rgb', 'ironbow', 'difference', 'speed', 'trails', 'edges'],
+      assert.deepEqual(boot.filters.slice(0, 7),
+        ['rgb', 'ironbow', 'difference', 'speed', 'trails', 'edges', 'grid'],
         'the strip mirrors the FILTERS registry, in order');
       assert.deepEqual(boot.active, ['rgb'], 'RGB is the default filter');
       assert.equal(boot.photoDisabled, true, 'no photo before the camera is live');

@@ -451,6 +451,93 @@ export const FILTERS: readonly FilterDefinition[] = [
   float g = clamp(length(vec2(gx, gy)), 0.0, 1.0);
   gl_FragColor = vec4(withAids(vec3(g), vUv), 1.0);
 }`
+  },
+  {
+    id: 'grid',
+    note: 'A ruled grid draped over the picture as if brightness were height. Bright things push the mesh toward you and the lines bend around them; the colour is the same height through the ramp. It is a SHADING read, not a depth sensor — a white wall reads as near.',
+    name: 'Grid',
+    family: 'view',
+    temporal: false,
+    supportsPhoto: true,
+    supportsVideo: true,
+    // The stretch needs the frame's measured luma range, the same census
+    // relief uses — without it a dim room is a flat sheet.
+    needsLumaRange: true,
+    /*
+     * HOW A FLAT GRID COMES TO HAVE A SHAPE.
+     *
+     * Joshua, 2026-09-04: "a grid style filter that purposefully draws grids,
+     * but will warp based on what it sees".
+     *
+     * The grid itself is nothing — fract() of a scaled coordinate. All of the
+     * effect is in WHERE it is sampled, and that offset is PARALLAX MAPPING,
+     * the standard bump-map trick: a point standing at height h on a surface
+     * viewed from a direction d appears displaced across the surface by h*d.
+     * Feed it the picture's brightness as h and the mesh climbs over whatever
+     * is lit, both axes moving, because d is a diagonal.
+     *
+     * It is deliberately the honest version of the metaphor and not a fake
+     * three-dimensional one: there is no depth sensor on a web page, and
+     * `relief` already says in this codebase why bright standing for near is
+     * a shading estimate rather than a measurement. A white wall will read as
+     * near. That is a property of the light, and it is stated in the note
+     * rather than hidden behind a convincing render.
+     *
+     * SQUARE CELLS AT ANY SHAPE OF FRAME. uTexel is one texel at the render
+     * size, so uTexel.x / uTexel.y is height/width — the factor that turns a
+     * count of columns into the matching count of rows. The shader still owns
+     * no resolution of its own, and the grid looks the same in the preview
+     * and in a twelve-megapixel still.
+     *
+     * LINE WIDTH IS A FRACTION OF A CELL, NOT A COUNT OF PIXELS. Those are
+     * the same thing on the preview and very different things on a
+     * twelve-megapixel still, which is viewed scaled to fit: pixel-width
+     * lines would come back as a hairline mesh that looked nothing like the
+     * frame the shutter was pressed on. A cell-relative width makes the
+     * saved picture the one that was shown, at any size. The pixel term
+     * survives only as a MINIMUM, so a small preview cannot be given
+     * sub-pixel lines that shimmer.
+     *
+     * No derivatives anywhere: OES_standard_derivatives is an extension this
+     * build does not require, so fwidth() is not available to lean on.
+     */
+    fragment: HEADER + `const float COLUMNS = 34.0;
+const float RELIEF = 0.055;
+const vec2 VIEW_LEAN = vec2(0.55, 0.835);
+const float SCENE_UNDER = 0.22;
+const float LINE_HALF_WIDTH = 0.035;
+const float INK_FLOOR = 0.18;
+
+void main() {
+  // Height, contrast-stretched into the frame's own measured range so a dim
+  // room has relief at all rather than a flat sheet at the bottom of 0..1.
+  float span = max(0.004, uLumaRange.y - uLumaRange.x);
+  float h = clamp((luma(texture2D(uFrame, vUv).rgb) - uLumaRange.x) / span, 0.0, 1.0);
+
+  // The parallax offset. Both axes move, so the mesh bends rather than only
+  // rippling in rows.
+  vec2 p = vUv + h * RELIEF * VIEW_LEAN;
+
+  vec2 cells = vec2(COLUMNS, COLUMNS * (uTexel.x / uTexel.y));
+  vec2 g = p * cells;
+  // Distance to the nearest line of each family, in cell units.
+  vec2 d = abs(fract(g) - 0.5);
+  // Half-width of a line in cell units — a fixed share of a cell, with one
+  // device pixel as the floor so the preview never draws sub-pixel lines.
+  vec2 w = max(vec2(LINE_HALF_WIDTH), uTexel * cells);
+  vec2 lit = vec2(1.0) - smoothstep(vec2(0.0), max(w, vec2(1e-5)), d);
+  float line = max(lit.x, lit.y);
+
+  // The line's colour is the height it stands at, so the mesh is a contour
+  // map as well as a shape — but LIFTED OFF THE BOTTOM OF THE RAMP. Ironbow
+  // begins at black by design, and a black line is not a line: colouring
+  // strictly by height made the mesh vanish over everything dark, which in a
+  // dim room is most of the frame. The lookup stays monotonic in height, so
+  // the reading is unchanged; it simply never lands where it cannot be seen.
+  vec3 ink = texture2D(uRamp, vec2(INK_FLOOR + (1.0 - INK_FLOOR) * h, 0.5)).rgb;
+  vec3 under = texture2D(uFrame, vUv).rgb * SCENE_UNDER;
+  gl_FragColor = vec4(withAids(mix(under, ink, line), vUv), 1.0);
+}`
   }
 ];
 

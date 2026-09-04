@@ -559,7 +559,8 @@ test('FILTERS is the one list: unique ids, honest metadata, real shaders', () =>
     assert.equal(body.includes('uPrevious') || stateSamplesHistory, filter.temporal,
       `${filter.id}: temporal metadata and shader body must agree`);
   }
-  assert.deepEqual(FILTERS.map((f) => f.id), ['rgb', 'ironbow', 'difference', 'speed', 'trails', 'edges']);
+  assert.deepEqual(FILTERS.map((f) => f.id),
+    ['rgb', 'ironbow', 'difference', 'speed', 'trails', 'edges', 'grid']);
   // Milestone D's second stage: Speed and Trails carry their memory in a
   // state pass, at ANALYSIS resolution, and decline stills like Motion.
   for (const id of ['speed', 'trails']) {
@@ -2230,4 +2231,63 @@ test('a container the constructor refuses costs one rung, not the recording', ()
   // hvc1 and encode something else, and the readout must not claim otherwise.
   assert.match(source, /this\.mime = this\.recorder\.mimeType \|\| chosen;/,
     'the recorder reports what it actually chose');
+});
+
+test('Grid draws a mesh whose shape is the picture, not a pattern', () => {
+  const grid = filterById('grid');
+  assert.ok(grid, 'the filter is registered');
+  const body = grid.fragment.slice(grid.fragment.indexOf('void main'));
+
+  // THE GRID IS NOTHING; THE OFFSET IS EVERYTHING. A fract() of a scaled
+  // coordinate is a flat pattern — what gives it shape is sampling it
+  // somewhere else, by parallax: a point at height h under a view direction d
+  // appears displaced by h*d.
+  assert.match(body, /vec2 p = vUv \+ h \* RELIEF \* VIEW_LEAN;/,
+    'the coordinate is displaced by the height, not the colour recoloured');
+  assert.match(grid.fragment, /const vec2 VIEW_LEAN = vec2\(0\.55, 0\.835\);/);
+  // BOTH AXES, or it is a rippling row of contours rather than a warped grid.
+  const lean = grid.fragment.match(/VIEW_LEAN = vec2\(([\d.]+), ([\d.]+)\)/);
+  assert.ok(Number(lean[1]) > 0 && Number(lean[2]) > 0,
+    'a diagonal view direction moves the mesh in x and y alike');
+
+  // HEIGHT IS STRETCHED INTO THE FRAME'S OWN RANGE, or a dim room is flat.
+  assert.equal(grid.needsLumaRange, true, 'and it declares the census it needs');
+  assert.match(body, /uLumaRange\.y - uLumaRange\.x/, 'the stretch is real, not nominal');
+
+  // SQUARE CELLS AT ANY FRAME SHAPE, and no resolution owned by the shader:
+  // uTexel.x / uTexel.y is height/width, which turns columns into rows.
+  assert.match(body, /vec2 cells = vec2\(COLUMNS, COLUMNS \* \(uTexel\.x \/ uTexel\.y\)\);/);
+
+  // LINE WIDTH IN PIXELS, WITHOUT DERIVATIVES. OES_standard_derivatives is an
+  // extension this build does not require, so fwidth() must not appear; the
+  // half-width comes from uTexel so a 12 MP still has the same grid the
+  // preview showed instead of hairlines.
+  assert.ok(!grid.fragment.includes('fwidth'), 'no derivative extension is relied on');
+  // A FRACTION OF A CELL, not a count of pixels: the two agree on the
+  // preview and disagree completely on a 12 MP still viewed scaled to fit,
+  // where pixel-width lines come back as a hairline mesh that looks nothing
+  // like the frame the shutter was pressed on.
+  assert.match(body, /vec2 w = max\(vec2\(LINE_HALF_WIDTH\), uTexel \* cells\);/);
+  assert.match(grid.fragment, /const float LINE_HALF_WIDTH = 0\.035;/);
+  assert.match(body, /max\(w, vec2\(1e-5\)\)/, 'and a zero width cannot divide the smoothstep');
+
+  // THE INK IS LIFTED OFF THE BOTTOM OF THE RAMP. Ironbow starts at black,
+  // and colouring lines strictly by height made the mesh disappear over
+  // everything dark — most of a dim room. Still monotonic in height, so the
+  // contour reading is unchanged.
+  assert.match(body, /INK_FLOOR \+ \(1\.0 - INK_FLOOR\) \* h/);
+  const floor = Number(grid.fragment.match(/INK_FLOOR = ([\d.]+)/)[1]);
+  assert.ok(floor > 0 && floor < 0.5, `a lift, not a wash: ${floor}`);
+
+  // It is a VIEW filter: no history, and it can be saved and recorded like
+  // any other picture.
+  assert.equal(grid.temporal, false);
+  assert.ok(!body.includes('uPrevious'), 'and the shader agrees');
+  assert.equal(grid.state, undefined, 'nothing to remember between frames');
+  assert.ok(grid.supportsPhoto && grid.supportsVideo);
+
+  // The note must say what it is NOT. Bright reading as near is a shading
+  // estimate; there is no depth sensor on a web page, and a convincing mesh
+  // is exactly the kind of picture that would be believed.
+  assert.match(grid.note, /not a depth sensor/i);
 });
