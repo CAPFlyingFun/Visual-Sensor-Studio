@@ -949,3 +949,49 @@ test('the glide duration is remembered and bounded', () => {
   assert.equal((build.match(/\} catch \{/g) ?? []).length, 2,
     'both the read and the write tolerate storage being unavailable');
 });
+
+test('the zoom stick is a RATE control, at the units Joshua specified', () => {
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+  assert.match(v2Html, /id="v2ZoomStick"/, 'the stick exists');
+  assert.match(v2Html, /min="-1" max="1" step="0\.01" value="0"/,
+    'centred, and pushes both ways');
+
+  // "the max is 1 zoom per second with half a stick at x0.5 per second"
+  assert.match(appTs, /const ZOOM_STICK_MAX_PER_SECOND = 1;/);
+  assert.match(appTs, /zoom\.value \+ zoomStickRate \* ZOOM_STICK_MAX_PER_SECOND \* dt/,
+    'deflection times the max rate times REAL elapsed time');
+
+  // Integrating measured dt is what makes a slow applyConstraints degrade to
+  // a coarser motion rather than a stutter against a planned trajectory.
+  assert.match(appTs, /const dt = zoomStickLast > 0 \? Math\.min\(0\.25, \(now - zoomStickLast\) \/ 1000\) : 0;/,
+    'a long frame gap cannot teleport the zoom');
+
+  // It must stay inside the camera's own range, and never re-ask for a value
+  // it already holds — that is how a camera gets slow.
+  assert.match(appTs, /Math\.min\(zoom\.max, Math\.max\(zoom\.min,/);
+  assert.match(appTs, /if \(Math\.abs\(next - zoom\.value\) > 0\.0005 && !zoomApplyInFlight\)/);
+
+  // SPRINGS BACK however the finger leaves it.
+  for (const event of ['pointerup', 'pointercancel', 'pointerleave', 'touchend', 'touchcancel']) {
+    assert.ok(appTs.includes(`'${event}'`), `${event} releases the stick`);
+  }
+  assert.match(appTs, /stick\.addEventListener\('blur', release\);/);
+
+  // ONE HAND ON THE WHEEL: a push on the stick cancels a preset glide.
+  assert.match(appTs, /zoomStickRate = Number\.isFinite\(rate\)[\s\S]{0,400}?cancelZoomRamp\(\);/,
+    'the stick and a preset glide never steer at once');
+
+  // And the stick only appears where there is a range to travel.
+  assert.match(appTs, /stick\.hidden = !zoom \|\| zoom\.kind === 'none' \|\| !\(zoom\.max > zoom\.min\);/);
+});
+
+test('how fast the camera really accepts zoom changes is measured, not assumed', () => {
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+  // "The zoom isn't smooth" is a feeling; this is the number underneath it.
+  // applyConstraints is asynchronous, so however finely a ramp is computed
+  // the camera moves only as often as it retires a request.
+  assert.match(appTs, /zoomAppliesPerSecond = \(zoomApplyCount \* 1000\) \/ elapsed;/);
+  assert.match(appTs, /camera accepts ~\$\{zoomAppliesPerSecond\.toFixed\(0\)\} zoom changes\/s/,
+    'and it reaches the readout');
+  assert.match(appTs, /if \(elapsed >= 1000\)/, 'averaged over a real second, not one sample');
+});

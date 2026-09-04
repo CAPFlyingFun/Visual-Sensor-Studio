@@ -2553,6 +2553,98 @@ function rampZoomTo(target: number): void {
   zoomRampFrame = window.requestAnimationFrame(step);
 }
 
+/* --- The zoom stick: a RATE control ---------------------------------------
+ *
+ * Joshua, 2026-09-04, after the timed glide came back steppy: "how about
+ * adding a manual zoom slider the user can control using their fingers? That
+ * would be the best... and the max is 1 zoom per second with half a stick at
+ * x0.5 per second."
+ *
+ * WHY THIS IS THE RIGHT SHAPE AND THE TIMED RAMP WAS NOT. Zoom is applied
+ * through applyConstraints, which is asynchronous and, on this hardware,
+ * unhurried — so a ramp that plans a trajectory and tries to hit it is at the
+ * mercy of a rate it does not control, and every request the camera is slow
+ * to retire shows up as a visible step. A RATE control has no trajectory to
+ * miss: the stick says how fast, the loop integrates whatever time actually
+ * passed, and a slow apply becomes a slightly coarser motion instead of a
+ * stutter against an expected path. The finger is also a far better
+ * controller than a number, because it corrects continuously.
+ *
+ * ZOOM_STICK_MAX_PER_SECOND is his figure exactly: full deflection moves one
+ * zoom step per second, half a stick half that. Additive rather than
+ * geometric here on purpose — he specified the units, and a rate the hand is
+ * steering wants to be predictable rather than clever.
+ */
+const ZOOM_STICK_MAX_PER_SECOND = 1;
+
+let zoomStickRate = 0;
+let zoomStickFrame = 0;
+let zoomStickLast = 0;
+/** Measured: how many zoom applies per second the camera really retires. */
+let zoomApplyCount = 0;
+let zoomApplyWindowStart = 0;
+let zoomAppliesPerSecond = 0;
+
+function stopZoomStick(): void {
+  if (zoomStickFrame) window.cancelAnimationFrame(zoomStickFrame);
+  zoomStickFrame = 0;
+  zoomStickRate = 0;
+}
+
+function driveZoomStick(now: number): void {
+  zoomStickFrame = 0;
+  const zoom = readState().zoom;
+  if (!zoom || zoom.kind === 'none' || zoomStickRate === 0) return;
+  const dt = zoomStickLast > 0 ? Math.min(0.25, (now - zoomStickLast) / 1000) : 0;
+  zoomStickLast = now;
+  const next = Math.min(zoom.max, Math.max(zoom.min,
+    zoom.value + zoomStickRate * ZOOM_STICK_MAX_PER_SECOND * dt));
+  // At a limit there is nothing to ask for, and hammering applyConstraints
+  // with a value it already holds is how a camera gets slow.
+  if (Math.abs(next - zoom.value) > 0.0005 && !zoomApplyInFlight) {
+    zoomApplyInFlight = true;
+    if (zoomApplyWindowStart === 0) zoomApplyWindowStart = now;
+    void camera.setZoom(next).catch(() => undefined).finally(() => {
+      zoomApplyInFlight = false;
+      zoomApplyCount += 1;
+      const elapsed = performance.now() - zoomApplyWindowStart;
+      if (elapsed >= 1000) {
+        zoomAppliesPerSecond = (zoomApplyCount * 1000) / elapsed;
+        zoomApplyCount = 0;
+        zoomApplyWindowStart = performance.now();
+      }
+    });
+  }
+  zoomStickFrame = window.requestAnimationFrame(driveZoomStick);
+}
+
+function buildZoomStick(): void {
+  const stick = document.getElementById('v2ZoomStick');
+  if (!(stick instanceof HTMLInputElement)) return;
+  const release = (): void => {
+    stick.value = '0';
+    stopZoomStick();
+  };
+  stick.addEventListener('input', () => {
+    const rate = Number(stick.value);
+    zoomStickRate = Number.isFinite(rate) ? Math.min(1, Math.max(-1, rate)) : 0;
+    // A tap on a preset and a push on the stick are two ways to drive the
+    // same camera; whichever the hand touched last wins, rather than both
+    // steering at once.
+    cancelZoomRamp();
+    if (zoomStickRate !== 0 && !zoomStickFrame) {
+      zoomStickLast = 0;
+      zoomStickFrame = window.requestAnimationFrame(driveZoomStick);
+    }
+  });
+  // Springs back to the middle however the finger leaves it — lifted,
+  // dragged off the control, or interrupted by the system.
+  for (const event of ['pointerup', 'pointercancel', 'pointerleave', 'touchend', 'touchcancel']) {
+    stick.addEventListener(event, release);
+  }
+  stick.addEventListener('blur', release);
+}
+
 function buildZoomRamp(): void {
   // getElementById, not byId: a fresh app.js against a cached older
   // index.html must lose the slider, not every control wired after it.
@@ -2567,7 +2659,15 @@ function buildZoomRamp(): void {
   }
   const show = (): void => {
     slider.value = String(zoomRampSeconds);
-    if (readout) readout.textContent = zoomRampSeconds > 0 ? `${zoomRampSeconds.toFixed(1)}s` : 'instant';
+    if (!readout) return;
+    // The MEASURED apply rate rides along, because "the zoom isn't smooth" is
+    // a feeling and this is the number underneath it: applyConstraints is
+    // asynchronous, and however finely a ramp is computed the camera moves
+    // only as often as it retires a request.
+    const rate = zoomAppliesPerSecond > 0
+      ? ` · camera accepts ~${zoomAppliesPerSecond.toFixed(0)} zoom changes/s`
+      : '';
+    readout.textContent = (zoomRampSeconds > 0 ? `${zoomRampSeconds.toFixed(1)}s` : 'instant') + rate;
   };
   show();
   slider.addEventListener('input', () => {
@@ -2586,6 +2686,14 @@ function buildZoomRamp(): void {
 }
 
 function renderZoomStops(): void {
+  // The glide readout carries the measured apply rate, which only exists
+  // after the stick has actually moved the camera — so it is refreshed here
+  // rather than only when the slider is touched.
+  const rampReadout = document.getElementById('v2ZoomRampValue');
+  if (rampReadout && zoomAppliesPerSecond > 0) {
+    rampReadout.textContent = (zoomRampSeconds > 0 ? `${zoomRampSeconds.toFixed(1)}s` : 'instant')
+      + ` · camera accepts ~${zoomAppliesPerSecond.toFixed(0)} zoom changes/s`;
+  }
   const holder = byId('v2ZoomStops');
   const zoom = readState().zoom;
   const range = zoom && zoom.kind !== 'none' ? `${zoom.kind}:${zoom.min}:${zoom.max}` : 'none';
@@ -2604,6 +2712,11 @@ function renderZoomStops(): void {
         holder.appendChild(button);
       }
     }
+  }
+  // The stick is only meaningful where there is a range to travel.
+  const stick = document.getElementById('v2ZoomStick');
+  if (stick instanceof HTMLInputElement) {
+    stick.hidden = !zoom || zoom.kind === 'none' || !(zoom.max > zoom.min);
   }
   if (!zoom) return;
   // classList.toggle to an unchanged state mutates nothing.
@@ -4433,6 +4546,7 @@ buildNightTest();
 buildAids();
 buildImport();
 buildZoomRamp();
+buildZoomStick();
 buildPrecisionProbe();
 try {
   const stored = localStorage.getItem(GUIDE_STORE_KEY);

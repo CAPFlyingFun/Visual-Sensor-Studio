@@ -92,6 +92,10 @@
       text-shadow: 0 2px 18px rgba(0, 0, 0, .85), 0 0 40px rgba(0, 0, 0, .6);
       background: rgba(0, 0, 0, .22);
     }
+    /* THE ZOOM STICK. A rate control, not a position one: where it sits says
+       how FAST the zoom moves, and it springs back to the middle on release.
+       Wide and short so a thumb can hold a small deflection steadily. */
+    .zoomstick { width: 100%; margin: 6px 0 2px; accent-color: var(--blue); height: 26px; }
     .capture button.recording { color: #ff5c5c; border-color: #ff5c5c; box-shadow: 0 0 0 1px rgba(255, 92, 92, .35); }
     .share-save { margin-top: 9px; min-height: 42px; padding: 0 16px; border-radius: 11px; border: 1px solid var(--blue); background: #10203a; color: #cfe4ff; font-size: 12px; font-weight: 600; }
     .enable-overlay {
@@ -251,7 +255,7 @@
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
-    <span class="pill" id="v2Badge">v0.64.0</span>
+    <span class="pill" id="v2Badge">v0.65.0</span>
   </header>
 
   <div class="camera-layout">
@@ -284,6 +288,8 @@
       </div>
       <div class="quickbar">
         <div class="zoom" id="v2ZoomStops" aria-label="Zoom presets"></div>
+        <input type="range" id="v2ZoomStick" class="zoomstick" min="-1" max="1" step="0.01" value="0"
+          aria-label="Zoom rate — push right to zoom in, left to zoom out" hidden />
         <div class="capture">
           <button type="button" id="v2PhotoButton" title="Photo" disabled>◉</button>
           <button type="button" id="v2RecordButton" title="Record" disabled>⏺</button>
