@@ -757,3 +757,35 @@ test('Night takes every delivered frame, but only a genuinely NEW one', () => {
   const renderTs = readFileSync(new URL('../src/v2/render/gl-renderer.ts', import.meta.url), 'utf8');
   assert.match(renderTs, /this\.nightFormat = 'RGBA16F';/, 'still the float accumulator');
 });
+
+test('the colour trim is measured after the gain, and set on every draw', () => {
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+
+  // MEASURED WHERE IT RESOLVES. The raw stack sits at about half of one 8-bit
+  // step, so a colour ratio taken from it would be noise reporting on noise.
+  assert.match(appTs, /function sampleNightChannels\(\): \[number, number, number\] \| null \{/);
+  const order = appTs.indexOf('const channels = sampleNightChannels();');
+  const gained = appTs.indexOf('renderer.renderNightResult(nightSize, recovery);');
+  assert.ok(gained > 0 && order > gained,
+    'the channels are sampled from the GAINED canvas, not the raw one');
+
+  // IT RAMPS TO AN EXACT IDENTITY, so a scene bright enough for its colour to
+  // be evidence keeps it.
+  assert.match(appTs, /const NIGHT_COLOUR_TRUST = 0\.05;/);
+  assert.match(appTs, /if \(strength <= 0 \|\| average <= 0\) return \[1, 1, 1\];/,
+    'no correction at all once the colour can be trusted');
+  assert.match(appTs, /1 \+ strength \* \(average \/ c - 1\)/,
+    'equalised toward the AVERAGE, so correcting colour cannot darken the picture');
+
+  // THE UNIFORM IS ALWAYS SET. The recovery program outlives a capture, so an
+  // unset uniform would carry a previous stack's trim into this one.
+  const renderTs = readFileSync(new URL('../src/v2/render/gl-renderer.ts', import.meta.url), 'utf8');
+  assert.match(renderTs, /const balance = recovery\.balance \?\? \[1, 1, 1\];/);
+  assert.match(renderTs, /gl\.uniform3f\(gl\.getUniformLocation\(program, 'uBalance'\)/);
+
+  // Rule 4: the shader lives in the registry with every other fragment.
+  const registryTs = readFileSync(new URL('../src/v2/filters/registry.ts', import.meta.url), 'utf8');
+  assert.match(registryTs, /uniform vec3 uBalance;/);
+  assert.match(registryTs, /clamp\(c \* uBalance, 0\.0, 1\.0\)/,
+    'a channel pulled up toward the average can pass 1.0');
+});

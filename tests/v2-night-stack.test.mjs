@@ -274,3 +274,60 @@ test('a gain of N is the sum of N frames, and daylight still binds first', () =>
   assert.equal(recover(0.001, 1), 1, 'one frame gathered one frame of light');
   assert.equal(recover(0.001, 15), 15, 'fifteen frames, fifteen frames of light');
 });
+
+/*
+ * THE COLOUR CAST, and why it is the sensor's rather than the room's.
+ *
+ * Each channel has its own noise floor. At an ordinary exposure the
+ * difference is invisible; multiplied by a gain of 113 it becomes the
+ * dominant colour. Joshua's runs are the evidence that it is an artefact:
+ * the same closet came back GREEN on several captures and BLUE on the next,
+ * and a wall does not change colour between two four-second exposures.
+ */
+test('the colour trim equalises a dark cast and leaves a real scene alone', () => {
+  const TRUST = 0.05;
+  const balanceFor = (rawMean, channels) => {
+    const strength = Math.max(0, Math.min(1, (TRUST - rawMean) / TRUST));
+    const average = (channels[0] + channels[1] + channels[2]) / 3;
+    if (strength <= 0 || average <= 0) return [1, 1, 1];
+    return channels.map((c) => (c > 0 ? 1 + strength * (average / c - 1) : 1));
+  };
+
+  // HIS BLUE RUN: mean 0.002, and a gained result dominated by blue.
+  const trim = balanceFor(0.002, [0.20, 0.30, 0.55]);
+  // Blue is pulled down, red is pulled up, and the correction is nearly full
+  // strength because 0.002 is far below the trust threshold.
+  assert.ok(trim[2] < 1, 'the dominant channel is trimmed down');
+  assert.ok(trim[0] > 1, 'the weakest channel is brought up');
+  // Applying it equalises the three to within a rounding error.
+  const after = [0.20 * trim[0], 0.30 * trim[1], 0.55 * trim[2]];
+  const spread = Math.max(...after) - Math.min(...after);
+  assert.ok(spread < 0.02, `the cast is removed (spread ${spread.toFixed(4)})`);
+
+  // BRIGHTNESS IS PRESERVED: equalising toward the AVERAGE, not toward the
+  // weakest channel, which would darken the whole picture to fix its colour.
+  const before = (0.20 + 0.30 + 0.55) / 3;
+  assert.ok(Math.abs((after[0] + after[1] + after[2]) / 3 - before) < 0.01,
+    'the average level is unchanged — this corrects colour, not exposure');
+
+  // A REAL SCENE IS UNTOUCHED. At an ordinary exposure the strength is zero
+  // and the trim is an exact identity, so a sunset stays a sunset.
+  assert.deepEqual(balanceFor(0.30, [0.45, 0.30, 0.18]), [1, 1, 1],
+    'daylight colour is evidence and is left exactly alone');
+  assert.deepEqual(balanceFor(TRUST, [0.4, 0.3, 0.2]), [1, 1, 1],
+    'and the ramp reaches identity exactly at the threshold, with no step');
+
+  // IT RAMPS rather than switching, so nothing falls either side of a line.
+  const partial = balanceFor(TRUST / 2, [0.2, 0.3, 0.55]);
+  assert.ok(partial[2] > trim[2] && partial[2] < 1,
+    'a half-trusted scene gets a half correction');
+});
+
+test('the trim is reported, including when it did nothing', () => {
+  const counters = emptyNightCounters();
+  assert.deepEqual(counters.balance, [1, 1, 1], 'an identity until measured');
+  assert.match(describeNightCounters(counters), /colour untouched/,
+    'saying so plainly beats leaving it to be inferred from a missing number');
+  assert.match(describeNightCounters({ ...counters, balance: [1.4, 1.0, 0.7] }),
+    /colour trim 1\.40\/1\.00\/0\.70/);
+});

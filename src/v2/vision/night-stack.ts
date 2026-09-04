@@ -206,6 +206,13 @@ export interface NightCounters {
    * would otherwise look like a stacking failure instead of a memory one.
    */
   accumulatorFormat: string;
+  /**
+   * The per-channel trim that was applied, R/G/B. (1,1,1) means the colour
+   * was left exactly alone — which is the correct answer for any scene bright
+   * enough for its colour to be evidence, and so is worth SAYING rather than
+   * leaving to be inferred from a missing number.
+   */
+  balance: [number, number, number];
 }
 
 export function emptyNightCounters(): NightCounters {
@@ -214,7 +221,8 @@ export function emptyNightCounters(): NightCounters {
     stackCount: 0, restarts: 0, offsetPixels: 0, maxOffsetPixels: 0,
     tierLabel: '', streamWidth: 0, streamHeight: 0,
     stackedWidth: 0, stackedHeight: 0, sensorWidth: 0, sensorHeight: 0,
-    actualCadenceMs: 0, meanBefore: 0, gain: 1, lift: 1, accumulatorFormat: ''
+    actualCadenceMs: 0, meanBefore: 0, gain: 1, lift: 1, accumulatorFormat: '',
+    balance: [1, 1, 1]
   };
 }
 
@@ -236,6 +244,12 @@ export function describeNightCounters(counters: NightCounters): string {
     + `stacked ${size(counters.stackedWidth, counters.stackedHeight)} · `
     + `sensor ${size(counters.sensorWidth, counters.sensorHeight)} · `
     + (counters.accumulatorFormat ? `accumulator ${counters.accumulatorFormat} · ` : '')
+    + (((counters.balance ?? [1, 1, 1]).some((v) => Math.abs(v - 1) > 0.005))
+      // Defensive on a field this readout only just grew: an installed PWA
+      // can hand a fresh module an object built by a cached older one, and a
+      // LOG must never be the thing that throws.
+      ? `colour trim ${(counters.balance ?? []).map((v) => v.toFixed(2)).join('/')} · `
+      : 'colour untouched · ')
     + (counters.gain > 1.001 || counters.lift > 1.001
       ? `lift ${counters.gain.toFixed(2)}× gain, ${counters.lift.toFixed(2)} shadows `
         + `(mean ${counters.meanBefore.toFixed(3)})`

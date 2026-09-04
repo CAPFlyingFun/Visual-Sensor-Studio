@@ -47,6 +47,12 @@ void main() {
 export interface NightRecovery {
   gain: number;
   lift: number;
+  /**
+   * Per-channel trim, applied after the curve. Optional so a caller that has
+   * not measured one is not forced to invent it; absent means (1,1,1), which
+   * the shader treats as an identity.
+   */
+  balance?: [number, number, number];
 }
 
 /**
@@ -642,6 +648,13 @@ export class GlRenderer {
     if (recovery) {
       gl.uniform1f(gl.getUniformLocation(program, 'uGain'), recovery.gain);
       gl.uniform1f(gl.getUniformLocation(program, 'uLift'), recovery.lift);
+      // ALWAYS SET, never left to whatever the last draw put there. This
+      // program object outlives a capture, so an unset uniform would carry a
+      // previous stack's colour trim into this one — the same trap uZebra
+      // and uPeak are forced to zero for a few lines below.
+      const balance = recovery.balance ?? [1, 1, 1];
+      gl.uniform3f(gl.getUniformLocation(program, 'uBalance'),
+        balance[0], balance[1], balance[2]);
     } else {
       gl.uniform2f(gl.getUniformLocation(program, 'uTexel'), 1 / target.width, 1 / target.height);
       // The aids are forced off: a zebra stripe or a peaking edge is a

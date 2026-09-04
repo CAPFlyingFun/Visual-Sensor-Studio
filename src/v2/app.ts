@@ -1280,6 +1280,80 @@ const NIGHT_TARGET_MEAN = 0.42;
  */
 const NIGHT_MEAN_FLOOR = 0.0001;
 
+/**
+ * The mean below which the stack's COLOUR is treated as the sensor's rather
+ * than the scene's.
+ *
+ * WHY THERE IS A CAST AT ALL. Each channel has its own noise floor — a Bayer
+ * sensor has twice as many green photosites, and the three channels do not
+ * sit at the same pedestal in the dark. At an ordinary exposure that
+ * difference is invisible. Multiplied by a gain of 113, a fraction of one
+ * 8-bit step becomes the dominant colour in the picture. Joshua's runs show
+ * exactly that, and show it is an artefact rather than the room: the same
+ * closet came back GREEN on several captures and BLUE on the next. A wall
+ * does not change colour between two four-second exposures; an amplified
+ * noise floor does, because the camera's own white balance settles
+ * differently each time.
+ *
+ * 0.05 (about 13 of 255) IS A CHOSEN NUMBER, not a measured one, and it is
+ * the only such number here. Below it a frame is essentially at the noise
+ * floor and its colour is not evidence; by it, a dim but real scene keeps its
+ * own colour untouched. The correction ramps between the two rather than
+ * switching, so there is no threshold to fall either side of.
+ */
+const NIGHT_COLOUR_TRUST = 0.05;
+
+/**
+ * Equalise the channels toward their own average, in proportion to how little
+ * the colour can be trusted. Never a fixed "make it grey": at an ordinary
+ * exposure the strength is zero and this returns an exact identity, so a
+ * sunset stays a sunset.
+ */
+function nightBalanceFor(
+  rawMean: number, channels: [number, number, number]
+): [number, number, number] {
+  const strength = Math.max(0, Math.min(1,
+    (NIGHT_COLOUR_TRUST - rawMean) / NIGHT_COLOUR_TRUST));
+  const average = (channels[0] + channels[1] + channels[2]) / 3;
+  if (strength <= 0 || average <= 0) return [1, 1, 1];
+  // mix(1, average / c, strength), per channel.
+  return channels.map((c) => (c > 0 ? 1 + strength * (average / c - 1) : 1)) as
+    [number, number, number];
+}
+
+/**
+ * The three channel means of what is CURRENTLY on the canvas.
+ *
+ * Deliberately measured from the GAINED result, not the raw stack. The raw
+ * stack's mean is around 0.002 — about half of one 8-bit step — so in a
+ * 64x64 sample only a handful of pixels are non-zero at all, and a colour
+ * ratio drawn from that would be noise reporting on noise. After the gain the
+ * same picture sits in the normal range, where 8 bits resolve it properly.
+ */
+function sampleNightChannels(): [number, number, number] | null {
+  nightSampleCanvas ??= document.createElement('canvas');
+  nightSampleCanvas.width = HISTOGRAM_SAMPLE;
+  nightSampleCanvas.height = HISTOGRAM_SAMPLE;
+  const context = nightSampleCanvas.getContext('2d', { willReadFrequently: true });
+  if (!context) return null;
+  try {
+    context.drawImage(renderer.targetCanvas, 0, 0, HISTOGRAM_SAMPLE, HISTOGRAM_SAMPLE);
+    const { data } = context.getImageData(0, 0, HISTOGRAM_SAMPLE, HISTOGRAM_SAMPLE);
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      r += data[i];
+      g += data[i + 1];
+      b += data[i + 2];
+    }
+    const pixels = data.length / 4;
+    return [r / pixels / 255, g / pixels / 255, b / pixels / 255];
+  } catch {
+    return null;
+  }
+}
+
 function nightRecoveryFor(reading: ExposureReading, frames: number): NightRecovery {
   // What the light collected pays for: one frame's worth per frame stacked.
   const collected = Math.max(1, frames);
@@ -1518,12 +1592,20 @@ function updateNightStack(now: number): void {
       : { gain: 1, lift: 1 };
     // Then again, through the lift that reading just asked for.
     renderer.renderNightResult(nightSize, recovery);
+    // AND ONCE MORE for the colour, which can only be measured now: the trim
+    // is read off the GAINED picture, so it has to be applied by a second
+    // pass over the same accumulator rather than folded into the one above.
+    // Two extra draws per capture, not per frame.
+    const channels = sampleNightChannels();
+    const balance = channels ? nightBalanceFor(reading?.mean ?? 1, channels) : undefined;
+    if (balance) renderer.renderNightResult(nightSize, { ...recovery, balance });
     nightCounters = {
       ...nightCounters,
       elapsedMs: elapsed,
       meanBefore: reading?.mean ?? 0,
       gain: recovery.gain,
-      lift: recovery.lift
+      lift: recovery.lift,
+      balance: balance ?? [1, 1, 1]
     };
     pushNightLogEntry(true);
     // The phase goes to complete BEFORE the save, because renderPreview is
