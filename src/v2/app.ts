@@ -505,7 +505,13 @@ let deliveryRunning = false;
 function startDeliveryMeter(): void {
   if (deliveryRunning) return;
   deliveryRunning = camera.startFrameDelivery((frame) => {
-    meter.recordDelivered(frame);
+    // TRUE only for a genuinely NEW decoded image. requestVideoFrameCallback
+    // can fire at the display's rate rather than the camera's, so on a 60 Hz
+    // screen showing a 30 fps stream about half of these callbacks carry the
+    // frame already seen. The meter identifies them by mediaTime (and stops
+    // trusting that signal if it ever proves static), so this is a reading,
+    // not a guess.
+    const freshFrame = meter.recordDelivered(frame);
     const d = camera.diagnostics;
     updateState({
       deliveredFps: meter.report.deliveredFps,
@@ -523,7 +529,13 @@ function startDeliveryMeter(): void {
     updateSteadyShutter(frame.now);
     // Same delivery loop, same reasoning: Night's tick can only ever act on
     // a picture the camera is really producing right now.
-    updateNightStack(frame.now);
+    //
+    // AND ONLY ON A NEW ONE. Night now takes every frame it is offered rather
+    // than one every 250 ms, so a repeated callback would fold the SAME image
+    // in a second time — which adds no light, yet advances 1/n and so dilutes
+    // the frames that are real. It would inflate the count while making the
+    // result worse. The 250 ms gate used to hide this; nothing hides it now.
+    if (freshFrame) updateNightStack(frame.now);
   });
 }
 
@@ -1379,9 +1391,10 @@ function stopNightTest(): void {
 /**
  * The tick — run from the SAME per-frame delivery callback renderPreview and
  * updateSteadyShutter already use, so Night can never run on a clock the
- * camera itself is not keeping. `now` is that frame's own timestamp; the
- * 250ms gate below is what turns "every delivered frame" into "roughly every
- * quarter second" without a second timer racing the real one.
+ * camera itself is not keeping. `now` is that frame's own timestamp; the gate
+ * below is a CEILING on the rate rather than a sampling period, so a stack
+ * takes every frame the camera delivers up to about 30 a second without a
+ * second timer racing the real one.
  */
 function updateNightStack(now: number): void {
   if (nightPhase === 'idle' || nightPhase === 'complete') return;
@@ -1492,9 +1505,10 @@ function updateNightStack(now: number): void {
   }
   if (now - nightLastCandidateAt < NIGHT_TICK_MS) return;
 
-  // A genuinely new candidate: this branch only runs once every ~250ms,
-  // driven by real frame delivery, never by re-examining a frame already
-  // considered.
+  // A genuinely new candidate. This runs on the camera's own delivery
+  // callback, so what follows is one arriving frame — never a re-examination
+  // of one already considered. The gate above is now only a CEILING against a
+  // 60 fps stream; on a 30 fps one essentially every frame gets here.
   const orientation = latestOrientation;
   if (!orientation) return; // no reading yet; wait for the next tick rather than guessing
   const sinceLast = now - nightLastCandidateAt;
@@ -1584,7 +1598,8 @@ function renderNightTest(): void {
       countdown: 'Let go and get comfortable — the release wobble needs a moment '
         + 'to settle before the hold is measured.',
       arming: 'Hold the phone steady — the stack begins once it settles.',
-      stacking: `Gathering roughly one frame every ${NIGHT_TICK_MS} ms for about `
+      stacking: `Gathering every frame the camera delivers, up to about `
+        + `${Math.round(1000 / NIGHT_TICK_MS)} a second, for `
         + `${(NIGHT_TARGET_MS / 1000).toFixed(0)}s.`,
       complete: nightSaved
         ? `Held on screen, and ${nightSaved}. Tap the button to clear it and try again.`

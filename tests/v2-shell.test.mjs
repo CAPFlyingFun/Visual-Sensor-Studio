@@ -503,7 +503,6 @@ test('the precision probe is diagnostics only, and cannot kill boot', () => {
   // FORMAT is now a separate change and has its own pins below; the cadence
   // and the duration are what this one must not have touched.
   const nightStack = readFileSync(new URL('../src/v2/vision/night-stack.ts', import.meta.url), 'utf8');
-  assert.match(nightStack, /export const NIGHT_TICK_MS = 250;/, 'cadence untouched');
   assert.match(nightStack, /export const NIGHT_TARGET_MS = 4000;/, 'duration untouched');
 });
 
@@ -717,4 +716,34 @@ test('the Night log can never take the app down with it, however the PWA updates
     'night-stack.ts gains no new export for the log — that is what broke the phone');
   // It still REUSES the counters formatter the shipped build already has.
   assert.match(appTs, /\+ describeNightCounters\(entry\.counters\);/);
+});
+
+test('Night takes every delivered frame, but only a genuinely NEW one', () => {
+  const appSrc = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+
+  // THE CEILING, not a sampling period. Joshua, 2026-09-04: "instead of
+  // sampling every 0.25s, do it every frame up to 30 frames per second".
+  const nightStackSrc = readFileSync(
+    new URL('../src/v2/vision/night-stack.ts', import.meta.url), 'utf8');
+  assert.match(nightStackSrc, /export const NIGHT_TICK_MS = 30;/,
+    'the gate is a ~30fps ceiling, not a quarter-second period');
+
+  // A REPEATED CALLBACK MUST NOT BE STACKED. requestVideoFrameCallback can
+  // fire at the display's rate, so folding one in twice would add no light
+  // while advancing 1/n and diluting the frames that are real.
+  assert.match(appSrc, /const freshFrame = meter\.recordDelivered\(frame\);/,
+    'the meter\'s own new-frame verdict is read rather than discarded');
+  assert.match(appSrc, /if \(freshFrame\) updateNightStack\(frame\.now\);/,
+    'and Night only ticks on a genuinely new decoded image');
+
+  // The tick still rides the camera's delivery callback, never a timer.
+  assert.match(appSrc, /camera\.startFrameDelivery\(\(frame\) => \{/);
+  assert.ok(!/setInterval\([^)]*updateNightStack/.test(appSrc),
+    'no second clock races the camera');
+
+  // AND NOTHING ELSE MOVED: same duration, same countdown, same accumulator.
+  assert.match(nightStackSrc, /export const NIGHT_TARGET_MS = 4000;/, 'duration untouched');
+  assert.match(nightStackSrc, /export const NIGHT_COUNTDOWN_MS = 3000;/, 'countdown untouched');
+  const renderTs = readFileSync(new URL('../src/v2/render/gl-renderer.ts', import.meta.url), 'utf8');
+  assert.match(renderTs, /this\.nightFormat = 'RGBA16F';/, 'still the float accumulator');
 });

@@ -111,7 +111,7 @@ export class GlRenderer {
    *
    * The two have incompatible update rhythms: the live accumulator advances
    * on every DISPLAYED frame at a weight that keeps forgetting old content
-   * (frame-average.ts's fixed EMA); Night advances roughly every 250ms at a
+   * (frame-average.ts's fixed EMA); Night advances per delivered frame at a
    * weight that CONVERGES (vision/night-stack.ts's 1/n). If they shared one
    * pair of textures, whichever one last wrote to it would silently corrupt
    * the other's in-progress picture. Same compiled shader program either

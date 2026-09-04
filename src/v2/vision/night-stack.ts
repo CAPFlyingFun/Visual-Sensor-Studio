@@ -38,16 +38,40 @@
  * cannot happen here structurally, independent of this formula.
  */
 
-/** How often a candidate frame is considered. Joshua's own starting value. */
-export const NIGHT_TICK_MS = 250;
+/**
+ * The MINIMUM GAP between candidate frames — a ceiling on the rate, not a
+ * sampling period any more.
+ *
+ * It was 250 ms, and the tick has always run from the camera's own delivery
+ * callback, so that gate was throwing away seven of every eight frames the
+ * sensor handed over. On Joshua's phone that is 29.9 fps reduced to 4 — 87%
+ * of the light-carrying frames discarded, which he spotted himself
+ * (2026-09-04): "instead of sampling every 0.25s, do it every frame up to 30
+ * frames per second".
+ *
+ * That matters because noise falls as the square root of the frame count, so
+ * eight times the frames is about 2.8 times less noise — and noise is what a
+ * dark stack has to spend before it can afford to be brightened.
+ *
+ * WHY 30 ms RATHER THAN THE 33.3 ms THAT 30 fps IMPLIES. The cap exists only
+ * to stop a 60 fps stream doubling the accumulator's work; on a 30 fps stream
+ * every frame should pass. Delivery jitters either side of its nominal
+ * interval, and a floor set exactly AT that interval would reject every
+ * slightly-early frame — and since the clock then runs on to the next one,
+ * each rejection costs a whole frame. Set a little under, ordinary jitter
+ * passes and a 60 fps stream still halves to about 33.
+ */
+export const NIGHT_TICK_MS = 30;
 
 /** Roughly how long a capture runs — the stop condition is wall-clock, not a frame count. */
 export const NIGHT_TARGET_MS = 4000;
 
 /**
- * The frame count the cadence above implies, for display only — Joshua's own
- * "~16 accepted frames" figure. Not a target to force to exactly, because a
- * shaky four seconds should end up short of it and SAY SO, not pad itself out.
+ * The frame count the ceiling above implies, for display only. Not a target
+ * to force to exactly: a shaky four seconds, or a device that cannot keep up
+ * with a full-size blend every frame, should end up short of it and SAY SO
+ * rather than pad itself out. The log's measured cadence is what says which
+ * of those happened.
  */
 export const NIGHT_TARGET_FRAMES = Math.round(NIGHT_TARGET_MS / NIGHT_TICK_MS);
 
@@ -97,7 +121,7 @@ export function nightStackWeight(n: number): number {
 export interface NightCounters {
   /** Milliseconds since the accumulation began (the current run since the last restart-clearing anchor, i.e. since the gate fired). */
   elapsedMs: number;
-  /** Every 250ms tick attempted, cumulative for this capture — never reset by a restart. */
+  /** Every candidate frame attempted, cumulative for this capture — never reset by a restart. */
   candidateFrames: number;
   /** Ticks whose verdict was 'stacked' or 'still' — folded into the accumulator. Cumulative. */
   acceptedFrames: number;

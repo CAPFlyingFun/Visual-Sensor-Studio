@@ -16,9 +16,14 @@ import {
  */
 
 test('the cadence and target are exactly what Joshua asked for', () => {
-  assert.equal(NIGHT_TICK_MS, 250, 'a candidate roughly every 0.25s');
+  // 2026-09-04: "instead of sampling every 0.25s, do it every frame up to 30
+  // frames per second". The gate is now a CEILING, not a sampling period.
+  assert.equal(NIGHT_TICK_MS, 30, 'a ceiling of about 30 frames a second, not a 0.25s period');
+  assert.ok(NIGHT_TICK_MS < 1000 / 30,
+    'set under the nominal 30fps interval so delivery jitter cannot halve the real rate');
+  assert.ok(1000 / NIGHT_TICK_MS < 40, 'but still a real ceiling against a 60fps stream');
   assert.equal(NIGHT_TARGET_MS, 4000, 'runs for about 4 seconds');
-  assert.equal(NIGHT_TARGET_FRAMES, 16, '4000ms / 250ms — the "~16 accepted frames" figure');
+  assert.equal(NIGHT_TARGET_FRAMES, 133, '4000ms / 30ms — what the new ceiling implies');
 });
 
 test('the weight is a CONVERGING mean (1/n), not the live ladder\'s forgetting EMA', () => {

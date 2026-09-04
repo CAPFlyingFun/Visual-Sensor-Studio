@@ -2007,7 +2007,7 @@ test('the averaging pass can be aligned, and refuses to average what was never p
 test('Night has its OWN accumulator, not a share of the live one', () => {
   // Two consumers with incompatible update rhythms — the live ladder
   // advances every DISPLAYED frame at a forgetting weight; Night advances
-  // roughly every 250ms at a converging one — sharing one pair of textures
+  // per delivered frame at a converging one — sharing one pair of textures
   // would have each corrupt the other's in-progress picture. Verified live
   // (2026-09-03): the live ladder set to "4 frames" kept reporting correctly
   // throughout a full Night capture that itself hit two rejections and two
