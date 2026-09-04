@@ -1,4 +1,4 @@
-const CACHE = 'visual-sensor-studio-v0.73.0';
+const CACHE = 'visual-sensor-studio-v0.74.0';
 
 /*
  * THE SHELL IS SHORT ON PURPOSE, and it is a different list from the one V1
@@ -33,22 +33,55 @@ const APP_SHELL = [
   './app/v2/app.js'
 ];
 
+/*
+ * AN UPDATE LANDS ON NEXT LAUNCH, NOT MID-SESSION.
+ *
+ * This file used to call skipWaiting() on install and clients.claim() on
+ * activate, and that combination bricked the running app three times
+ * (2026-09-03, v0.63.0, and again on 2026-09-04). Every time: all buttons
+ * dead, camera unstartable, cleared by a full quit and never by a code
+ * change. On the v0.63.0 occasion the build was loaded in a real browser and
+ * was completely clean, which is what ruled the code out.
+ *
+ * WHAT THOSE TWO CALLS DID. skipWaiting() activates a new worker while the
+ * old page is still running; clients.claim() then hands that page to it; and
+ * activate deletes every older cache. So a page mid-session lost the cache
+ * its modules came from and began re-fetching against a newer deploy. While
+ * GitHub Pages is half-propagated it gets some modules new and keeps others
+ * old — a fresh app.js against stale siblings, which is a dead app. Joshua
+ * named the window himself: "must be a slight update lag."
+ *
+ * THE TRADE, and it is a real one. Without these, a new version waits until
+ * every tab of the installed app is closed. An app that is never fully quit
+ * stays a build behind. That was the reason the calls were here, and it is
+ * the wrong side of the trade for this project: Joshua force-quits after
+ * every push already, and a dead app costs far more than a late one.
+ *
+ * The message handler below is DELIBERATELY KEPT. It is the same
+ * skipWaiting, but user-initiated: Settings' "update now" posts it and
+ * reloads on controllerchange, so the page that gets swapped is one that is
+ * about to be replaced anyway. That is the safe shape of this operation —
+ * asked for, and immediately followed by a reload.
+ */
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(APP_SHELL)));
-  self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
+  // Safe to delete older caches HERE precisely because there is no
+  // clients.claim above: this worker only becomes active once no page is
+  // still being served by the old one, so nothing can lose the cache it is
+  // reading from.
   event.waitUntil(
     caches.keys().then((keys) => Promise.all(
       keys.filter((key) => key.startsWith('visual-sensor-studio-') && key !== CACHE)
         .map((key) => caches.delete(key))
     ))
   );
-  self.clients.claim();
 });
 
 self.addEventListener('message', (event) => {
+  // User-initiated activation, followed by a reload on the page's side.
   if (event.data?.type === 'SKIP_WAITING') {
     self.skipWaiting();
   }

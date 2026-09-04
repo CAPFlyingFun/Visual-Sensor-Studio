@@ -36,11 +36,41 @@ test('the resume check is throttled and never throws', () => {
   assert.match(fn, /\.catch\(/, 'offline must not surface as an error');
 });
 
-test('a new worker takes over without waiting for every tab to close', () => {
-  // Without both of these an update sits waiting behind an installed app that
-  // is never fully quit, which is exactly how a PWA drifts a build behind.
-  assert.match(swSource, /self\.skipWaiting\(\)/);
-  assert.match(swSource, /self\.clients\.claim\(\)/);
+test('an update lands on next launch and never mid-session', () => {
+  // THIS ASSERTION USED TO SAY THE OPPOSITE, and the reason it was inverted
+  // is worth keeping. skipWaiting() on install plus clients.claim() on
+  // activate hands a RUNNING page to a new worker and deletes the cache its
+  // modules came from; mid-deploy it then re-fetches some modules new and
+  // keeps others old, which is a fresh app.js against stale siblings — a
+  // dead app. That happened three times (2026-09-03, v0.63.0, 2026-09-04),
+  // cleared every time by a full quit and never by a code change.
+  //
+  // The old comment here named the cost of NOT doing it: an app that is
+  // never fully quit stays a build behind. That cost is real and it is the
+  // better one. This is a trade, not a bug fix, and it is recorded as such.
+  // Comments stripped first. This is the third time in one sitting that an
+  // assertion about what code must NOT contain has been tripped by the
+  // comment explaining why it must not contain it — `half`, then `sin(`, now
+  // the note above saying there is no clients.claim. The rule is the same
+  // every time: assert against code, never against prose.
+  const code = swSource.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  const install = code.slice(code.indexOf("addEventListener('install'"),
+    code.indexOf("addEventListener('activate'"));
+  const activate = code.slice(code.indexOf("addEventListener('activate'"),
+    code.indexOf("addEventListener('message'"));
+  assert.ok(!install.includes('skipWaiting'), 'install must not activate over a running page');
+  assert.ok(!activate.includes('clients.claim'), 'and activate must not seize one');
+
+  // THE USER-INITIATED PATH SURVIVES, because it is the safe shape of the
+  // same operation: Settings asks for it and reloads immediately after, so
+  // the page being swapped is one that is about to be replaced anyway.
+  const message = code.slice(code.indexOf("addEventListener('message'"));
+  assert.match(message, /SKIP_WAITING/);
+  assert.match(message, /self\.skipWaiting\(\)/);
+
+  // Deleting older caches is only safe BECAUSE nothing claims a live page:
+  // this worker activates once no page is still served by the old one.
+  assert.match(activate, /caches\.delete\(key\)/);
 });
 
 test('the app shell is served network-first so a cache cannot pin the build', () => {
