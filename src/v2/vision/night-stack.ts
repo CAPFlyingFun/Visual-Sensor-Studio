@@ -67,32 +67,32 @@ export const NIGHT_TICK_MS = 30;
  * Roughly how long a capture runs — the stop condition is wall-clock, not a
  * frame count.
  *
- * TEN SECONDS, up from four. Joshua on the v0.48.0 result (2026-09-04):
- * "That was a lot better, but still grainy compared to ProCam." Grain is
- * noise, and after gain and frame count are both doing their jobs the only
- * remaining lever on noise is collecting more light. Noise falls as the
- * square root of the frame count, so 4s -> 10s is about 2.5x the frames and
- * roughly 1.6x less grain. There is no cleverness left to substitute for it:
- * ProCam's thirty-second exposures gather several times what four seconds
- * can, and that difference is most of what he is seeing.
+ * FOUR SECONDS. It was raised to ten on the reasoning that noise falls as the
+ * square root of the frame count, so more light should mean less grain. The
+ * device disagreed: Joshua, on the ten-second build, "it's worse... too
+ * whitewashed and grainy" — flatter, hazier, with colour fringing along
+ * high-contrast edges that the four-second version did not have. Reverted to
+ * the last duration his device actually preferred.
  *
- * It also buys brightness for free. The gain may claim one frame's worth of
- * light per frame stacked, so at 106 frames it was the FRAME COUNT limiting
- * the exposure (106x, against the 140x his measured mean asked for). Past
- * about 140 frames the measurement becomes the limit instead, which is where
- * it should be — the picture asking for what it needs rather than the
- * capture running out of frames to pay with.
+ * THE SQUARE-ROOT ARGUMENT IS STILL TRUE; it just is not the only thing that
+ * changes with a longer hold, and two of the others push the other way:
  *
- * THE COUNTDOWN IS NOT PART OF IT. NIGHT_COUNTDOWN_MS runs before the
- * steadiness gate is even armed, so the ten seconds is ten seconds of
- * integration and the hold is longer than that by the countdown plus however
- * long the gate takes to settle.
+ * - DRIFT. Ten seconds of integration is about fourteen of holding still once
+ *   the countdown and the gate are counted. The aligner corrects a predicted
+ *   shift, and whatever it does not correct is smeared across every frame —
+ *   which lowers contrast and reads as haze, not as grain. The colour
+ *   fringing points here: the channels are landing in slightly different
+ *   places.
+ * - THE CAMERA'S OWN EXPOSURE. Nothing here holds it still. Over ten seconds
+ *   in a dark room its automatic gain has time to travel, so the stack
+ *   averages frames taken at different sensitivities, and the noisiest ones
+ *   arrive last. Four seconds gives it less room to move.
  *
- * The cost is hand-hold time: ten seconds of drift is more than four, and
- * the log's offset and restart counts are what will say whether the aligner
- * still keeps up.
+ * So a longer capture is not simply more light, and it should not be tried
+ * again until the drift and the exposure are both pinned down. Raising this
+ * is cheap; the reason it did not work is what was expensive to learn.
  */
-export const NIGHT_TARGET_MS = 10000;
+export const NIGHT_TARGET_MS = 4000;
 
 /**
  * The frame count the ceiling above implies, for display only. Not a target
