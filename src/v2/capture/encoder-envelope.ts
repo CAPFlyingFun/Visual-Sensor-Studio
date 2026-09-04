@@ -2,14 +2,26 @@
  * ENCODER CAPABILITY — the largest frame this device's video encoder can
  * actually write, as a capability fact of its own.
  *
- * Measured on the reference iPhone, 2026-09-01, with the encoder probe: the
- * camera delivers 3024×4032, the GPU renders it, JPEG saves it — and every
- * H.264 file above 36,864 macroblocks (16×16 blocks) comes back undecodable,
- * at 5 fps as surely as at 30. 2592×3456 (34,992) decodes; 2688×3584
- * (37,632) does not. That is the H.264 Level 5.2 frame-size limit (MaxFS,
- * ITU-T H.264 Table A-1), and it is a property of the ENCODER, not of the
- * camera, the GPU or the container. A frame rate cannot fix it and neither
- * can restarting the recorder: each frame itself violates the level.
+ * IT IS A PROPERTY OF A CODEC, NOT OF A DEVICE — and that distinction cost
+ * a day to learn, so it is written down here.
+ *
+ * Measured repeatedly on the reference iPhone: every H.264 file above 36,864
+ * macroblocks (16×16 blocks) comes back undecodable, at 5 fps as surely as at
+ * 30. 2592×3456 (34,992) decodes; 2688×3584 (37,632) does not. That is the
+ * H.264 Level 5.2 frame-size limit (MaxFS, ITU-T H.264 Table A-1). A frame
+ * rate cannot fix it and neither can restarting the recorder: each frame
+ * itself violates the level.
+ *
+ * THE SAME PHONE ENCODES 3024×4032 AT 30 fps WITH HEVC — 7/7 probe trials on
+ * 2026-09-04, files half the size, importing to Photos at full resolution.
+ * Every earlier run that "proved" this device could not record MAX was
+ * measuring H.264, because isTypeSupported had refused every HEVC codec
+ * string and the container ladder fell through to the plain type without
+ * saying so. The ceiling was a spelling (capture/record.ts).
+ *
+ * So this envelope is a real constraint when H.264 is what the browser will
+ * give, and NO constraint at all when HEVC is reachable. Which of those a
+ * device is cannot be assumed from anything except its own probe run.
  *
  * So RECORD IN gets one more owner of a downgrade, with its reason named
  * (docs/camera_rule.md): the envelope. It is ASSUMED at the Level 5.2 line
@@ -47,7 +59,8 @@ export interface EnvelopeMeasurement {
 export const ASSUMED_ENVELOPE: EncoderEnvelope = {
   maxMacroblocks: H264_LEVEL_5_2_MACROBLOCKS,
   measured: false,
-  reason: 'H.264 Level 5.2 frame limit — assumed until the encoder probe measures this device'
+  reason: 'H.264 Level 5.2 frame limit — assumed, and wrong wherever HEVC is available; '
+    + 'the encoder probe replaces it with this device\'s own answer'
 };
 
 /** Reduce probe rows to the two numbers that matter. Rows that never ran do not count. */

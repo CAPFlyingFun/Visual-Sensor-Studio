@@ -14,15 +14,19 @@
  * is 720/1080/2K/MAX with 4K grey. The SOURCE row reports what was actually
  * granted, and no tier ever invents pixels the sensor lacks.
  *
- * One bound sits above the tier, and it is the ENCODER's, not the camera's:
- * measured 2026-09-01 with the encoder probe, an H.264 frame above 36,864
- * macroblocks (Level 5.2) never decodes on the reference iPhone, at any
- * frame rate — the "12 MP crash" was never a crash, it was a file the level
- * cannot describe. So a tier still STREAMS what it streams, and RECORD IN
- * is held under the encoder envelope with the reason named
- * (capture/encoder-envelope.ts); the tiers whose streams can exceed it say
- * so beside the filter strip. Photos always escalate to the sensor's maximum
- * through the shutter regardless of tier — JPEG has no such level.
+ * One bound can sit above the tier, and it is a CODEC's rather than the
+ * camera's. An H.264 frame above 36,864 macroblocks (Level 5.2) never
+ * decodes — measured repeatedly on the reference iPhone at every frame rate,
+ * so the "12 MP crash" was never a crash, it was a file the level cannot
+ * describe. But that is H.264's ceiling, not the device's: with HEVC the
+ * same phone encodes 3024x4032 at 30 fps and the file imports to Photos
+ * (measured 2026-09-04, 7/7 probe trials). Which one applies depends on
+ * whether the browser admits an HEVC codec string at all — see
+ * capture/record.ts, where the spelling turned out to decide it. So a tier
+ * STREAMS what it streams, RECORD IN reports what it records and why, and
+ * the encoder probe is what settles the ceiling for a given device rather
+ * than any number written here. Photos always escalate to the sensor's
+ * maximum through the shutter regardless of tier — JPEG has no such level.
  */
 
 export interface StreamTier {
@@ -75,8 +79,9 @@ export const STREAM_TIERS: readonly StreamTier[] = [
     shortSide: 3240,
     streamLabel: '4K-class live stream — chosen, expect fewer fps',
     recordPolicy: 'source',
-    clipWarning: 'A 4K-class frame exceeds the H.264 encoder\'s frame limit on most devices — '
-      + 'clips record at the largest frame this encoder can write (RECORD IN names it and why). '
+    clipWarning: 'A 4K-class frame exceeds H.264\'s Level 5.2 frame limit, so a device that '
+      + 'only offers H.264 records these clips smaller (RECORD IN names it and why). Where HEVC '
+      + 'is available the limit does not apply — run the encoder probe to find out which this is. '
       + 'Photos always stay at MAX.'
   },
   {
