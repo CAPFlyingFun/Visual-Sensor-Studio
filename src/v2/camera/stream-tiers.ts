@@ -92,7 +92,7 @@ export const STREAM_TIERS: readonly StreamTier[] = [
   }
 ];
 
-export const DEFAULT_STREAM_TIER = '720';
+export const DEFAULT_STREAM_TIER = '1080';
 
 export function tierById(id: string): StreamTier | null {
   return STREAM_TIERS.find((tier) => tier.id === id) ?? null;
