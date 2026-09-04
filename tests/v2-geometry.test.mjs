@@ -1378,8 +1378,18 @@ test('recording truth: native and filtered clips measured from their files (fake
       assert.match(native, / · finalised in \d+\.\ds · fed [\d.]+ fps → file /,
         `the fed rate and the file's own rate are both reported, got "${native}"`);
       const summary = await page.textContent('#v2RecordSummary');
-      assert.match(summary, /^Saved \d+\.\ds · \d+×\d+( · \d+ fps)? · [\d.]+ MB$/,
+      // The RESULT, and — where the platform refuses to share the file — the
+      // one sentence saying where it went instead. That is an outcome, not an
+      // instrument: it is the answer to "why is this not in my album?", and
+      // headless Chromium takes that branch because it cannot share at all.
+      assert.match(summary,
+        /^Saved \d+\.\ds · \d+×\d+( · \d+ fps)? · [\d.]+ MB( · cannot be shared here \([^)]*\) — saved to Files instead; open it there to add it to Photos)?$/,
         `the main screen gets the result, not the instruments, got "${summary}"`);
+      // The instruments stay in the More readout, where they belong.
+      for (const instrument of ['chunk', 'finalised in', 'fed ', 'Mb/s measured']) {
+        assert.ok(!summary.includes(instrument),
+          `"${instrument}" belongs in the detail line, not the main screen`);
+      }
       if (/video\/mp4/.test(native)) {
         assert.match(native, /file [\d.]+ fps \(\d+ frames\)/,
           `an MP4's frames are counted from its tables, got "${native}"`);

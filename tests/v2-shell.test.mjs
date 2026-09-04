@@ -835,3 +835,45 @@ test('MAX can be recorded at MAX by choice, and the envelope stops pretending', 
   assert.match(recordTs, /function measureEncodedSize\(blob: Blob\)/,
     'the file is still the witness, whatever the envelope said beforehand');
 });
+
+test('a shared file carries a MIME the system can map, not the recorder\'s full string', () => {
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+
+  // WHY: MediaRecorder reports what it negotiated, parameters and all — so
+  // asking for HEVC gets back "video/mp4;codecs=hvc1". iOS maps a file's MIME
+  // to a UTI to decide which targets accept it, and a parameterised type has
+  // no UTI, so Photos is never offered. The clip records perfectly and then
+  // has nowhere to go, which is exactly the report this came from.
+  assert.match(appTs, /function shareMimeType\(reported: string, fallback: string\): string \{/);
+  assert.match(appTs, /const base = \(reported \|\| ''\)\.split\(';'\)\[0\]\.trim\(\);/,
+    'the codec parameters are dropped for the File');
+
+  // BOTH share paths use it — the camera clip and the imported one.
+  const shares = [...appTs.matchAll(/new File\(\[result\.blob\][\s\S]{0,140}?\}\)/g)].map((m) => m[0]);
+  assert.ok(shares.length >= 2, `both share paths build a File, found ${shares.length}`);
+  for (const call of shares) {
+    assert.match(call, /shareMimeType\(/,
+      `every shared File gets a mappable type, got: ${call.replace(/\s+/g, ' ')}`);
+  }
+
+  // AND THE READOUT KEEPS THE FULL STRING. The parameterised type is the
+  // measurement — it is how we know whether HEVC was actually used — so it
+  // must not be sanitised out of the place that reports it.
+  assert.match(appTs, /\$\{result\.mimeType \|\| 'container unreported'\}/,
+    'the clip readout still states exactly what the recorder negotiated');
+
+  // A REFUSED SHARE IS NOT SILENT. Hiding the button with no explanation
+  // reads as "the app cannot save"; the file is in Files either way.
+  const offer = appTs.slice(appTs.indexOf('function offerShare('),
+    appTs.indexOf('function offerShare(') + 1600);
+  assert.match(offer, /button\.hidden = true;\s*\n\s*if \(reportTo\) \{/,
+    'a device that will not share the file says so');
+  assert.match(offer, /saved to Files instead/, 'and says where the file actually is');
+  // APPENDED, never substituted: the line already carries size, duration and
+  // rate, and an explanation that ate them would trade one missing answer
+  // for several.
+  assert.match(offer, /setText\(reportTo, current \? `\$\{current\} · \$\{note\}` : note\)/,
+    'the measurements the line already carries are kept');
+  assert.match(offer, /if \(!current\.includes\('cannot be shared here'\)\)/,
+    'and it is not appended twice');
+});

@@ -2123,7 +2123,8 @@ async function saveImportClip(): Promise<void> {
     // The recorder already names the file from what it measured — one naming
     // for every clip this app writes, camera or import.
     offerShare('v2SharePhoto',
-      new File([result.blob], result.fileName, { type: result.blob.type }), 'v2PhotoResult');
+      new File([result.blob], result.fileName,
+        { type: shareMimeType(result.blob.type, 'video/mp4') }), 'v2PhotoResult');
     setText('v2ImportNote', `Saved ${result.encodedWidth}×${result.encodedHeight} · `
       + `${result.seconds.toFixed(1)}s · ${(result.blob.size / 1e6).toFixed(2)} MB · `
       + `silent · ${importedName} is untouched`);
@@ -3000,6 +3001,26 @@ function shutterStream(): ShutterStream {
  * offers a button. `onclick` assignment on purpose: a new result replaces
  * the old handler instead of stacking listeners.
  */
+/**
+ * The MIME a FILE should carry, which is not the one the recorder reported.
+ *
+ * MediaRecorder reports what it negotiated, parameters and all — asking for
+ * HEVC gets back something like "video/mp4;codecs=hvc1". That full string is
+ * the truth and belongs in the readout. It does NOT belong on a File handed
+ * to the share sheet: iOS maps a file's MIME to a UTI to decide which targets
+ * can accept it, and a parameterised type has no UTI, so Photos is not
+ * offered — the clip records perfectly and then has nowhere to go. The base
+ * type maps cleanly, and the bytes are identical either way.
+ *
+ * Kept local rather than imported: app.ts gaining a new cross-module import
+ * is the failure that took the PWA down on 2026-09-03, when a fresh app.js
+ * met a cached older sibling. One short expression is the cheaper risk.
+ */
+function shareMimeType(reported: string, fallback: string): string {
+  const base = (reported || '').split(';')[0].trim();
+  return base || fallback;
+}
+
 function offerShare(buttonId: string, file: File, reportTo?: string): void {
   const button = byId<HTMLButtonElement>(buttonId);
   const nav = navigator as Navigator & {
@@ -3007,7 +3028,23 @@ function offerShare(buttonId: string, file: File, reportTo?: string): void {
     share?: (data: { files: File[] }) => Promise<void>;
   };
   if (typeof nav.share !== 'function' || nav.canShare?.({ files: [file] }) === false) {
+    // HIDDEN, BUT NOT SILENT. A refused file used to remove the button with
+    // no explanation, which reads exactly like "the app cannot save" — and
+    // that is the report this change came from. The file HAS been written to
+    // the browser's downloads either way, so say both.
     button.hidden = true;
+    if (reportTo) {
+      const target = byId(reportTo);
+      const current = target.textContent ?? '';
+      // APPENDED, never substituted. The line already carries the numbers
+      // that matter — size, duration, rate — and an explanation that ate them
+      // would trade one missing answer for several.
+      const note = `cannot be shared here (${file.type || 'unknown type'}) — `
+        + 'saved to Files instead; open it there to add it to Photos';
+      if (!current.includes('cannot be shared here')) {
+        setText(reportTo, current ? `${current} · ${note}` : note);
+      }
+    }
     return;
   }
   button.hidden = false;
@@ -3139,7 +3176,8 @@ async function toggleRecording(): Promise<void> {
       : 'The recording produced no data.');
     if (result) {
       offerShare('v2ShareClip',
-        new File([result.blob], result.fileName, { type: result.mimeType || 'video/mp4' }),
+        new File([result.blob], result.fileName,
+          { type: shareMimeType(result.mimeType, 'video/mp4') }),
         'v2RecordSummary');
     }
     return;
