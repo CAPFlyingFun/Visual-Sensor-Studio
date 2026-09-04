@@ -513,7 +513,7 @@ test('the precision probe is diagnostics only, and cannot kill boot', () => {
   // FORMAT is now a separate change and has its own pins below; the cadence
   // and the duration are what this one must not have touched.
   const nightStack = readFileSync(new URL('../src/v2/vision/night-stack.ts', import.meta.url), 'utf8');
-  assert.match(nightStack, /export const NIGHT_TARGET_MS = 4000;/, 'duration untouched');
+  assert.match(nightStack, /export const NIGHT_TARGET_MS = 10000;/, 'a ten-second integration');
 });
 
 test('Night allocates the best format it can RENDER TO, and falls back to RGBA8', () => {
@@ -752,7 +752,7 @@ test('Night takes every delivered frame, but only a genuinely NEW one', () => {
     'no second clock races the camera');
 
   // AND NOTHING ELSE MOVED: same duration, same countdown, same accumulator.
-  assert.match(nightStackSrc, /export const NIGHT_TARGET_MS = 4000;/, 'duration untouched');
+  assert.match(nightStackSrc, /export const NIGHT_TARGET_MS = 10000;/, 'a ten-second integration');
   assert.match(nightStackSrc, /export const NIGHT_COUNTDOWN_MS = 3000;/, 'countdown untouched');
   const renderTs = readFileSync(new URL('../src/v2/render/gl-renderer.ts', import.meta.url), 'utf8');
   assert.match(renderTs, /this\.nightFormat = 'RGBA16F';/, 'still the float accumulator');

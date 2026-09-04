@@ -63,8 +63,36 @@
  */
 export const NIGHT_TICK_MS = 30;
 
-/** Roughly how long a capture runs — the stop condition is wall-clock, not a frame count. */
-export const NIGHT_TARGET_MS = 4000;
+/**
+ * Roughly how long a capture runs — the stop condition is wall-clock, not a
+ * frame count.
+ *
+ * TEN SECONDS, up from four. Joshua on the v0.48.0 result (2026-09-04):
+ * "That was a lot better, but still grainy compared to ProCam." Grain is
+ * noise, and after gain and frame count are both doing their jobs the only
+ * remaining lever on noise is collecting more light. Noise falls as the
+ * square root of the frame count, so 4s -> 10s is about 2.5x the frames and
+ * roughly 1.6x less grain. There is no cleverness left to substitute for it:
+ * ProCam's thirty-second exposures gather several times what four seconds
+ * can, and that difference is most of what he is seeing.
+ *
+ * It also buys brightness for free. The gain may claim one frame's worth of
+ * light per frame stacked, so at 106 frames it was the FRAME COUNT limiting
+ * the exposure (106x, against the 140x his measured mean asked for). Past
+ * about 140 frames the measurement becomes the limit instead, which is where
+ * it should be — the picture asking for what it needs rather than the
+ * capture running out of frames to pay with.
+ *
+ * THE COUNTDOWN IS NOT PART OF IT. NIGHT_COUNTDOWN_MS runs before the
+ * steadiness gate is even armed, so the ten seconds is ten seconds of
+ * integration and the hold is longer than that by the countdown plus however
+ * long the gate takes to settle.
+ *
+ * The cost is hand-hold time: ten seconds of drift is more than four, and
+ * the log's offset and restart counts are what will say whether the aligner
+ * still keeps up.
+ */
+export const NIGHT_TARGET_MS = 10000;
 
 /**
  * The frame count the ceiling above implies, for display only. Not a target

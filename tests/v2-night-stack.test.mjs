@@ -22,8 +22,11 @@ test('the cadence and target are exactly what Joshua asked for', () => {
   assert.ok(NIGHT_TICK_MS < 1000 / 30,
     'set under the nominal 30fps interval so delivery jitter cannot halve the real rate');
   assert.ok(1000 / NIGHT_TICK_MS < 40, 'but still a real ceiling against a 60fps stream');
-  assert.equal(NIGHT_TARGET_MS, 4000, 'runs for about 4 seconds');
-  assert.equal(NIGHT_TARGET_FRAMES, 133, '4000ms / 30ms — what the new ceiling implies');
+  assert.equal(NIGHT_TARGET_MS, 10000, 'runs for about 10 seconds — grain needs light, not tricks');
+  // The countdown sits BEFORE the gate, so integration is the full ten.
+  assert.ok(NIGHT_COUNTDOWN_MS < NIGHT_TARGET_MS,
+    'the settle window is not counted against the exposure');
+  assert.equal(NIGHT_TARGET_FRAMES, 333, '10000ms / 30ms — what the ceiling implies');
 });
 
 test('the weight is a CONVERGING mean (1/n), not the live ladder\'s forgetting EMA', () => {
