@@ -255,7 +255,7 @@
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
-    <span class="pill" id="v2Badge">v0.66.0</span>
+    <span class="pill" id="v2Badge">v0.67.0</span>
   </header>
 
   <div class="camera-layout">
@@ -450,17 +450,11 @@
           <div id="v2ControlRows"></div>
           <p class="hint" id="v2ControlNote"></p>
           <p class="hint" id="v2ControlVerdict"></p>
-          <label class="coach-mute" for="v2ZoomRamp"><strong>Zoom glide</strong>
-            <input type="range" id="v2ZoomRamp" min="0" max="10" step="0.1" value="1.5"
-              aria-label="Seconds to glide between zoom stops" />
-            <span id="v2ZoomRampValue">1.5s</span></label>
-          <p class="hint">
-            How long a tap on a zoom preset takes to travel from wherever the zoom is now
-            to the one you pressed. 0 is the old instant jump. The ramp is
-            <em>geometric</em> &mdash; each moment multiplies the zoom by the same factor
-            rather than adding the same amount &mdash; because zoom is multiplicative, and a
-            straight-line ramp from x1 to x3 races through the first half and crawls through
-            the second. A new tap redirects the glide from wherever it has reached.
+          <p class="hint" id="v2ZoomRateNote">
+            Smooth zoom is the stick under the viewfinder: push it right to zoom in, left
+            to zoom out, and it springs back to the middle when the finger lifts. Full
+            deflection is one zoom step a second, half a stick half that. The presets are
+            an instant jump to an exact number.
           </p>
         </section>
 

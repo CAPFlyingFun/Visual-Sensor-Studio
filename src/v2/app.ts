@@ -2483,85 +2483,21 @@ async function applyCameraControl(
  * only a genuinely new zoom range (a camera switch) may replace the buttons.
  */
 let builtZoomRange = '';
-/* --- Zoom glide ----------------------------------------------------------- */
-
-const ZOOM_RAMP_STORE_KEY = 'vss.v2.zoomRamp.v1';
-
-/**
- * Seconds a tap on a zoom preset takes to travel from where the zoom IS to
- * where it was asked to go. Joshua, 2026-09-04: "would be good to be able to
- * Lerp between zoom's so it's not snappy... a slider from 1-10s".
- *
- * 0 is the old instant jump, kept because it is what every previous build did
- * and someone may want it back.
- */
-let zoomRampSeconds = 1.5;
-
-/** The in-flight glide, if any. A token so a superseded frame retires itself. */
-let zoomRampToken = 0;
-let zoomRampFrame = 0;
 /**
  * setZoom goes through applyConstraints, which is asynchronous and on some
- * devices slow. Firing one per animation frame regardless would queue work
- * faster than the camera retires it, so a frame that finds one still in
- * flight simply skips — the ramp is driven by the CLOCK, not by how many
- * requests it managed to make, so skipping costs smoothness and never
- * accuracy. The final value is applied unconditionally.
+ * devices slow. Asking for a new value while one is still in flight queues
+ * work faster than the camera retires it, so every driver of the zoom checks
+ * this first and simply skips that moment. The stick is driven by the CLOCK
+ * rather than by how many requests it managed to make, so a skip costs
+ * smoothness and never accuracy.
+ *
+ * (A timed glide between presets lived here until v0.67.0. It planned a
+ * trajectory and then missed it, because the rate applyConstraints retires
+ * requests at is not ours to set — every missed deadline showed as a step.
+ * Joshua, 2026-09-04, on the finger stick that replaced it: "Works better,
+ * but can delete this old section as it doesn't work.")
  */
 let zoomApplyInFlight = false;
-
-function cancelZoomRamp(): void {
-  zoomRampToken += 1;
-  if (zoomRampFrame) window.cancelAnimationFrame(zoomRampFrame);
-  zoomRampFrame = 0;
-}
-
-/**
- * Glide to a zoom stop, GEOMETRICALLY.
- *
- * Zoom is multiplicative, not additive: 1x to 2x is the same visual step as
- * 2x to 4x. A straight line from 1x to 3x therefore races through the first
- * half and crawls through the second, which is precisely the "snappy" this
- * is meant to remove. Multiplying by a constant factor each moment —
- * from * (to/from)^p — makes every instant of the glide change the picture by
- * the same proportion, which is what reads as smooth.
- *
- * The progress itself is smoothstepped so the movement eases in and out
- * rather than starting and stopping abruptly.
- */
-function rampZoomTo(target: number): void {
-  cancelZoomRamp();
-  const zoom = readState().zoom;
-  const from = zoom && zoom.kind !== 'none' ? zoom.value : 0;
-  // No range, no glide time, or nowhere to go: the old behaviour exactly.
-  if (!(from > 0) || !(target > 0) || zoomRampSeconds <= 0 || Math.abs(target - from) < 0.01) {
-    void camera.setZoom(target);
-    return;
-  }
-  const token = ++zoomRampToken;
-  const startedAt = performance.now();
-  const durationMs = zoomRampSeconds * 1000;
-  const step = (now: number): void => {
-    if (token !== zoomRampToken) return;
-    const p = Math.min(1, (now - startedAt) / durationMs);
-    const eased = p * p * (3 - 2 * p);
-    if (p >= 1) {
-      zoomRampFrame = 0;
-      // Landed: applied unconditionally, so the stop is exact however many
-      // intermediate frames were skipped.
-      void camera.setZoom(target);
-      return;
-    }
-    if (!zoomApplyInFlight) {
-      zoomApplyInFlight = true;
-      void camera.setZoom(from * Math.pow(target / from, eased))
-        .catch(() => undefined)
-        .finally(() => { zoomApplyInFlight = false; });
-    }
-    zoomRampFrame = window.requestAnimationFrame(step);
-  };
-  zoomRampFrame = window.requestAnimationFrame(step);
-}
 
 /* --- The zoom stick: a RATE control ---------------------------------------
  *
@@ -2638,10 +2574,6 @@ function buildZoomStick(): void {
   stick.addEventListener('input', () => {
     const rate = Number(stick.value);
     zoomStickRate = Number.isFinite(rate) ? Math.min(1, Math.max(-1, rate)) : 0;
-    // A tap on a preset and a push on the stick are two ways to drive the
-    // same camera; whichever the hand touched last wins, rather than both
-    // steering at once.
-    cancelZoomRamp();
     if (zoomStickRate !== 0 && !zoomStickFrame) {
       zoomStickLast = 0;
       zoomStickFrame = window.requestAnimationFrame(driveZoomStick);
@@ -2655,54 +2587,23 @@ function buildZoomStick(): void {
   stick.addEventListener('blur', release);
 }
 
-function buildZoomRamp(): void {
-  // getElementById, not byId: a fresh app.js against a cached older
-  // index.html must lose the slider, not every control wired after it.
-  const slider = document.getElementById('v2ZoomRamp');
-  const readout = document.getElementById('v2ZoomRampValue');
-  if (!(slider instanceof HTMLInputElement)) return;
-  try {
-    const stored = Number(localStorage.getItem(ZOOM_RAMP_STORE_KEY));
-    if (Number.isFinite(stored) && stored >= 0 && stored <= 10) zoomRampSeconds = stored;
-  } catch {
-    // Storage is optional; the default stands.
-  }
-  const show = (): void => {
-    slider.value = String(zoomRampSeconds);
-    if (!readout) return;
-    // The MEASURED apply rate rides along, because "the zoom isn't smooth" is
-    // a feeling and this is the number underneath it: applyConstraints is
-    // asynchronous, and however finely a ramp is computed the camera moves
-    // only as often as it retires a request.
-    const rate = zoomAppliesPerSecond > 0
-      ? ` · camera accepts ~${zoomAppliesPerSecond.toFixed(0)} zoom changes/s`
-      : '';
-    readout.textContent = (zoomRampSeconds > 0 ? `${zoomRampSeconds.toFixed(1)}s` : 'instant') + rate;
-  };
-  show();
-  slider.addEventListener('input', () => {
-    const next = Number(slider.value);
-    if (!Number.isFinite(next)) return;
-    zoomRampSeconds = Math.min(10, Math.max(0, next));
-    // A glide already running keeps its own duration rather than jumping to
-    // the new one mid-flight, which would be a visible lurch.
-    show();
-    try {
-      localStorage.setItem(ZOOM_RAMP_STORE_KEY, String(zoomRampSeconds));
-    } catch {
-      // Storage is optional; the session still honours the choice.
-    }
-  });
-}
-
 function renderZoomStops(): void {
-  // The glide readout carries the measured apply rate, which only exists
-  // after the stick has actually moved the camera — so it is refreshed here
-  // rather than only when the slider is touched.
-  const rampReadout = document.getElementById('v2ZoomRampValue');
-  if (rampReadout && zoomAppliesPerSecond > 0) {
-    rampReadout.textContent = (zoomRampSeconds > 0 ? `${zoomRampSeconds.toFixed(1)}s` : 'instant')
-      + ` · camera accepts ~${zoomAppliesPerSecond.toFixed(0)} zoom changes/s`;
+  // "The zoom isn't smooth" is a feeling; this is the number underneath it.
+  // applyConstraints is asynchronous, and however finely a rate is computed
+  // the picture moves only as often as the camera retires a request — so the
+  // measured rate is reported where the zoom control is explained. It only
+  // exists once the stick has actually moved the camera, which is why it is
+  // appended here rather than written into the page's static text.
+  // getElementById, not byId: a fresh app.js against a cached older
+  // index.html must lose one readout, not every control wired after it.
+  const rateNote = document.getElementById('v2ZoomRateNote');
+  if (rateNote && zoomAppliesPerSecond > 0) {
+    const measured = `Camera accepts ~${zoomAppliesPerSecond.toFixed(0)} zoom changes/s.`;
+    if (rateNote.dataset.measured !== measured) {
+      rateNote.dataset.measured = measured;
+      const base = rateNote.dataset.base ?? (rateNote.dataset.base = rateNote.textContent ?? '');
+      rateNote.textContent = `${base.trim()} ${measured}`;
+    }
   }
   const holder = byId('v2ZoomStops');
   const zoom = readState().zoom;
@@ -2718,7 +2619,12 @@ function renderZoomStops(): void {
         button.type = 'button';
         button.textContent = `${stop}×`;
         button.dataset.zoomStop = String(stop);
-        button.addEventListener('click', () => { rampZoomTo(stop); });
+        button.addEventListener('click', () => {
+          // A tap on a preset and a push on the stick are two ways to drive
+          // the same camera; whichever the hand touched last wins.
+          stopZoomStick();
+          void camera.setZoom(stop);
+        });
         holder.appendChild(button);
       }
     }
@@ -4555,7 +4461,6 @@ buildSteadyShutter();
 buildNightTest();
 buildAids();
 buildImport();
-buildZoomRamp();
 buildZoomStick();
 buildPrecisionProbe();
 try {

@@ -901,53 +901,27 @@ test('the encoder probe releases the camera and puts it back', () => {
     'a probe never turns a camera on that the user had off');
 });
 
-test('a zoom preset glides geometrically instead of snapping', () => {
+test('a zoom preset is an instant jump, and the glide is gone', () => {
   const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
 
-  // The stop button asks for a glide, not an instant apply.
-  assert.match(appTs, /button\.addEventListener\('click', \(\) => \{ rampZoomTo\(stop\); \}\);/);
-  assert.match(v2Html, /id="v2ZoomRamp"/, 'and the duration has a control');
-  assert.match(appTs, /document\.getElementById\('v2ZoomRamp'\)/,
-    'looked up without byId, so missing markup costs only the slider');
+  // Joshua, 2026-09-04, on the timed glide: "can delete this old section as
+  // it doesn't work." It planned a trajectory through applyConstraints and
+  // then missed it, because how fast the camera retires a request is not
+  // ours to set — every missed deadline read as a step. Smooth zoom is the
+  // stick; a preset is now what it always was before v0.64.0, an exact jump.
+  assert.match(appTs, /stopZoomStick\(\);\s*\n\s*void camera\.setZoom\(stop\);/,
+    'a preset applies at once, and stops the stick so two hands do not steer');
 
-  // GEOMETRIC, not linear. Zoom is multiplicative — 1x→2x is the same visual
-  // step as 2x→4x — so a straight line races the first half and crawls the
-  // second, which is the "snappy" this removes.
-  assert.match(appTs, /from \* Math\.pow\(target \/ from, eased\)/,
-    'each moment multiplies by the same factor');
-  assert.match(appTs, /const eased = p \* p \* \(3 - 2 \* p\);/,
-    'smoothstepped, so it eases in and out rather than starting abruptly');
+  for (const ghost of ['rampZoomTo', 'cancelZoomRamp', 'buildZoomRamp',
+    'ZOOM_RAMP_STORE_KEY', 'zoomRampSeconds']) {
+    assert.ok(!appTs.includes(ghost), `${ghost} is gone from the app`);
+  }
+  assert.ok(!v2Html.includes('v2ZoomRamp'), 'and its markup is gone from the page');
 
-  // 0 IS THE OLD BEHAVIOUR, exactly — and so is "nowhere to go".
-  assert.match(appTs, /zoomRampSeconds <= 0 \|\| Math\.abs\(target - from\) < 0\.01/);
-
-  // A SUPERSEDED GLIDE RETIRES ITSELF. A second tap must redirect from where
-  // the zoom has reached, not run two ramps against each other.
-  assert.match(appTs, /if \(token !== zoomRampToken\) return;/);
-  assert.match(appTs, /function cancelZoomRamp\(\): void \{/);
-  assert.match(appTs, /function rampZoomTo\(target: number\): void \{\s*\n\s*cancelZoomRamp\(\);/,
-    'a new glide cancels the old one before reading the current zoom');
-
-  // THE LANDING IS EXACT. Intermediate frames may be skipped while an
-  // applyConstraints is in flight, so the final value is applied
-  // unconditionally rather than being whatever the last frame managed.
-  assert.match(appTs, /if \(p >= 1\) \{[\s\S]{0,320}?void camera\.setZoom\(target\);/,
-    'the stop is landed exactly, however many frames were skipped');
-  assert.match(appTs, /if \(!zoomApplyInFlight\) \{/,
-    'and the camera is never queued faster than it retires requests');
-});
-
-test('the glide duration is remembered and bounded', () => {
-  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
-  assert.match(appTs, /const ZOOM_RAMP_STORE_KEY = 'vss\.v2\.zoomRamp\.v1';/);
-  assert.match(appTs, /Math\.min\(10, Math\.max\(0, next\)\)/, 'clamped to the slider\'s own range');
-  assert.match(appTs, /if \(Number\.isFinite\(stored\) && stored >= 0 && stored <= 10\)/,
-    'a stored value outside the range is ignored rather than trusted');
-  // Storage is optional on both sides — a private window must not break zoom.
-  const build = appTs.slice(appTs.indexOf('function buildZoomRamp()'),
-    appTs.indexOf('function renderZoomStops()'));
-  assert.equal((build.match(/\} catch \{/g) ?? []).length, 2,
-    'both the read and the write tolerate storage being unavailable');
+  // The in-flight guard is NOT part of the glide — the stick needs it, and
+  // it is the reason a slow applyConstraints coarsens the motion instead of
+  // queueing work the camera cannot retire.
+  assert.match(appTs, /let zoomApplyInFlight = false;/);
 });
 
 test('the zoom stick is a RATE control, at the units Joshua specified', () => {
@@ -977,10 +951,6 @@ test('the zoom stick is a RATE control, at the units Joshua specified', () => {
   }
   assert.match(appTs, /stick\.addEventListener\('blur', release\);/);
 
-  // ONE HAND ON THE WHEEL: a push on the stick cancels a preset glide.
-  assert.match(appTs, /zoomStickRate = Number\.isFinite\(rate\)[\s\S]{0,400}?cancelZoomRamp\(\);/,
-    'the stick and a preset glide never steer at once');
-
   // And the stick only appears where there is a range to travel.
   assert.match(appTs, /stick\.hidden = !zoom \|\| zoom\.kind === 'none' \|\| !\(zoom\.max > zoom\.min\);/);
 });
@@ -991,7 +961,10 @@ test('how fast the camera really accepts zoom changes is measured, not assumed',
   // applyConstraints is asynchronous, so however finely a ramp is computed
   // the camera moves only as often as it retires a request.
   assert.match(appTs, /zoomAppliesPerSecond = \(zoomApplyCount \* 1000\) \/ elapsed;/);
-  assert.match(appTs, /camera accepts ~\$\{zoomAppliesPerSecond\.toFixed\(0\)\} zoom changes\/s/,
+  assert.match(appTs, /Camera accepts ~\$\{zoomAppliesPerSecond\.toFixed\(0\)\} zoom changes\/s\./,
     'and it reaches the readout');
+  assert.match(appTs, /document\.getElementById\('v2ZoomRateNote'\)/,
+    'which outlived the glide slider it used to ride on');
+  assert.match(v2Html, /id="v2ZoomRateNote"/, 'and has somewhere on the page to land');
   assert.match(appTs, /if \(elapsed >= 1000\)/, 'averaged over a real second, not one sample');
 });
