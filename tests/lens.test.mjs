@@ -10,7 +10,8 @@ import {
   describeLens,
   renderLens,
   toHex,
-  upscaleChannel
+  upscaleChannel,
+  MAX_STOPS
 } from '../.test-build/vision/lens.js';
 import {
   decodeLensShare,
@@ -356,8 +357,10 @@ test('NaN and infinity never survive into a binding', () => {
 });
 
 test('an enormous stop list is capped', () => {
+  // Against the CONSTANT, not against a copy of its value — the number moved
+  // once already (8 to 12) and a literal here would have had to move with it.
   const stops = Array.from({ length: 400 }, (_, i) => ({ at: i / 400, color: '#ff0000' }));
-  assert.ok(sanitiseLens({ stops }).stops.length <= 8);
+  assert.equal(sanitiseLens({ stops }).stops.length, MAX_STOPS);
 });
 
 test('a runaway name cannot break the list layout', () => {
@@ -588,4 +591,41 @@ test('no shipped lens claims to measure distance', () => {
   const raw = readFileSync(new URL('../public/lenses/index.json', import.meta.url), 'utf8');
   assert.doesNotMatch(raw, /\bdepth\b/i);
   assert.doesNotMatch(raw, /lidar/i);
+});
+
+test('a lens can carry a colour for every tenth of the range', () => {
+  // Joshua, 2026-09-04: "I was trying to do one color for each 0.1, and was
+  // short." Eleven stops, 0.0 through 1.0. The old ceiling was eight.
+  assert.ok(MAX_STOPS >= 11, `eleven stops must fit, ceiling is ${MAX_STOPS}`);
+
+  const stops = [];
+  for (let i = 0; i <= 10; i += 1) {
+    const v = Math.round((i / 10) * 255).toString(16).padStart(2, '0');
+    stops.push({ at: i / 10, color: `#${v}00${v}` });
+  }
+  assert.equal(stops.length, 11);
+
+  // NOTHING DOWNSTREAM COUNTS STOPS. The ramp is baked to a 256-entry LUT, so
+  // eleven stops cost exactly what two do — this is the reason the ceiling
+  // was safe to raise.
+  const lut = buildRampLut(stops);
+  assert.equal(lut.length, 256 * 3);
+
+  // Each stop lands where it was put, so "one colour per 0.1" really is ten
+  // distinct bands rather than a gradient that swallows them.
+  for (const stop of stops) {
+    const i = Math.round(stop.at * 255);
+    const expected = parseInt(stop.color.slice(1, 3), 16);
+    assert.ok(Math.abs(lut[i * 3] - expected) <= 1,
+      `stop at ${stop.at} should read ${expected}, got ${lut[i * 3]}`);
+    assert.ok(Math.abs(lut[i * 3 + 1] - 0) <= 1, 'and no green leaks in');
+  }
+
+  // A saved lens keeps all eleven through the store's sanitiser, which is
+  // where the ceiling is actually enforced.
+  const restored = sanitiseLens({
+    id: 'x', name: 'tenths', color: { channel: 'luma', low: 0, high: 1, gamma: 1 },
+    stops, base: 'black', sceneBlend: 0
+  });
+  assert.equal(restored.stops.length, 11, 'the store keeps every one of them');
 });

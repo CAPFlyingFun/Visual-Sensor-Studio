@@ -346,7 +346,22 @@ export interface CustomLens {
   target?: string;
 }
 
-export const MAX_STOPS = 8;
+/**
+ * How many colour stops a lens may carry.
+ *
+ * Joshua, 2026-09-04: "I was trying to do one color for each 0.1, and was
+ * short." That is eleven stops — 0.0 through 1.0 — and the limit was eight.
+ *
+ * Nothing in the pipeline cared about the old number. The ramp is baked into
+ * a 256-entry LUT (buildRampLut) and uploaded as a texture, so the shader
+ * never sees a stop at all and costs exactly the same at two stops or twenty;
+ * the share code is JSON in base64url with no fixed-width count; storage is
+ * JSON. It was a guard on the editor, not a capacity.
+ *
+ * Twelve rather than eleven so that the request that prompted this does not
+ * land on the ceiling it just raised.
+ */
+export const MAX_STOPS = 12;
 export const MIN_STOPS = 2;
 
 /**
