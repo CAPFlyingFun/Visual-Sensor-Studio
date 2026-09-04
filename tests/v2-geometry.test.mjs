@@ -1265,9 +1265,14 @@ test('a stream above the encoder envelope records through the render, held under
       });
       // A remembered probe verdict from "this device": a wall far below the
       // fake camera's stream, so the RGB clip must go through the render.
+      //
+      // AND THE CEILING IS EXPLICITLY TURNED ON. Recording at MAX regardless
+      // of the envelope is the default now, so a test of the CLAMPED path has
+      // to ask for the clamp — otherwise it silently stops testing anything.
       await context.addInitScript(() => {
         localStorage.setItem('vss.v2.encoderEnvelope.v1',
           JSON.stringify({ largestDecoded: 1000, smallestFailed: 1200 }));
+        localStorage.setItem('vss.v2.forceMaxRecord.v1', 'no');
       });
       const page = await context.newPage();
       await page.goto(`${base}/index.html`);

@@ -198,9 +198,20 @@ updateState({ encoderEnvelope: envelopeFromMeasurement(storedEnvelopeMeasurement
  */
 function storedForceMaxRecord(): boolean {
   try {
-    return localStorage.getItem(FORCE_MAX_STORE_KEY) === 'yes';
+    // DEFAULT ON. Joshua, 2026-09-04: "want to try it out before we rule it
+    // out" — and he is right that the shape of the old default was wrong.
+    // The envelope predicts a failure from a frame-size limit belonging to
+    // ONE codec on ONE device, and then applies that prediction to every
+    // camera the app will ever meet. "What if using a computer with a camera
+    // up to 16K, having a recording limit seems like failure for the app."
+    // A cap that shrinks every recording everywhere to avoid a failure that
+    // may not happen is the worse trade, especially when the failure is
+    // VISIBLE the moment it happens: the finished file is decoded and the
+    // readout says "did not decode" rather than handing over a broken clip.
+    // Only an explicit 'no' turns the ceiling back on.
+    return localStorage.getItem(FORCE_MAX_STORE_KEY) !== 'no';
   } catch {
-    return false;
+    return true;
   }
 }
 updateState({ forceMaxRecord: storedForceMaxRecord() });

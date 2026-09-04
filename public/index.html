@@ -251,7 +251,7 @@
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
-    <span class="pill" id="v2Badge">v0.56.0</span>
+    <span class="pill" id="v2Badge">v0.57.0</span>
   </header>
 
   <div class="camera-layout">
@@ -577,15 +577,17 @@
           <p class="stage-note" id="v2RecordResult"></p>
           <p>
             <label class="coach-mute"><input type="checkbox" id="v2ForceMaxRecord" />
-            <strong>Record at MAX regardless of the encoder envelope</strong></label>
-            RECORD IN normally holds under the encoder's frame limit, which is
-            <em>assumed</em> at the H.264 Level 5.2 line until the probe below measures this
-            device &mdash; and an assumption should not shrink a recording. With this on,
+            <strong>Record at MAX regardless of the encoder envelope</strong> &mdash; on by
+            default</label>
             RECORD IN follows the chosen tier exactly as a photo does, so MAX records at MAX.
-            Nothing about the check is silent either way: every clip's dimensions are read
-            back out of the finished file, so if the encoder cannot hold the frame the
-            readout says <em>did not decode</em> rather than leaving you a broken clip
-            that looks fine.
+            Untick it to hold recordings under the encoder's frame limit instead &mdash; a
+            limit that is <em>assumed</em> at the H.264 Level 5.2 line until the probe below
+            measures this device. That assumption would shrink a 12&nbsp;MP frame to about
+            three quarters of its area, and it would do the same on a camera many times
+            larger, so it is not applied unless you ask for it. Nothing here is silent
+            either way: every clip's dimensions are read back out of the finished file, so
+            an encoder that cannot hold the frame reports <em>did not decode</em> rather
+            than leaving you a broken clip that looks fine.
           </p>
           <p>
             <strong>Encoder envelope probe.</strong> Records a synthetic moving-noise canvas

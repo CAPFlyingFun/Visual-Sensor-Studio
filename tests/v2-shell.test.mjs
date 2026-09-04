@@ -804,6 +804,20 @@ test('MAX can be recorded at MAX by choice, and the envelope stops pretending', 
   assert.match(appTs, /encoderMacroblocks: readState\(\)\.forceMaxRecord \? null : \{/,
     'null is the geometry\'s own "no envelope", not a second policy');
 
+  // ON BY DEFAULT, and only an explicit 'no' turns the ceiling back on. The
+  // envelope generalises one codec's limit, measured on one device, to every
+  // camera the app will meet; shrinking every recording everywhere to
+  // pre-empt a failure that announces itself anyway is the worse trade.
+  assert.match(appTs, /localStorage\.getItem\(FORCE_MAX_STORE_KEY\) !== 'no'/,
+    'anything but a stored "no" records at MAX');
+  const stored = appTs.slice(appTs.indexOf('function storedForceMaxRecord'),
+    appTs.indexOf('updateState({ forceMaxRecord: storedForceMaxRecord() });'));
+  assert.match(stored, /\} catch \{\s*return true;/,
+    'and unreadable storage must not quietly reinstate the ceiling');
+  const stateTs = readFileSync(new URL('../src/v2/state.ts', import.meta.url), 'utf8');
+  assert.match(stateTs, /forceMaxRecord: true/,
+    'the boot state agrees with the stored default, so nothing flips on first paint');
+
   // AND IT IS REMEMBERED — a decision about this device, not this session.
   assert.match(appTs, /const FORCE_MAX_STORE_KEY = 'vss\.v2\.forceMaxRecord\.v1';/);
   assert.match(appTs, /function storedForceMaxRecord\(\): boolean \{/);

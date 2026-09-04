@@ -182,6 +182,12 @@ export interface V2State {
    * it also overrides a measured envelope, not merely the assumed one: the
    * finished file is decoded and reported either way, so a frame the encoder
    * really cannot hold announces itself instead of being predicted away.
+   *
+   * DEFAULT TRUE. The envelope generalises one codec's frame limit, measured
+   * on one device, to every camera this app will ever meet — "what if using a
+   * computer with a camera up to 16K, having a recording limit seems like
+   * failure for the app". Shrinking every recording everywhere to pre-empt a
+   * failure that announces itself anyway is the worse trade.
    */
   forceMaxRecord: boolean;
 }
@@ -223,7 +229,9 @@ const state: V2State = {
   recording: null,
   lastClip: null,
   encoderEnvelope: ASSUMED_ENVELOPE,
-  forceMaxRecord: false
+  // ON until the stored preference or an explicit untick says otherwise —
+  // see storedForceMaxRecord in app.ts for why the default is this way round.
+  forceMaxRecord: true
 };
 
 const listeners = new Set<Listener>();
