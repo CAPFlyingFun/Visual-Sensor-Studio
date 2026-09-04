@@ -36,7 +36,6 @@ export const TEMPORAL_CHANNELS: readonly ChannelId[] = ['speed', 'change', 'age'
  * checked. `decodePhoto` steps down and verifies rather than trusting this
  * number, which is only where the stepping starts.
  */
-export const DEFAULT_MAX_PIXELS = 16_000_000;
 
 export interface DecodedPhoto {
   data: ImageData;
@@ -54,6 +53,8 @@ export interface PhotoCanvasHost {
     height: number;
   };
 }
+
+export const DEFAULT_MAX_PIXELS = (sourceWidth: number;) * (sourceHeight: number;):
 
 /**
  * Has this canvas actually been drawn, or did the browser hand back a blank?
