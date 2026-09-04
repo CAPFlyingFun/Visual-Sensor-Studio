@@ -70,23 +70,63 @@ export interface ClipResult {
 }
 
 /**
- * Plain containers only, most compatible first. Parameterised codec strings
- * are deliberately absent: the legacy app measured Chromium rejecting every
- * one of them while plain video/mp4 encoded correctly, and a pinned low
- * H.264 level is exactly the ceiling the spec forbids.
+ * HEVC FIRST, then plain containers.
+ *
+ * WHY THIS CHANGED (Joshua, 2026-09-04: "MAX is MAX output, not half or even
+ * 3/4 of MAX"). Left to itself, WebKit encodes MediaRecorder output as H.264,
+ * and H.264 Level 5.2 caps a frame at 36,864 macroblocks. The encoder probe
+ * measured exactly that line on this device: 2592x3456 decodes, 2688x3584
+ * does not. A 3024x4032 frame is 47,628 macroblocks, so a MAX recording is
+ * held down to 2656x3542 — about three quarters of MAX by area. That is not
+ * a limit of the phone. It is a limit of the one codec nobody asked to
+ * change: HEVC's frame ceiling is far higher, and this hardware encodes it
+ * natively for its own camera app.
+ *
+ * SO A CODECS= PARAMETER IS NOW ALLOWED, WITH THE OLD RULE INTACT. The rule
+ * this ladder was written under was "no pinned H.264 profile or level", after
+ * the legacy app measured Chromium rejecting parameterised strings and a
+ * pinned low level capping the encoder. Asking for HEVC is the opposite of
+ * that mistake — it REMOVES a ceiling rather than imposing one — and no H.264
+ * codec string appears here, so no level can ever be pinned. A test holds
+ * both halves.
+ *
+ * hvc1 before hev1: both name HEVC in MP4 and Apple's tooling writes hvc1,
+ * which is also the tag QuickTime and Photos handle without complaint.
+ * Plain video/mp4 stays as the fallback that has always worked, so a device
+ * that admits neither HEVC string behaves exactly as it did before.
  */
-const CONTAINER_LADDER = ['video/mp4', 'video/webm'] as const;
+const CONTAINER_LADDER = [
+  'video/mp4;codecs=hvc1',
+  'video/mp4;codecs=hev1',
+  'video/mp4',
+  'video/webm'
+] as const;
 
-export function pickContainer(isSupported: (mime: string) => boolean): string {
+/**
+ * Every candidate this browser admits, best first — not just the first one.
+ *
+ * isTypeSupported saying yes is not a promise the CONSTRUCTOR will accept the
+ * same string, and a MediaRecorder that throws returns a failed recording
+ * rather than falling back. With one candidate that was survivable, because
+ * the one candidate was the plain container that always works; with HEVC in
+ * front of it, a browser that admits hvc1 and then refuses to build it would
+ * take recording down entirely. So start() walks this list.
+ */
+export function containerCandidates(isSupported: (mime: string) => boolean): string[] {
+  const admitted: string[] = [];
   for (const mime of CONTAINER_LADDER) {
     try {
-      if (isSupported(mime)) return mime;
+      if (isSupported(mime)) admitted.push(mime);
     } catch {
       // An overzealous isTypeSupported must not take recording down.
     }
   }
-  // Empty string = let the browser pick; the file is measured either way.
-  return '';
+  return admitted;
+}
+
+/** The single best admitted container, or '' to let the browser choose. */
+export function pickContainer(isSupported: (mime: string) => boolean): string {
+  return containerCandidates(isSupported)[0] ?? '';
 }
 
 /**
@@ -169,18 +209,38 @@ export class ClipRecorder {
     if (typeof MediaRecorder === 'undefined') {
       return { ok: false, reason: 'MediaRecorder is unavailable in this browser' };
     }
-    const mime = pickContainer((candidate) => MediaRecorder.isTypeSupported(candidate));
     this.bitrate = suggestedBitrate(
       recordInput.width, recordInput.height, measuredFps > 0 ? measuredFps : 30);
-    try {
-      this.recorder = new MediaRecorder(stream, mime
-        ? { mimeType: mime, videoBitsPerSecond: this.bitrate }
-        : { videoBitsPerSecond: this.bitrate });
-    } catch (error) {
-      this.recorder = null;
-      return { ok: false, reason: error instanceof Error ? error.message : 'recorder refused' };
+    // Walk the admitted containers, then the browser's own default. A
+    // constructor that refuses a string isTypeSupported admitted costs one
+    // step down the ladder instead of the whole recording.
+    const candidates: (string | null)[] = [
+      ...containerCandidates((candidate) => MediaRecorder.isTypeSupported(candidate)),
+      null
+    ];
+    let chosen = '';
+    let refused: unknown = null;
+    for (const candidate of candidates) {
+      try {
+        this.recorder = new MediaRecorder(stream, candidate
+          ? { mimeType: candidate, videoBitsPerSecond: this.bitrate }
+          : { videoBitsPerSecond: this.bitrate });
+        chosen = candidate ?? '';
+        break;
+      } catch (error) {
+        refused = error;
+        this.recorder = null;
+      }
     }
-    this.mime = this.recorder.mimeType || mime;
+    if (!this.recorder) {
+      return {
+        ok: false,
+        reason: refused instanceof Error ? refused.message : 'recorder refused'
+      };
+    }
+    // The recorder's OWN answer wins over what was asked for: a browser may
+    // accept hvc1 and encode something else, and the file is what matters.
+    this.mime = this.recorder.mimeType || chosen;
     this.label = label;
     this.chunks = [];
     this.diedReason = null;

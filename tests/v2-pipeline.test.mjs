@@ -8,7 +8,7 @@ import {
   DEFAULT_GEOMETRY_INPUTS, fitShortSide, resolveGeometry
 } from '../.test-build/v2/camera/geometry.js';
 import { captureAtMaxStream } from '../.test-build/v2/capture/shutter.js';
-import { pickContainer } from '../.test-build/v2/capture/record.js';
+import { containerCandidates, pickContainer } from '../.test-build/v2/capture/record.js';
 import {
   STREAM_TIERS, DEFAULT_STREAM_TIER, tierAvailable, tierById
 } from '../.test-build/v2/camera/stream-tiers.js';
@@ -203,18 +203,40 @@ test('the record policy records the chosen stream; no silent default cap', () =>
   assert.match(small.recordInput.reason, /responsive stream/);
 });
 
-test('the container ladder prefers mp4, falls back honestly, never pins a level', () => {
-  assert.equal(pickContainer(() => true), 'video/mp4');
+test('the container ladder asks for HEVC first, falls back honestly, never pins an H.264 level', () => {
+  // HEVC FIRST. H.264 Level 5.2 caps a frame at 36,864 macroblocks, which is
+  // what holds a 47,628-macroblock MAX recording down to three quarters of
+  // its size. HEVC's ceiling is far higher and this hardware encodes it.
+  assert.equal(pickContainer(() => true), 'video/mp4;codecs=hvc1');
+  assert.equal(pickContainer((mime) => mime === 'video/mp4;codecs=hev1'),
+    'video/mp4;codecs=hev1', 'hev1 is taken when hvc1 is not admitted');
+
+  // AND THE OLD RULE SURVIVES: no H.264 codec string, ever. That is the one
+  // that pinned a LEVEL and capped the encoder; asking for HEVC removes a
+  // ceiling rather than imposing one, which is why it is allowed here.
+  const seen = [];
+  pickContainer((mime) => { seen.push(mime); return false; });
+  assert.ok(seen.length > 0, 'the ladder is walked');
+  assert.ok(seen.every((mime) => !/avc1|avc3|h264/i.test(mime)),
+    `no H.264 codec string can pin a level, saw: ${seen.join(', ')}`);
+
+  // A DEVICE THAT ADMITS NEITHER HEVC STRING BEHAVES EXACTLY AS BEFORE.
+  assert.equal(pickContainer((mime) => !mime.includes('codecs')), 'video/mp4',
+    'plain mp4 is still the fallback that has always worked');
   assert.equal(pickContainer((mime) => mime === 'video/webm'), 'video/webm');
   assert.equal(pickContainer(() => false), '',
     'no admitted container means the browser default, measured afterwards');
   assert.equal(pickContainer(() => { throw new Error('no recorder'); }), '');
-  // The whole point: no candidate carries a codecs= parameter, so no
-  // hard-coded H.264 profile/level can ever cap the encoder again.
-  const seen = [];
-  pickContainer((mime) => { seen.push(mime); return false; });
-  assert.ok(seen.length > 0 && seen.every((mime) => !mime.includes('codecs')),
-    `plain containers only, saw: ${seen.join(', ')}`);
+
+  // EVERY admitted candidate is kept, in order — isTypeSupported saying yes
+  // is not a promise the CONSTRUCTOR will accept the same string, so start()
+  // needs somewhere to fall to rather than failing the recording.
+  assert.deepEqual(containerCandidates(() => true), [
+    'video/mp4;codecs=hvc1', 'video/mp4;codecs=hev1', 'video/mp4', 'video/webm'
+  ]);
+  assert.deepEqual(containerCandidates((mime) => !mime.includes('codecs')),
+    ['video/mp4', 'video/webm']);
+  assert.deepEqual(containerCandidates(() => false), []);
 });
 
 test('analysis downsamples for vision work and says so', () => {
@@ -2156,4 +2178,27 @@ test('Night saves the STACK, at the tier\'s size, and still consults no lens', (
   const freeze = nightBlock.indexOf("nightPhase = 'complete';");
   assert.ok(freeze > -1 && nightBlock.indexOf('void saveNightPhoto(') > freeze,
     'renderPreview is frozen before the canvas is encoded');
+});
+
+test('a container the constructor refuses costs one rung, not the recording', () => {
+  // isTypeSupported admitting a string is not a promise the MediaRecorder
+  // CONSTRUCTOR will accept it. With one candidate that was survivable — the
+  // one candidate was the plain container that always works. With HEVC in
+  // front of it, a browser that admits hvc1 and then refuses to build it
+  // would have taken recording down entirely, so start() walks the list.
+  const source = readFileSync(new URL('../src/v2/capture/record.ts', import.meta.url), 'utf8');
+  const start = source.slice(source.indexOf('  start('), source.indexOf('this.label = label;'));
+
+  assert.match(start, /containerCandidates\(\(candidate\) => MediaRecorder\.isTypeSupported\(candidate\)\)/,
+    'every admitted container is a candidate, not just the first');
+  assert.match(start, /for \(const candidate of candidates\)/, 'and each is tried in turn');
+  assert.match(start, /\.\.\.containerCandidates[\s\S]*?\n\s*null\n\s*\]/,
+    'with the browser default last, so an all-refusing ladder still records');
+  assert.match(start, /if \(!this\.recorder\) \{/,
+    'only an empty ladder is a failed recording');
+
+  // THE FILE'S OWN ANSWER WINS over what was asked for: a browser may accept
+  // hvc1 and encode something else, and the readout must not claim otherwise.
+  assert.match(source, /this\.mime = this\.recorder\.mimeType \|\| chosen;/,
+    'the recorder reports what it actually chose');
 });
