@@ -1242,9 +1242,23 @@ function describeNightLogEntry(entry: NightLogEntry): string {
  * GAIN answers the dark scene. A mean of N frames is not brighter than one
  * frame — it is the same brightness with about sqrt(N) less noise — so the
  * brightening has to be done here, and the stack is what makes it affordable.
- * The multiplier is whatever brings the measured mean to TARGET_MEAN, floored
- * at 1.0 so Night can only ever brighten, and capped so a nearly black frame
- * cannot ask for a multiply that would only magnify what noise remains.
+ *
+ * ITS CEILING IS THE FRAME COUNT, and that is the whole of Joshua's "only
+ * adding and no division" (2026-09-04). Adding N frames without dividing is
+ * arithmetically identical to this mean multiplied by N — sum = mean x N — so
+ * a gain of N IS the sum, reached through the numerically better-conditioned
+ * form. It is not an arbitrary ceiling either: N frames collected N frames'
+ * worth of light, so N is precisely the brightening the exposure actually
+ * paid for, and asking for more is inventing light that was never measured.
+ * It is also what makes the stack worth having: brightening by N after
+ * averaging N frames is about sqrt(N) cleaner than brightening one frame by
+ * N, which is why the frame count had to rise before this ceiling could.
+ *
+ * THE MEASURED TARGET STILL BINDS FIRST, whichever is smaller. In daylight a
+ * mean of 0.3 asks for 1.4x, and handing it 109x because 109 frames were
+ * stacked would wash the picture out. In the near-black room the measurement
+ * asks for about 420x and only 109 were collected, so the light actually
+ * gathered is the limit. Each case is answered by the smaller, honest number.
  *
  * LIFT answers daylight. It is driven by the CRUSHED share — the pixels the
  * exposure reading found at the bottom of the range with their detail already
@@ -1256,11 +1270,22 @@ function describeNightLogEntry(entry: NightLogEntry): string {
  * whatever the gain, and a gain of 1.0 makes the whole curve an identity.
  */
 const NIGHT_TARGET_MEAN = 0.42;
-const NIGHT_MAX_GAIN = 6;
 
-function nightRecoveryFor(reading: ExposureReading): NightRecovery {
-  const gain = Math.min(NIGHT_MAX_GAIN,
-    Math.max(1, NIGHT_TARGET_MEAN / Math.max(reading.mean, 0.01)));
+/**
+ * Only a guard against dividing by zero. It was 0.01 — which, against a
+ * measured mean of 0.001, silently answered a question nobody asked: the
+ * ratio was pinned at 42 before any cap even applied. A floor that changes
+ * the answer for real scenes is not a guard, so this one sits far below
+ * anything a camera can report.
+ */
+const NIGHT_MEAN_FLOOR = 0.0001;
+
+function nightRecoveryFor(reading: ExposureReading, frames: number): NightRecovery {
+  // What the light collected pays for: one frame's worth per frame stacked.
+  const collected = Math.max(1, frames);
+  // What the picture asks for to reach an ordinary exposure.
+  const wanted = NIGHT_TARGET_MEAN / Math.max(reading.mean, NIGHT_MEAN_FLOOR);
+  const gain = Math.max(1, Math.min(collected, wanted));
   // Crushed is a share, 0..1. A frame with a tenth of itself blocked up asks
   // for a noticeable open; one with none asks for nothing.
   const lift = 1 + Math.min(0.6, reading.crushed * 3);
@@ -1484,7 +1509,13 @@ function updateNightStack(now: number): void {
     // through plain RGB with no lift at all.
     renderer.renderNightResult(nightSize);
     const reading = measureNightResult();
-    const recovery = reading ? nightRecoveryFor(reading) : { gain: 1, lift: 1 };
+    // stackCount, not acceptedFrames: the gain may only claim the light that
+    // is actually IN the accumulator, and a restart threw the earlier frames
+    // away. Claiming a whole capture's worth after a restart would brighten
+    // by light the stored picture never received.
+    const recovery = reading
+      ? nightRecoveryFor(reading, nightCounters.stackCount)
+      : { gain: 1, lift: 1 };
     // Then again, through the lift that reading just asked for.
     renderer.renderNightResult(nightSize, recovery);
     nightCounters = {

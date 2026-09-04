@@ -230,3 +230,42 @@ test('the accumulator format is reported in the counters, empty until measured',
   assert.match(describeNightCounters({ ...counters, accumulatorFormat: 'RGBA16F' }),
     /accumulator RGBA16F/, 'once measured it reaches the copyable log');
 });
+
+/*
+ * "Only adding and no division" (Joshua, 2026-09-04), as arithmetic.
+ *
+ * Summing N frames without dividing is identical to the running mean times
+ * N. The accumulator keeps the mean because it is the better-conditioned
+ * form; the sum is then recovered as a gain of N at the tone stage. These
+ * check the two are the same number, and that the rule is safe in daylight.
+ */
+test('a gain of N is the sum of N frames, and daylight still binds first', () => {
+  const TARGET = 0.42;
+  const FLOOR = 0.0001;
+  const recover = (mean, frames) =>
+    Math.max(1, Math.min(Math.max(1, frames), TARGET / Math.max(mean, FLOOR)));
+
+  // THE DARK ROOM, Joshua's measured numbers: mean 0.001 over 109 frames.
+  // The picture asks for 420x; only 109 frames of light were collected.
+  const dark = recover(0.001, 109);
+  assert.equal(dark, 109, 'the dark scene is brightened by exactly the frames it gathered');
+  // Which is the sum: mean x N is what adding without dividing would store.
+  assert.ok(Math.abs(0.001 * 109 - 0.001 * dark) < 1e-12,
+    'gain of N and the undivided sum are the same value');
+
+  // THE OLD CEILING of 6 was the binding constraint by a factor of eighteen.
+  assert.ok(dark / 6 > 15, 'the arbitrary cap was holding back most of the light');
+
+  // DAYLIGHT: 109 frames were still gathered, but the picture only asks for
+  // 1.4x. Handing it 109x would wash it out, so the measurement wins.
+  assert.ok(Math.abs(recover(0.3, 109) - 1.4) < 1e-9,
+    'a bright scene takes what it asks for, not what it collected');
+
+  // A WELL-EXPOSED frame is left exactly alone; Night may only brighten.
+  assert.equal(recover(0.42, 109), 1, 'gain 1.0 is an identity, never a darkening');
+  assert.equal(recover(0.9, 109), 1, 'and an over-bright frame is not pulled down');
+
+  // A SHORT STACK cannot claim a long one's light.
+  assert.equal(recover(0.001, 1), 1, 'one frame gathered one frame of light');
+  assert.equal(recover(0.001, 15), 15, 'fifteen frames, fifteen frames of light');
+});

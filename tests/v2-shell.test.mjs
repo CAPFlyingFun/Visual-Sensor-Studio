@@ -423,8 +423,18 @@ test('Night measures its own result, then lifts it, then saves what it lifted', 
   assert.match(appTs, /context\.drawImage\(renderer\.targetCanvas,/,
     'it measures the STACK, not the frame arriving now');
 
-  // Never darkens, and a well-exposed frame is left alone.
-  assert.match(appTs, /Math\.max\(1, NIGHT_TARGET_MEAN \/ Math\.max\(reading\.mean, 0\.01\)\)/);
+  // Never darkens, and a well-exposed frame is left alone. The gain is the
+  // SMALLER of what the picture asks for and what the light collected pays
+  // for — a gain of N being arithmetically the sum of N frames.
+  assert.match(appTs, /const collected = Math\.max\(1, frames\);/);
+  assert.match(appTs,
+    /const wanted = NIGHT_TARGET_MEAN \/ Math\.max\(reading\.mean, NIGHT_MEAN_FLOOR\);/);
+  assert.match(appTs, /const gain = Math\.max\(1, Math\.min\(collected, wanted\)\);/,
+    'the frame count is the ceiling, and the measurement binds first in daylight');
+  assert.match(appTs, /nightRecoveryFor\(reading, nightCounters\.stackCount\)/,
+    'counted from what is IN the accumulator, so a restart cannot claim lost light');
+  assert.ok(!/NIGHT_MAX_GAIN/.test(appTs),
+    'the arbitrary ceiling of 6 is gone — the frame count replaced it');
   assert.match(appTs, /const lift = 1 \+ Math\.min\(0\.6, reading\.crushed \* 3\);/,
     'the shadow open is driven by the CRUSHED share, so daylight gets it too');
 
