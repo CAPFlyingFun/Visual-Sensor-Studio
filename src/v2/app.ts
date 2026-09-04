@@ -135,7 +135,16 @@ function geometryInputs(): GeometryInputs {
     recordPolicy: tierById(readState().streamTier)?.recordPolicy ?? 'source',
     // ENCODER CAPABILITY is the last bound on RECORD IN — measured by the
     // probe or assumed at the Level 5.2 line, and always with its reason.
-    encoderMacroblocks: {
+    //
+    // NULL WHEN THE RECORDING IS FORCED TO MAX. Joshua, 2026-09-04: "don't
+    // assume my phone can't as I am able to record at MAX at around 30fps."
+    // A capability nobody measured on THIS install should not quietly take a
+    // quarter of his frame, and the check is the only thing standing between
+    // the chosen tier and the file. Skipping it is safe to offer because the
+    // clip's real dimensions are decoded out of the finished file afterwards:
+    // an encoder that cannot hold the frame reports "did not decode" rather
+    // than being predicted away in advance.
+    encoderMacroblocks: readState().forceMaxRecord ? null : {
       limit: readState().encoderEnvelope.maxMacroblocks,
       reason: readState().encoderEnvelope.reason
     }
@@ -155,6 +164,7 @@ window.addEventListener('resize', refreshGeometry);
 /* --- ENCODER CAPABILITY: assumed until this device's probe measures it ----- */
 
 const ENVELOPE_STORE_KEY = 'vss.v2.encoderEnvelope.v1';
+const FORCE_MAX_STORE_KEY = 'vss.v2.forceMaxRecord.v1';
 
 function storedEnvelopeMeasurement(): EnvelopeMeasurement | null {
   try {
@@ -179,6 +189,21 @@ function rememberEnvelopeMeasurement(measurement: EnvelopeMeasurement): void {
 // The stored measurement (a previous probe run on this device) outranks the
 // assumption from the first frame, so RECORD IN never has to be corrected.
 updateState({ encoderEnvelope: envelopeFromMeasurement(storedEnvelopeMeasurement()) });
+
+/**
+ * The MAX-recording choice is remembered, because it is a preference about
+ * this device rather than a per-session experiment: having decided his phone
+ * records MAX, Joshua should not have to decide it again on every launch.
+ * Read defensively — a missing or unreadable value is simply "off".
+ */
+function storedForceMaxRecord(): boolean {
+  try {
+    return localStorage.getItem(FORCE_MAX_STORE_KEY) === 'yes';
+  } catch {
+    return false;
+  }
+}
+updateState({ forceMaxRecord: storedForceMaxRecord() });
 
 /* --- The pipeline: one frame in, explicit products out -------------------- */
 
@@ -2560,7 +2585,11 @@ function renderDiagnostics(): void {
       : recordCapped ? 'RGB render — the stream exceeds the encoder envelope' : 'camera stream direct';
   setText('v2DiagEncoder',
     `${encoderEnvelope.maxMacroblocks.toLocaleString('en-US')} macroblocks max frame · `
-    + `${encoderEnvelope.measured ? 'MEASURED' : 'assumed'} · ${encoderEnvelope.reason}`);
+    + `${encoderEnvelope.measured ? 'MEASURED' : 'assumed'} · ${encoderEnvelope.reason}`
+    // A limit that is not being applied must not be shown as if it were.
+    + (readState().forceMaxRecord
+      ? ' · NOT APPLIED: recording at MAX by choice, and the finished file is decoded to say whether it held'
+      : ''));
   setText('v2DiagRecordIn', recording
     ? `${recording.input.width}×${recording.input.height} · RECORDING · ${path}`
     : geometry
@@ -4118,6 +4147,30 @@ byId('v2RecordButton').addEventListener('click', () => void toggleRecording());
  * is about the ENCODER alone — see capture/encoder-probe.ts for the two
  * hypotheses it is built to separate.
  */
+/**
+ * The MAX-recording choice. Looked up WITHOUT byId: byId throws on missing
+ * markup, and a fresh app.js booting against a cached older index.html would
+ * then take every control wired after this line down with it — which is
+ * exactly how the app was bricked on 2026-09-03. A missing checkbox must cost
+ * only the checkbox.
+ */
+const forceMaxToggle = document.getElementById('v2ForceMaxRecord');
+if (forceMaxToggle instanceof HTMLInputElement) {
+  forceMaxToggle.checked = readState().forceMaxRecord;
+  forceMaxToggle.addEventListener('change', () => {
+    const forceMaxRecord = forceMaxToggle.checked;
+    try {
+      localStorage.setItem(FORCE_MAX_STORE_KEY, forceMaxRecord ? 'yes' : 'no');
+    } catch {
+      // Storage is optional; the session still honours the choice.
+    }
+    updateState({ forceMaxRecord });
+    // RECORD IN is resolved from the inputs, so the truth table has to be
+    // re-read for the new answer to appear rather than waiting for a frame.
+    refreshGeometry();
+  });
+}
+
 let probing = false;
 byId('v2EncoderProbe').addEventListener('click', () => {
   if (probing || readState().recording) return;

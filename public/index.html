@@ -251,7 +251,7 @@
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
-    <span class="pill" id="v2Badge">v0.54.0</span>
+    <span class="pill" id="v2Badge">v0.55.0</span>
   </header>
 
   <div class="camera-layout">
@@ -575,6 +575,18 @@
             what was asked.
           </p>
           <p class="stage-note" id="v2RecordResult"></p>
+          <p>
+            <label class="coach-mute"><input type="checkbox" id="v2ForceMaxRecord" />
+            <strong>Record at MAX regardless of the encoder envelope</strong></label>
+            RECORD IN normally holds under the encoder's frame limit, which is
+            <em>assumed</em> at the H.264 Level 5.2 line until the probe below measures this
+            device &mdash; and an assumption should not shrink a recording. With this on,
+            RECORD IN follows the chosen tier exactly as a photo does, so MAX records at MAX.
+            Nothing about the check is silent either way: every clip's dimensions are read
+            back out of the finished file, so if the encoder cannot hold the frame the
+            readout says <em>did not decode</em> rather than leaving you a broken clip
+            that looks fine.
+          </p>
           <p>
             <strong>Encoder envelope probe.</strong> Records a synthetic moving-noise canvas
             through the same recorder at 4:3 sizes bracketing the H.264 Level 5.2 frame limit

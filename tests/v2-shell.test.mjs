@@ -789,3 +789,35 @@ test('the colour trim is measured after the gain, and set on every draw', () => 
   assert.match(registryTs, /clamp\(c \* uBalance, 0\.0, 1\.0\)/,
     'a channel pulled up toward the average can pass 1.0');
 });
+
+test('MAX can be recorded at MAX by choice, and the envelope stops pretending', () => {
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+
+  // THE OPTION EXISTS AND IS REACHABLE. Joshua, 2026-09-04: "don't assume my
+  // phone can't as I am able to record at MAX at around 30fps."
+  assert.match(v2Html, /id="v2ForceMaxRecord"/, 'the choice has a control');
+  assert.match(appTs, /document\.getElementById\('v2ForceMaxRecord'\)/,
+    'looked up without byId, so missing markup costs only the checkbox');
+
+  // IT SKIPS THE CHECK ENTIRELY rather than raising a number, so RECORD IN
+  // follows the chosen tier exactly as a photo does.
+  assert.match(appTs, /encoderMacroblocks: readState\(\)\.forceMaxRecord \? null : \{/,
+    'null is the geometry\'s own "no envelope", not a second policy');
+
+  // AND IT IS REMEMBERED — a decision about this device, not this session.
+  assert.match(appTs, /const FORCE_MAX_STORE_KEY = 'vss\.v2\.forceMaxRecord\.v1';/);
+  assert.match(appTs, /function storedForceMaxRecord\(\): boolean \{/);
+  assert.match(appTs, /updateState\(\{ forceMaxRecord: storedForceMaxRecord\(\) \}\);/,
+    'restored at boot, so the choice survives a relaunch');
+
+  // THE READOUT MUST NOT SHOW A LIMIT IT IS NOT APPLYING.
+  assert.match(appTs, /NOT APPLIED: recording at MAX by choice/,
+    'an unapplied envelope says so rather than reading as the active ceiling');
+
+  // WHAT MAKES THIS SAFE TO OFFER: the clip's real size is read back out of
+  // the finished file, so an encoder that cannot hold the frame announces
+  // itself instead of being predicted away. That instrument must stay.
+  const recordTs = readFileSync(new URL('../src/v2/capture/record.ts', import.meta.url), 'utf8');
+  assert.match(recordTs, /function measureEncodedSize\(blob: Blob\)/,
+    'the file is still the witness, whatever the envelope said beforehand');
+});

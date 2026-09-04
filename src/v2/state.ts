@@ -173,6 +173,16 @@ export interface V2State {
    * this device. RECORD IN is held under it, with the reason named.
    */
   encoderEnvelope: EncoderEnvelope;
+  /**
+   * RECORD AT MAX REGARDLESS OF THE ENVELOPE — Joshua's own call, 2026-09-04:
+   * "don't assume my phone can't as I am able to record at MAX at around
+   * 30fps." With this set, RECORD IN follows the chosen tier exactly as a
+   * photo does and the encoder check is skipped entirely. It is a CHOICE, so
+   * it also overrides a measured envelope, not merely the assumed one: the
+   * finished file is decoded and reported either way, so a frame the encoder
+   * really cannot hold announces itself instead of being predicted away.
+   */
+  forceMaxRecord: boolean;
 }
 
 export function frameSize(width: number, height: number): FrameSize | null {
@@ -207,7 +217,8 @@ const state: V2State = {
   reticle: false,
   recording: null,
   lastClip: null,
-  encoderEnvelope: ASSUMED_ENVELOPE
+  encoderEnvelope: ASSUMED_ENVELOPE,
+  forceMaxRecord: false
 };
 
 const listeners = new Set<Listener>();
