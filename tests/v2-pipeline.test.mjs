@@ -210,12 +210,18 @@ test('the record policy records the chosen stream; no silent default cap', () =>
 });
 
 test('the container ladder asks for HEVC first, falls back honestly, never pins an H.264 level', () => {
-  // HEVC FIRST. H.264 Level 5.2 caps a frame at 36,864 macroblocks, which is
-  // what holds a 47,628-macroblock MAX recording down to three quarters of
-  // its size. HEVC's ceiling is far higher and this hardware encodes it.
-  assert.equal(pickContainer(() => true), 'video/mp4;codecs=hvc1');
+  // HEVC FIRST, AND QUOTED FIRST. RFC 6381 quotes the codecs value, and the
+  // device rejected every BARE spelling: the probe reported `asked
+  // video/mp4` with `codec avc1` on every trial, so the ladder had fallen
+  // through to the plain container and HEVC was never requested at all.
+  assert.equal(pickContainer(() => true), 'video/mp4;codecs="hvc1"');
   assert.equal(pickContainer((mime) => mime === 'video/mp4;codecs=hev1'),
-    'video/mp4;codecs=hev1', 'hev1 is taken when hvc1 is not admitted');
+    'video/mp4;codecs=hev1', 'a bare spelling is still taken when it is all there is');
+
+  // A browser that admits ONLY the quoted form must reach HEVC, which is the
+  // whole point of the change — the bare-only ladder could not.
+  assert.match(pickContainer((mime) => mime.includes('"')), /codecs="hvc/,
+    'quoting is tried before giving up on HEVC');
 
   // AND THE OLD RULE SURVIVES: no H.264 codec string, ever. That is the one
   // that pinned a LEVEL and capped the encoder; asking for HEVC removes a
@@ -237,9 +243,13 @@ test('the container ladder asks for HEVC first, falls back honestly, never pins 
   // EVERY admitted candidate is kept, in order — isTypeSupported saying yes
   // is not a promise the CONSTRUCTOR will accept the same string, so start()
   // needs somewhere to fall to rather than failing the recording.
-  assert.deepEqual(containerCandidates(() => true), [
-    'video/mp4;codecs=hvc1', 'video/mp4;codecs=hev1', 'video/mp4', 'video/webm'
-  ]);
+  const all = containerCandidates(() => true);
+  assert.equal(all[0], 'video/mp4;codecs="hvc1"', 'the quoted HEVC form leads');
+  assert.equal(all[all.length - 2], 'video/mp4', 'the plain container is the last MP4 resort');
+  assert.equal(all[all.length - 1], 'video/webm');
+  assert.ok(all.filter((m) => /hvc1|hev1/.test(m)).length >= 4,
+    'several HEVC spellings are tried before conceding, quoted and bare');
+  assert.ok(all.every((m, i) => all.indexOf(m) === i), 'no duplicate candidates');
   assert.deepEqual(containerCandidates((mime) => !mime.includes('codecs')),
     ['video/mp4', 'video/webm']);
   assert.deepEqual(containerCandidates(() => false), []);

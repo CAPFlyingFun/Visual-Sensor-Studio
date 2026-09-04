@@ -104,11 +104,27 @@ export interface ClipResult {
  * that admits neither HEVC string behaves exactly as it did before.
  */
 const CONTAINER_LADDER = [
+  // RFC 6381 QUOTES THE CODECS VALUE, and that is not decoration. The first
+  // attempt used the bare forms below and this device rejected every one of
+  // them: the probe reported `asked video/mp4` and `codec avc1` on every
+  // trial, so the ladder had fallen straight through to the plain container
+  // and HEVC was never requested at all. Every "HEVC is not enough" reading
+  // of that ladder was measuring H.264.
+  'video/mp4;codecs="hvc1"',
+  'video/mp4;codecs="hvc1.1.6.L153.B0"',
+  'video/mp4;codecs="hvc1.1.6.L123.B0"',
+  'video/mp4;codecs="hev1"',
+  // The bare forms stay BELOW the quoted ones rather than being deleted: a
+  // browser that accepts one and not the other costs nothing to keep, and
+  // which spelling a given engine admits is exactly what is being discovered.
   'video/mp4;codecs=hvc1',
   'video/mp4;codecs=hev1',
   'video/mp4',
   'video/webm'
 ] as const;
+
+/** Every candidate the ladder will try, in order — for the readout. */
+export const CONTAINER_CANDIDATE_LIST: readonly string[] = CONTAINER_LADDER;
 
 /**
  * Every candidate this browser admits, best first — not just the first one.

@@ -46,6 +46,7 @@ import {
 import { captureAtMaxStream, type Escalation, type ShutterStream } from './capture/shutter.js';
 import { ClipRecorder, type ClipResult } from './capture/record.js';
 import { describeImportability } from './capture/mp4-shape.js';
+import { CONTAINER_CANDIDATE_LIST, containerCandidates } from './capture/record.js';
 import { ENCODER_PROBE_LADDER, runEncoderProbe } from './capture/encoder-probe.js';
 import {
   envelopeFromMeasurement, measurementFromRows, type EnvelopeMeasurement
@@ -4233,8 +4234,17 @@ byId('v2EncoderProbe').addEventListener('click', () => {
   const out = byId('v2EncoderProbeOut');
   button.disabled = true;
   out.hidden = false;
+  // WHAT THIS BROWSER ADMITS, before a single trial runs. The probe reported
+  // `asked video/mp4` on every row of a ladder that leads with HEVC, which
+  // means isTypeSupported refused every HEVC spelling and the fall-through
+  // was invisible. It is not invisible now.
+  const admitted = containerCandidates((m) => typeof MediaRecorder !== 'undefined'
+    && MediaRecorder.isTypeSupported(m));
+  const refused = CONTAINER_CANDIDATE_LIST.filter((m) => !admitted.includes(m));
   out.textContent = `Encoder envelope probe — camera live: ${readState().camera?.state === 'live' ? 'yes' : 'no'} `
-    + `· ${ENCODER_PROBE_LADDER.length} trials, ~30 s, nothing saved\n`;
+    + `· ${ENCODER_PROBE_LADDER.length} trials, ~30 s, nothing saved\n`
+    + `admitted: ${admitted.length > 0 ? admitted.join(' | ') : 'none — the browser picks'}\n`
+    + `refused: ${refused.length > 0 ? refused.join(' | ') : 'none'}\n`;
   void runEncoderProbe(ENCODER_PROBE_LADDER, (_row, text) => {
     out.textContent += `${text}\n`;
   }).then((rows) => {
