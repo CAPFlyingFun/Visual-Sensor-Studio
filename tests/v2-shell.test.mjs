@@ -877,3 +877,26 @@ test('a shared file carries a MIME the system can map, not the recorder\'s full 
   assert.match(offer, /if \(!current\.includes\('cannot be shared here'\)\)/,
     'and it is not appended twice');
 });
+
+test('the encoder probe releases the camera and puts it back', () => {
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+  const probe = appTs.slice(appTs.indexOf("byId('v2EncoderProbe').addEventListener"),
+    appTs.indexOf("byId('v2EncoderProbe').addEventListener") + 4200);
+
+  // The probe allocates a full-size canvas and an encoder per trial while the
+  // camera, the frame texture and the display canvas hold their own buffers.
+  // WebKit reclaimed the camera to survive it — twice, on device.
+  assert.match(probe, /const cameraWasLive = readState\(\)\.camera\?\.state === 'live';/,
+    'it remembers whether there was a camera to put back');
+  assert.match(probe, /camera\.stop\(\);/, 'and releases it before the trials');
+
+  // RESTORED THROUGH THE APP'S OWN START PATH, so the tier, geometry and
+  // delivery meter come back as a normal start leaves them.
+  assert.match(probe, /void startCamera\(\)/, 'restored through the ordinary start');
+  assert.match(probe, /\}\)\.finally\(\(\) => \{[\s\S]*?restoreCamera\(\);/,
+    'in a finally, so a failed probe still gives the camera back');
+
+  // A camera that was NOT live must not be started by running a probe.
+  assert.match(probe, /if \(!cameraWasLive\) return;/,
+    'a probe never turns a camera on that the user had off');
+});

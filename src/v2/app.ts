@@ -4245,6 +4245,26 @@ byId('v2EncoderProbe').addEventListener('click', () => {
     + `· ${ENCODER_PROBE_LADDER.length} trials, ~30 s, nothing saved\n`
     + `admitted: ${admitted.length > 0 ? admitted.join(' | ') : 'none — the browser picks'}\n`
     + `refused: ${refused.length > 0 ? refused.join(' | ') : 'none'}\n`;
+  // THE CAMERA STANDS DOWN FOR THE DURATION. Joshua hit this twice: "the
+  // camera went blank and suspended like in the second probe". The probe
+  // allocates a full-size canvas and an encoder per trial while the live
+  // camera, the frame texture and the display canvas are all still holding
+  // their own buffers — and WebKit reclaims the camera to survive it. The
+  // probe records SYNTHETIC noise and never needed the camera, so releasing
+  // it is free here, and it is the largest allocation available to release.
+  const cameraWasLive = readState().camera?.state === 'live';
+  if (cameraWasLive) {
+    camera.stop();
+    out.textContent += 'camera released for the probe — it is restarted at the end\n';
+  }
+  const restoreCamera = (): void => {
+    if (!cameraWasLive) return;
+    // Through the app's own start path, so the stream tier, the geometry and
+    // the delivery meter all come back the way a normal start leaves them.
+    void startCamera().catch(() => {
+      out.textContent += '\nThe camera did not come back on its own — tap Enable camera.';
+    });
+  };
   void runEncoderProbe(ENCODER_PROBE_LADDER, (_row, text) => {
     out.textContent += `${text}\n`;
   }).then((rows) => {
@@ -4264,6 +4284,7 @@ byId('v2EncoderProbe').addEventListener('click', () => {
   }).finally(() => {
     probing = false;
     button.disabled = false;
+    restoreCamera();
   });
 });
 byId('v2ReverseRamp').addEventListener('click', () => {
