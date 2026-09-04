@@ -251,7 +251,7 @@
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
-    <span class="pill" id="v2Badge">v0.43.1</span>
+    <span class="pill" id="v2Badge">v0.44.0</span>
   </header>
 
   <div class="camera-layout">
@@ -520,13 +520,18 @@
              never written to. It renders at the picture's own full size, so
              an import is not quietly downscaled any more than a capture is. -->
         <section class="section">
-          <div class="section-title"><h2>Import a photo</h2><span class="hint">same filters · saved as a new file</span></div>
+          <div class="section-title"><h2>Import</h2><span class="hint">photo or video · same filters · saved as a new file</span></div>
           <div class="button-row">
-            <button type="button" class="btn" id="v2ImportPick">🖼️ Choose a photo</button>
+            <button type="button" class="btn" id="v2ImportPick">🖼️ Choose a photo or video</button>
+            <button type="button" class="btn" id="v2ImportPlay" hidden>⏸ Pause</button>
             <button type="button" class="btn" id="v2ImportSave" hidden>💾 Save as new</button>
             <button type="button" class="btn" id="v2ImportClear" hidden>✕ Clear</button>
           </div>
-          <input type="file" id="v2ImportFile" accept="image/*" hidden />
+          <input type="file" id="v2ImportFile" accept="image/*,video/*" hidden />
+          <!-- The imported clip decodes here and is never shown directly: the
+               FILTERED canvas below is what the eye gets, exactly as the
+               viewfinder shows the render rather than the raw camera. -->
+          <video id="v2ImportVideo" playsinline muted loop hidden></video>
           <p class="hint" id="v2ImportNote"></p>
           <canvas id="v2ImportCanvas" hidden></canvas>
           <p class="probe-out" id="v2ImportReading"></p>

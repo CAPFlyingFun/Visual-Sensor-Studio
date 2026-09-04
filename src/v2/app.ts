@@ -40,7 +40,9 @@ import {
   DEFAULT_STEADY_THRESHOLD, HOLD_MS, SteadyShutter, describeSteadiness,
   rateFrom, readSteadiness, smoothRate, type SteadyReading
 } from './vision/steadiness.js';
-import { resolveGeometry, DEFAULT_GEOMETRY_INPUTS } from './camera/geometry.js';
+import {
+  resolveGeometry, DEFAULT_GEOMETRY_INPUTS, type GeometryInputs
+} from './camera/geometry.js';
 import { captureAtMaxStream, type Escalation, type ShutterStream } from './capture/shutter.js';
 import { ClipRecorder, type ClipResult } from './capture/record.js';
 import { ENCODER_PROBE_LADDER, runEncoderProbe } from './capture/encoder-probe.js';
@@ -118,26 +120,34 @@ function measureViewfinder(): { width: number; height: number; shortSide: number
   return { width, height, shortSide: Math.min(width, height) };
 }
 
+/**
+ * The inputs the geometry authority is asked with — ONE definition, so an
+ * imported clip is measured by the same rules the camera is (Rule 6). It was
+ * inline in refreshGeometry until the import needed to resolve rows for a
+ * file rather than for the stream.
+ */
+function geometryInputs(): GeometryInputs {
+  return {
+    ...DEFAULT_GEOMETRY_INPUTS,
+    previewBoxShortSide: measureViewfinder().shortSide,
+    // The chosen tier is the eyes-open trade; its record policy rides
+    // along rather than a second opinion being formed here.
+    recordPolicy: tierById(readState().streamTier)?.recordPolicy ?? 'source',
+    // ENCODER CAPABILITY is the last bound on RECORD IN — measured by the
+    // probe or assumed at the Level 5.2 line, and always with its reason.
+    encoderMacroblocks: {
+      limit: readState().encoderEnvelope.maxMacroblocks,
+      reason: readState().encoderEnvelope.reason
+    }
+  };
+}
+
 function refreshGeometry(): void {
   const viewfinder = measureViewfinder();
   const { source } = readState();
   updateState({
     viewfinder: { width: viewfinder.width, height: viewfinder.height },
-    geometry: source
-      ? resolveGeometry(source, {
-        ...DEFAULT_GEOMETRY_INPUTS,
-        previewBoxShortSide: viewfinder.shortSide,
-        // The chosen tier is the eyes-open trade; its record policy rides
-        // along rather than a second opinion being formed here.
-        recordPolicy: tierById(readState().streamTier)?.recordPolicy ?? 'source',
-        // ENCODER CAPABILITY is the last bound on RECORD IN — measured by the
-        // probe or assumed at the Level 5.2 line, and always with its reason.
-        encoderMacroblocks: {
-          limit: readState().encoderEnvelope.maxMacroblocks,
-          reason: readState().encoderEnvelope.reason
-        }
-      })
-      : null
+    geometry: source ? resolveGeometry(source, geometryInputs()) : null
   });
 }
 window.addEventListener('resize', refreshGeometry);
@@ -300,6 +310,12 @@ function renderPreview(now: number): void {
   // the recording guard above, for the same reason: the ordinary per-frame
   // draw would otherwise overwrite it on the very next delivered frame.
   if (nightPhase === 'complete') return;
+  // AN IMPORTED CLIP OWNS THE CANVAS WHILE IT PLAYS. There is one WebGL
+  // context, one frame texture and one target canvas (Rule 4), so two
+  // sources cannot draw at once — the camera would overwrite the clip's
+  // frame and the clip the camera's, thirty times a second. The camera
+  // stands down for the duration rather than a second renderer existing.
+  if (importPlaying) return;
   const target = recording?.path === 'filtered' ? recording.input : resolved.preview;
   // A fresh census every few frames, for whoever is asking: a lens bound to
   // the whole frame's colours, a reference lens reporting its match share, or
@@ -1614,15 +1630,30 @@ function renderNightLog(): void {
  * says why instead of leaving a dead button.
  */
 let importedImage: HTMLImageElement | null = null;
+let importedClip: HTMLVideoElement | null = null;
 let importedName = '';
 let importedUrl = '';
+/**
+ * True while the imported clip is driving the shared canvas. renderPreview
+ * checks it and stands the camera down — one context, one writer.
+ */
+let importPlaying = false;
+let importFrames = 0;
 
-/** Why this filter cannot be applied to a single imported still, or ''. */
-function importRefusal(filterId: string): string {
+/**
+ * Why this filter cannot be applied to the imported media, or ''.
+ *
+ * The distinction that matters is STILL vs CLIP. Speed and Trails build their
+ * picture from a sequence, so on a single photo they have nothing to work
+ * from and would composite the camera's leftover memory over it. An imported
+ * VIDEO is a real sequence, so the same filters are exactly right there and
+ * are not refused — the refusal is about the material, not the filter.
+ */
+function importRefusal(filterId: string, isClip = false): string {
   const filter = filterById(filterId);
   if (!filter) return 'That filter is not available.';
   if (filter.unavailableReason) return filter.unavailableReason;
-  if (filter.state || filter.temporal) {
+  if (!isClip && (filter.state || filter.temporal)) {
     return `${filter.name} builds its picture from a sequence of frames, so it `
       + 'has nothing to work from in a single imported still. Pick a filter '
       + 'that reads one frame — RGB, Ironbow, Edges, or any lens.';
@@ -1631,6 +1662,12 @@ function importRefusal(filterId: string): string {
 }
 
 function clearImport(): void {
+  stopImportPlayback();
+  if (importedClip) {
+    importedClip.removeAttribute('src');
+    importedClip.load();
+  }
+  importedClip = null;
   importedImage = null;
   importedName = '';
   importedFilter = '';
@@ -1639,6 +1676,7 @@ function clearImport(): void {
   byId('v2ImportCanvas').hidden = true;
   byId('v2ImportSave').hidden = true;
   byId('v2ImportClear').hidden = true;
+  byId('v2ImportPlay').hidden = true;
   setText('v2ImportNote', '');
   setText('v2ImportReading', '');
 }
@@ -1683,9 +1721,106 @@ function renderImport(): boolean {
   return true;
 }
 
+/**
+ * One frame of the imported clip, through the active filter, onto the shared
+ * canvas and then into the import's own.
+ *
+ * A clip gets the FULL treatment a camera frame gets — the analysis size is
+ * passed, so Speed and Trails advance their state pass and actually work on
+ * imported footage. That is the whole point of importing a video rather than
+ * a still: there is a real sequence to read.
+ */
+function drawImportFrame(): boolean {
+  const clip = importedClip;
+  if (!clip) return false;
+  const size = frameSize(clip.videoWidth, clip.videoHeight);
+  if (!size) return false;
+  const { activeFilter } = readState();
+  if (importRefusal(activeFilter, true)) return false;
+  const resolved = resolveGeometry(size, geometryInputs());
+  if (!renderer.uploadFrame(clip)
+    || !renderer.render(activeFilter, size, resolved.analysis)) return false;
+  // A temporal filter compares against the PREVIOUS frame, so the clip has to
+  // leave one behind exactly as the delivery loop does for the camera.
+  renderer.snapshotHistory(resolved.analysis);
+  const canvas = byId<HTMLCanvasElement>('v2ImportCanvas');
+  if (canvas.width !== size.width || canvas.height !== size.height) {
+    canvas.width = size.width;
+    canvas.height = size.height;
+  }
+  const context = canvas.getContext('2d');
+  if (!context) return false;
+  context.drawImage(renderer.targetCanvas, 0, 0);
+  canvas.hidden = false;
+  importFrames++;
+  return true;
+}
+
+function driveImport(): void {
+  if (!importPlaying) return;
+  drawImportFrame();
+  window.requestAnimationFrame(driveImport);
+}
+
+function startImportPlayback(): void {
+  if (!importedClip || importPlaying) return;
+  importPlaying = true;
+  byId('v2ImportPlay').textContent = '⏸ Pause';
+  void importedClip.play().catch(() => { /* a refused play leaves it paused */ });
+  window.requestAnimationFrame(driveImport);
+}
+
+function stopImportPlayback(): void {
+  importPlaying = false;
+  importedClip?.pause();
+  const play = document.getElementById('v2ImportPlay');
+  if (play) play.textContent = '▶︎ Play';
+}
+
+async function loadClip(file: File): Promise<void> {
+  const clip = byId<HTMLVideoElement>('v2ImportVideo');
+  const url = URL.createObjectURL(file);
+  const ready = new Promise<boolean>((resolve) => {
+    const done = (ok: boolean) => {
+      clip.removeEventListener('loadeddata', onLoad);
+      clip.removeEventListener('error', onError);
+      resolve(ok);
+    };
+    const onLoad = () => done(true);
+    const onError = () => done(false);
+    clip.addEventListener('loadeddata', onLoad);
+    clip.addEventListener('error', onError);
+  });
+  clip.src = url;
+  clip.load();
+  if (!await ready) {
+    URL.revokeObjectURL(url);
+    setText('v2ImportNote', `${file.name} could not be opened as a video.`);
+    return;
+  }
+  importedClip = clip;
+  importedUrl = url;
+  importedName = file.name;
+  importedFilter = readState().activeFilter;
+  importFrames = 0;
+  byId('v2ImportClear').hidden = false;
+  byId('v2ImportPlay').hidden = false;
+  byId('v2ImportSave').hidden = false;
+  const size = frameSize(clip.videoWidth, clip.videoHeight);
+  setText('v2ImportNote', `${file.name} · through ${filterById(readState().activeFilter)?.name ?? ''}`);
+  setText('v2ImportReading', `${size?.width ?? 0}×${size?.height ?? 0} · `
+    + `${clip.duration.toFixed(1)}s · every filter, including Speed and Trails, `
+    + 'because a clip is a real sequence · the original file is never written to');
+  startImportPlayback();
+}
+
 async function loadImport(file: File): Promise<void> {
   clearImport();
   setText('v2ImportNote', `Opening ${file.name}…`);
+  if (file.type.startsWith('video/')) {
+    await loadClip(file);
+    return;
+  }
   const url = URL.createObjectURL(file);
   const image = new Image();
   try {
@@ -1737,11 +1872,95 @@ async function saveImport(): Promise<void> {
  */
 let importedFilter = '';
 function renderImportPanel(): void {
-  if (!importedImage) { importedFilter = ''; return; }
+  if (!importedImage && !importedClip) { importedFilter = ''; return; }
   const { activeFilter } = readState();
   if (activeFilter === importedFilter) return;
   importedFilter = activeFilter;
+  // A CLIP redraws itself every frame, so the shader change lands on its own;
+  // only the note needs saying again. A STILL is drawn once and must be
+  // re-rendered to show the new filter at all.
+  if (importedClip) {
+    setText('v2ImportNote', `${importedName} · through ${filterById(activeFilter)?.name ?? activeFilter}`);
+    return;
+  }
   renderImport();
+}
+
+/**
+ * Save the imported clip as a NEW video: the filtered canvas, recorded.
+ *
+ * ITS OWN RECORDER instance, deliberately. The camera's clipRecorder carries
+ * the live recording's state (readState().recording, the fed-frame counters,
+ * the stopping guard), and borrowing it would make an import look like a
+ * camera recording to every readout that asks.
+ *
+ * THREE HONEST LIMITS, said out loud rather than discovered:
+ * - SILENT. A canvas stream carries no audio; the original's sound is not in
+ *   the new file.
+ * - REAL TIME. The frames are encoded as they play, so a one-minute clip
+ *   takes a minute.
+ * - THE ENCODER'S CEILING still applies, so a clip above the measured
+ *   macroblock limit is recorded at the largest size that will decode — the
+ *   same RECORD IN row the camera obeys, resolved by the same authority.
+ */
+const importRecorder = new ClipRecorder();
+let importSaving = false;
+
+async function saveImportClip(): Promise<void> {
+  const clip = importedClip;
+  if (!clip || importSaving) return;
+  const size = frameSize(clip.videoWidth, clip.videoHeight);
+  if (!size) return;
+  const input = resolveGeometry(size, geometryInputs()).recordInput;
+  importSaving = true;
+  byId<HTMLButtonElement>('v2ImportSave').disabled = true;
+  try {
+    // From the top, once, with looping off so 'ended' really means ended.
+    stopImportPlayback();
+    const wasLooping = clip.loop;
+    clip.loop = false;
+    clip.currentTime = 0;
+    if (!drawImportFrame()) {
+      setText('v2ImportNote', 'No frame to start the recording from.');
+      return;
+    }
+    // 30 is a BITRATE-PLANNING REQUEST, not a measurement — the recorder uses
+    // it to size the encoder's budget before a single frame exists. What the
+    // file actually contains is measured from the file afterwards and is what
+    // the readout reports. The label carries `import-` so a filtered clip is
+    // never mistaken for a camera recording in the camera roll.
+    const started = importRecorder.start(renderer.targetCanvas.captureStream(),
+      input, 30, `import-${readState().activeFilter}`);
+    if (!started.ok) {
+      setText('v2ImportNote', started.reason ?? 'The recorder refused to start.');
+      return;
+    }
+    setText('v2ImportNote', `Recording ${clip.duration.toFixed(1)}s in real time — `
+      + 'the clip plays through once. Sound is not carried over.');
+    const ended = new Promise<void>((resolve) => {
+      const done = () => { clip.removeEventListener('ended', done); resolve(); };
+      clip.addEventListener('ended', done);
+    });
+    startImportPlayback();
+    await ended;
+    stopImportPlayback();
+    clip.loop = wasLooping;
+    const result = await importRecorder.stop();
+    if (!result) {
+      setText('v2ImportNote', 'The recording produced no file.');
+      return;
+    }
+    // The recorder already names the file from what it measured — one naming
+    // for every clip this app writes, camera or import.
+    offerShare('v2SharePhoto',
+      new File([result.blob], result.fileName, { type: result.blob.type }), 'v2PhotoResult');
+    setText('v2ImportNote', `Saved ${result.encodedWidth}×${result.encodedHeight} · `
+      + `${result.seconds.toFixed(1)}s · ${(result.blob.size / 1e6).toFixed(2)} MB · `
+      + `silent · ${importedName} is untouched`);
+  } finally {
+    importSaving = false;
+    byId<HTMLButtonElement>('v2ImportSave').disabled = false;
+  }
 }
 
 function buildImport(): void {
@@ -1753,7 +1972,12 @@ function buildImport(): void {
     input.value = '';
     if (file) void loadImport(file);
   });
-  byId('v2ImportSave').addEventListener('click', () => void saveImport());
+  byId('v2ImportPlay').addEventListener('click', () => {
+    if (importPlaying) stopImportPlayback(); else startImportPlayback();
+  });
+  byId('v2ImportSave').addEventListener('click', () => {
+    if (importedClip) void saveImportClip(); else void saveImport();
+  });
   byId('v2ImportClear').addEventListener('click', () => clearImport());
 }
 

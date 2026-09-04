@@ -135,8 +135,8 @@ test('the state store is the one owner, and flow is one-directional', () => {
   const outside = appTs.replace(fn[0], '');
   assert.ok(!/getBoundingClientRect|innerWidth|innerHeight|devicePixelRatio/.test(outside),
     'measureViewfinder() is the only place V2 may read the display');
-  assert.match(appTs, /previewBoxShortSide: viewfinder\.shortSide/,
-    'and it feeds the geometry authority');
+  assert.match(appTs, /previewBoxShortSide: measureViewfinder\(\)\.shortSide/,
+    'and it feeds the geometry authority, through the one inputs helper');
   const streamReads = appTs.match(/frameSize\(d\.videoWidth, d\.videoHeight\)/g) ?? [];
   assert.ok(streamReads.length >= 2,
     'both the status and delivery paths read SOURCE from the stream diagnostics');
@@ -482,10 +482,56 @@ test('the filters sit directly under the viewfinder, with their own panels', () 
   assert.ok(workbench > strip && workbench < firstOther, 'the lens workbench followed its button');
 });
 
+test('an imported VIDEO plays through the filters and saves as a new clip', () => {
+  // Joshua asked for "picture or video" and then, once photos shipped, "am I
+  // able to import video now?" — this is the video half.
+  assert.match(v2Html, /id="v2ImportFile"[^>]*accept="image\/\*,video\/\*"/);
+  assert.match(v2Html, /<video id="v2ImportVideo" playsinline muted loop hidden>/);
+  assert.match(v2Html, /id="v2ImportPlay"/);
+
+  // A CLIP IS A REAL SEQUENCE, so it gets the full treatment a camera frame
+  // gets: the analysis size is passed (so Speed/Trails advance their state
+  // pass) and it leaves a previous frame behind for temporal filters.
+  assert.match(appTs, /renderer\.render\(activeFilter, size, resolved\.analysis\)/);
+  assert.match(appTs, /renderer\.snapshotHistory\(resolved\.analysis\);/);
+  // And so those filters are NOT refused for a clip, only for a still.
+  assert.match(appTs, /function importRefusal\(filterId: string, isClip = false\): string \{/);
+  assert.match(appTs, /if \(!isClip && \(filter\.state \|\| filter\.temporal\)\) \{/);
+
+  // ONE WRITER FOR THE CANVAS. There is one context, one frame texture and
+  // one target canvas, so the camera stands down while a clip plays rather
+  // than the two overwriting each other thirty times a second.
+  assert.match(appTs, /if \(importPlaying\) return;/);
+
+  // The export uses its OWN recorder, so an import can never be mistaken for
+  // a live recording by the state every readout reads.
+  assert.match(appTs, /const importRecorder = new ClipRecorder\(\);/);
+  assert.match(appTs, /importRecorder\.start\(renderer\.targetCanvas\.captureStream\(\),/);
+  assert.match(appTs, /`import-\$\{readState\(\)\.activeFilter\}`\);/,
+    'the file says import, so it is not mistaken for a camera clip');
+  // Sized by the ONE geometry authority, so the encoder ceiling applies to an
+  // import exactly as it does to a camera recording.
+  assert.match(appTs, /resolveGeometry\(size, geometryInputs\(\)\)\.recordInput/);
+  // The limits are stated rather than discovered.
+  assert.match(appTs, /silent/i);
+  assert.match(appTs, /in real time/i);
+});
+
+test('the geometry inputs have ONE definition, shared by camera and import', () => {
+  // They were inline in refreshGeometry until the import needed to resolve
+  // rows for a file rather than for the stream. Two copies would have let an
+  // import be measured by different rules than the camera (Rule 6).
+  assert.match(appTs, /function geometryInputs\(\): GeometryInputs \{/);
+  assert.match(appTs, /geometry: source \? resolveGeometry\(source, geometryInputs\(\)\) : null/);
+  assert.equal((appTs.match(/previewBoxShortSide: measureViewfinder\(\)\.shortSide/g) ?? []).length, 1,
+    'one place decides what the geometry authority is asked');
+});
+
 test('an imported photo goes through the SAME filters and saves as a new file', () => {
   // Joshua, 2026-09-03: "add where you can upload and picture or video and
   // apply filters and save as new."
-  assert.match(v2Html, /id="v2ImportFile"[^>]*accept="image\/\*"/);
+  assert.match(v2Html, /id="v2ImportFile"[^>]*accept="image\/\*,video\/\*"/,
+    'the one picker takes both kinds');
   assert.match(v2Html, /id="v2ImportPick"/);
   assert.match(v2Html, /id="v2ImportSave"/);
   assert.match(v2Html, /id="v2ImportCanvas"/);
@@ -501,7 +547,9 @@ test('an imported photo goes through the SAME filters and saves as a new file', 
   // A sequence filter is refused BY ITS CAPABILITY METADATA, not by a list of
   // names (Rule 10) — a single still is not a sequence, and applying one
   // would composite the camera's leftover memory over the imported picture.
-  assert.match(appTs, /if \(filter\.state \|\| filter\.temporal\) \{/);
+  // ...and only for a STILL. A clip is a real sequence, so the same filters
+  // are right there and are not refused — the refusal is about the material.
+  assert.match(appTs, /if \(!isClip && \(filter\.state \|\| filter\.temporal\)\) \{/);
   // The refusal takes the picture off screen rather than leaving the previous
   // filter's render up under a note about a different one.
   assert.match(appTs, /canvas\.hidden = true;\n    byId\('v2ImportSave'\)\.hidden = true;/);
