@@ -2073,8 +2073,12 @@ test('the recovery curve cannot clip, wash out, or touch a well-exposed frame', 
   // bounded so no gain can clip what the stack spent four seconds keeping.
   const registry = readFileSync(new URL('../src/v2/filters/registry.ts', import.meta.url), 'utf8');
   const shader = registry.slice(registry.indexOf('export const NIGHT_RECOVERY_FRAGMENT'),
-    registry.indexOf('export const NIGHT_RECOVERY_FRAGMENT') + 1200);
-  assert.match(shader, /float w = max\(uGain, 1\.0\);/);
+    registry.indexOf('export const NIGHT_RECOVERY_FRAGMENT') + 2400);
+  // Per-channel since the colour trim became part of the gain: each channel
+  // is its own white point, which is what keeps 1.0 -> 1.0 true for a channel
+  // the trim scaled UP. The arithmetic below is unchanged — with a trim of
+  // 1.0 the per-channel form is exactly the scalar one it replaced.
+  assert.match(shader, /vec3 w = max\(g, vec3\(1\.0\)\);/);
   assert.match(shader, /c = c \* \(1\.0 \+ c \/ \(w \* w\)\) \/ \(1\.0 \+ c\);/);
   // Checked as arithmetic, not just as text: the same expression, evaluated.
   const curve = (v, gain, lift) => {

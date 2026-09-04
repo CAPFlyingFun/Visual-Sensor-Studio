@@ -210,21 +210,29 @@ varying vec2 vUv;
 uniform sampler2D uFrame;
 uniform float uGain;
 uniform float uLift;
-// PER-CHANNEL TRIM, measured from the gained result. (1,1,1) is an identity.
+// PER-CHANNEL TRIM. (1,1,1) is an exact identity.
 uniform vec3 uBalance;
 void main() {
-  vec3 c = texture2D(uFrame, vUv).rgb * uGain;
-  // Reinhard, white point = the gain. At uGain 1.0 this is exactly c.
-  float w = max(uGain, 1.0);
+  // THE TRIM IS PART OF THE GAIN, not a correction bolted on afterwards.
+  // A white balance is physically a per-channel EXPOSURE — three channels
+  // given slightly different amounts of amplification — so it belongs on the
+  // linear signal, before any curve. Applied after the curve and the gamma
+  // instead, as it was first written, the same multiplier lands differently
+  // at different brightnesses: it can equalise the channel MEANS while
+  // leaving shadows and midtones tinted in opposite directions. That is
+  // exactly what the device showed — dark areas purple, midtones green,
+  // highlights blue, from an image whose means were correctly equal.
+  vec3 g = vec3(uGain) * uBalance;
+  vec3 c = texture2D(uFrame, vUv).rgb * g;
+  // Reinhard, white point = that channel's own gain, so an input of 1.0
+  // still lands on exactly 1.0 in EVERY channel however the trim scaled it.
+  // Per-channel is what keeps that guarantee: one shared white point would
+  // let a channel trimmed upward run past 1.0 and clip.
+  vec3 w = max(g, vec3(1.0));
   c = c * (1.0 + c / (w * w)) / (1.0 + c);
   // SHADOWS. A gamma of 1.0 is an identity; above it the dark end opens and
   // white stays where it is.
   c = pow(max(c, 0.0), vec3(1.0 / max(uLift, 0.0001)));
-  // COLOUR LAST, and measured at this same stage rather than before the
-  // curve — a trim computed from the gained picture has to be applied to the
-  // gained picture or it is correcting numbers it never saw. Clamped because
-  // a channel pulled UP toward the average can pass 1.0.
-  c = clamp(c * uBalance, 0.0, 1.0);
   gl_FragColor = vec4(c, 1.0);
 }`;
 

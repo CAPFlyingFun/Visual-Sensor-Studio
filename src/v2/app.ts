@@ -1308,6 +1308,16 @@ const NIGHT_COLOUR_TRUST = 0.05;
  * the colour can be trusted. Never a fixed "make it grey": at an ordinary
  * exposure the strength is zero and this returns an exact identity, so a
  * sunset stays a sunset.
+ *
+ * The ratio is measured on the GAINED picture but applied to the LINEAR one,
+ * as part of the gain. Those are not the same space — the Reinhard curve sits
+ * between them — but in the dark, where this correction does anything at all,
+ * the curve is very nearly linear: at a channel value of 0.3 it returns 0.23,
+ * and what matters here is the RATIO between three channels all sitting in
+ * that same near-linear stretch, not their absolute level. Measuring after
+ * the curve and correcting before it is therefore a good approximation, and
+ * it is the only order available: before the gain the values are half of one
+ * 8-bit step and cannot be measured at all.
  */
 function nightBalanceFor(
   rawMean: number, channels: [number, number, number]
@@ -1592,10 +1602,10 @@ function updateNightStack(now: number): void {
       : { gain: 1, lift: 1 };
     // Then again, through the lift that reading just asked for.
     renderer.renderNightResult(nightSize, recovery);
-    // AND ONCE MORE for the colour, which can only be measured now: the trim
-    // is read off the GAINED picture, so it has to be applied by a second
-    // pass over the same accumulator rather than folded into the one above.
-    // Two extra draws per capture, not per frame.
+    // AND ONCE MORE for the colour. The trim can only be MEASURED on a gained
+    // picture — before the gain the values are half of one 8-bit step — so
+    // the first pass exists to be measured and this one to be kept. Two extra
+    // draws per capture, none per frame.
     const channels = sampleNightChannels();
     const balance = channels ? nightBalanceFor(reading?.mean ?? 1, channels) : undefined;
     if (balance) renderer.renderNightResult(nightSize, { ...recovery, balance });
