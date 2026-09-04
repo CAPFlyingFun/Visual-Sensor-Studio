@@ -542,6 +542,19 @@ test('FILTERS is the one list: unique ids, honest metadata, real shaders', () =>
     assert.equal(typeof filter.supportsVideo, 'boolean');
     assert.match(filter.fragment, /void main\(\)/, `${filter.id} must carry a fragment shader`);
     assert.match(filter.fragment, /uFrame/, `${filter.id} must sample the camera frame`);
+    // RESERVED WORDS DO NOT COMPILE, and the failure is invisible here: the
+    // shader is a string to TypeScript, so a filter using one builds, tests,
+    // deploys, and dies on the device with a blank preview. 'half' reached a
+    // review this way (Poly, 2026-09-04). Comments are stripped first —
+    // reserved words are only reserved to the compiler.
+    for (const source of [filter.fragment, filter.state ?? '']) {
+      const code = source.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+      for (const reserved of ['half', 'flat', 'long', 'short', 'double', 'union',
+        'input', 'output', 'this', 'class', 'template', 'namespace', 'sizeof', 'cast']) {
+        assert.ok(!new RegExp(`\\b${reserved}\\b`).test(code),
+          `${filter.id}: '${reserved}' is reserved in GLSL ES 1.00`);
+      }
+    }
     // The metadata and the shader must agree about history: a temporal
     // filter's BODY (display or state pass) samples uPrevious; a
     // non-temporal one never does. A state pass must feed the display.
@@ -560,7 +573,7 @@ test('FILTERS is the one list: unique ids, honest metadata, real shaders', () =>
       `${filter.id}: temporal metadata and shader body must agree`);
   }
   assert.deepEqual(FILTERS.map((f) => f.id),
-    ['rgb', 'ironbow', 'difference', 'speed', 'trails', 'edges', 'grid']);
+    ['rgb', 'ironbow', 'difference', 'speed', 'trails', 'edges', 'grid', 'poly']);
   // Milestone D's second stage: Speed and Trails carry their memory in a
   // state pass, at ANALYSIS resolution, and decline stills like Motion.
   for (const id of ['speed', 'trails']) {
@@ -2306,4 +2319,64 @@ test('Grid draws a mesh whose shape is the picture, not a pattern', () => {
   // estimate; there is no depth sensor on a web page, and a convincing mesh
   // is exactly the kind of picture that would be believed.
   assert.match(grid.note, /not a depth sensor/i);
+});
+
+test('Poly cuts each cell along the edge running through it', () => {
+  const poly = filterById('poly');
+  assert.ok(poly, 'the filter is registered');
+  const body = poly.fragment.slice(poly.fragment.indexOf('void main'));
+
+  // A fragment shader cannot triangulate — no memory of other pixels, no
+  // mesh. What it can do is decide which triangle THIS pixel is in, which is
+  // enough to fill one.
+  assert.match(body, /vec2 cell = floor\(g\);/);
+  assert.match(body, /vec2 f = g - cell;/);
+
+  // THE GRADIENT IS SAMPLED AT THE CELL, NOT THE PIXEL. Every pixel in a
+  // cell must reach the same verdict, or the diagonal tears along its own
+  // length as neighbouring pixels disagree about which way to cut.
+  assert.match(body, /vec2 c = \(cell \+ 0\.5\) \/ cells;/);
+  assert.match(body, /float gx = luma\(texture2D\(uFrame, clamp\(c \+ vec2\(halfCell\.x/);
+
+  // An edge runs perpendicular to its gradient, so edge direction is
+  // (-gy, gx); scoring both diagonals against it gives |gx-gy| and |gx+gy|.
+  assert.match(body, /float fitBack = abs\(gx - gy\);/);
+  assert.match(body, /float fitFwd = abs\(gx \+ gy\);/);
+
+  // 'half' is RESERVED in GLSL ES 1.00 — a shader using it does not compile,
+  // and the failure would only have appeared on the device. Checked against
+  // the CODE, with comments stripped: the note explaining this very trap
+  // says the word, and a reserved word in a comment compiles fine.
+  const code = poly.fragment.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const reserved of ['half', 'flat', 'long', 'short', 'double', 'input', 'output']) {
+    assert.ok(!new RegExp(`\\b${reserved}\\b`).test(code),
+      `${reserved} is reserved in GLSL ES 1.00 and must not reach the compiler`);
+  }
+
+  // THE FILL IS AN AVERAGE, not one texel: a single sample makes sensor
+  // noise decide a whole facet, which in a dark room is most of the frame.
+  assert.equal((body.match(/texture2D\(uFrame, clamp\(at/g) ?? []).length, 4,
+    'four taps inside the triangle');
+  assert.match(body, /facet \* 0\.25/, 'and they are averaged, not summed');
+
+  // The four centroids are the real ones: a triangle's centroid is the mean
+  // of its vertices, and getting these wrong shifts every facet's colour.
+  for (const centroid of [
+    'vec2 upperBack = vec2(1.0 / 3.0, 2.0 / 3.0);',
+    'vec2 lowerBack = vec2(2.0 / 3.0, 1.0 / 3.0);',
+    'vec2 upperFwd = vec2(2.0 / 3.0, 2.0 / 3.0);',
+    'vec2 lowerFwd = vec2(1.0 / 3.0, 1.0 / 3.0);'
+  ]) assert.ok(poly.fragment.includes(centroid), `centroid: ${centroid}`);
+
+  // NOTHING IS BRIGHTENED. Grid earned its curve because its subject was a
+  // measured height the ramp rendered invisible; Poly's subject is the
+  // camera's own colour, and lifting it would invent an exposure.
+  assert.ok(!body.includes('uLumaRange'), 'no contrast stretch');
+  assert.ok(!body.includes('pow('), 'and no gamma');
+  assert.equal(poly.needsLumaRange, undefined, 'so it asks for no census');
+  assert.match(poly.note, /camera's own/);
+
+  assert.equal(poly.temporal, false);
+  assert.equal(poly.state, undefined);
+  assert.ok(poly.supportsPhoto && poly.supportsVideo);
 });
