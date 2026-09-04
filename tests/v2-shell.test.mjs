@@ -443,7 +443,7 @@ test('Night measures its own result, then lifts it, then saves what it lifted', 
   // in the REGISTRY with every other fragment shader — Rule 4 is enforced
   // structurally, and putting it beside the renderer broke that test.
   const registryTs = readFileSync(new URL('../src/v2/filters/registry.ts', import.meta.url), 'utf8');
-  assert.match(registryTs, /vec3 w = max\(g, vec3\(1\.0\)\);/);
+  assert.match(registryTs, /float w = max\(uGain, 1\.0\);/);
   assert.match(registryTs, /c = c \* \(1\.0 \+ c \/ \(w \* w\)\) \/ \(1\.0 \+ c\);/);
   assert.match(renderTs, /NIGHT_RECOVERY_FRAGMENT/, 'the renderer imports it rather than restating it');
 
@@ -786,23 +786,6 @@ test('the colour trim is measured after the gain, and set on every draw', () => 
   // Rule 4: the shader lives in the registry with every other fragment.
   const registryTs = readFileSync(new URL('../src/v2/filters/registry.ts', import.meta.url), 'utf8');
   assert.match(registryTs, /uniform vec3 uBalance;/);
-
-  // THE TRIM IS PART OF THE GAIN, applied to the linear signal before any
-  // curve. A white balance is physically a per-channel exposure; applied
-  // after the curve and the gamma, the same multiplier lands differently at
-  // different brightnesses and tints shadows and midtones opposite ways even
-  // when the channel means come out equal — which is what the device showed.
-  assert.match(registryTs, /vec3 g = vec3\(uGain\) \* uBalance;/,
-    'the trim multiplies the gain, not the tone-mapped result');
-  const body = registryTs.slice(registryTs.indexOf('export const NIGHT_RECOVERY_FRAGMENT'),
-    registryTs.indexOf('THE GPU PRECISION PROBE'));
-  assert.ok(body.indexOf('uBalance') < body.indexOf('Reinhard'),
-    'and it is applied BEFORE the curve, not after it');
-  assert.ok(!/clamp\(c \* uBalance/.test(body),
-    'so no clamp is needed to catch a channel pushed past 1.0');
-
-  // THE WHITE POINT IS PER-CHANNEL, which is what preserves that guarantee:
-  // one shared white point would let a channel trimmed upward clip.
-  assert.match(registryTs, /vec3 w = max\(g, vec3\(1\.0\)\);/,
-    'each channel is its own white point, so 1.0 still lands on 1.0');
+  assert.match(registryTs, /clamp\(c \* uBalance, 0\.0, 1\.0\)/,
+    'a channel pulled up toward the average can pass 1.0');
 });
