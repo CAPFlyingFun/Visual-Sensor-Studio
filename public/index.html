@@ -251,7 +251,7 @@
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
-    <span class="pill" id="v2Badge">v0.63.0</span>
+    <span class="pill" id="v2Badge">v0.64.0</span>
   </header>
 
   <div class="camera-layout">
@@ -444,6 +444,18 @@
           <div id="v2ControlRows"></div>
           <p class="hint" id="v2ControlNote"></p>
           <p class="hint" id="v2ControlVerdict"></p>
+          <label class="coach-mute" for="v2ZoomRamp"><strong>Zoom glide</strong>
+            <input type="range" id="v2ZoomRamp" min="0" max="10" step="0.1" value="1.5"
+              aria-label="Seconds to glide between zoom stops" />
+            <span id="v2ZoomRampValue">1.5s</span></label>
+          <p class="hint">
+            How long a tap on a zoom preset takes to travel from wherever the zoom is now
+            to the one you pressed. 0 is the old instant jump. The ramp is
+            <em>geometric</em> &mdash; each moment multiplies the zoom by the same factor
+            rather than adding the same amount &mdash; because zoom is multiplicative, and a
+            straight-line ramp from x1 to x3 races through the first half and crawls through
+            the second. A new tap redirects the glide from wherever it has reached.
+          </p>
         </section>
 
         <!-- Milestone F's instruments. Zebra and peaking are VIEWING AIDS:
