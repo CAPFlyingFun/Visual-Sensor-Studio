@@ -251,7 +251,7 @@
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
-    <span class="pill" id="v2Badge">v0.44.0</span>
+    <span class="pill" id="v2Badge">v0.45.0</span>
   </header>
 
   <div class="camera-layout">
@@ -583,6 +583,42 @@
           </p>
           <div class="button-row"><button type="button" class="btn" id="v2EncoderProbe">Probe encoder envelope</button></div>
           <pre class="probe-out" id="v2EncoderProbeOut" hidden></pre>
+        </div>
+
+        <!-- What this device's GPU can actually hold. Night accumulates into
+             RGBA8 today, which cannot store the sub-step shadow differences a
+             dark-room stack depends on; this measures whether a higher
+             precision format is really available HERE rather than assuming
+             what iOS "normally" supports. -->
+        <div class="card">
+          <h3>Night / GPU precision</h3>
+          <p>
+            For each candidate accumulator format: allocate a texture, attach it to a
+            framebuffer, check completeness, render known fractional values, read them back
+            through an amplifying pass, and verify they survived. RGBA8 is probed as a
+            CONTROL that is expected to FAIL &mdash; a test that passes everything proves
+            nothing. The last row tries a full Night-sized ping-pong pair. It runs on its own
+            throwaway context, so a loss cannot take the camera down; nothing is saved and
+            Night is not changed.
+          </p>
+          <div class="button-row"><button type="button" class="btn" id="v2PrecisionProbe">Probe GPU precision</button></div>
+          <pre class="probe-out" id="v2PrecisionProbeOut" hidden></pre>
+        </div>
+
+        <!-- FOUR SIZES, NEVER COLLAPSED INTO ONE WORD (Joshua, 2026-09-04).
+             A Night capture has a source, an accumulator, a preview and an
+             output, and they are not the same number. -->
+        <div class="card">
+          <h3>Night sizes</h3>
+          <div class="diagnostics" aria-label="Night size table">
+            <div><span class="k">SOURCE</span><span id="v2NightDiagSource">&mdash;</span></div>
+            <div><span class="k">ACCUMULATOR</span><span id="v2NightDiagAccumulator">&mdash;</span></div>
+            <div><span class="k">PREVIEW</span><span id="v2NightDiagPreview">&mdash;</span></div>
+            <div><span class="k">PHOTO OUTPUT</span><span id="v2NightDiagPhoto">&mdash;</span></div>
+            <div><span class="k">EXPOSURE</span><span id="v2NightDiagExposure">&mdash;</span></div>
+            <div><span class="k">ISO</span><span id="v2NightDiagIso">&mdash;</span></div>
+            <div><span class="k">DELIVERED</span><span id="v2NightDiagFps">&mdash;</span></div>
+          </div>
         </div>
 
         <div class="card">

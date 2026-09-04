@@ -482,6 +482,55 @@ test('the filters sit directly under the viewfinder, with their own panels', () 
   assert.ok(workbench > strip && workbench < firstOther, 'the lens workbench followed its button');
 });
 
+test('the precision probe is diagnostics only, and cannot kill boot', () => {
+  // Change 1 of the Night redesign (Joshua, 2026-09-04): measure what this
+  // phone can hold BEFORE redesigning Night around a format it may not have.
+  assert.match(v2Html, /id="v2PrecisionProbe"/);
+  assert.match(v2Html, /id="v2PrecisionProbeOut"/);
+
+  // A DYNAMIC import. A statically imported module that the PWA serves a stale
+  // copy of fails the whole module graph before a line runs — that is exactly
+  // what took the app down on 2026-09-03. Loaded inside the handler, a stale
+  // copy fails where it can be caught.
+  assert.match(appTs, /await import\('\.\/render\/gpu-precision\.js'\)/);
+  const handler = appTs.slice(appTs.indexOf('function buildPrecisionProbe()'),
+    appTs.indexOf('function buildPrecisionProbe()') + 1400);
+  assert.match(handler, /\} catch \(error\) \{/, 'and the failure is reported, not thrown');
+  assert.match(handler, /document\.getElementById\('v2PrecisionProbe'\)/,
+    'looked up without byId, so missing markup costs only the probe');
+
+  // IT CHANGES NOTHING ABOUT NIGHT. The capture path keeps every constant and
+  // the RGBA8 accumulator it had; this change only measures and reports.
+  const nightStack = readFileSync(new URL('../src/v2/vision/night-stack.ts', import.meta.url), 'utf8');
+  assert.match(nightStack, /export const NIGHT_TICK_MS = 250;/, 'cadence untouched');
+  assert.match(nightStack, /export const NIGHT_TARGET_MS = 4000;/, 'duration untouched');
+  const renderTs = readFileSync(new URL('../src/v2/render/gl-renderer.ts', import.meta.url), 'utf8');
+  const nightAlloc = renderTs.slice(renderTs.indexOf('if (!this.nightTextures)'),
+    renderTs.indexOf('if (!this.nightTextures)') + 900);
+  assert.match(nightAlloc, /gl\.RGBA, gl\.UNSIGNED_BYTE, null/,
+    'the accumulator is still RGBA8 — replacing it is a LATER change');
+});
+
+test('the four Night sizes are reported apart, and exposure is advertised only', () => {
+  // "Do not collapse all of those into the word 'resolution'" (Joshua).
+  for (const id of ['v2NightDiagSource', 'v2NightDiagAccumulator',
+    'v2NightDiagPreview', 'v2NightDiagPhoto']) {
+    assert.match(v2Html, new RegExp(`id="${id}"`), `${id} is its own row`);
+  }
+  assert.match(appTs, /function renderNightDiagnostics\(\): void \{/);
+  // Each row comes from its own authority, not from one number reused.
+  assert.match(appTs, /setText\('v2NightDiagPreview', size\(geometry\?\.preview\)\)/);
+  assert.match(appTs, /setText\('v2NightDiagPhoto', `\$\{size\(geometry\?\.photo\)\}/);
+
+  // Exposure/ISO are READ, never requested — a capability is not a grant, and
+  // requesting one mutates the camera, which is a separate change.
+  assert.match(appTs, /advertised only, not requested/);
+  const block = appTs.slice(appTs.indexOf('function renderNightDiagnostics'),
+    appTs.indexOf('function renderNightDiagnostics') + 2200);
+  assert.ok(!/applyConstraints|verifyApply/.test(block),
+    'the diagnostics block never applies a constraint');
+});
+
 test('an imported VIDEO plays through the filters and saves as a new clip', () => {
   // Joshua asked for "picture or video" and then, once photos shipped, "am I
   // able to import video now?" — this is the video half.

@@ -1981,6 +1981,73 @@ function buildImport(): void {
   byId('v2ImportClear').addEventListener('click', () => clearImport());
 }
 
+/* --- Night diagnostics: what this device can hold, and at what size ------- */
+
+/**
+ * THE FOUR SIZES, NEVER COLLAPSED (Joshua, 2026-09-04: "Do not collapse all of
+ * those into the word 'resolution'"). A Night capture has a source, an
+ * accumulator, a preview and an output, each decided by a different authority,
+ * and the MAX-vs-720 difference in his dark-room tests is only interpretable if
+ * they are reported apart.
+ *
+ * Read-only. Nothing here changes what Night does.
+ */
+function renderNightDiagnostics(): void {
+  const { source, geometry, deliveredFps, capability } = readState();
+  const size = (box: { width: number; height: number } | null | undefined) =>
+    (box && box.width > 0 ? `${box.width}×${box.height}` : '—');
+  setText('v2NightDiagSource', size(source));
+  // The accumulator is whatever a capture froze, or what one would freeze now.
+  setText('v2NightDiagAccumulator', nightSize
+    ? `${size(nightSize)} · RGBA8 (this capture)`
+    : `${size(geometry?.photo)} · RGBA8 (the size a capture would take)`);
+  setText('v2NightDiagPreview', size(geometry?.preview));
+  setText('v2NightDiagPhoto', `${size(geometry?.photo)} · sensor max ${size(capability)}`);
+  setText('v2NightDiagFps', deliveredFps > 0 ? `${deliveredFps.toFixed(1)} fps` : '—');
+
+  // ADVERTISED ONLY. Requesting a longer exposure and verifying the read-back
+  // is a separate change; this reports what the track claims without touching
+  // it, because a capability is not a grant.
+  const report = camera.capabilityReport;
+  for (const [id, element] of [['exposureTime', 'v2NightDiagExposure'], ['iso', 'v2NightDiagIso']] as const) {
+    const field = report?.available ? report.fields[id] : undefined;
+    if (!field) { setText(element, report?.available ? 'not exposed by WebKit' : '—'); continue; }
+    if (field.state !== 'supported') { setText(element, field.state); continue; }
+    const current = report.settings?.[id];
+    setText(element, `${field.min ?? '?'} – ${field.max ?? '?'}`
+      + (field.step !== undefined ? ` step ${field.step}` : '')
+      + ` · now ${current ?? 'unreported'} · advertised only, not requested`);
+  }
+}
+
+/**
+ * The GPU precision probe, loaded ONLY when asked.
+ *
+ * A DYNAMIC import on purpose. A statically imported module that a PWA serves
+ * a stale copy of fails the whole module graph before a line runs, which is
+ * exactly what took the app down on 2026-09-03; a dynamic one fails inside
+ * this handler, where it can be caught and reported. The probe is
+ * user-triggered, so it costs nothing to load it late.
+ */
+function buildPrecisionProbe(): void {
+  const button = document.getElementById('v2PrecisionProbe');
+  const out = document.getElementById('v2PrecisionProbeOut');
+  if (!button || !out) return;
+  button.addEventListener('click', () => void (async () => {
+    const target = readState().geometry?.photo ?? readState().source;
+    if (!target) { out.hidden = false; out.textContent = 'Start the camera first — the probe needs the size a Night capture would really use.'; return; }
+    out.hidden = false;
+    out.textContent = 'Measuring…';
+    try {
+      const module = await import('./render/gpu-precision.js');
+      const report = module.probeGpuPrecision({ width: target.width, height: target.height });
+      out.textContent = module.describeGpuPrecision(report);
+    } catch (error) {
+      out.textContent = `The probe could not run: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  })());
+}
+
 let renderedAidKey = '';
 function renderAids(): void {
   const { zebra, peaking, exposureShown } = readState();
@@ -2644,6 +2711,7 @@ function renderTextPanels(): void {
   renderSteadyShutter();
   renderSteadyHud();
   renderNightTest();
+  renderNightDiagnostics();
   renderImportPanel();
   renderCameraControls();
   renderAids();
@@ -3975,6 +4043,7 @@ buildSteadyShutter();
 buildNightTest();
 buildAids();
 buildImport();
+buildPrecisionProbe();
 try {
   const stored = localStorage.getItem(GUIDE_STORE_KEY);
   if (stored && guideById(stored)) updateState({ guide: stored });

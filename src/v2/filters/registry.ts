@@ -221,6 +221,43 @@ void main() {
   gl_FragColor = vec4(c, 1.0);
 }`;
 
+/*
+ * THE GPU PRECISION PROBE'S TWO SHADERS (render/gpu-precision.ts).
+ *
+ * They live here for the reason AVERAGE_FRAGMENT does: every fragment shader
+ * in V2 lives in this file, and one kept elsewhere is the first half of a
+ * second filter path (Rule 4). Neither draws a product — they write known
+ * fractional values into a candidate accumulator format and read them back
+ * amplified, to find out whether this device can hold more than 8 bits.
+ *
+ * highp on purpose. The whole question is whether small fractions survive, so
+ * the probe must not be the thing that rounds them away. Where highp is
+ * unavailable in a fragment shader the report says so and the result is read
+ * as the device's honest answer.
+ */
+export const PROBE_VERTEX = `attribute vec2 aPosition;
+varying vec2 vUv;
+void main() {
+  vUv = aPosition * 0.5 + 0.5;
+  gl_Position = vec4(aPosition, 0.0, 1.0);
+}`;
+
+/** Writes one known colour into whatever target is bound. */
+export const PROBE_CONSTANT_FRAGMENT = `precision highp float;
+uniform vec4 uValue;
+void main() { gl_FragColor = uValue; }`;
+
+/**
+ * Reads the candidate target and multiplies it back into 8-bit range, so the
+ * readback can be an ordinary UNSIGNED_BYTE readPixels that every WebGL1
+ * implementation supports.
+ */
+export const PROBE_AMPLIFY_FRAGMENT = `precision highp float;
+varying vec2 vUv;
+uniform sampler2D uFrame;
+uniform float uAmplify;
+void main() { gl_FragColor = vec4(texture2D(uFrame, vUv).rgb * uAmplify, 1.0); }`;
+
 export const AVERAGE_FRAGMENT = `precision mediump float;
 varying vec2 vUv;
 uniform sampler2D uFrame;

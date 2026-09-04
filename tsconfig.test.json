@@ -65,6 +65,7 @@
     "src/v2/capture/encoder-probe.ts",
     "src/v2/filters/registry.ts",
     "src/v2/render/guides.ts",
+    "src/v2/render/gpu-precision.ts",
     "src/v2/render/overlays.ts",
     "src/v2/camera/controls.ts",
     "src/v2/vision/exposure.ts",
