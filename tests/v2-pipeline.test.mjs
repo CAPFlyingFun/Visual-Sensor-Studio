@@ -154,9 +154,15 @@ test('stream tiers are one registry: deliberate, labelled, defaulting responsive
     && !tierById('2k')?.clipWarning,
     'no scare copy on the proven tiers');
   const fallback = tierById(DEFAULT_STREAM_TIER);
-  assert.ok(fallback && fallback.shortSide === 720,
-    'the default tier is the responsive one — the maximum never arrives by accident');
-  assert.match(fallback.streamLabel, /responsive/);
+  // The DEFAULT is Joshua's to choose, and he set it to 1080 (2026-09-04).
+  // What this pins is the invariant behind the old 720, which is unchanged:
+  // the default must be a REAL registry tier and must never be the maximum,
+  // so the most expensive stream can only ever arrive by a deliberate tap.
+  assert.ok(fallback, 'the default names a tier that actually exists');
+  assert.notEqual(DEFAULT_STREAM_TIER, 'max',
+    'the maximum never arrives by accident — only by a deliberate choice');
+  assert.ok(typeof fallback.shortSide === 'number',
+    'and the default asks for a definite size rather than "the largest there is"');
   assert.equal(readState().streamTier, DEFAULT_STREAM_TIER,
     'the state boots on the registry default — one owner for the default');
   assert.equal(tierById('nope'), null);
@@ -504,8 +510,8 @@ test('the camera rule document and the code speak the same language', () => {
 
   const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
   assert.match(appTs, /streamLabel/, 'the SOURCE row reads its description from the tier registry');
-  assert.match(tierById(DEFAULT_STREAM_TIER)?.streamLabel ?? '', /responsive live stream/,
-    'the default policy names itself');
+  assert.ok((tierById(DEFAULT_STREAM_TIER)?.streamLabel ?? '').length > 0,
+    'the default policy names itself in the SOURCE row, whichever tier it is');
   // The maximum is reachable ONLY through a deliberate tier choice or the
   // shutter — never on ordinary startup.
   assert.ok(!/^\s*camera\.preferMaxCaptureSize/m.test(appTs.split('async function startCamera')[1]?.split('}')[0] ?? ''),

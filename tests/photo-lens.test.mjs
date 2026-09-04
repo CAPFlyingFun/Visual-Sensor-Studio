@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  DEFAULT_MAX_PIXELS,
   TEMPORAL_CHANNELS,
   describeMissing,
   fitWithin,
+  fullPixelBudget,
   looksBlank,
   renderPhotoLens,
   unavailableChannels
@@ -81,8 +81,29 @@ test('fitting preserves aspect and never exceeds the budget', () => {
 });
 
 test('an image already within budget is untouched', () => {
-  const fit = fitWithin(1920, 1080, DEFAULT_MAX_PIXELS);
+  const fit = fitWithin(1920, 1080, fullPixelBudget(1920, 1080));
   assert.deepEqual(fit, { width: 1920, height: 1080, reduced: false });
+});
+
+test('the pixel budget is the image\'s own size — no invented ceiling', () => {
+  // Joshua, 2026-09-04: "the max pixel count needs to be (device-width *
+  // device-height) as each camera is different and won't have a set number."
+  // The old fixed 16 MP constant guessed low on every camera above it.
+  assert.equal(fullPixelBudget(3024, 4032), 3024 * 4032, 'a 12 MP camera gets 12 MP');
+  assert.equal(fullPixelBudget(8000, 6000), 48_000_000, 'and a 48 MP one gets 48 MP');
+  assert.ok(fullPixelBudget(4536, 8064) > 16_000_000,
+    'a frame the old constant would have shrunk is now attempted whole');
+
+  // Starting at the full size must be a NO-OP for the fitter, so nothing is
+  // resampled before the device has even been asked.
+  const fit = fitWithin(4536, 8064, fullPixelBudget(4536, 8064));
+  assert.deepEqual(fit, { width: 4536, height: 8064, reduced: false });
+
+  // Total over its domain: never zero, never fractional, never negative —
+  // it feeds a canvas dimension, and a NaN there is a blank picture.
+  assert.equal(fullPixelBudget(0, 0), 1);
+  assert.equal(fullPixelBudget(-5, 10), 1);
+  assert.equal(fullPixelBudget(1920.7, 1080.9), 1920 * 1080);
 });
 
 test('an undrawn canvas is detected rather than rendered as a lens picture', () => {

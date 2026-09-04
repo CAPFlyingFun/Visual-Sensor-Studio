@@ -108,7 +108,7 @@ import {
   previewStep
 } from './vision/lens-preview.js';
 import {
-  DEFAULT_MAX_PIXELS,
+  fullPixelBudget,
   describeMissing,
   fitWithin,
   looksBlank,
@@ -208,7 +208,7 @@ import {
 
 type RecordDetail = 'preview' | 'higher' | 'full' | 'sensor';
 
-const APP_VERSION = '0.55.0';
+const APP_VERSION = '0.56.0';
 const SETTINGS_KEY = 'visual-sensor-settings-v1';
 const CACHE_PREFIX = 'visual-sensor-studio-';
 
@@ -2673,7 +2673,9 @@ async function decodePhoto(file: File): Promise<DecodedPhoto | null> {
     return null;
   }
 
-  let budget = Math.min(sourceWidth * sourceHeight, DEFAULT_MAX_PIXELS);
+  // The image's own size, with no invented ceiling above it — the loop below
+  // is what finds this device's real limit, by drawing and checking.
+  let budget = fullPixelBudget(sourceWidth, sourceHeight);
   for (let attempt = 0; attempt < 5; attempt++) {
     const fit = fitWithin(sourceWidth, sourceHeight, budget);
     try {

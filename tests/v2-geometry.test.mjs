@@ -4,6 +4,19 @@ import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  DEFAULT_STREAM_TIER, tierById
+} from '../.test-build/v2/camera/stream-tiers.js';
+
+/*
+ * THE BOOT TIER'S OWN LABEL, read from the registry rather than written here.
+ * These assertions used to spell out "responsive live stream", which was the
+ * 720 tier's wording — so changing DEFAULT_STREAM_TIER broke three browser
+ * tests that were really only asking "does the SOURCE row name the policy it
+ * booted under?". Derived, that question survives any default.
+ */
+const BOOT_TIER_LABEL = tierById(DEFAULT_STREAM_TIER)?.streamLabel ?? '';
+const bootLabelRe = new RegExp(BOOT_TIER_LABEL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
 
 /*
  * V2 Milestones A–B, measured in a real browser: routing, the single sticky
@@ -203,7 +216,7 @@ test('the camera goes live and the HUD carries measured truth (fake device)',
       assert.match(hud.fps, /^\d+(\.\d+)? fps$/, `delivered fps should be measured, got "${hud.fps}"`);
       assert.match(hud.diag, /^\d+×\d+ · \d+(\.\d+)? delivered fps/,
         'the SOURCE row carries size and measured rate together');
-      assert.match(hud.diag, /responsive live stream/,
+      assert.match(hud.diag, bootLabelRe,
         'the live-source policy names itself — a SOURCE below CAPABILITY is healthy, not flagged');
       // CAPABILITY is a fact of its own: numbers where the browser exposes
       // them, an honest "not exposed" where it does not — never a dash once
@@ -360,7 +373,7 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
       // fake device comes back 1280×720 for a 960×720 start, measured), and
       // the stream must have left the capture mode when one was entered.
       const escalated = savedW !== sw || savedH !== sh;
-      await page.waitForFunction(([shortSide, wasEscalated, capW, capH]) => {
+      await page.waitForFunction(([shortSide, wasEscalated, capW, capH, label]) => {
         const text = document.getElementById('v2DiagSource')?.textContent ?? '';
         const m = text.match(/^(\d+)×(\d+)/);
         if (!m) return false;
@@ -368,8 +381,8 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
         const h = Number(m[2]);
         if (Math.min(w, h) !== shortSide) return false;
         if (wasEscalated && w === capW && h === capH) return false;
-        return /responsive live stream/.test(text);
-      }, [Math.min(sw, sh), escalated, savedW, savedH], { timeout: 10000 });
+        return new RegExp(label).test(text);
+      }, [Math.min(sw, sh), escalated, savedW, savedH, BOOT_TIER_LABEL], { timeout: 10000 });
 
       // And the preview follows the RESTORED stream through the one owner:
       // the canvas matches the PREVIEW row exactly, at the same short side.
@@ -379,7 +392,7 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
       assert.equal(after.width, rpw, 'the canvas tracks the PREVIEW geometry after a photo');
       assert.equal(after.height, rph);
       assert.equal(Math.min(after.width, after.height), Math.min(pw, ph),
-        'the preview short side comes back with the responsive stream');
+        'the preview short side comes back with the restored stream');
 
       await page.close();
       await context.close();
@@ -479,9 +492,9 @@ test('the stream tier renegotiates the LIVE stream and the row measures it (fake
           .map((b) => b.dataset.streamTier));
       assert.deepEqual(tiers, ['720', '1080', '2k', '4k', 'maximum'],
         'the tier strip mirrors STREAM_TIERS, in order');
-      await page.waitForFunction(() =>
-        /responsive live stream/.test(document.getElementById('v2DiagSource')?.textContent ?? ''),
-        null, { timeout: 3000 });
+      await page.waitForFunction((label) =>
+        new RegExp(label).test(document.getElementById('v2DiagSource')?.textContent ?? ''),
+        BOOT_TIER_LABEL, { timeout: 3000 });
 
       // A class the camera cannot fill shows RED and answers a tap with a
       // 5 s toast instead of applying; no standing text under the strip.
@@ -516,7 +529,10 @@ test('the stream tier renegotiates the LIVE stream and the row measures it (fake
           }));
           assert.equal(toast.hidden, false, 'a tap on a red tier answers with the toast');
           assert.match(toast.text, /not available/, 'the toast names the reason');
-          assert.equal(toast.active, '720', 'a refused tier is never applied');
+          // Still on whatever it booted with — the point is that a refused
+          // tap changes NOTHING, not that the boot tier is any one value.
+          assert.equal(toast.active, DEFAULT_STREAM_TIER,
+            'a refused tier is never applied');
         }
       } else {
         assert.equal(availability.fourKRed, false,
@@ -534,7 +550,7 @@ test('the stream tier renegotiates the LIVE stream and the row measures it (fake
           && /1080-class live stream/.test(text);
       }, null, { timeout: 8000 });
 
-      // And back down — responsive is one tap away, and the preview follows
+      // And back down — the boot tier is one tap away, and the preview follows
       // the stream through both changes via the one geometry owner.
       await page.click('[data-stream-tier="720"]');
       await page.waitForFunction(() => {

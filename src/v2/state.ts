@@ -15,6 +15,7 @@
 import type { CameraStatus, CameraZoomState } from '../sensors/camera.js';
 import type { FrameGeometryState } from './camera/geometry.js';
 import { ASSUMED_ENVELOPE, type EncoderEnvelope } from './capture/encoder-envelope.js';
+import { DEFAULT_STREAM_TIER } from './camera/stream-tiers.js';
 import { DEFAULT_FRAME_AVERAGE } from './render/frame-average.js';
 
 export interface FrameSize {
@@ -205,7 +206,11 @@ const state: V2State = {
   viewfinder: null,
   lastPhoto: null,
   captureActive: false,
-  streamTier: '720',
+  // FROM THE REGISTRY, never a second copy of the number. This was the
+  // literal '720' while stream-tiers.ts owned DEFAULT_STREAM_TIER, so
+  // changing the registry's default changed nothing the app actually booted
+  // with — the duplicate silently won. One owner for the default.
+  streamTier: DEFAULT_STREAM_TIER,
   guide: 'off',
   zebra: 'off',
   peaking: 'off',

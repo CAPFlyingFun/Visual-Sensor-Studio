@@ -23,6 +23,13 @@ export interface PhotoResult {
   timing: { renderMs: number; encodeMs: number };
 }
 
+/**
+ * JPEG quality for a saved still. 1.0, not a compromise: every other stage
+ * here is spent keeping detail, so the encoder is not the place to give it
+ * back. Named rather than inline so the one place it is decided is findable.
+ */
+const MAX_STILL_QUALITY = 1.0;
+
 /** Copy target, reused across captures; photo sizes dwarf preview sizes. */
 let photoCanvas: HTMLCanvasElement | null = null;
 
@@ -67,8 +74,14 @@ export async function capturePhoto(
   context.drawImage(renderer.targetCanvas, 0, 0);
   const renderDone = performance.now();
 
+  // MAXIMUM QUALITY. It was 0.92 — a sensible default for a web image and the
+  // wrong one for this app, which exists to preserve what the sensor saw. The
+  // stack, the gain and MAX MEANS MAX all spend effort keeping detail that a
+  // lossy re-encode then discards at the last step. V1's own saveQuality
+  // default was raised to 1.00 for the same reason (vision/save-format.ts);
+  // this is the V2 path, which had its own literal and did not follow.
   const blob = await new Promise<Blob | null>((resolve) =>
-    photoCanvas!.toBlob(resolve, 'image/jpeg', 0.92));
+    photoCanvas!.toBlob(resolve, 'image/jpeg', MAX_STILL_QUALITY));
   if (!blob) return null;
   const encodeDone = performance.now();
 

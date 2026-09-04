@@ -28,14 +28,25 @@ import {
 export const TEMPORAL_CHANNELS: readonly ChannelId[] = ['speed', 'change', 'age', 'novelty'];
 
 /**
- * Largest image this will attempt, in pixels.
+ * WHERE THE STEPPING STARTS: the image's OWN pixel count, and nothing else.
  *
- * Not a guess at a policy: iOS Safari refuses to back a canvas beyond a
- * device-dependent area and hands back a BLANK one rather than an error, so
- * anything above a few tens of megapixels has to be treated as unreliable and
- * checked. `decodePhoto` steps down and verifies rather than trusting this
- * number, which is only where the stepping starts.
+ * There used to be a fixed 16 MP ceiling here. Joshua removed it, 2026-09-04:
+ * "the max pixel count needs to be (device-width * device-height) as each
+ * camera is different and won't have a set number." He is right, and the
+ * ceiling was never what made this safe.
+ *
+ * WHAT MAKES IT SAFE IS THE VERIFICATION, which is unchanged. iOS Safari
+ * refuses to back a canvas beyond a device-dependent area and hands back a
+ * BLANK one rather than an error, so no number written here could have been
+ * correct for every device anyway — the honest move is to attempt the real
+ * size and CHECK. decodePhoto draws, reads the pixels back, and halves the
+ * budget whenever the result comes back blank or the canvas throws, up to
+ * five times. That loop measures the device; a constant only ever guessed at
+ * it, and guessed low on every camera larger than 16 MP.
  */
+export function fullPixelBudget(sourceWidth: number, sourceHeight: number): number {
+  return Math.max(1, Math.floor(sourceWidth) * Math.floor(sourceHeight));
+}
 
 export interface DecodedPhoto {
   data: ImageData;
@@ -53,8 +64,6 @@ export interface PhotoCanvasHost {
     height: number;
   };
 }
-
-export const DEFAULT_MAX_PIXELS = (sourceWidth: number;) * (sourceHeight: number;):
 
 /**
  * Has this canvas actually been drawn, or did the browser hand back a blank?
