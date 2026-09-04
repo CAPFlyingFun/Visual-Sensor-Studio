@@ -156,3 +156,72 @@ test('the displayed countdown reads 3, 2, 1 — never 0, never negative', () => 
   assert.equal(nightCountdownSecondsLeft(3000), 1);
   assert.equal(nightCountdownSecondsLeft(5000), 1);
 });
+
+/*
+ * WHY THE 8-BIT ACCUMULATOR FROZE — the arithmetic behind the change of
+ * format, evaluated here rather than asserted in a comment.
+ *
+ * The blend is mix(before, now, 1/n). An RGBA8 target rounds every result to
+ * the nearest 1/255, so the STORED value only changes when the increment
+ * clears half a step: |now - before| / n > 0.5/255. In Joshua's near-black
+ * room the scene sits at two or three steps out of 255 and consecutive frames
+ * differ by about one step, so the accumulator stops moving early in the
+ * capture and every later frame writes back the number already there.
+ *
+ * Half-float's precision is RELATIVE — roughly value x 2^-11 to the nearest
+ * representable — so near zero its steps are far finer than 8-bit's fixed
+ * 1/255, which is exactly where a dark stack lives.
+ */
+test('an 8-bit accumulator cannot hold the mean a dark stack converges to', () => {
+  const STEP = 1 / 255;
+  // A dark scene whose TRUE mean falls between two 8-bit steps. This is the
+  // ordinary case, not a contrived one: sensor noise makes frames alternate
+  // around a level, and recovering that between-steps level is the entire
+  // purpose of averaging them.
+  const frame = (n) => (n % 2 === 0 ? 3 : 2) * STEP;
+  const TRUE_MEAN = 2.5 * STEP;
+
+  // THE FREEZE. With weight 1/n the increment is |now - before| / n, and an
+  // 8-bit store ignores anything under half a step. A one-step difference
+  // therefore cannot move the stored value at all from frame 3 onward.
+  const firstFrozenFrame = Math.floor(STEP / (0.5 * STEP)) + 1;
+  assert.equal(firstFrozenFrame, 3,
+    'a one-step difference stops registering at the third frame');
+
+  let stored = frame(1);
+  for (let n = 2; n <= 15; n += 1) {
+    stored = Math.round((stored + (frame(n) - stored) * nightStackWeight(n)) * 255) / 255;
+  }
+  // Fifteen frames land on a step, not on the level they average to. The
+  // stack did its arithmetic correctly and the storage threw the answer away.
+  assert.equal(Math.round(stored * 255), 3, 'the 8-bit stack lands on a representable step');
+  assert.ok(Math.abs(stored - TRUE_MEAN) >= 0.5 * STEP,
+    'and so sits half a step from the mean it was computing');
+
+  // HALF-FLOAT holds it. Its precision is relative — about value x 2^-11 —
+  // so near zero its steps are far finer than 8-bit's fixed 1/255.
+  const halfStep = (v) => Math.pow(2, Math.floor(Math.log2(Math.abs(v) || 1)) - 10);
+  const quantizeHalf = (v) => Math.round(v / halfStep(v)) * halfStep(v);
+  let float = frame(1);
+  for (let n = 2; n <= 15; n += 1) {
+    float = quantizeHalf(float + (frame(n) - float) * nightStackWeight(n));
+  }
+  assert.ok(Math.abs(float - TRUE_MEAN) < 0.05 * STEP,
+    `half-float converged to the true mean (landed ${(float * 255).toFixed(3)} of 255)`);
+
+  // AND IT KEEPS MOVING AT THE FRAME COUNTS A LONGER CAPTURE WOULD REACH, so
+  // raising the duration later is not blocked by this format in turn.
+  const halfFloatFreezesAt = STEP / (0.5 * halfStep(2 * STEP));
+  assert.ok(halfFloatFreezesAt > 300,
+    `still moving past 300 frames (freezes near ${Math.round(halfFloatFreezesAt)})`);
+});
+
+test('the accumulator format is reported in the counters, empty until measured', () => {
+  const counters = emptyNightCounters();
+  assert.equal(counters.accumulatorFormat, '',
+    'no claim before an allocation has actually happened');
+  assert.ok(!describeNightCounters(counters).includes('accumulator '),
+    'and nothing is said about it while it is unknown');
+  assert.match(describeNightCounters({ ...counters, accumulatorFormat: 'RGBA16F' }),
+    /accumulator RGBA16F/, 'once measured it reaches the copyable log');
+});

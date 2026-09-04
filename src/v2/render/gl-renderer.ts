@@ -123,6 +123,8 @@ export class GlRenderer {
   private nightSize = { width: 0, height: 0 };
   private nightRead = 0;
   private nightPrimed = false;
+  /** What the pair was actually allocated as — see allocateNightStack. */
+  private nightFormat: 'RGBA8' | 'RGBA16F' = 'RGBA8';
   /** The camera frame's own size, so the aids measure at sensor scale. */
   private frameSize = { width: 0, height: 0 };
   /** Which program key each filter id currently owns, so an edited lens frees its old program. */
@@ -190,6 +192,11 @@ export class GlRenderer {
     this.nightFramebuffer = null;
     this.nightSize = { width: 0, height: 0 };
     this.nightPrimed = false;
+    // The format is a property of textures that no longer exist. The next
+    // capture re-measures it rather than inheriting a claim about a dead
+    // context — which, on a device that lost the context to memory pressure,
+    // is exactly the claim most likely to be wrong.
+    this.nightFormat = 'RGBA8';
     this.rampTextures.clear();
     this.programKeys.clear();
     this.histogramTexture = null;
@@ -456,7 +463,23 @@ export class GlRenderer {
     this.averageProgram ??= this.buildProgram(VERTEX_OFFSCREEN, AVERAGE_FRAGMENT);
     const program = this.averageProgram;
     if (!program) return false;
-    if (!this.nightTextures) this.nightTextures = [this.makeTexture(gl), this.makeTexture(gl)];
+    if (!this.nightTextures) {
+      this.nightTextures = [this.makeTexture(gl), this.makeTexture(gl)];
+      // NEAREST, unlike every other texture here, for two reasons that agree.
+      // The accumulator is only ever sampled at vUv — exact texel centres, at
+      // 1:1 — so LINEAR and NEAREST return the identical value and nothing is
+      // given up. (The sub-texel alignment offset is applied to the ARRIVING
+      // FRAME, uFrame, which keeps its LINEAR sampling; see AVERAGE_FRAGMENT.)
+      // And a half-float texture filtered LINEAR is INCOMPLETE wherever
+      // OES_texture_half_float_linear is missing — it samples as pure black,
+      // which would look like a broken capture rather than a missing
+      // extension. NEAREST removes that dependency entirely.
+      for (const texture of this.nightTextures) {
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      }
+    }
     if (!this.nightFramebuffer) this.nightFramebuffer = gl.createFramebuffer();
 
     // A size change makes the stored stack meaningless — it is a picture of
@@ -464,11 +487,7 @@ export class GlRenderer {
     const resized = this.nightSize.width !== size.width || this.nightSize.height !== size.height;
     if (resized) {
       this.nightSize = { width: size.width, height: size.height };
-      for (const texture of this.nightTextures) {
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size.width, size.height, 0,
-          gl.RGBA, gl.UNSIGNED_BYTE, null);
-      }
+      this.allocateNightStack(gl, size);
       this.nightPrimed = false;
     }
     if (restart) this.nightPrimed = false;
@@ -510,6 +529,73 @@ export class GlRenderer {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.nightPrimed = true;
     return true;
+  }
+
+  /**
+   * Allocate Night's ping-pong pair at the most precision this device will
+   * actually RENDER TO, and fall back to RGBA8 when it will not.
+   *
+   * WHY THIS IS NOT A DETAIL. An 8-bit accumulator stores 256 values per
+   * channel, and every blend rounds to the nearest one. Since the blend
+   * weight is 1/n (night-stack.ts), the stored value only moves at all when
+   * the arriving frame differs from the accumulation by more than n × 0.5/255
+   * — at 15 frames, by more than seven 8-bit steps. In a near-black room the
+   * whole scene sits at two or three steps and consecutive frames differ by
+   * about one, so from the THIRD frame onward the blend rounds to the value
+   * already stored and the rest of the capture writes back what it held. The
+   * mean such a scene converges to lies BETWEEN two 8-bit steps — which is
+   * precisely the information stacking exists to recover, and precisely what
+   * this storage cannot represent. A storage problem, not an algorithm one;
+   * the arithmetic is pinned in tests/v2-night-stack.test.mjs. Half-float's precision is RELATIVE, so it keeps roughly
+   * a thousandth of the value wherever the value happens to sit — which is
+   * exactly what a dark stack needs, since its whole signal lives near zero.
+   *
+   * VERIFIED, NOT ASSUMED. The extension strings are necessary but not
+   * sufficient: an implementation may expose OES_texture_half_float and still
+   * refuse to render to it. So the pair is allocated, attached, and the
+   * framebuffer's completeness is CHECKED — and the GL error queue is drained
+   * first and read after, because a full-size pair is a large request and
+   * OUT_OF_MEMORY is reported there rather than thrown. Anything short of a
+   * complete framebuffer falls back to the RGBA8 the accumulator has always
+   * used: worse, but working, and the readout says which one it got.
+   */
+  private allocateNightStack(gl: WebGLRenderingContext, size: RenderTargetSize): void {
+    const textures = this.nightTextures;
+    const framebuffer = this.nightFramebuffer;
+    if (!textures || !framebuffer) return;
+
+    const attempt = (type: number): boolean => {
+      // Drain first: an error left by earlier work is not evidence about THIS
+      // allocation, and reading a stale one would reject a format that works.
+      while (gl.getError() !== gl.NO_ERROR) { /* drain */ }
+      for (const texture of textures) {
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size.width, size.height, 0, gl.RGBA, type, null);
+      }
+      if (gl.getError() !== gl.NO_ERROR) return false;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, textures[0], 0);
+      const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      return complete;
+    };
+
+    const half = gl.getExtension('OES_texture_half_float') as { HALF_FLOAT_OES: number } | null;
+    const renderable = gl.getExtension('EXT_color_buffer_half_float');
+    if (half && renderable && attempt(half.HALF_FLOAT_OES)) {
+      this.nightFormat = 'RGBA16F';
+      return;
+    }
+    attempt(gl.UNSIGNED_BYTE);
+    this.nightFormat = 'RGBA8';
+  }
+
+  /**
+   * Which format Night's accumulator actually GOT — measured at allocation,
+   * never predicted from an extension string. Empty until one is allocated.
+   */
+  nightAccumulatorFormat(): string {
+    return this.nightTextures ? this.nightFormat : '';
   }
 
   /**

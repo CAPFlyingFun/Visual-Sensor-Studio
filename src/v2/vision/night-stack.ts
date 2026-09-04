@@ -146,6 +146,14 @@ export interface NightCounters {
   meanBefore: number;
   gain: number;
   lift: number;
+  /**
+   * WHAT THE ACCUMULATOR WAS ACTUALLY ALLOCATED AS — 'RGBA16F' or the
+   * 'RGBA8' fallback, measured by the renderer at allocation rather than
+   * predicted from an extension string. It belongs in the log because the
+   * fallback is silent by design: a capture that quietly dropped to 8 bits
+   * would otherwise look like a stacking failure instead of a memory one.
+   */
+  accumulatorFormat: string;
 }
 
 export function emptyNightCounters(): NightCounters {
@@ -154,7 +162,7 @@ export function emptyNightCounters(): NightCounters {
     stackCount: 0, restarts: 0, offsetPixels: 0, maxOffsetPixels: 0,
     tierLabel: '', streamWidth: 0, streamHeight: 0,
     stackedWidth: 0, stackedHeight: 0, sensorWidth: 0, sensorHeight: 0,
-    actualCadenceMs: 0, meanBefore: 0, gain: 1, lift: 1
+    actualCadenceMs: 0, meanBefore: 0, gain: 1, lift: 1, accumulatorFormat: ''
   };
 }
 
@@ -175,6 +183,7 @@ export function describeNightCounters(counters: NightCounters): string {
     + `tier ${counters.tierLabel || '—'} · stream ${size(counters.streamWidth, counters.streamHeight)} · `
     + `stacked ${size(counters.stackedWidth, counters.stackedHeight)} · `
     + `sensor ${size(counters.sensorWidth, counters.sensorHeight)} · `
+    + (counters.accumulatorFormat ? `accumulator ${counters.accumulatorFormat} · ` : '')
     + (counters.gain > 1.001 || counters.lift > 1.001
       ? `lift ${counters.gain.toFixed(2)}× gain, ${counters.lift.toFixed(2)} shadows `
         + `(mean ${counters.meanBefore.toFixed(3)})`

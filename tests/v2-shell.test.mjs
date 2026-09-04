@@ -499,16 +499,58 @@ test('the precision probe is diagnostics only, and cannot kill boot', () => {
   assert.match(handler, /document\.getElementById\('v2PrecisionProbe'\)/,
     'looked up without byId, so missing markup costs only the probe');
 
-  // IT CHANGES NOTHING ABOUT NIGHT. The capture path keeps every constant and
-  // the RGBA8 accumulator it had; this change only measures and reports.
+  // THE PROBE ITSELF still changes no capture constant. The accumulator's
+  // FORMAT is now a separate change and has its own pins below; the cadence
+  // and the duration are what this one must not have touched.
   const nightStack = readFileSync(new URL('../src/v2/vision/night-stack.ts', import.meta.url), 'utf8');
   assert.match(nightStack, /export const NIGHT_TICK_MS = 250;/, 'cadence untouched');
   assert.match(nightStack, /export const NIGHT_TARGET_MS = 4000;/, 'duration untouched');
+});
+
+test('Night allocates the best format it can RENDER TO, and falls back to RGBA8', () => {
   const renderTs = readFileSync(new URL('../src/v2/render/gl-renderer.ts', import.meta.url), 'utf8');
-  const nightAlloc = renderTs.slice(renderTs.indexOf('if (!this.nightTextures)'),
-    renderTs.indexOf('if (!this.nightTextures)') + 900);
-  assert.match(nightAlloc, /gl\.RGBA, gl\.UNSIGNED_BYTE, null/,
-    'the accumulator is still RGBA8 — replacing it is a LATER change');
+  const alloc = renderTs.slice(renderTs.indexOf('private allocateNightStack('),
+    renderTs.indexOf('nightAccumulatorFormat()'));
+  assert.ok(alloc.length > 0, 'the allocation is its own named step, not inline');
+
+  // AN EXTENSION STRING IS NOT A GRANT. An implementation may advertise
+  // half-float and still refuse to render to it, so the pair is allocated,
+  // attached and CHECKED before it is believed.
+  assert.match(alloc, /OES_texture_half_float/, 'asks for the half-float type');
+  assert.match(alloc, /EXT_color_buffer_half_float/, 'and for the right to render to it');
+  assert.match(alloc, /checkFramebufferStatus\(gl\.FRAMEBUFFER\) === gl\.FRAMEBUFFER_COMPLETE/,
+    'the framebuffer is proved complete rather than assumed');
+  assert.match(alloc, /while \(gl\.getError\(\) !== gl\.NO_ERROR\)/,
+    'the error queue is drained first, so a stale error cannot reject a working format');
+  assert.match(alloc, /if \(gl\.getError\(\) !== gl\.NO_ERROR\) return false;/,
+    'and read after, because OUT_OF_MEMORY is reported there rather than thrown');
+
+  // THE FALLBACK SURVIVES. A device that cannot hold the float pair still
+  // gets the accumulator it always had, rather than a failed capture.
+  assert.match(alloc, /attempt\(gl\.UNSIGNED_BYTE\);/, 'RGBA8 remains the fallback');
+  assert.match(alloc, /this\.nightFormat = 'RGBA8';/, 'and the fallback is recorded, not silent');
+
+  // NEAREST, or a half-float texture is INCOMPLETE wherever the linear
+  // extension is missing and the whole stack samples as black.
+  const create = renderTs.slice(renderTs.indexOf('if (!this.nightTextures) {'),
+    renderTs.indexOf('if (!this.nightFramebuffer)'));
+  assert.match(create, /gl\.TEXTURE_MIN_FILTER, gl\.NEAREST/, 'night textures sample NEAREST');
+  assert.match(create, /gl\.TEXTURE_MAG_FILTER, gl\.NEAREST/);
+
+  // A lost context invalidates the measurement along with the textures.
+  const reset = renderTs.slice(renderTs.indexOf('this.nightTextures = null;'),
+    renderTs.indexOf('this.nightTextures = null;') + 700);
+  assert.match(reset, /this\.nightFormat = 'RGBA8';/,
+    'the format claim is forgotten with the context that produced it');
+
+  // AND IT IS REPORTED, so a silent fallback cannot read as a stacking bug.
+  const appSrc = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+  assert.match(appSrc, /accumulatorFormat: renderer\.nightAccumulatorFormat\?\.\(\) \?\? ''/,
+    'the log records what was measured, and an optional call survives a stale renderer');
+  const nightStackSrc = readFileSync(
+    new URL('../src/v2/vision/night-stack.ts', import.meta.url), 'utf8');
+  assert.match(nightStackSrc, /accumulator \$\{counters\.accumulatorFormat\}/,
+    'and it reaches the copyable log');
 });
 
 test('the four Night sizes are reported apart, and exposure is advertised only', () => {

@@ -1536,6 +1536,12 @@ function updateNightStack(now: number): void {
     ...nightCounters,
     candidateFrames: candidates,
     acceptedFrames: nightCounters.acceptedFrames + 1,
+    // Read AFTER the first advance, because that is when the pair is
+    // allocated and so when the format stops being a prediction. The optional
+    // call is deliberate: an installed PWA can boot a fresh app.js against a
+    // cached older renderer, and a missing method must cost this one readout
+    // rather than the capture (2026-09-03).
+    accumulatorFormat: renderer.nightAccumulatorFormat?.() ?? '',
     stackCount,
     // A RESTART is the accumulator being thrown away and started over — not
     // the first prime of a fresh capture, which is simply how a mean begins.
@@ -1998,9 +2004,14 @@ function renderNightDiagnostics(): void {
     (box && box.width > 0 ? `${box.width}×${box.height}` : '—');
   setText('v2NightDiagSource', size(source));
   // The accumulator is whatever a capture froze, or what one would freeze now.
+  // The format is REPORTED, never predicted: before a capture allocates the
+  // pair there is no measured answer, and naming one would be a guess dressed
+  // as a reading.
+  const nightFormat = renderer.nightAccumulatorFormat?.() ?? '';
   setText('v2NightDiagAccumulator', nightSize
-    ? `${size(nightSize)} · RGBA8 (this capture)`
-    : `${size(geometry?.photo)} · RGBA8 (the size a capture would take)`);
+    ? `${size(nightSize)} · ${nightFormat || 'not yet allocated'} (this capture)`
+    : `${size(geometry?.photo)} · ${nightFormat || 'allocated on the first capture'} `
+      + '(the size a capture would take)');
   setText('v2NightDiagPreview', size(geometry?.preview));
   setText('v2NightDiagPhoto', `${size(geometry?.photo)} · sensor max ${size(capability)}`);
   setText('v2NightDiagFps', deliveredFps > 0 ? `${deliveredFps.toFixed(1)} fps` : '—');
