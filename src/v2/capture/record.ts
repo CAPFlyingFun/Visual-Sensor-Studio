@@ -23,6 +23,7 @@ import {
   clipFileName, extensionForMime, suggestedBitrate
 } from '../../vision/clip-format.js';
 import { countMp4Frames } from './mp4-frames.js';
+import { describeMp4Shape, type Mp4Shape } from './mp4-shape.js';
 
 export interface ClipResult {
   seconds: number;
@@ -67,6 +68,13 @@ export interface ClipResult {
   encodedFrames: number | null;
   /** The file's own duration from its sample tables, when it carries one. */
   encodedSeconds: number | null;
+  /**
+   * The CONTAINER's shape, read from the bytes — codec tag, fragmented or
+   * progressive, where the index sits. Null when the file is not an MP4 this
+   * can parse. It is here because "the share sheet offered Save to Camera
+   * Roll and nothing happened" is answerable only from the file itself.
+   */
+  shape: Mp4Shape | null;
 }
 
 /**
@@ -322,8 +330,12 @@ export class ClipRecorder {
 
     const encoded = await measureEncodedSize(blob);
     let counted: { frames: number; seconds: number | null } | null = null;
+    let shape: Mp4Shape | null = null;
     try {
-      counted = countMp4Frames(new Uint8Array(await blob.arrayBuffer()));
+      // One read of the bytes serves both: the frame count and the shape.
+      const raw = new Uint8Array(await blob.arrayBuffer());
+      counted = countMp4Frames(raw);
+      shape = describeMp4Shape(raw);
     } catch {
       counted = null;
     }
@@ -346,7 +358,8 @@ export class ClipRecorder {
       encodedFrames: counted?.frames ?? null,
       // The decoder's duration first (it reads fragmented files too), the
       // sample tables' second, the wall clock only as the caller's fallback.
-      encodedSeconds: encoded.seconds ?? counted?.seconds ?? null
+      encodedSeconds: encoded.seconds ?? counted?.seconds ?? null,
+      shape
     };
   }
 }

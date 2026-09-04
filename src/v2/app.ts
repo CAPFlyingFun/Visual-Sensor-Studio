@@ -45,6 +45,7 @@ import {
 } from './camera/geometry.js';
 import { captureAtMaxStream, type Escalation, type ShutterStream } from './capture/shutter.js';
 import { ClipRecorder, type ClipResult } from './capture/record.js';
+import { describeImportability } from './capture/mp4-shape.js';
 import { ENCODER_PROBE_LADDER, runEncoderProbe } from './capture/encoder-probe.js';
 import {
   envelopeFromMeasurement, measurementFromRows, type EnvelopeMeasurement
@@ -3173,6 +3174,10 @@ async function toggleRecording(): Promise<void> {
         + `${(result.bytes / 1e6).toFixed(2)} MB · ${(result.measuredBitsPerSecond / 1e6).toFixed(1)} Mb/s measured `
         + `(asked ${(result.requestedBitsPerSecond / 1e6).toFixed(1)}) · ${result.mimeType || 'container unreported'}`
         + ` · ${chunkText} · ${finalizeText}${rateText}`
+        // WHY IT WILL OR WILL NOT IMPORT, read from the file's own boxes.
+        // "It did give me the option, but nothing happened" is a silent
+        // refusal, and a silent refusal cannot be diagnosed from the outside.
+        + ` · IMPORT: ${describeImportability(result.shape)}`
       : 'The recording produced no data.');
     if (result) {
       offerShare('v2ShareClip',
