@@ -255,7 +255,7 @@
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
-    <span class="pill" id="v2Badge">v0.74.0</span>
+    <span class="pill" id="v2Badge">v0.75.0</span>
   </header>
 
   <div class="camera-layout">
@@ -537,6 +537,7 @@
             <button type="button" class="btn" id="v2ImportPick">🖼️ Choose a photo or video</button>
             <button type="button" class="btn" id="v2ImportPlay" hidden>⏸ Pause</button>
             <button type="button" class="btn" id="v2ImportSave" hidden>💾 Save as new</button>
+            <button type="button" class="btn" id="v2ImportCancel" hidden>⏹ Stop export</button>
             <button type="button" class="btn" id="v2ImportClear" hidden>✕ Clear</button>
           </div>
           <input type="file" id="v2ImportFile" accept="image/*,video/*" hidden />
@@ -547,6 +548,13 @@
           <p class="hint" id="v2ImportNote"></p>
           <canvas id="v2ImportCanvas" hidden></canvas>
           <p class="probe-out" id="v2ImportReading"></p>
+          <p class="hint">
+            An imported file has already been compressed once. Edge, Motion and Speed read
+            what is in the pixels, so they will find that codec's blocking and ringing and
+            draw it as confidently as they draw the room &mdash; artefacts arrive looking
+            like structure. Footage straight off this camera has only been through one
+            encoder; anything messaged, downloaded or re-shared has been through several.
+          </p>
         </section>
 
         <!-- The main screen shows RESULTS, not instruments (Joshua, 2026-09-01:

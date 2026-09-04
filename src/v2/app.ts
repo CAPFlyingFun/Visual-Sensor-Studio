@@ -1838,6 +1838,12 @@ let importedUrl = '';
  */
 let importPlaying = false;
 let importFrames = 0;
+/** The browser's own count of frames this clip has presented, when it keeps one. */
+let importPresented = 0;
+/** Set by the Cancel button; the export loop stops at the next frame boundary. */
+let importCancelled = false;
+/** Resolves the export's single wait, so cancelling takes the same exit as ending. */
+let importCancelWait: (() => void) | null = null;
 
 /**
  * Why this filter cannot be applied to the imported media, or ''.
@@ -1955,8 +1961,42 @@ function drawImportFrame(): boolean {
   return true;
 }
 
+/**
+ * ONE RENDER PER DECODED FRAME, not per display refresh.
+ *
+ * requestAnimationFrame drove this until now, and it asks the wrong question:
+ * it fires when the SCREEN is ready, not when the clip has a new frame. Under
+ * a filter slower than the refresh — Wash is thirteen taps a pixel — the
+ * renders fall behind while the clip plays on regardless, so frames are
+ * skipped and the recorded stream carries stale ones. The export came out
+ * the right LENGTH with fewer distinct frames in it, and nothing said so.
+ *
+ * requestVideoFrameCallback fires once per frame the video actually
+ * presents, and hands over `presentedFrames` — a running count kept by the
+ * browser. The difference between that and how many times this rendered is
+ * the drop count, measured rather than assumed.
+ *
+ * The rAF path stays as the fallback where rVFC is missing, and reports its
+ * frames as unmeasured rather than pretending to a number it cannot know.
+ */
+interface FrameMeta { presentedFrames?: number }
+type FrameStepper = HTMLVideoElement & {
+  requestVideoFrameCallback?: (cb: (now: number, meta: FrameMeta) => void) => number;
+};
+
 function driveImport(): void {
   if (!importPlaying) return;
+  const clip = importedClip as FrameStepper | null;
+  if (!clip) return;
+  if (typeof clip.requestVideoFrameCallback === 'function') {
+    clip.requestVideoFrameCallback((_now, meta) => {
+      if (!importPlaying) return;
+      if (typeof meta.presentedFrames === 'number') importPresented = meta.presentedFrames;
+      drawImportFrame();
+      driveImport();
+    });
+    return;
+  }
   drawImportFrame();
   window.requestAnimationFrame(driveImport);
 }
@@ -1966,7 +2006,7 @@ function startImportPlayback(): void {
   importPlaying = true;
   byId('v2ImportPlay').textContent = '⏸ Pause';
   void importedClip.play().catch(() => { /* a refused play leaves it paused */ });
-  window.requestAnimationFrame(driveImport);
+  driveImport();
 }
 
 function stopImportPlayback(): void {
@@ -2138,14 +2178,41 @@ async function saveImportClip(): Promise<void> {
       setText('v2ImportNote', started.reason ?? 'The recorder refused to start.');
       return;
     }
-    setText('v2ImportNote', `Recording ${clip.duration.toFixed(1)}s in real time — `
-      + 'the clip plays through once. Sound is not carried over.');
+    // PROGRESS, because this is the one operation in the app that takes
+    // longer than a person will wait without feedback: the clip plays through
+    // at 1x, so a minute of footage is a minute of apparently nothing.
+    const cancel = document.getElementById('v2ImportCancel');
+    if (cancel) cancel.hidden = false;
+    importCancelled = false;
+    importFrames = 0;
+    // A BASELINE, NOT A RESET. presentedFrames is the browser's cumulative
+    // count for the element's whole lifetime and nothing this code does can
+    // zero it — the clip has been playing since it was loaded. Setting the
+    // local counter to 0 and comparing against a total that started earlier
+    // produced "172 of 119 frames filtered", which is not a ratio at all.
+    const presentedAtStart = importPresented;
+    const tick = window.setInterval(() => {
+      const done = clip.currentTime;
+      const total = clip.duration > 0 ? clip.duration : 0;
+      const pct = total > 0 ? Math.min(100, (done / total) * 100) : 0;
+      setText('v2ImportNote', `Recording ${done.toFixed(1)}s of ${total.toFixed(1)}s`
+        + ` · ${pct.toFixed(0)}% · ${importFrames} frames rendered`
+        + ' · silent, and in real time because the encoder writes at wall-clock rate');
+    }, 250);
+
     const ended = new Promise<void>((resolve) => {
       const done = () => { clip.removeEventListener('ended', done); resolve(); };
       clip.addEventListener('ended', done);
+      // CANCEL resolves the same wait rather than racing a second path out of
+      // here: one exit, so the recorder is always stopped exactly once and a
+      // cancelled export still produces the file it managed to write.
+      importCancelWait = () => { clip.removeEventListener('ended', done); resolve(); };
     });
     startImportPlayback();
     await ended;
+    window.clearInterval(tick);
+    if (cancel) cancel.hidden = true;
+    importCancelWait = null;
     stopImportPlayback();
     clip.loop = wasLooping;
     const result = await importRecorder.stop();
@@ -2158,8 +2225,28 @@ async function saveImportClip(): Promise<void> {
     offerShare('v2SharePhoto',
       new File([result.blob], result.fileName,
         { type: shareMimeType(result.blob.type, 'video/mp4') }), 'v2PhotoResult');
-    setText('v2ImportNote', `Saved ${result.encodedWidth}×${result.encodedHeight} · `
-      + `${result.seconds.toFixed(1)}s · ${(result.blob.size / 1e6).toFixed(2)} MB · `
+    // WHAT WAS ACTUALLY CAPTURED, not what was asked for. presentedFrames is
+    // the browser's own count of frames the clip put on screen; the renders
+    // are ours. A filter too slow for the clip's frame rate shows up here as
+    // a shortfall rather than as a file that quietly holds duplicates.
+    const presented = Math.max(0, importPresented - presentedAtStart);
+    // A SHORTFALL IS THE ONLY INTERESTING CASE. Renders can legitimately
+    // EXCEED presented frames — some browsers fire the frame callback at the
+    // display's rate rather than the clip's — and reporting "172 of 119"
+    // would be reporting the measurement's own quirk as if it were the
+    // clip's. More renders than frames means nothing was missed, which is
+    // the thing worth saying.
+    const dropped = presented > 0 ? presented - importFrames : 0;
+    const filterName = filterById(readState().activeFilter)?.name ?? 'the filter';
+    const frames = presented <= 0
+      ? ` · ${importFrames} frames filtered (this browser does not count presented frames)`
+      : dropped > 0
+        ? ` · ${importFrames} of ${presented} frames filtered — ${dropped} arrived faster`
+          + ` than ${filterName} could draw them, and the frame before was encoded again`
+        : ` · every one of ${presented} frames filtered`;
+    setText('v2ImportNote', `${importCancelled ? 'Stopped early' : 'Saved'} `
+      + `${result.encodedWidth}×${result.encodedHeight} · `
+      + `${result.seconds.toFixed(1)}s · ${(result.blob.size / 1e6).toFixed(2)} MB${frames} · `
       + `silent · ${importedName} is untouched`);
   } finally {
     importSaving = false;
@@ -2182,6 +2269,17 @@ function buildImport(): void {
   byId('v2ImportSave').addEventListener('click', () => {
     if (importedClip) void saveImportClip(); else void saveImport();
   });
+  const cancel = document.getElementById('v2ImportCancel');
+  if (cancel) {
+    cancel.addEventListener('click', () => {
+      // A cancelled export KEEPS what it wrote. The recorder is stopped the
+      // same way either way, so the part of the clip that was filtered is a
+      // real file rather than a discarded one.
+      importCancelled = true;
+      importedClip?.pause();
+      importCancelWait?.();
+    });
+  }
   byId('v2ImportClear').addEventListener('click', () => clearImport());
 }
 

@@ -968,3 +968,72 @@ test('how fast the camera really accepts zoom changes is measured, not assumed',
   assert.match(v2Html, /id="v2ZoomRateNote"/, 'and has somewhere on the page to land');
   assert.match(appTs, /if \(elapsed >= 1000\)/, 'averaged over a real second, not one sample');
 });
+
+test('an imported clip renders once per DECODED frame, and counts what it missed', () => {
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+  const drive = appTs.slice(appTs.indexOf('function driveImport()'),
+    appTs.indexOf('function startImportPlayback()'));
+
+  // requestAnimationFrame asks the wrong question: it fires when the SCREEN is
+  // ready, not when the clip has a new frame. A filter slower than the refresh
+  // then skips frames while the clip plays on, and the export comes out the
+  // right LENGTH with fewer distinct frames in it.
+  assert.match(drive, /clip\.requestVideoFrameCallback\(\(_now, meta\) => \{/,
+    'the clip drives the renders, not the display');
+  assert.match(drive, /meta\.presentedFrames === 'number'/,
+    'and the browser\'s own frame count is read while it is there');
+  // The fallback survives, because rVFC is not everywhere.
+  assert.match(drive, /window\.requestAnimationFrame\(driveImport\);/);
+
+  // A BASELINE, NOT A RESET. presentedFrames is cumulative for the element's
+  // lifetime and nothing here can zero it — the clip has been playing since
+  // it loaded. Comparing a counter that restarts against one that does not
+  // produced "172 of 119 frames filtered", which is not a ratio.
+  assert.match(appTs, /const presentedAtStart = importPresented;/);
+  assert.match(appTs, /const presented = Math\.max\(0, importPresented - presentedAtStart\);/);
+
+  // MORE RENDERS THAN FRAMES MEANS NOTHING WAS MISSED. Some browsers fire the
+  // frame callback at the display's rate rather than the clip's, so only a
+  // SHORTFALL is worth reporting — the other direction is the measurement's
+  // own quirk, not the clip's.
+  assert.match(appTs, /const dropped = presented > 0 \? presented - importFrames : 0;/);
+  assert.match(appTs, /every one of \$\{presented\} frames filtered/);
+  assert.match(appTs, /frames filtered \(this browser does not count presented frames\)/,
+    'and where it cannot be counted, it says so rather than guessing');
+});
+
+test('a long export shows progress and can be stopped without losing the file', () => {
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+
+  // This is the one operation that takes longer than a person will wait: the
+  // clip plays through at 1x, so a minute of footage is a minute of nothing.
+  assert.match(appTs, /window\.setInterval\(\(\) => \{[\s\S]{0,400}?Recording \$\{done\.toFixed\(1\)\}s of/);
+  assert.match(appTs, /window\.clearInterval\(tick\);/, 'and the ticker is always cleared');
+
+  // ONE EXIT. Cancel resolves the same wait 'ended' does rather than racing a
+  // second path out, so the recorder is stopped exactly once.
+  assert.match(appTs, /importCancelWait = \(\) => \{ clip\.removeEventListener\('ended', done\); resolve\(\); \};/);
+  assert.match(appTs, /importCancelWait\?\.\(\);/);
+  assert.match(appTs, /importCancelWait = null;/, 'and the resolver is cleared after the wait');
+
+  // A CANCELLED EXPORT KEEPS WHAT IT WROTE — stop() runs either way, so the
+  // filtered part is a real file rather than a discarded one.
+  const save = appTs.slice(appTs.indexOf('async function saveImportClip()'),
+    appTs.indexOf('function buildImport()'));
+  assert.equal((save.match(/importRecorder\.stop\(\)/g) ?? []).length, 1,
+    'exactly one stop, on both paths');
+  assert.match(save, /\$\{importCancelled \? 'Stopped early' : 'Saved'\}/,
+    'and the readout says which happened');
+
+  assert.match(v2Html, /id="v2ImportCancel"/);
+  // getElementById, not byId: missing markup must cost only this button.
+  assert.match(appTs, /document\.getElementById\('v2ImportCancel'\)/);
+});
+
+test('the import panel says what a compressed file already lost', () => {
+  // The card asked for this and it was never built. An edge or motion filter
+  // reads what is in the pixels, and a codec's blocking and ringing ARE in
+  // the pixels — they arrive looking like structure.
+  assert.match(v2Html, /artefacts arrive looking\s*\n?\s*like structure/,
+    'the honesty note is on the import panel');
+});
