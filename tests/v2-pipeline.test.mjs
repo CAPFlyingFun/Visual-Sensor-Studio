@@ -548,7 +548,7 @@ test('FILTERS is the one list: unique ids, honest metadata, real shaders', () =>
     // review this way (Poly, 2026-09-04). Comments are stripped first —
     // reserved words are only reserved to the compiler.
     for (const source of [filter.fragment, filter.state ?? '']) {
-      const code = source.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+      const code = glslCode(source);
       for (const reserved of ['half', 'flat', 'long', 'short', 'double', 'union',
         'input', 'output', 'this', 'class', 'template', 'namespace', 'sizeof', 'cast']) {
         assert.ok(!new RegExp(`\\b${reserved}\\b`).test(code),
@@ -573,7 +573,8 @@ test('FILTERS is the one list: unique ids, honest metadata, real shaders', () =>
       `${filter.id}: temporal metadata and shader body must agree`);
   }
   assert.deepEqual(FILTERS.map((f) => f.id),
-    ['rgb', 'ironbow', 'difference', 'speed', 'trails', 'edges', 'grid', 'poly']);
+    ['rgb', 'ironbow', 'difference', 'speed', 'trails', 'edges', 'grid', 'poly',
+     'cel', 'ink', 'wash']);
   // Milestone D's second stage: Speed and Trails carry their memory in a
   // state pass, at ANALYSIS resolution, and decline stills like Motion.
   for (const id of ['speed', 'trails']) {
@@ -2347,7 +2348,7 @@ test('Poly cuts each cell along the edge running through it', () => {
   // and the failure would only have appeared on the device. Checked against
   // the CODE, with comments stripped: the note explaining this very trap
   // says the word, and a reserved word in a comment compiles fine.
-  const code = poly.fragment.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  const code = glslCode(poly.fragment);
   for (const reserved of ['half', 'flat', 'long', 'short', 'double', 'input', 'output']) {
     assert.ok(!new RegExp(`\\b${reserved}\\b`).test(code),
       `${reserved} is reserved in GLSL ES 1.00 and must not reach the compiler`);
@@ -2380,3 +2381,126 @@ test('Poly cuts each cell along the edge running through it', () => {
   assert.equal(poly.state, undefined);
   assert.ok(poly.supportsPhoto && poly.supportsVideo);
 });
+
+test('the Sobel is written once and shared by everything that reads an edge', () => {
+  // It had been transcribed three times — the Edges filter, the peaking aid,
+  // and the compiled lens channel — and Cel, Ink and Wash would have made
+  // six. Six copies of eight taps is six chances for one to drift, and the
+  // symptom would be two filters disagreeing about where an edge is.
+  assert.match(SHADER_HEADER, /float sobelLuma\(vec2 uv, vec2 texel\) \{/,
+    'one definition, in the header');
+  // The TEXEL IS A PARAMETER, which is the thing that lets the aid share it:
+  // peaking measures at the aid's resolution, everything else at the render
+  // size, and that difference was the only reason for a separate copy.
+  assert.match(SHADER_HEADER, /sobelLuma\(uv, uAidTexel\) >= uPeak/, 'peaking uses it');
+  assert.equal((SHADER_HEADER.match(/2\.0 \* r \+ br/g) ?? []).length, 1,
+    'and the eight taps appear exactly once in the header');
+
+  const edges = filterById('edges');
+  assert.match(edges.fragment.slice(edges.fragment.indexOf('void main')),
+    /sobelLuma\(vUv, uTexel\)/, 'the Edges filter uses it');
+  assert.ok(!edges.fragment.slice(edges.fragment.indexOf('void main')).includes('2.0 * r + br'),
+    'and no longer carries its own copy');
+
+  for (const id of ['cel', 'ink', 'wash']) {
+    const filter = filterById(id);
+    assert.match(filter.fragment.slice(filter.fragment.indexOf('void main')),
+      /sobelLuma\(vUv, uTexel\)/, `${id} reads edges through the shared one`);
+  }
+});
+
+test('Cel bands the VALUE so hue survives, and says its curve is a stylisation', () => {
+  const cel = filterById('cel');
+  const body = cel.fragment.slice(cel.fragment.indexOf('void main'));
+
+  // Quantising r, g and b separately is the obvious way and it wrecks hue:
+  // a wall drifts beige to pink as two channels cross a step at different
+  // moments. Band luma, then rescale the original colour onto that band.
+  assert.match(body, /float band = floor\(curved \* BANDS \+ 0\.5\) \/ BANDS;/);
+  assert.match(body, /vec3 painted = scene \* \(band \/ max\(y, 0\.02\)\);/,
+    'the original colour is rescaled, not rebuilt');
+  assert.ok(!/floor\(scene/.test(body), 'the channels are never quantised apart');
+
+  // The near-black guard: without it the ratio has no meaning and multiplies
+  // sensor noise straight into the top band.
+  assert.match(body, /max\(y, 0\.02\)/);
+
+  // The curve is admitted in the note rather than passed off as a reading.
+  assert.match(cel.note, /stylisation/i);
+  assert.match(body, /pow\(clamp\(y, 0\.0, 1\.0\), VALUE_GAMMA\)/);
+});
+
+test('Ink builds shade the way a pen does, and at frame scale', () => {
+  const ink = filterById('ink');
+  const body = ink.fragment.slice(ink.fragment.indexOf('void main'));
+
+  // FOUR LAYERS AT FOUR THRESHOLDS. A pen has one colour and only density to
+  // spend, so darker means more lines, not greyer ones.
+  const layers = body.match(/hatch\(/g) ?? [];
+  assert.equal(layers.length, 4, 'four hatch families');
+  const cuts = [...body.matchAll(/step\(y, ([\d.]+)\)/g)].map((m) => Number(m[1]));
+  assert.equal(cuts.length, 4);
+  for (let i = 1; i < cuts.length; i += 1) {
+    assert.ok(cuts[i] < cuts[i - 1], `each layer cuts in darker: ${cuts.join(' > ')}`);
+  }
+
+  // MEASURED IN THE FRAME, NOT IN PIXELS — the same mistake Grid's line width
+  // made. Pixel spacing gives the preview a coarse weave and a 12 MP still a
+  // fine grey mist, so the drawing would not survive being saved.
+  assert.match(body, /vec2 p = vec2\(vUv\.x, vUv\.y \* \(uTexel\.x \/ uTexel\.y\)\) \* HATCH_SCALE;/,
+    'scaled by the frame, with the aspect term keeping strokes at 45 degrees');
+
+  // sin() at large arguments loses precision at mediump — a visible seam on a
+  // phone, not a rounding error. Checked against the CODE: the comment that
+  // explains this names the function it is warning about.
+  assert.ok(!glslCode(ink.fragment).includes('sin('), 'the hash avoids sin entirely');
+  assert.match(ink.fragment, /float hash\(vec2 p\) \{/);
+});
+
+test('Wash darkens its rims rather than outlining them', () => {
+  const wash = filterById('wash');
+  const body = wash.fragment.slice(wash.fragment.indexOf('void main'));
+
+  // THE ONE EFFECT THAT READS AS WATERCOLOUR AND NOTHING ELSE: pigment
+  // migrates to the rim of a drying pool. It must DARKEN the boundary — an
+  // ink line there would make it a drawing instead.
+  assert.match(body, /vec3 washed = pool \* \(1\.0 - rim\);/);
+  assert.ok(!body.includes('INK'), 'no outline is drawn');
+
+  // A WASH DRIES FLAT, and blur alone does not: measured on a real room the
+  // rim contrast was +0.068 with the pools left smooth and +0.211 once they
+  // were banded. Banded by VALUE, after the blur — before it would posterise
+  // noise instead of shaping pools.
+  assert.match(body, /float flatten = floor\(pow\(clamp\(pooled, 0\.0, 1\.0\), 0\.75\) \* POOL_BANDS/);
+  assert.ok(body.indexOf('pool / 10.0') < body.indexOf('POOL_BANDS'),
+    'the banding happens after the blur, not before it');
+
+  // Nine colour taps, averaged with the centre weighted double.
+  assert.equal((body.match(/texture2D\(uFrame/g) ?? []).length, 9);
+  assert.match(body, /texture2D\(uFrame, at\)\.rgb \* 2\.0/);
+  assert.match(body, /pool \/ 10\.0/, 'weights sum to ten');
+
+  // The wobble is CONSTANT ACROSS A PATCH: per-pixel noise is a lens defect,
+  // wet paper wanders in patches.
+  assert.match(body, /vec2 patch = floor\(vUv \/ max\(uTexel, vec2\(1e-6\)\) \/ 14\.0\);/);
+
+  // Paper grain strongest where the wash is thin, as real pigment behaves.
+  assert.match(body, /1\.0 - PAPER_GRAIN \* grain \* \(0\.35 \+ 0\.65 \* thin\)/);
+
+  // And the cost is stated rather than discovered.
+  assert.match(wash.note, /thirteen taps/i);
+});
+
+
+/**
+ * A shader's CODE, with its comments removed.
+ *
+ * Written after tripping over this twice in one sitting: a shader comment
+ * that explains a trap necessarily names the trap, so `half` appeared in the
+ * note warning that `half` is reserved, and `sin(` in the note warning about
+ * sin(). Both times the test was wrong and the shader was fine. Anything
+ * asserting what a shader must NOT contain belongs on this side of the line.
+ */
+function glslCode(source) {
+  return source.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+}

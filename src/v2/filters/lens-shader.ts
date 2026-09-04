@@ -98,18 +98,12 @@ function channelGlsl(id: ChannelId): string {
     case 'edges':
       // The legacy field is hypot(gx, gy) of a Sobel on 0–255 gray, clamped
       // to 255; on 0–1 luma that is the same number × 255.
+      // The SAME eight taps every other edge reader uses — sobelLuma lives in
+      // SHADER_HEADER (Rule 4). A lens and the Edges filter disagreeing about
+      // where an edge is would be a bug nobody could see until they were
+      // compared side by side.
       return `float ch_edges(vec2 uv) {
-  float tl = luma(texture2D(uFrame, uv + uTexel * vec2(-1.0, -1.0)).rgb);
-  float  l = luma(texture2D(uFrame, uv + uTexel * vec2(-1.0,  0.0)).rgb);
-  float bl = luma(texture2D(uFrame, uv + uTexel * vec2(-1.0,  1.0)).rgb);
-  float tr = luma(texture2D(uFrame, uv + uTexel * vec2( 1.0, -1.0)).rgb);
-  float  r = luma(texture2D(uFrame, uv + uTexel * vec2( 1.0,  0.0)).rgb);
-  float br = luma(texture2D(uFrame, uv + uTexel * vec2( 1.0,  1.0)).rgb);
-  float  t = luma(texture2D(uFrame, uv + uTexel * vec2( 0.0, -1.0)).rgb);
-  float  b = luma(texture2D(uFrame, uv + uTexel * vec2( 0.0,  1.0)).rgb);
-  float gx = (tr + 2.0 * r + br) - (tl + 2.0 * l + bl);
-  float gy = (bl + 2.0 * b + br) - (tl + 2.0 * t + tr);
-  return clamp(length(vec2(gx, gy)) * 255.0, 0.0, 255.0);
+  return clamp(sobelLuma(uv, uTexel) * 255.0, 0.0, 255.0);
 }`;
     case 'change':
       return `float ch_change(vec2 uv) {

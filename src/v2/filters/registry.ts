@@ -77,6 +77,34 @@ uniform sampler2D uPrevious;
 uniform sampler2D uState;
 uniform vec2 uTexel;
 float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+/*
+ * THE SOBEL, ONCE (Rule 4).
+ *
+ * This had been written out three times — in the Edges filter, in the focus
+ * peaking aid below, and again in the compiled lens channel — and three more
+ * copies were about to arrive with Cel, Ink and Wash. Six transcriptions of
+ * the same eight taps is six chances for one of them to drift, silently, in
+ * a way that shows up as two filters disagreeing about where an edge is.
+ *
+ * The texel is a PARAMETER rather than uTexel, which is what lets the aid
+ * share it: peaking measures at the aid's own resolution and everything else
+ * at the render size, and that difference is the only thing that ever
+ * separated the copies.
+ */
+float sobelLuma(vec2 uv, vec2 texel) {
+  float tl = luma(texture2D(uFrame, uv + texel * vec2(-1.0, -1.0)).rgb);
+  float  l = luma(texture2D(uFrame, uv + texel * vec2(-1.0,  0.0)).rgb);
+  float bl = luma(texture2D(uFrame, uv + texel * vec2(-1.0,  1.0)).rgb);
+  float tr = luma(texture2D(uFrame, uv + texel * vec2( 1.0, -1.0)).rgb);
+  float  r = luma(texture2D(uFrame, uv + texel * vec2( 1.0,  0.0)).rgb);
+  float br = luma(texture2D(uFrame, uv + texel * vec2( 1.0,  1.0)).rgb);
+  float  t = luma(texture2D(uFrame, uv + texel * vec2( 0.0, -1.0)).rgb);
+  float  b = luma(texture2D(uFrame, uv + texel * vec2( 0.0,  1.0)).rgb);
+  float gx = (tr + 2.0 * r + br) - (tl + 2.0 * l + bl);
+  float gy = (bl + 2.0 * b + br) - (tl + 2.0 * t + tr);
+  return length(vec2(gx, gy));
+}
 // The frame's colour histogram (64 texels, red channel = share of the
 // commonest hue) and its prevailing colour as HSV. Both are measurements of
 // the WHOLE picture; a filter that ignores them costs nothing for them.
@@ -117,17 +145,8 @@ vec3 withAids(vec3 color, vec2 uv) {
     if (stripe < 0.5) color = mix(color, vec3(1.0, 0.1, 0.1), 0.65);
   }
   if (uPeak > 0.0) {
-    float tl = luma(texture2D(uFrame, uv + uAidTexel * vec2(-1.0, -1.0)).rgb);
-    float  l = luma(texture2D(uFrame, uv + uAidTexel * vec2(-1.0,  0.0)).rgb);
-    float bl = luma(texture2D(uFrame, uv + uAidTexel * vec2(-1.0,  1.0)).rgb);
-    float tr = luma(texture2D(uFrame, uv + uAidTexel * vec2( 1.0, -1.0)).rgb);
-    float  r = luma(texture2D(uFrame, uv + uAidTexel * vec2( 1.0,  0.0)).rgb);
-    float br = luma(texture2D(uFrame, uv + uAidTexel * vec2( 1.0,  1.0)).rgb);
-    float  t = luma(texture2D(uFrame, uv + uAidTexel * vec2( 0.0, -1.0)).rgb);
-    float  b = luma(texture2D(uFrame, uv + uAidTexel * vec2( 0.0,  1.0)).rgb);
-    float gx = (tr + 2.0 * r + br) - (tl + 2.0 * l + bl);
-    float gy = (bl + 2.0 * b + br) - (tl + 2.0 * t + tr);
-    if (length(vec2(gx, gy)) >= uPeak) color = vec3(0.2, 1.0, 0.3);
+    // At the AID's resolution, which is why sobelLuma takes its texel.
+    if (sobelLuma(uv, uAidTexel) >= uPeak) color = vec3(0.2, 1.0, 0.3);
   }
   return color;
 }
@@ -438,17 +457,7 @@ export const FILTERS: readonly FilterDefinition[] = [
     // Sobel on luma. uTexel is one texel at the RENDER size, supplied by the
     // renderer from the target geometry — the shader owns no resolution.
     fragment: HEADER + `void main() {
-  float tl = luma(texture2D(uFrame, vUv + uTexel * vec2(-1.0, -1.0)).rgb);
-  float  l = luma(texture2D(uFrame, vUv + uTexel * vec2(-1.0,  0.0)).rgb);
-  float bl = luma(texture2D(uFrame, vUv + uTexel * vec2(-1.0,  1.0)).rgb);
-  float tr = luma(texture2D(uFrame, vUv + uTexel * vec2( 1.0, -1.0)).rgb);
-  float  r = luma(texture2D(uFrame, vUv + uTexel * vec2( 1.0,  0.0)).rgb);
-  float br = luma(texture2D(uFrame, vUv + uTexel * vec2( 1.0,  1.0)).rgb);
-  float  t = luma(texture2D(uFrame, vUv + uTexel * vec2( 0.0, -1.0)).rgb);
-  float  b = luma(texture2D(uFrame, vUv + uTexel * vec2( 0.0,  1.0)).rgb);
-  float gx = (tr + 2.0 * r + br) - (tl + 2.0 * l + bl);
-  float gy = (bl + 2.0 * b + br) - (tl + 2.0 * t + tr);
-  float g = clamp(length(vec2(gx, gy)), 0.0, 1.0);
+  float g = clamp(sobelLuma(vUv, uTexel), 0.0, 1.0);
   gl_FragColor = vec4(withAids(vec3(g), vUv), 1.0);
 }`
   },
@@ -672,6 +681,212 @@ void main() {
              + texture2D(uFrame, clamp(at + vec2(0.0, spread.y), 0.0, 1.0)).rgb
              + texture2D(uFrame, clamp(at - vec2(0.0, spread.y), 0.0, 1.0)).rgb;
   gl_FragColor = vec4(withAids(facet * 0.25, vUv), 1.0);
+}`
+  },
+  {
+    id: 'cel',
+    note: 'Anime cel shading: the picture flattened into a few bands of tone with its colour kept, and dark ink laid along the edges. The banding runs on a curved value so a dim room lands in more than one band — a stylisation, and the only thing here that is not the camera\'s own reading.',
+    name: 'Cel',
+    family: 'view',
+    temporal: false,
+    supportsPhoto: true,
+    supportsVideo: true,
+    /*
+     * FLAT TONE PLUS INK, which is what cel animation actually is: paint
+     * mixed in a few discrete values, and a line drawn over it.
+     *
+     * BANDING THE VALUE, NOT THE COLOUR. Quantising r, g and b separately is
+     * the obvious way and it wrecks hue — a wall drifts from beige to pink as
+     * two channels cross a step at different moments. Banding LUMA and then
+     * rescaling the original colour to sit on that band keeps the hue exactly
+     * and moves only the brightness, which is what a painter mixing four
+     * values does.
+     *
+     * THE CURVE IS A STYLISATION AND IS SAID TO BE. Poly shows the camera's
+     * own colour untouched because its subject is that colour. Cel's subject
+     * is a painting, and a dark room quantised on raw luma lands entirely in
+     * the bottom band — one flat shape, no picture. The curve spends the
+     * bands where the room actually is. It is not a measurement and the note
+     * does not present it as one.
+     */
+    fragment: HEADER + `const float BANDS = 5.0;
+const float VALUE_GAMMA = 0.7;
+const float SATURATION = 1.25;
+const float INK_FULL = 0.30;
+const vec3 INK = vec3(0.04, 0.03, 0.05);
+
+void main() {
+  vec3 scene = texture2D(uFrame, vUv).rgb;
+  float y = luma(scene);
+  float curved = pow(clamp(y, 0.0, 1.0), VALUE_GAMMA);
+  float band = floor(curved * BANDS + 0.5) / BANDS;
+
+  // Rescale the ORIGINAL colour onto the band: hue and saturation survive,
+  // only the value moves. The guard is for near-black, where the ratio has
+  // no meaning and would otherwise multiply noise up into the top band.
+  vec3 painted = scene * (band / max(y, 0.02));
+  painted = clamp(painted, 0.0, 1.0);
+  painted = clamp(mix(vec3(luma(painted)), painted, SATURATION), 0.0, 1.0);
+
+  // Ink where the picture has a boundary, softened over the approach so the
+  // line has a drawn edge rather than a staircase.
+  float ink = smoothstep(INK_FULL * 0.35, INK_FULL, sobelLuma(vUv, uTexel));
+  gl_FragColor = vec4(withAids(mix(painted, INK, ink), vUv), 1.0);
+}`
+  },
+  {
+    id: 'ink',
+    note: 'The room drawn on paper: graphite strokes along every edge, and cross-hatching that thickens as the light falls. Four hatch layers at different angles, each cutting in at its own darkness, the way a pen builds up shade.',
+    name: 'Ink',
+    family: 'view',
+    temporal: false,
+    supportsPhoto: true,
+    supportsVideo: true,
+    /*
+     * A PEN HAS ONE COLOUR AND ONLY DENSITY TO SPEND.
+     *
+     * That is the whole idea, and it is why hatching is the right instrument
+     * rather than a grey wash: a drawing gets darker by putting more lines
+     * down, so four layers at four angles cut in at four thresholds, and the
+     * darker a region is the more of them are drawn over it.
+     *
+     * THE HATCH IS MEASURED IN THE FRAME, NOT IN PIXELS. Spacing in device
+     * pixels would give the preview a coarse weave and a twelve-megapixel
+     * still a fine grey mist — the same mistake Grid's line width made — so
+     * the pattern is scaled by the frame and the drawing survives being
+     * saved. The aspect term keeps the strokes at 45 degrees instead of
+     * shearing with the frame's shape.
+     *
+     * The paper is not flat white: a little grain keeps it from reading as a
+     * screen, and it is cheap because it comes from the same hash the strokes
+     * already need.
+     */
+    fragment: HEADER + `const float HATCH_SCALE = 210.0;
+const float STROKE = 0.34;
+const vec3 PAPER = vec3(0.96, 0.94, 0.88);
+const vec3 GRAPHITE = vec3(0.13, 0.12, 0.15);
+const float EDGE_FULL = 0.26;
+
+// Hash without sine: sin() at large arguments loses precision at mediump,
+// which on a phone is a visible seam rather than a rounding error.
+float hash(vec2 p) {
+  vec3 q = fract(vec3(p.xyx) * 0.1031);
+  q += dot(q, q.yzx + 33.33);
+  return fract((q.x + q.y) * q.z);
+}
+
+// One family of parallel strokes, at an angle, in FRAME coordinates.
+float hatch(vec2 p, float c, float sn, float width) {
+  float v = p.x * c + p.y * sn;
+  return 1.0 - smoothstep(0.0, width, abs(fract(v) - 0.5));
+}
+
+void main() {
+  vec3 scene = texture2D(uFrame, vUv).rgb;
+  float y = pow(clamp(luma(scene), 0.0, 1.0), 0.7);
+
+  // Square the coordinate system before hatching, or the strokes shear.
+  vec2 p = vec2(vUv.x, vUv.y * (uTexel.x / uTexel.y)) * HATCH_SCALE;
+
+  // Four layers, each arriving as the light falls further.
+  float shade = 0.0;
+  shade = max(shade, hatch(p, 0.707, 0.707, STROKE) * step(y, 0.80));
+  shade = max(shade, hatch(p, 0.707, -0.707, STROKE) * step(y, 0.55));
+  shade = max(shade, hatch(p * 1.7, 1.0, 0.0, STROKE) * step(y, 0.34));
+  shade = max(shade, hatch(p * 1.7, 0.0, 1.0, STROKE) * step(y, 0.16));
+
+  // The outline, drawn over everything the hatching has built up.
+  float stroke = smoothstep(EDGE_FULL * 0.3, EDGE_FULL, sobelLuma(vUv, uTexel));
+
+  float grain = hash(floor(vUv / max(uTexel, vec2(1e-6)) * 0.5)) * 0.05;
+  vec3 paper = PAPER - grain;
+  vec3 drawn = mix(paper, GRAPHITE, max(shade * 0.85, stroke));
+  gl_FragColor = vec4(withAids(drawn, vUv), 1.0);
+}`
+  },
+  {
+    id: 'wash',
+    note: 'Watercolour: colour bled sideways into soft pools, pigment gathering darker along every boundary the way a real wash dries, and the grain of the paper showing through. The heaviest filter here — thirteen taps a pixel.',
+    name: 'Wash',
+    family: 'view',
+    temporal: false,
+    supportsPhoto: true,
+    supportsVideo: true,
+    /*
+     * WHAT MAKES A WASH LOOK LIKE A WASH, in the order it matters.
+     *
+     * 1. THE EDGE IS DARKER THAN THE MIDDLE. Pigment migrates to the rim of a
+     *    drying pool and settles there. This is the one effect that reads as
+     *    watercolour and nothing else, and it is why the boundary is
+     *    DARKENED rather than outlined in ink — a line would be a drawing.
+     * 2. COLOUR SPREADS PAST ITS SUBJECT. Eight taps around a small disc, so
+     *    a red mug bleeds a little into the table beside it.
+     * 3. THE SPREAD IS UNEVEN. A perfectly circular blur reads as a lens
+     *    defect; wet paper wanders. A hash-driven offset, constant per small
+     *    patch, wobbles where each pixel reaches for its colour. The bleed
+     *    stops at 6 texels for a reason that was measured rather than
+     *    guessed: at 9 the patches stop reading as wet paper and start
+     *    reading as rectangles, because the offset is constant across each
+     *    one and a wide enough reach makes that constancy visible.
+     * 4. THE PAPER SHOWS. Grain multiplies the result, strongest where the
+     *    wash is pale, exactly as it does when the pigment is thin.
+     *
+     * Thirteen taps a pixel makes this the most expensive filter in the
+     * registry, which is a fact worth stating rather than discovering: it is
+     * a still-and-preview effect, and a twelve-megapixel save will take
+     * noticeably longer than RGB's.
+     */
+    fragment: HEADER + `const float BLEED = 6.0;
+const float WOBBLE = 1.6;
+const float RIM = 1.2;
+const float POOL_BANDS = 8.0;
+const float PAPER_GRAIN = 0.13;
+const float LIFT = 1.06;
+
+float hash(vec2 p) {
+  vec3 q = fract(vec3(p.xyx) * 0.1031);
+  q += dot(q, q.yzx + 33.33);
+  return fract((q.x + q.y) * q.z);
+}
+
+void main() {
+  // Where this pixel reaches for its colour, nudged by a value that is
+  // constant across a small patch — wet paper does not wander per pixel.
+  vec2 patch = floor(vUv / max(uTexel, vec2(1e-6)) / 14.0);
+  vec2 drift = vec2(hash(patch) - 0.5, hash(patch + 7.31) - 0.5) * WOBBLE;
+  vec2 at = vUv + drift * uTexel * BLEED;
+
+  vec2 r = uTexel * BLEED;
+  vec3 pool = texture2D(uFrame, at).rgb * 2.0;
+  pool += texture2D(uFrame, at + vec2( r.x, 0.0)).rgb;
+  pool += texture2D(uFrame, at + vec2(-r.x, 0.0)).rgb;
+  pool += texture2D(uFrame, at + vec2(0.0,  r.y)).rgb;
+  pool += texture2D(uFrame, at + vec2(0.0, -r.y)).rgb;
+  pool += texture2D(uFrame, at + r * 0.7).rgb;
+  pool += texture2D(uFrame, at - r * 0.7).rgb;
+  pool += texture2D(uFrame, at + vec2(r.x, -r.y) * 0.7).rgb;
+  pool += texture2D(uFrame, at + vec2(-r.x, r.y) * 0.7).rgb;
+  pool = clamp(pool / 10.0 * LIFT, 0.0, 1.0);
+
+  // A WASH DRIES FLAT. Blur alone gave a slightly soft photograph and not a
+  // painting — measured, the rim contrast was +0.068, which is nothing. The
+  // pools are banded like Cel's tone, by VALUE so the hue is untouched, and
+  // that plus a stronger rim brings it to +0.211: pigment pooling you can
+  // actually see. Banding after the blur rather than before is what keeps
+  // the steps as soft-edged shapes instead of posterised noise.
+  float pooled = max(luma(pool), 0.02);
+  float flatten = floor(pow(clamp(pooled, 0.0, 1.0), 0.75) * POOL_BANDS + 0.5) / POOL_BANDS;
+  pool = clamp(pool * (flatten / pooled), 0.0, 1.0);
+
+  // Pigment gathering at the rim of the pool.
+  float rim = clamp(sobelLuma(vUv, uTexel) * RIM, 0.0, 0.75);
+  vec3 washed = pool * (1.0 - rim);
+
+  // Paper, strongest where the wash is thin.
+  float grain = hash(floor(vUv / max(uTexel, vec2(1e-6)) * 0.6));
+  float thin = 1.0 - clamp(luma(washed), 0.0, 1.0);
+  washed *= 1.0 - PAPER_GRAIN * grain * (0.35 + 0.65 * thin);
+  gl_FragColor = vec4(withAids(clamp(washed, 0.0, 1.0), vUv), 1.0);
 }`
   }
 ];
