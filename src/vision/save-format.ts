@@ -74,7 +74,7 @@ export function resolveFormat(wanted: SaveFormat, supported: readonly SaveFormat
   return supported.includes(wanted) ? wanted : 'png';
 }
 
-export const DEFAULT_QUALITY = 0.92;
+export const DEFAULT_QUALITY = 1.00;
 
 export function clampQuality(quality: number): number {
   if (!Number.isFinite(quality)) return DEFAULT_QUALITY;
