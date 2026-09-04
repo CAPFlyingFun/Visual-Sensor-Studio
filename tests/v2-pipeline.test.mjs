@@ -629,7 +629,8 @@ test('the encoder probe ladder brackets the H.264 Level 5.2 frame limit exactly'
   const row = {
     trial: ENCODER_PROBE_LADDER[2], macroblocks: 37632, aboveLevel52: true, decoded: false,
     encodedWidth: 0, encodedHeight: 0, bytes: 1.5e6, measuredMbps: 4.8, chunkCount: 1,
-    finalizeMs: 12, encoderDied: 'recorder error (UnknownError) at 1.9s', error: null
+    finalizeMs: 12, encoderDied: 'recorder error (UnknownError) at 1.9s', error: null,
+    mimeType: 'video/mp4;codecs=hvc1', codecTag: 'avc1', fragmented: true
   };
   const text = describeRow(row);
   assert.match(text, /ABOVE L5\.2/);
@@ -637,6 +638,18 @@ test('the encoder probe ladder brackets the H.264 Level 5.2 frame limit exactly'
   assert.match(text, /ENCODER DIED: recorder error/);
   assert.match(describeRow({ ...row, decoded: true, encodedWidth: 2688, encodedHeight: 3584, encoderDied: null }),
     /DECODED 2688×3584/);
+
+  // THE ROW SAYS WHAT WAS ASKED FOR AND WHAT ARRIVED. Every MAX trial failing
+  // at exactly the H.264 Level 5.2 line is the signature of an HEVC request
+  // that was accepted and then ignored — and "HEVC is not enough" needs
+  // opposite work from "HEVC was never used", so the row must distinguish
+  // them. This fixture is that case: hvc1 asked, avc1 delivered.
+  assert.match(text, /codec avc1/, 'the file\'s own sample entry, not the request');
+  assert.match(text, /asked video\/mp4;codecs=hvc1/, 'and what was requested, for comparison');
+  assert.match(text, /fragmented/, 'the layout too — it decides whether Photos can import it');
+  assert.match(describeRow({ ...row, codecTag: '', fragmented: false }),
+    /codec unreadable · progressive/,
+    'an unreadable container says so rather than claiming a codec');
 });
 
 test('ENCODER CAPABILITY: the largest frame the encoder can write, with its reason', () => {

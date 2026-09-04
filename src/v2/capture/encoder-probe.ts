@@ -65,6 +65,20 @@ export interface ProbeRow {
   chunkCount: number;
   finalizeMs: number;
   encoderDied: string | null;
+  /**
+   * WHAT THE ENCODER ACTUALLY PRODUCED, not what was asked for. The container
+   * ladder asks for HEVC first, and every MAX trial failing at exactly the
+   * H.264 Level 5.2 line is the signature of a request that was ACCEPTED and
+   * then ignored — a browser may admit "video/mp4;codecs=hvc1", build the
+   * recorder, and still encode H.264. Without these two fields the probe
+   * cannot tell "HEVC is not enough" from "HEVC was never used", and those
+   * call for opposite work.
+   */
+  mimeType: string;
+  /** The video sample entry the file really carries: hvc1, hev1, avc1… */
+  codecTag: string;
+  /** True when the file is a fragmented MP4 — moof boxes, no single index. */
+  fragmented: boolean;
   /** The recorder refused to start, or the browser cannot run the trial. */
   error: string | null;
 }
@@ -79,7 +93,11 @@ export function describeRow(row: ProbeRow): string {
     : '✗ DID NOT DECODE';
   return `${head}\n   ${body} · ${(row.bytes / 1e6).toFixed(2)} MB · ${row.measuredMbps.toFixed(1)} Mb/s · `
     + `${row.chunkCount} chunk${row.chunkCount === 1 ? '' : 's'} · finalised ${(row.finalizeMs / 1000).toFixed(1)}s`
-    + (row.encoderDied ? ` · ENCODER DIED: ${row.encoderDied}` : '');
+    + (row.encoderDied ? ` · ENCODER DIED: ${row.encoderDied}` : '')
+    // The codec the file really carries, and the layout — the two facts that
+    // say whether the ceiling belongs to H.264 or to this device.
+    + `\n   codec ${row.codecTag || 'unreadable'} · ${row.fragmented ? 'fragmented' : 'progressive'}`
+    + ` · asked ${row.mimeType || 'browser default'}`;
 }
 
 /** Moving noise + moving blocks: real entropy, so the encoder cannot coast. */
@@ -134,6 +152,9 @@ async function runTrial(trial: ProbeTrial): Promise<ProbeRow> {
     chunkCount: 0,
     finalizeMs: 0,
     encoderDied: null as string | null,
+    mimeType: '',
+    codecTag: '',
+    fragmented: false,
     error: null as string | null
   };
   const canvas = document.createElement('canvas');
@@ -172,7 +193,12 @@ async function runTrial(trial: ProbeTrial): Promise<ProbeRow> {
     measuredMbps: result.measuredBitsPerSecond / 1e6,
     chunkCount: result.chunkCount,
     finalizeMs: result.finalizeMs,
-    encoderDied: result.encoderDied
+    encoderDied: result.encoderDied,
+    mimeType: result.mimeType,
+    // The file's own answer. A trial that did not decode still has boxes to
+    // read, and its codec tag is exactly the evidence this probe was missing.
+    codecTag: result.shape?.videoCodecs.join('/') ?? '',
+    fragmented: result.shape?.fragmented ?? false
   };
 }
 
