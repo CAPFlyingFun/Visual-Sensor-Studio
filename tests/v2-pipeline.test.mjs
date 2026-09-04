@@ -2254,6 +2254,22 @@ test('Grid draws a mesh whose shape is the picture, not a pattern', () => {
   assert.equal(grid.needsLumaRange, true, 'and it declares the census it needs');
   assert.match(body, /uLumaRange\.y - uLumaRange\.x/, 'the stretch is real, not nominal');
 
+  // AND THEN CURVED, because the stretch alone is an identity in practice.
+  // uLumaRange is an absolute min and max, so one bright thing in a dark room
+  // pins the top at 1.0 and the bottom sits at 0.0 — measured on Joshua's
+  // room: min 0.0000, max 1.0000, leaving 62% of the rendered frame too dark
+  // to read. The curve is what fixes that, and it must apply to the scene
+  // underneath as well or the mesh floats over a black rectangle.
+  assert.match(body, /float h = pow\(stretched, HEIGHT_GAMMA\);/);
+  assert.match(body, /vec3 under = pow\(scene, vec3\(HEIGHT_GAMMA\)\) \* SCENE_UNDER;/);
+  const gamma = Number(grid.fragment.match(/HEIGHT_GAMMA = ([\d.]+)/)[1]);
+  assert.ok(gamma > 0 && gamma < 1, `a gamma below 1 spends range on the dark end, got ${gamma}`);
+
+  // The line's brightness is EQUALISED, and only ever upward: scaling a
+  // bright line down would flatten the ramp's top and clipping would bend its
+  // hue, and either would make the colour lie about the height.
+  assert.match(body, /min\(max\(LINE_LUMA \/ inkLuma, 1\.0\), 1\.0 \/ brightest\)/);
+
   // SQUARE CELLS AT ANY FRAME SHAPE, and no resolution owned by the shader:
   // uTexel.x / uTexel.y is height/width, which turns columns into rows.
   assert.match(body, /vec2 cells = vec2\(COLUMNS, COLUMNS \* \(uTexel\.x \/ uTexel\.y\)\);/);

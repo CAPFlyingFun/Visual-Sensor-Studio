@@ -1,4 +1,4 @@
-const CACHE = 'visual-sensor-studio-v0.70.0';
+const CACHE = 'visual-sensor-studio-v0.71.0';
 
 /*
  * THE SHELL IS SHORT ON PURPOSE, and it is a different list from the one V1

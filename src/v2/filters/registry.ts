@@ -504,15 +504,32 @@ export const FILTERS: readonly FilterDefinition[] = [
     fragment: HEADER + `const float COLUMNS = 34.0;
 const float RELIEF = 0.055;
 const vec2 VIEW_LEAN = vec2(0.55, 0.835);
-const float SCENE_UNDER = 0.22;
+const float SCENE_UNDER = 0.40;
+const float HEIGHT_GAMMA = 0.5;
 const float LINE_HALF_WIDTH = 0.035;
 const float INK_FLOOR = 0.18;
+const float LINE_LUMA = 0.62;
 
 void main() {
-  // Height, contrast-stretched into the frame's own measured range so a dim
-  // room has relief at all rather than a flat sheet at the bottom of 0..1.
+  // Height, stretched into the frame's measured range and then GAMMA'D.
+  //
+  // The stretch alone is not enough and it is worth saying exactly why,
+  // because it looks like it should be. uLumaRange is an absolute min and
+  // max (see vision/exposure.ts), so a single bright thing in an otherwise
+  // dark room — a television, a lamp — pins the top at 1.0 and the bottom is
+  // almost always 0.0. Measured on Joshua's own room: min 0.0000, max
+  // 1.0000, which makes the stretch an identity and leaves 29% of the frame
+  // in the bottom fifth of the ramp, where the mesh is a deep violet nobody
+  // can read. That is the whole of "it did it, but it's dark".
+  //
+  // The range stays as it is — it is the honest reading, and the exposure
+  // instrument and relief both depend on it. The curve belongs here instead:
+  // a square root is the ordinary way to spend more of a display's range on
+  // the dark end, and it moves that room's median height from 0.30 to 0.58
+  // without touching what the census reports.
   float span = max(0.004, uLumaRange.y - uLumaRange.x);
-  float h = clamp((luma(texture2D(uFrame, vUv).rgb) - uLumaRange.x) / span, 0.0, 1.0);
+  float stretched = clamp((luma(texture2D(uFrame, vUv).rgb) - uLumaRange.x) / span, 0.0, 1.0);
+  float h = pow(stretched, HEIGHT_GAMMA);
 
   // The parallax offset. Both axes move, so the mesh bends rather than only
   // rippling in rows.
@@ -535,7 +552,28 @@ void main() {
   // dim room is most of the frame. The lookup stays monotonic in height, so
   // the reading is unchanged; it simply never lands where it cannot be seen.
   vec3 ink = texture2D(uRamp, vec2(INK_FLOOR + (1.0 - INK_FLOOR) * h, 0.5)).rgb;
-  vec3 under = texture2D(uFrame, vUv).rgb * SCENE_UNDER;
+
+  // HUE CARRIES THE HEIGHT; BRIGHTNESS CARRIES "THIS IS A LINE". Lifting the
+  // lookup off black was not enough on a real dark room (Joshua, 2026-09-04:
+  // "It did it, but it's dark") because the ramp's low end is dim by nature —
+  // a deep violet line is still a line nobody can read. Every line is now
+  // raised to the same luminance, so the mesh is legible from end to end
+  // while its colour still says how high it stands.
+  //
+  // Only ever a LIFT, and never past the point where a channel would clip:
+  // scaling a bright line down would flatten the ramp's top, and clipping
+  // would bend its hue. Both would make the colour lie about the height.
+  float inkLuma = max(luma(ink), 0.001);
+  float brightest = max(max(ink.r, ink.g), max(ink.b, 0.001));
+  ink *= min(max(LINE_LUMA / inkLuma, 1.0), 1.0 / brightest);
+
+  // The scene underneath gets the SAME curve before it is dimmed. Dividing
+  // by the measured maximum was the obvious move and it is worthless for the
+  // same reason the stretch was: that maximum is pinned at 1.0 by whatever
+  // is brightest, so it lifts nothing. A gamma does not care what else is in
+  // the frame.
+  vec3 scene = texture2D(uFrame, vUv).rgb;
+  vec3 under = pow(scene, vec3(HEIGHT_GAMMA)) * SCENE_UNDER;
   gl_FragColor = vec4(withAids(mix(under, ink, line), vUv), 1.0);
 }`
   }
