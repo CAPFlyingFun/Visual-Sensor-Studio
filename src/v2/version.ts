@@ -11,4 +11,4 @@
  * Bump this with package.json, public/sw.js's CACHE and src/main.ts's
  * APP_VERSION; tests/pwa-parity.test.mjs holds them to the same value.
  */
-export const APP_VERSION = '0.81.0';
+export const APP_VERSION = '0.82.0';

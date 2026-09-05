@@ -506,6 +506,33 @@ void main() {
   gl_FragColor = vec4(angle, lit, 0.0, 1.0);
 }`;
 
+/**
+ * MOTION'S MASK, at ANALYSIS resolution — V1's motionMaskToRgba, ported.
+ *
+ * V1 smoothed the frame difference with a five-tap cross before thresholding
+ * it, which is what stops single-pixel sensor noise from being painted as
+ * movement. The weights are V1's exactly: the centre twice, its four
+ * neighbours once, over six.
+ *
+ * IT RUNS IN A STATE PASS FOR THE REASON FLOW AND BACKGROUND HAD TO BE MOVED
+ * INTO ONE. uPrevious is the history snapshotted at analysis size while a
+ * display pass runs at preview or photo size, so differencing there subtracts
+ * a sharp frame from a bilinear magnification of a coarse one — and a
+ * MOTIONLESS scene comes out with a bright rim on every edge. Here both
+ * frames are point-sampled on the same grid, so still is still. The mask is
+ * magnified afterwards, which is what a mask survives.
+ */
+export const MOTION_STATE = HEADER + `float delta(vec2 uv) {
+  return abs(luma(texture2D(uFrame, uv).rgb) - luma(texture2D(uPrevious, uv).rgb));
+}
+
+void main() {
+  float smoothed = (delta(vUv) * 2.0
+    + delta(vUv - vec2(uTexel.x, 0.0)) + delta(vUv + vec2(uTexel.x, 0.0))
+    + delta(vUv - vec2(0.0, uTexel.y)) + delta(vUv + vec2(0.0, uTexel.y))) / 6.0;
+  gl_FragColor = vec4(smoothed, smoothed, smoothed, 1.0);
+}`;
+
 export const AMPLIFY_STATE = HEADER + `const float FAST = 0.5;
 const float SLOW = 0.06;
 
@@ -549,8 +576,13 @@ export const FILTERS: readonly FilterDefinition[] = [
   },
   {
     id: 'difference',
-    note: 'Change between frames through the ramp — history held at ANALYSIS resolution. A still is the frame you were shown; the trail behind it lives at ANALYSIS resolution.',
-    name: 'Motion',
+    note: 'Change between frames through the ramp — every pixel that moved, coloured by how much. History is held at ANALYSIS resolution, so a still is the frame you were shown with a trail measured coarser than it. This is V1\'s DIFFERENCE; the filter beside it named Motion is V1\'s Motion.',
+    // RENAMED FROM "Motion" (audit, 2026-09-03: "V1's DIFFERENCE wearing V1's
+    // MOTION's name - verified in source"). The id was always 'difference'
+    // and the label was always wrong; it only became worth fixing now that
+    // V1's actual Motion exists beside it and the two would otherwise be
+    // indistinguishable in the strip.
+    name: 'Difference',
     family: 'motion',
     temporal: true,
     // A still is saved like every other filter's, at the full sensor. The
@@ -569,6 +601,51 @@ export const FILTERS: readonly FilterDefinition[] = [
   float before = luma(texture2D(uPrevious, vUv).rgb);
   float change = clamp(abs(now - before) * 4.0, 0.0, 1.0);
   gl_FragColor = vec4(withAids(texture2D(uRamp, vec2(change, 0.5)).rgb, vUv), 1.0);
+}`
+  },
+  {
+    id: 'motion',
+    note: 'V1\'s Motion, restored: the scene dimmed to a third, and everything that moved painted over it in warm light — brighter and yellower the more it moved. The dim backdrop is what makes it readable; a bare mask tells you something moved but not where in the room.',
+    name: 'Motion',
+    family: 'motion',
+    temporal: true,
+    supportsPhoto: true,
+    supportsVideo: true,
+    state: MOTION_STATE,
+    /*
+     * THE GAP THE V1 AUDIT CALLED "Motion-C: V1's real Motion (dimmed scene +
+     * threshold mask) has NO V2 equivalent."
+     *
+     * Every constant here is V1's, converted from 0-255 to 0-1 rather than
+     * re-tuned: threshold 18, heat span 60, backdrop 0.34, and the two colour
+     * ramps. A port that re-picks its numbers is a new filter wearing an old
+     * name, and the whole point of restoring this one is that it is the thing
+     * that was there before.
+     *
+     * WHY A DIMMED SCENE RATHER THAN A BARE MASK. Difference (beside this in
+     * the strip) already answers "what changed" as pure colour. This answers
+     * "what moved, and WHERE" — the third-brightness backdrop keeps the room
+     * legible under the mask, which is the entire difference between the two
+     * filters and the reason V1 shipped both.
+     */
+    fragment: HEADER + `const float THRESHOLD = 0.0706;
+const float HEAT_SPAN = 0.2353;
+const float BACKDROP = 0.34;
+
+void main() {
+  float base = luma(texture2D(uFrame, vUv).rgb) * BACKDROP;
+  float smoothed = texture2D(uState, vUv).r;
+  float heat = clamp((smoothed - THRESHOLD) / HEAT_SPAN, 0.0, 1.0);
+
+  // V1's two ramps, in 0-1: moving pixels run warm and brighten with the
+  // amount of movement; still ones keep a faint cool cast so the backdrop
+  // does not read as pure grey.
+  vec3 moving = vec3(base + 0.157 + 0.588 * heat,
+                     base + 0.588 + 0.412 * heat,
+                     base + 0.471 + 0.235 * (1.0 - heat));
+  vec3 still = vec3(base, base + 0.0157, base + 0.039);
+  gl_FragColor = vec4(withAids(
+    clamp(mix(still, moving, step(THRESHOLD, smoothed)), 0.0, 1.0), vUv), 1.0);
 }`
   },
   {

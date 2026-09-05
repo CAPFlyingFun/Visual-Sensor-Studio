@@ -14,7 +14,7 @@ import {
 } from '../.test-build/v2/camera/stream-tiers.js';
 import { readState } from '../.test-build/v2/state.js';
 import {
-  AGE_STATE, FILTERS, NOVELTY_STATE, SHADER_HEADER, allFilters, canReverse,
+  AGE_STATE, FILTERS, MOTION_STATE, NOVELTY_STATE, SHADER_HEADER, allFilters, canReverse,
   filterById, ironbowLut, isReversed, setCustomFilters, setReversedFilters
 } from '../.test-build/v2/filters/registry.js';
 import { ironbowColor } from '../.test-build/vision/motion-ironbow.js';
@@ -558,23 +558,44 @@ test('FILTERS is the one list: unique ids, honest metadata, real shaders', () =>
     // The metadata and the shader must agree about history: a temporal
     // filter's BODY (display or state pass) samples uPrevious; a
     // non-temporal one never does. A state pass must feed the display.
+    // The filter's OWN code: everything after the shared header. Slicing from
+    // `void main` was the old way of skipping the header's uniform
+    // declarations, and it silently skipped HELPER FUNCTIONS too — Motion
+    // reads uPrevious inside a delta() helper, so it read as sampling nothing.
+    const ownCode = (source) => source.slice(SHADER_HEADER.length);
     if (filter.state) {
-      const stateBody = filter.state.slice(filter.state.indexOf('void main'));
-      assert.ok(stateBody.includes('uState'), `${filter.id}: a state pass reads its own previous output`);
-      assert.ok(filter.fragment.slice(filter.fragment.indexOf('void main')).includes('uState'),
+      const stateBody = ownCode(filter.state);
+      // A STATE PASS MUST EARN ITS EXISTENCE, and this used to say that meant
+      // reading uState — that a state pass is memory. That was true of every
+      // filter when it was written and is too narrow now: the pass is ALSO
+      // the only mechanism this renderer has for "run at analysis
+      // resolution", which is a correctness requirement rather than a
+      // preference. A shader that differences uFrame against uPrevious CANNOT
+      // do it in the display pass: uPrevious is snapshotted at analysis size
+      // while the display runs at preview or photo size, so a motionless
+      // scene comes out with a bright rim on every edge. Flow, Background and
+      // Motion were each moved here for exactly that, and two of them were
+      // shipped bugs before they were.
+      //
+      // So the real invariant is: a state pass does something the display
+      // pass could not do correctly — it holds memory (uState) or it needs
+      // the matched grid (uPrevious). A pass doing neither is a display pass
+      // in the wrong place.
+      assert.ok(stateBody.includes('uState') || stateBody.includes('uPrevious'),
+        `${filter.id}: a state pass must hold memory or need the matched grid`);
+      assert.ok(ownCode(filter.fragment).includes('uState'),
         `${filter.id}: the display pass must sample the state it computes`);
       assert.equal(filter.supportsPhoto, true,
         `${filter.id}: a still is the frame you were shown, like any other filter`);
     }
-    const body = filter.fragment.split('void main')[1] ?? '';
-    const stateSamplesHistory = filter.state
-      ? filter.state.slice(filter.state.indexOf('void main')).includes('uPrevious') : false;
+    const body = ownCode(filter.fragment);
+    const stateSamplesHistory = filter.state ? ownCode(filter.state).includes('uPrevious') : false;
     assert.equal(body.includes('uPrevious') || stateSamplesHistory, filter.temporal,
       `${filter.id}: temporal metadata and shader body must agree`);
   }
   assert.deepEqual(FILTERS.map((f) => f.id),
-    ['rgb', 'ironbow', 'difference', 'speed', 'trails', 'edges', 'grid', 'poly',
-     'cel', 'ink', 'wash', 'amplify', 'flow', 'background']);
+    ['rgb', 'ironbow', 'difference', 'motion', 'speed', 'trails', 'edges', 'grid',
+     'poly', 'cel', 'ink', 'wash', 'amplify', 'flow', 'background']);
   // Milestone D's second stage: Speed and Trails carry their memory in a
   // state pass, at ANALYSIS resolution, and decline stills like Motion.
   for (const id of ['speed', 'trails']) {
@@ -2652,4 +2673,43 @@ test('Background reuses the learned model the novelty channel already uses', () 
   // The honest cost is in the note: a model that never absorbed anything
   // could not follow the light changing either.
   assert.match(background.note, /absorbed into the background/i);
+});
+
+test('Motion is V1\'s Motion, and Difference stops wearing its name', () => {
+  // THE COLLISION THE AUDIT FLAGGED: "V2's filter id:'difference' displays as
+  // NAME 'Motion'. V1's DIFFERENCE wearing V1's MOTION's name - verified in
+  // source." The id was always right and the label always wrong; it only
+  // became worth fixing once V1's actual Motion existed beside it.
+  assert.equal(filterById('difference').name, 'Difference');
+  assert.equal(filterById('motion').name, 'Motion');
+
+  const motion = filterById('motion');
+  const body = motion.fragment.slice(motion.fragment.indexOf('void main'));
+
+  // EVERY CONSTANT IS V1's, converted from 0-255 rather than re-picked. A port
+  // that re-tunes its numbers is a new filter wearing an old name, and being
+  // the thing that was there before is the whole point of restoring it.
+  assert.match(motion.fragment, /const float THRESHOLD = 0\.0706;/, "V1's 18/255");
+  assert.match(motion.fragment, /const float HEAT_SPAN = 0\.2353;/, "V1's /60");
+  assert.match(motion.fragment, /const float BACKDROP = 0\.34;/, "V1's 0.34 dim");
+  assert.match(body, /base \+ 0\.157 \+ 0\.588 \* heat/, "V1's 40 + 150*heat");
+  assert.match(body, /base \+ 0\.471 \+ 0\.235 \* \(1\.0 - heat\)/, "V1's 120 + 60*(1-heat)");
+
+  // THE DIMMED SCENE IS THE POINT. Difference already answers "what changed"
+  // as pure colour; this answers "what moved, and WHERE" — the backdrop keeps
+  // the room legible under the mask, which is why V1 shipped both.
+  assert.match(body, /float base = luma\(texture2D\(uFrame, vUv\)\.rgb\) \* BACKDROP;/);
+  assert.match(body, /mix\(still, moving, step\(THRESHOLD, smoothed\)\)/);
+
+  // THE DIFFERENCE IS MEASURED IN A STATE PASS, at analysis size, for the
+  // reason Flow and Background were both moved into one: differencing a
+  // full-resolution frame against analysis-size history paints a bright rim
+  // on every edge of a MOTIONLESS scene.
+  assert.ok(motion.state, 'the difference runs where both frames are the same size');
+  assert.match(MOTION_STATE, /float delta\(vec2 uv\) \{/);
+  // V1's five-tap cross, at V1's weights: centre twice, neighbours once, / 6.
+  assert.match(MOTION_STATE, /delta\(vUv\) \* 2\.0/);
+  assert.match(MOTION_STATE, /\) \/ 6\.0;/);
+  assert.ok(!motion.fragment.slice(motion.fragment.indexOf('void main')).includes('uPrevious'),
+    'the display pass differences nothing');
 });
