@@ -3351,6 +3351,263 @@ byId('v2CoachAction').addEventListener('click', () => {
  * under a live stream left every control effectively dead to touch. A
  * trailing render always catches the final state.
  */
+/* --- THE VIEWER: the full-screen viewer ------------------------------------
+ *
+ * Joshua, 2026-09-05: "create the full screen live and edit viewer screen
+ * without everything else to look like a normal camera app... the bottom left
+ * could be the filters, you tap it to have like a scroll wheel of filters and
+ * once you select one, will automatically close small. Can also edit new ones
+ * right in that view as well."
+ *
+ * It is a MODE, not a second screen. Every control the viewer shows already
+ * exists on this page and is MOVED into a viewer slot on entry, then handed
+ * back on exit. A second filter strip, a second shutter or a second workbench
+ * would be a second definition of the same control (Rule 4), and the two
+ * would disagree the first time one of them saved a lens.
+ *
+ * #cameraVideo is deliberately not in the list. Re-parenting a <video> makes
+ * iOS tear its media down and reload it, so the live track would drop on
+ * every entry; the viewer changes the SHAPE of the box around the video and
+ * never the video's place in the document.
+ */
+
+const VIEWER_STORE_KEY = 'vss.v2.viewer.v1';
+const VIEWER_FIT_KEY = 'vss.v2.viewerFit.v1';
+const VIEWER_MODE_KEY = 'vss.v2.viewerMode.v1';
+
+/**
+ * Left: a control that already exists. Right: the slot that borrows it.
+ *
+ * ORDER MATTERS, and in a specific way: THE LIST IS IN DOCUMENT ORDER. Entry appends in that order, so the viewer reads the
+ * way the page does; exit walks the list BACKWARDS, which is what makes "put
+ * it back before the thing that used to follow it" work — that thing is
+ * already home by the time its predecessor asks for it. Strictly only siblings
+ * can break this, but document order for the whole list is a rule that can be
+ * checked by reading, and per-parent order is not.
+ */
+const VIEWER_MOVES: ReadonlyArray<readonly [string, string]> = [
+  // The readouts first: they live inside the viewfinder, which is the earliest
+  // of every home on this list, and the list is in document order.
+  ['v2Hud', 'v2ViewerHud'],
+  ['v2ZoomStops', 'v2ViewerZoom'],
+  ['v2ZoomStick', 'v2ViewerZoom'],
+  ['v2PhotoButton', 'v2ViewerShutter'],
+  ['v2RecordButton', 'v2ViewerShutter'],
+  ['v2SwitchCamera', 'v2ViewerRight'],
+  ['v2StreamTiersTop', 'v2ViewerTop'],
+  ['v2FilterStrip', 'v2ViewerWheel'],
+  ['v2FilterNote', 'v2ViewerWheel'],
+  ['v2Coach', 'v2ViewerWheel'],
+  ['v2LensActions', 'v2ViewerWheel'],
+  ['v2PickerCard', 'v2ViewerSheet'],
+  ['v2LensWorkbench', 'v2ViewerSheet'],
+  ['v2Toast', 'v2Viewer'],
+  // The lens-import picker travels too: an <input type="file"> stranded in a
+  // display:none subtree is exactly the kind of thing that opens on a desktop
+  // and silently does nothing on the phone.
+  ['v2LensImport', 'v2Viewer']
+];
+
+/**
+ * Where each borrowed control lives when the viewer is shut. Read once, from
+ * the markup itself, so "put it back" is exact rather than an approximation
+ * that slowly reorders the page across entries.
+ */
+const viewerHomes = new Map<string, { parent: Node; before: Node | null }>();
+for (const [id] of VIEWER_MOVES) {
+  const node = document.getElementById(id);
+  if (node?.parentNode) viewerHomes.set(id, { parent: node.parentNode, before: node.nextSibling });
+}
+
+/**
+ * getElementById, never byId, for every element in this section. byId throws
+ * on missing markup, and a fresh app.js booting against a cached older
+ * index.html would then take down every control wired after it — which is
+ * exactly how the app was bricked on 2026-09-03. A viewer this build cannot
+ * find must cost the viewer and nothing else.
+ */
+function viewerEl(id: string): HTMLElement | null {
+  return document.getElementById(id);
+}
+
+let viewerOn = false;
+let viewerMode: 'photo' | 'video' = 'photo';
+let viewerWheelOpen = false;
+/**
+ * FIT shows the whole frame and letterboxes; FULL fills the screen and crops.
+ * Joshua, 2026-09-05: "image should have the option to go fit or full." The
+ * button names the one that is on, because FULL is hiding roughly a third of
+ * the frame's width from a viewfinder whose job is showing what the photo
+ * will contain — a crop is fine, a silent crop is not.
+ */
+let viewerFit: 'fit' | 'full' = 'fit';
+
+function viewerSetFit(fit: 'fit' | 'full'): void {
+  viewerFit = fit;
+  document.body.dataset.viewerFit = fit;
+  remember(VIEWER_FIT_KEY, fit);
+  renderViewer();
+  // The box changed shape, and PREVIEW is resolved from the box.
+  refreshGeometry();
+  renderPreview(performance.now());
+}
+
+/** The wheel: open, or out of the way. It is never both. */
+function viewerWheel(open: boolean): void {
+  viewerWheelOpen = open;
+  const wheel = viewerEl('v2ViewerWheel');
+  if (wheel) wheel.hidden = !open;
+  viewerEl('v2ViewerWheelToggle')?.setAttribute('aria-expanded', String(open));
+}
+
+/**
+ * The sheet holds the picker and the workbench, and it is open exactly when
+ * one of them is. Driven by an observer rather than by calls at every open
+ * and close site: a panel gains a new way to be shown far more often than
+ * anyone remembers to tell a second system about it.
+ */
+function syncStageSheet(): void {
+  const sheet = viewerEl('v2ViewerSheet');
+  if (!sheet) return;
+  const open = Array.from(sheet.children).some((child) => !(child as HTMLElement).hidden);
+  sheet.hidden = !open;
+  // The wheel and the sheet occupy the same corner; a workbench opened from
+  // the wheel would otherwise be read through it.
+  if (open) viewerWheel(false);
+}
+
+function viewerSetMode(mode: 'photo' | 'video'): void {
+  viewerMode = mode;
+  remember(VIEWER_MODE_KEY, mode);
+  renderViewer();
+}
+
+function viewerSet(on: boolean): void {
+  if (on === viewerOn) return;
+  const viewer = viewerEl('v2Viewer');
+  if (!viewer) return;
+  viewerOn = on;
+  const order = on ? VIEWER_MOVES : [...VIEWER_MOVES].reverse();
+  for (const [id, slot] of order) {
+    const node = document.getElementById(id);
+    if (!node) continue;
+    if (on) {
+      viewerEl(slot)?.appendChild(node);
+      continue;
+    }
+    const home = viewerHomes.get(id);
+    if (!home) continue;
+    // The reference node should already be home; if some future move ever
+    // breaks that, appending is wrong-but-recoverable and throwing here
+    // would strand the phone inside the viewer with no way out.
+    const before = home.before && home.before.parentNode === home.parent ? home.before : null;
+    home.parent.insertBefore(node, before);
+  }
+  document.body.classList.toggle('viewer', on);
+  viewer.hidden = !on;
+  if (!on) viewerWheel(false);
+  remember(VIEWER_STORE_KEY, on ? 'on' : 'off');
+  // renderViewer FIRST: it publishes the source aspect the box is sized from,
+  // and PREVIEW is resolved from the box's measured short side.
+  renderViewer();
+  syncStageSheet();
+  refreshGeometry();
+  renderPreview(performance.now());
+}
+
+let renderedStageKey = '';
+function renderViewer(): void {
+  const viewer = viewerEl('v2Viewer');
+  if (!viewer) return;
+  const { activeFilter, source, recording } = readState();
+  // THE LETTERBOX. The box is given the frame's own aspect ratio, so the
+  // cover crop the whole app maps through becomes an identity — the picker's
+  // tap→source mapping stays exact, and a viewfinder whose job is showing
+  // what the photo will contain stops hiding a third of the frame's width.
+  if (source && source.width > 0 && source.height > 0) {
+    document.body.style.setProperty('--viewer-ar', String(source.width / source.height));
+  }
+  const rec = recording !== null;
+  const key = `${viewerOn}|${viewerMode}|${viewerFit}|${activeFilter}|${rec}`
+    + `|${filterById(activeFilter)?.revision ?? ''}`;
+  if (key === renderedStageKey) return;
+  renderedStageKey = key;
+  viewer.dataset.mode = viewerMode;
+  for (const [id, mode] of [['v2ViewerPhoto', 'photo'], ['v2ViewerVideo', 'video']] as const) {
+    const button = viewerEl(id);
+    if (!(button instanceof HTMLButtonElement)) continue;
+    button.setAttribute('aria-pressed', String(viewerMode === mode));
+    // Switching to PHOTO mid-clip would take the stop button off the screen.
+    button.disabled = rec;
+  }
+  // The filters button wears the lens that is on, so the control shows its
+  // own state instead of a label that never moves. Built-in swatches reuse
+  // the strip's own thumb classes rather than restating those gradients.
+  const swatch = viewerEl('v2ViewerWheelSwatch');
+  const filter = filterById(activeFilter);
+  if (swatch) {
+    swatch.className = filter?.lens ? '' : `thumb thumb-${activeFilter}`;
+    swatch.style.background = filter?.lens
+      ? rampToCss(filter.lens.stops).replace('90deg', '135deg')
+      : '';
+  }
+  // RGB's swatch is a flat dark tile and several lenses share a palette, so
+  // the name is what actually answers "which filter am I looking through?".
+  const name = viewerEl('v2ViewerWheelName');
+  if (name) name.textContent = filter?.name ?? '';
+  const fit = viewerEl('v2ViewerFit');
+  if (fit) {
+    // The label is the STATE, not the action: a button reading FULL while the
+    // picture is letterboxed is the ambiguity this wording avoids.
+    fit.textContent = viewerFit === 'fit' ? 'FIT' : 'FULL';
+    fit.setAttribute('aria-pressed', String(viewerFit === 'full'));
+  }
+}
+
+const viewerSheetWatch = new MutationObserver(syncStageSheet);
+for (const id of ['v2PickerCard', 'v2LensWorkbench']) {
+  const node = document.getElementById(id);
+  if (node) viewerSheetWatch.observe(node, { attributes: true, attributeFilter: ['hidden'] });
+}
+
+/**
+ * The viewer is remembered, like the stream tier and for the same reason: a
+ * camera app that opens as a camera should keep doing so. The exit button is
+ * the top-right corner of the viewer itself, so a remembered viewer is always
+ * one tap from the instrument panel.
+ */
+function viewerRecall(key: string, fallback: string): string {
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+viewerEl('v2ViewerEnter')?.addEventListener('click', () => viewerSet(true));
+viewerEl('v2ViewerExit')?.addEventListener('click', () => viewerSet(false));
+viewerEl('v2ViewerFit')?.addEventListener('click', () => viewerSetFit(viewerFit === 'fit' ? 'full' : 'fit'));
+viewerEl('v2ViewerWheelToggle')?.addEventListener('click', () => viewerWheel(!viewerWheelOpen));
+viewerEl('v2ViewerWheelClose')?.addEventListener('click', () => viewerWheel(false));
+viewerEl('v2ViewerPhoto')?.addEventListener('click', () => viewerSetMode('photo'));
+viewerEl('v2ViewerVideo')?.addEventListener('click', () => viewerSetMode('video'));
+/**
+ * "Once you select one, will automatically close small." One delegated
+ * listener on the wheel rather than a second handler bolted onto every filter
+ * button — the strip builds its own buttons in two places and rebuilds them
+ * whenever a lens is saved, so a per-button handler would go missing the
+ * first time that happened. An UNAVAILABLE lens leaves the wheel open: its
+ * tap explains why rather than choosing anything, so closing would read as
+ * a choice that was never made.
+ */
+viewerEl('v2ViewerWheel')?.addEventListener('click', (event) => {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const button = target.closest<HTMLElement>('[data-filter], [data-lens-new]');
+  if (!button || button.classList.contains('unavailable')) return;
+  viewerWheel(false);
+});
+
 const TEXT_RENDER_INTERVAL_MS = 250;
 let lastTextRender = -Infinity;
 let queuedTextRender = 0;
@@ -3376,6 +3633,7 @@ function renderTextPanels(): void {
 
 subscribe(() => {
   renderControls();
+  renderViewer();
   renderZoomStops();
   renderFilterStrip();
   renderStreamTiers();
@@ -4856,6 +5114,9 @@ buildStreamTiers();
 applyStreamTier(storedStreamTier());
 buildDock();
 showRoute('camera');
+viewerSetMode(viewerRecall(VIEWER_MODE_KEY, 'photo') === 'video' ? 'video' : 'photo');
+viewerSetFit(viewerRecall(VIEWER_FIT_KEY, 'fit') === 'full' ? 'full' : 'fit');
+if (viewerRecall(VIEWER_STORE_KEY, 'off') === 'on') viewerSet(true);
 
 // If the engine survived a reload already live (its whole reason to exist),
 // pick its state up rather than showing an Enable button over a running feed.

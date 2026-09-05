@@ -2791,3 +2791,106 @@ test('Relief is reachable from the strip, not only from the gallery', () => {
   assert.match(note.slice(0, 600), /not a depth measurement/i);
   assert.match(note.slice(0, 600), /white wall reads as near/i);
 });
+
+/* --- THE VIEWER: the full-screen camera-app mode -------------------------- */
+
+const VIEWER_HTML = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+const VIEWER_APP = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+
+/** Everything the viewer borrows, read from the one list app.ts moves by. */
+function viewerMoves() {
+  const block = VIEWER_APP.slice(
+    VIEWER_APP.indexOf('const VIEWER_MOVES'), VIEWER_APP.indexOf('const viewerHomes'));
+  return [...block.matchAll(/\['(\w+)', '(\w+)'\]/g)].map((m) => [m[1], m[2]]);
+}
+
+test('the viewer borrows its controls — it never grows a second copy', () => {
+  const moves = viewerMoves();
+  assert.ok(moves.length >= 12, `the move list is the whole feature: ${moves.length}`);
+
+  for (const [id, slot] of moves) {
+    // BOTH ends must be real markup. A slot that does not exist silently drops
+    // the control off the screen; a control that does not exist is a rename
+    // nobody followed through.
+    assert.ok(VIEWER_HTML.includes(`id="${id}"`), `${id} exists to be borrowed`);
+    assert.ok(VIEWER_HTML.includes(`id="${slot}"`), `${slot} exists to borrow into`);
+    // Exactly one of each: the point of moving rather than copying is that
+    // there is one filter strip, one shutter and one workbench in the app.
+    assert.equal(VIEWER_HTML.split(`id="${id}"`).length - 1, 1, `one ${id}`);
+  }
+
+  // THE VIDEO NEVER MOVES. Re-parenting a <video> makes iOS tear its media
+  // down and reload it, so the live track would drop on every entry.
+  assert.ok(!moves.some(([id]) => id === 'cameraVideo'), 'the camera element stays put');
+
+  // THE LIST IS IN DOCUMENT ORDER, because exit walks it backwards to put each
+  // node back before the thing that used to follow it — out of order, that
+  // reference node is still inside the viewer and the restore lands somewhere
+  // else. Strictly only siblings can break it, but whole-document order is a
+  // rule that can be checked by reading and per-parent order is not.
+  const order = moves.map(([id]) => VIEWER_HTML.indexOf(`id="${id}"`));
+  assert.deepEqual(order, [...order].sort((a, b) => a - b),
+    `the move list is in document order: ${moves.map(([id]) => id).join(', ')}`);
+});
+
+test('the viewer offers FIT and FULL, and FIT holds in BOTH orientations', () => {
+  // aspect-ratio holds only while exactly one side is definite. width:100%
+  // plus max-height looks like a clamp, but in landscape the height caps at
+  // the screen while the width stays 100%, the ratio is dropped, and FIT
+  // silently becomes FULL — in the one orientation nobody screenshots.
+  const box = VIEWER_HTML.slice(VIEWER_HTML.indexOf('body.viewer .viewfinder {'));
+  const fit = box.slice(0, box.indexOf('}') + 1);
+  assert.match(fit, /width: min\(100%, calc\(100dvh \* var\(--viewer-ar/);
+  assert.match(fit, /aspect-ratio: var\(--viewer-ar/);
+  assert.ok(!/max-height/.test(fit), 'a second constraint is what drops the ratio');
+
+  // FULL is the other half of the choice, and it is the one that crops.
+  const full = box.slice(box.indexOf('[data-viewer-fit="full"]'));
+  assert.match(full.slice(0, 160), /width: 100%; height: 100dvh; aspect-ratio: auto/);
+
+  // The ratio is the SOURCE's own, so FIT shows the whole frame rather than a
+  // guess at one.
+  assert.match(VIEWER_APP, /setProperty\('--viewer-ar', String\(source\.width \/ source\.height\)\)/);
+
+  // THE BUTTON NAMES THE STATE. FULL hides roughly a third of the frame's
+  // width from a viewfinder whose job is showing what the photo will contain:
+  // a crop is fine, a silent crop is not.
+  assert.match(VIEWER_APP, /fit\.textContent = viewerFit === 'fit' \? 'FIT' : 'FULL'/);
+  // Changing the box changes PREVIEW, which is resolved from the box.
+  const setter = VIEWER_APP.slice(VIEWER_APP.indexOf('function viewerSetFit'));
+  assert.match(setter.slice(0, 400), /refreshGeometry\(\)/);
+
+  // Landscape turns the black bands into side BARS, so the portrait stack
+  // would run down the middle of the picture. The layer turns with the phone.
+  assert.match(VIEWER_HTML, /@media \(orientation: landscape\) \{\s*\n\s*body\.viewer \.viewer \{ flex-direction: row/);
+});
+
+test('the viewer can always be left, and the wheel can always be closed', () => {
+  // The exit is the only way back to the instrument panel and the mode is
+  // remembered across launches, so a viewer with no exit is a bricked app.
+  assert.match(VIEWER_HTML, /id="v2ViewerExit"/);
+  assert.match(VIEWER_APP, /viewerEl\('v2ViewerExit'\)\?\.addEventListener\('click', \(\) => viewerSet\(false\)\)/);
+
+  // The wheel opens OVER the shutter, which is where its own toggle lives —
+  // so closing has to be possible without choosing a filter.
+  assert.match(VIEWER_HTML, /id="v2ViewerWheelClose"/);
+  assert.match(VIEWER_APP, /viewerEl\('v2ViewerWheelClose'\)\?\.addEventListener/);
+
+  // Every lookup in the viewer goes through viewerEl (getElementById), never
+  // byId: byId throws on missing markup, and a fresh app.js against a cached
+  // older index.html would take down every control wired after it.
+  const block = VIEWER_APP.slice(
+    VIEWER_APP.indexOf('/* --- THE VIEWER'), VIEWER_APP.indexOf('const TEXT_RENDER_INTERVAL_MS'));
+  assert.ok(!/\bbyId\(/.test(block), 'a missing viewer costs the viewer and nothing else');
+});
+
+test('choosing a filter closes the wheel — but an unavailable one does not', () => {
+  const block = VIEWER_APP.slice(VIEWER_APP.indexOf("viewerEl('v2ViewerWheel')?.addEventListener"));
+  // One delegated listener, not a handler per button: the strip rebuilds its
+  // buttons whenever a lens is saved, and per-button wiring would go missing.
+  assert.match(block.slice(0, 400), /closest<HTMLElement>\('\[data-filter\], \[data-lens-new\]'\)/);
+  // An unavailable lens explains itself rather than choosing anything, so
+  // closing on it would read as a choice that was never made.
+  assert.match(block.slice(0, 400), /classList\.contains\('unavailable'\)\) return/);
+  assert.match(block.slice(0, 400), /viewerWheel\(false\)/);
+});

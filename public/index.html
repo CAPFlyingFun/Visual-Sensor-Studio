@@ -263,6 +263,227 @@
 
     footer { margin: 14px 11px 0; font-size: 10px; color: #6d7d8b; text-align: center; }
 
+    /* ======================================================================
+       THE VIEWER — the full-screen viewer (Joshua, 2026-09-05: "create the
+       full screen live and edit viewer screen without everything else to
+       look like a normal camera app").
+
+       It is a CSS MODE, not a second page. Nothing is duplicated: the same
+       video, the same render canvas, the same filter strip, the same three
+       capture buttons and the same lens workbench are MOVED into the stage's
+       slots on entry and put back on exit. A second copy of the filter strip
+       would be a second definition of the same control, and the two would
+       drift the first time one was edited (Rule 4).
+
+       The video element in particular is never re-parented — moving a <video>
+       in the DOM makes iOS tear the element's media down and reload it, which
+       would drop the live track on every entry. It stays exactly where it is;
+       only the box around it changes shape.
+       ------------------------------------------------------------------- */
+    body.viewer { overflow: hidden; }
+    body.viewer .app { padding-bottom: 0; }
+    body.viewer .topbar, body.viewer .content, body.viewer .dock, body.viewer .quickbar { display: none; }
+    /* Higher specificity than the landscape rule below, which also sets
+       position on .viewfinder-wrap. */
+    body.viewer .viewfinder-wrap {
+      position: fixed; inset: 0; z-index: 60; width: 100%;
+      background: #000; border: 0; box-shadow: none;
+      display: grid; place-items: center;
+    }
+    /* THE PICTURE IS LETTERBOXED, NOT CROPPED. The box is given the SOURCE's
+       own aspect ratio, so object-fit: cover crops nothing — cover and
+       contain are the same transform when the box already matches the frame.
+       That keeps one crop rule for the whole app: the colour picker's
+       tap→source mapping (tapToSource) assumes the cover crop, and a stage
+       that letterboxed by object-fit instead would have silently moved every
+       sampled pixel. Filling the screen edge to edge would also have hidden
+       about a third of the frame's width from a viewfinder whose whole job is
+       showing what the photo will contain. */
+    /*
+     * FIT AND FULL — two ways to put a 4:3 frame on a 19.5:9 screen, and the
+     * choice is Joshua's rather than mine (2026-09-05: "image should have the
+     * option to go fit or full").
+     *
+     * FIT letterboxes: the whole frame is on screen, and what the viewfinder
+     * shows is what the photo will contain. FULL fills the screen and crops,
+     * which looks like a camera app and hides about a third of the frame's
+     * width — worth knowing, which is why the button says which one is on.
+     *
+     * SIZED IN ONE AXIS, NEVER TWO. aspect-ratio only holds while exactly one
+     * side is definite: `width: 100%` plus `max-height: 100dvh` looks like it
+     * clamps, but in landscape the height caps at the screen while the width
+     * stays 100% — the ratio is dropped, FIT silently becomes FULL, and the
+     * bug hides in the one orientation nobody screenshots. Driving the WIDTH
+     * from the shorter of the two constraints keeps one definite side in both:
+     *   portrait  430x932, ar .75 -> min(430, 699) = 430 wide, 573 tall
+     *   landscape 932x430, ar .75 -> min(932, 322) = 322 wide, 430 tall
+     *
+     * Neither mode troubles the colour picker: tapToSource derives the cover
+     * crop from whatever box it is given, so a tap lands on the same pixel
+     * under either. FIT is about what you can SEE, not about what is measured.
+     */
+    body.viewer .viewfinder {
+      width: min(100%, calc(100dvh * var(--viewer-ar, .75)));
+      height: auto;
+      aspect-ratio: var(--viewer-ar, .75);
+    }
+    body.viewer[data-viewer-fit="full"] .viewfinder {
+      width: 100%; height: 100dvh; aspect-ratio: auto;
+    }
+    /* The live readouts move to the TOP of the picture: the bottom of the box
+       is where the controls stack, and a HUD there would sit under a thumb. */
+    /* Borrowed into the header, so it is LAID OUT rather than positioned:
+       one rule serves FIT and FULL, and neither can put it over the tier
+       ladder or halfway down the screen. */
+    body.viewer .hud {
+      position: static; inset: auto; transform: none;
+      width: max-content; max-width: 100%; margin: 8px auto 0;
+      background: rgba(2, 7, 12, .62);
+    }
+    .viewer-head { display: flex; flex-direction: column; min-width: 0; }
+    .viewer-hud { display: flex; justify-content: center; min-width: 0; }
+    body.viewer .rec-hud, body.viewer #v2SteadyHud { top: 44px; bottom: auto; }
+
+    .viewer {
+      position: fixed; inset: 0; z-index: 61;
+      display: flex; flex-direction: column; justify-content: space-between;
+      padding: var(--safe-top) 12px var(--safe-bottom);
+      /* The layer is a frame around the picture, not a lid over it: taps fall
+         through to the viewfinder (the colour picker samples by tapping it)
+         everywhere the stage has not put a real control. */
+      pointer-events: none;
+    }
+    .viewer > * { pointer-events: auto; }
+    .viewer-top { display: flex; align-items: center; gap: 10px; }
+    #v2ViewerTop { flex: 1 1 auto; min-width: 0; }
+    .viewer-icon {
+      flex: 0 0 auto; width: 38px; height: 38px; border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, .28); background: rgba(12, 22, 32, .74);
+      color: #dbe7f2; font-size: 15px;
+      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    }
+    .viewer-fit { width: auto; min-width: 56px; padding: 0 12px; border-radius: 999px;
+      font-size: 11px; font-weight: 700; letter-spacing: .08em;
+      /* letter-spacing puts a trailing space after the LAST glyph too, and
+         centring counts it — so the word sat HALF a trailing space left of
+         centre. Indent by half, not by the whole space, or it lands the same
+         distance out the other way. */
+      text-indent: .04em; }
+    .viewer-fit[aria-pressed="true"] { color: #ffd34d; border-color: rgba(255, 211, 77, .5); }
+    .viewer-bottom { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+    #v2ViewerZoom { display: flex; align-items: center; gap: 8px; max-width: 100%; min-width: 0; }
+    /* The shutter: one big button, and which of the two it is follows the
+       mode. Both keep their own click handler — the mode picks which is on
+       screen rather than routing a tap somewhere new. */
+    .viewer-shutter { display: grid; place-items: center; }
+    .viewer[data-mode="photo"] #v2RecordButton, .viewer[data-mode="video"] #v2PhotoButton { display: none; }
+    .viewer-shutter button {
+      width: 72px; height: 72px; border-radius: 50%;
+      border: 4px solid rgba(255, 255, 255, .82); background: #fff;
+      color: transparent; font-size: 0;
+    }
+    .viewer-shutter button#v2RecordButton { background: #ff4a4f; }
+    .viewer-shutter button.recording { background: #fff; border-color: #ff4a4f; }
+    .viewer-shutter button[disabled] { opacity: .35; }
+    .viewer-row { display: grid; grid-template-columns: 74px 1fr 74px; align-items: center; width: 100%; gap: 10px; }
+    .viewer-modes { display: flex; justify-self: center; gap: 2px; padding: 3px; border-radius: 999px; background: rgba(12, 22, 32, .74); }
+    .viewer-mode { min-height: 34px; padding: 0 16px; border: 0; border-radius: 999px; background: transparent; color: #c7d5e2; font-size: 12px; font-weight: 700; letter-spacing: .06em; }
+    .viewer-mode[aria-pressed="true"] { background: rgba(255, 255, 255, .1); color: #ffd34d; }
+    /* Bottom left: the filters. A round swatch of the lens that is ON, so
+       the control shows its own state rather than a label that never moves. */
+    .viewer-lens {
+      width: 52px; height: 52px; border-radius: 50%; padding: 0;
+      border: 2px solid rgba(255, 255, 255, .55); background: #0b141c; overflow: hidden;
+    }
+    .viewer-lens span { display: block; width: 100%; height: 100%; margin: 0; border-radius: 0; }
+    /* The zoom stops, dressed for glass rather than for a panel. */
+    #v2ViewerTop { flex: 1 1 auto; min-width: 0; display: flex; }
+    #v2ViewerTop button, #v2ViewerZoom .zoom button {
+      border: 0; background: transparent; border-radius: 999px; color: #dbe7f2;
+    }
+    #v2ViewerTop .tiers, #v2ViewerZoom .zoom {
+      background: rgba(12, 22, 32, .74); border-radius: 999px; padding: 3px;
+      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    }
+    #v2ViewerZoom .zoom button.active, #v2ViewerTop button.active {
+      background: rgba(255, 255, 255, .12); color: #ffd34d; box-shadow: none;
+    }
+    #v2ViewerTop button.unavailable { color: #ff8a8d; }
+    #v2ViewerZoom .zoomstick { flex: 0 0 108px; height: 22px; accent-color: #fff; opacity: .8; }
+    .viewer-lens-cell { display: grid; justify-items: center; gap: 3px; min-width: 0; }
+    .viewer-lens-cell small { max-width: 74px; font-size: 9px; color: #cfdae5; text-align: center;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 3px #000; }
+    .viewer-wheel-head { display: flex; align-items: center; justify-content: space-between;
+      gap: 10px; margin-bottom: 8px; font-size: 12px; color: var(--muted); }
+    .viewer-right { justify-self: end; }
+    .viewer-right button { width: 46px; height: 46px; border-radius: 50%; border: 1px solid rgba(255, 255, 255, .28); background: rgba(12, 22, 32, .74); font-size: 17px; }
+    /* The wheel: the real filter strip, on a sheet that opens from the
+       bottom-left button and closes itself the moment a filter is chosen. */
+    .viewer-wheel {
+      position: absolute; left: 0; right: 0; bottom: 0; z-index: 2;
+      max-height: 62dvh; overflow-y: auto;
+      padding: 12px 12px calc(var(--safe-bottom) + 12px);
+      background: rgba(4, 9, 15, .93); border-top: 1px solid var(--line);
+      backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+    }
+    /* The sheet: the lens workbench and the colour picker, edited without
+       leaving the picture they are changing. */
+    .viewer-sheet {
+      position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
+      max-height: 82dvh; overflow-y: auto;
+      padding: 10px 0 calc(var(--safe-bottom) + 10px);
+      background: rgba(4, 9, 15, .95); border-top: 1px solid var(--line2);
+      backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+    }
+    /* Only the stage's own toast may outrank the sheets. */
+    body.viewer .toast { z-index: 70; bottom: calc(var(--safe-bottom) + 200px); }
+
+    /*
+     * LANDSCAPE. The letterbox turns the black from two bands above and below
+     * into two BARS at the sides, and the portrait stack then runs straight
+     * down the middle of the picture while ~360px of bar sits empty. So the
+     * layer turns with the phone: controls into the right bar, readouts into
+     * the left, and the frame left alone. No min-width here on purpose — a
+     * phone on its side is the case this is for, and the rule below starts at
+     * 700px because it is about a tablet-shaped instrument panel.
+     */
+    @media (orientation: landscape) {
+      body.viewer .viewer { flex-direction: row; align-items: stretch; }
+      body.viewer .viewer-top { flex-direction: column; align-items: flex-start; justify-content: flex-start; flex: 0 0 auto; }
+      body.viewer #v2ViewerTop { flex: 0 0 auto; }
+      body.viewer #v2ViewerTop .tiers, body.viewer #v2ViewerZoom .zoom { flex-direction: column; overflow: visible; }
+      body.viewer .viewer-bottom { justify-content: center; flex: 0 0 auto; }
+      body.viewer #v2ViewerZoom { flex-direction: column; }
+      /* The rate stick is a horizontal control with a horizontal meaning
+         ("push right to zoom in"). Turned on its side it would be a new
+         gesture with the old label, so the presets carry zoom here and the
+         stick waits for a control that is actually vertical. */
+      body.viewer #v2ViewerZoom .zoomstick { display: none; }
+      /* column-reverse, so the flip sits at the top of the bar and the
+         filters stay at the thumb end — the same corner they hold upright. */
+      body.viewer .viewer-row { display: flex; flex-direction: column-reverse; align-items: center; width: auto; }
+      body.viewer .viewer-shutter button { width: 62px; height: 62px; }
+      /* The bar is ~180px wide and 430 tall: everything in it is measured
+         against those two numbers rather than against portrait's roomier
+         bottom band. The mode pill at portrait's padding overhung the bar
+         onto the picture. */
+      body.viewer .viewer-bottom { gap: 8px; }
+      body.viewer .viewer-modes .viewer-mode { padding: 0 10px; font-size: 11px; min-height: 30px; }
+      body.viewer #v2ViewerZoom .zoom button { height: 30px; }
+      body.viewer .viewer-right button { width: 42px; height: 42px; }
+      body.viewer .viewer-lens { width: 46px; height: 46px; }
+      /* The sheets stay full-bleed along the bottom: a filter strip is a
+         horizontal scroller and turning it into a tall list would cost more
+         than the bar is worth. */
+      body.viewer .viewer-wheel { max-height: 74dvh; }
+      body.viewer .viewer-sheet { max-height: 92dvh; }
+      /* The header IS the left bar in landscape, so the readouts stack under
+         the tier column rather than trying to sit beside it. */
+      body.viewer .viewer-head { flex: 0 0 auto; align-items: flex-start; }
+      body.viewer .viewer-hud { justify-content: flex-start; }
+      body.viewer .hud { margin-left: 0; flex-wrap: wrap; max-width: 150px; }
+    }
+
     @media (orientation: landscape) and (min-width: 700px) {
       .app { width: 100%; max-width: none; }
       .camera-layout { display: grid; grid-template-columns: minmax(45%, 1.1fr) minmax(340px, .9fr); align-items: start; }
@@ -276,7 +497,10 @@
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
-    <span class="pill" id="v2Badge">v0.84.0</span>
+    <span>
+      <button type="button" class="chip" id="v2ViewerEnter" title="Full screen viewer">&#9974; Full screen</button>
+      <span class="pill" id="v2Badge">v0.85.0</span>
+    </span>
   </header>
 
   <div class="camera-layout">
@@ -300,7 +524,7 @@
         <button class="enable-overlay" id="v2EnableCamera" type="button">Enable Camera</button>
         <div class="rec-hud" id="v2RecHud" hidden></div>
         <div id="v2SteadyHud" hidden></div>
-        <div class="hud" aria-label="Live readouts">
+        <div class="hud" id="v2Hud" aria-label="Live readouts">
           <span><i class="dot" id="v2HudDot"></i><span id="v2HudState">IDLE</span></span>
           <span id="v2HudSource">—</span>
           <span id="v2HudFps">— fps</span>
@@ -324,6 +548,60 @@
              live only behind a scroll. -->
         <div class="zoom tiers compact" id="v2StreamTiersTop" aria-label="Stream size"></div>
         </div>
+      </div>
+
+      <!-- THE VIEWER. Every slot below starts EMPTY: it is filled at runtime
+           with the controls that already exist elsewhere on this page, moved
+           rather than copied, and handed back when the stage closes. The
+           markup here is the furniture; app.ts moves the tenants. -->
+      <div class="viewer" id="v2Viewer" data-mode="photo" hidden>
+        <div class="viewer-head">
+          <div class="viewer-top">
+            <!-- Stream size, exactly the row the quickbar carries. -->
+            <div id="v2ViewerTop"></div>
+            <button type="button" class="viewer-icon viewer-fit" id="v2ViewerFit"
+              aria-pressed="false" title="Fit the whole frame, or fill the screen">FIT</button>
+            <button type="button" class="viewer-icon" id="v2ViewerExit" title="Leave full screen">&#10005;</button>
+          </div>
+          <!-- The live readouts sit HERE rather than at the top edge of the
+               picture. Pinned inside the viewfinder they follow the frame, so
+               in FIT they floated halfway down the screen while the controls
+               they belong with stayed at the top; and .viewfinder clips its
+               overflow, so they cannot simply be nudged out of it. -->
+          <div class="viewer-hud" id="v2ViewerHud"></div>
+        </div>
+
+        <div class="viewer-bottom">
+          <div id="v2ViewerZoom" aria-label="Zoom"></div>
+          <div class="viewer-shutter" id="v2ViewerShutter"></div>
+          <div class="viewer-row">
+            <div class="viewer-lens-cell">
+              <button type="button" class="viewer-lens" id="v2ViewerWheelToggle"
+                aria-expanded="false" aria-controls="v2ViewerWheel" title="Filters &amp; lenses">
+                <span id="v2ViewerWheelSwatch"></span>
+              </button>
+              <!-- A swatch alone is not a readout: RGB's is a flat dark tile,
+                   which says nothing about which filter is on. -->
+              <small id="v2ViewerWheelName"></small>
+            </div>
+            <div class="viewer-modes" role="group" aria-label="Capture mode">
+              <button type="button" class="viewer-mode" id="v2ViewerVideo" aria-pressed="false">VIDEO</button>
+              <button type="button" class="viewer-mode" id="v2ViewerPhoto" aria-pressed="true">PHOTO</button>
+            </div>
+            <div class="viewer-right" id="v2ViewerRight"></div>
+          </div>
+        </div>
+
+        <!-- The wheel opens over the shutter, so the button that opened it is
+             underneath: closing has to be possible without choosing a filter,
+             or "let me look at these" becomes "pick one or be stuck". -->
+        <div class="viewer-wheel" id="v2ViewerWheel" hidden>
+          <div class="viewer-wheel-head">
+            <span>Filters &amp; lenses</span>
+            <button type="button" class="viewer-icon" id="v2ViewerWheelClose" title="Close">&#10005;</button>
+          </div>
+        </div>
+        <div class="viewer-sheet" id="v2ViewerSheet" hidden></div>
       </div>
     </div>
 
