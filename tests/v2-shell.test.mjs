@@ -1037,3 +1037,39 @@ test('the import panel says what a compressed file already lost', () => {
   assert.match(v2Html, /artefacts arrive looking\s*\n?\s*like structure/,
     'the honesty note is on the import panel');
 });
+
+test('a suspended camera is not an unstarted one, and says so', () => {
+  // MEASURED before the fix (2026-09-03): with the camera suspended, SOURCE
+  // read "not started" while the last frame sat frozen on screen behind
+  // Resume. Both halves of that were wrong — the camera HAD started, and the
+  // picture in front of you looked exactly like a running one.
+  assert.match(stateTs, /lastLive: LastLiveState \| null;/);
+  assert.match(stateTs, /export interface LastLiveState/);
+
+  // Captured on the TRANSITION, from the state as it stands BEFORE the update
+  // overwrites it. Releasing the track zeroes the video element's dimensions,
+  // so a beat later there is nothing left to remember.
+  assert.match(appTs, /const leftLive = before\.camera\?\.state === 'live' && status\.state !== 'live';/);
+  assert.match(appTs, /source: before\.source,/);
+
+  // TWO DIFFERENT QUESTIONS. `remembered` fills in what releasing the track
+  // ERASED; `stale` marks what merely SURVIVED it. Conflating them left
+  // CAPABILITY and PREVIEW reading exactly as they had while live — which is
+  // how the first attempt at this fix shipped half-done in the probe.
+  assert.match(appTs, /const remembered = !live && !source \? lastLive : null;/);
+  assert.match(appTs, /const stale = !live && lastLive !== null;/);
+
+  // Every remembered number is labelled as past, never left looking current.
+  assert.match(appTs, /a past measurement, not a live one/);
+  assert.match(appTs, /last known, the track is released/);
+  assert.match(appTs, /frozen last frame · nothing is rendering into it/);
+  assert.match(appTs, /released — a resume requests a new stream/);
+  assert.match(appTs, /was \$\{wasLive\.source\.width\}/, 'the HUD says "was" over a frozen frame');
+
+  // NO FABRICATED RATE. A rate is a measurement of frames arriving, and none
+  // are: the fps rows stay a dash however much history exists beside them.
+  assert.match(appTs, /live && deliveredFps > 0 \? `\$\{deliveredFps\.toFixed\(1\)\} fps` : '— fps'/);
+
+  // "not started" survives for the one state where it is true.
+  assert.match(appTs, /: 'not started'\);/);
+});
