@@ -574,7 +574,7 @@ test('FILTERS is the one list: unique ids, honest metadata, real shaders', () =>
   }
   assert.deepEqual(FILTERS.map((f) => f.id),
     ['rgb', 'ironbow', 'difference', 'speed', 'trails', 'edges', 'grid', 'poly',
-     'cel', 'ink', 'wash']);
+     'cel', 'ink', 'wash', 'amplify', 'flow', 'background']);
   // Milestone D's second stage: Speed and Trails carry their memory in a
   // state pass, at ANALYSIS resolution, and decline stills like Motion.
   for (const id of ['speed', 'trails']) {
@@ -2504,3 +2504,94 @@ test('Wash darkens its rims rather than outlining them', () => {
 function glslCode(source) {
   return source.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
 }
+
+test('Amplify holds two running averages in one state texture', () => {
+  const amplify = filterById('amplify');
+  const state = amplify.state.slice(amplify.state.indexOf('void main'));
+
+  // A state pass owns exactly ONE RGBA target and this needs two running
+  // values, so fast lives in .r and slow in .g. That is also why it is luma:
+  // six values would need two targets, and the band is a brightness question.
+  assert.match(state, /float fast = mix\(now, held\.r \+ \(now - held\.r\) \* FAST, primed\);/);
+  assert.match(state, /float slow = mix\(now, held\.g \+ \(now - held\.g\) \* SLOW, primed\);/);
+  assert.match(amplify.state, /const float FAST = 0\.5;/);
+  assert.match(amplify.state, /const float SLOW = 0\.06;/);
+  const fast = Number(amplify.state.match(/FAST = ([\d.]+)/)[1]);
+  const slow = Number(amplify.state.match(/SLOW = ([\d.]+)/)[1]);
+  assert.ok(fast > slow, 'the fast filter must actually be faster, or there is no band');
+
+  // SEEDED FROM THE FIRST FRAME. State clears to zero on a filter change, so
+  // starting both averages at zero would make the opening second one
+  // full-scale transient that never happened. Alpha carries "primed".
+  assert.match(state, /float primed = held\.a;/);
+  assert.match(state, /gl_FragColor = vec4\(fast, slow, 0\.0, 1\.0\);/,
+    'alpha is written 1.0, and clears to 0, which is how the first pass knows');
+
+  // The band is the DIFFERENCE, multiplied and added back.
+  const body = amplify.fragment.slice(amplify.fragment.indexOf('void main'));
+  assert.match(body, /float band = held\.r - held\.g;/);
+  assert.match(body, /scene \+ band \* GAIN/);
+
+  // NOT temporal: it never reads uPrevious. The flag means "reads the frame
+  // before" in this codebase, and Amplify reads its own averages instead.
+  assert.equal(amplify.temporal, false);
+  assert.ok(!body.includes('uPrevious') && !state.includes('uPrevious'));
+
+  // The three limits are in the note, because each shows up immediately.
+  assert.match(amplify.note, /amplifies NOISE as readily as motion/i);
+  assert.match(amplify.note, /flat wall that moves shows nothing/i);
+});
+
+test('Flow reports direction, and admits what direction it cannot see', () => {
+  const flow = filterById('flow');
+  const body = flow.fragment.slice(flow.fragment.indexOf('void main'));
+
+  // The gradient constraint: v = -It * (Ix, Iy) / (Ix^2 + Iy^2).
+  assert.match(body, /vec2 v = -dt \* vec2\(dx, dy\) \/ \(dx \* dx \+ dy \* dy \+ 0\.0016\);/);
+  // SIGNED in time, unlike Speed's magnitude — the sign IS the direction.
+  assert.match(body, /float dt = now - before;/);
+  assert.ok(!/abs\(now - before\)/.test(body), 'an absolute difference has no direction in it');
+  // The epsilon stops a flat region, where the division is meaningless, from
+  // reporting an enormous velocity.
+  assert.match(body, /\+ 0\.0016\)/);
+
+  assert.match(body, /float angle = atan\(v\.y, v\.x\)/, 'direction becomes hue');
+  assert.match(body, /hueWheel\(angle\) \* lit/, 'and speed becomes brightness');
+
+  // THE APERTURE PROBLEM IS IN THE NOTE. Only the component along the
+  // gradient is recoverable from one pixel, so an edge sliding along its own
+  // length reads as still. That is the measurement, not a fault, and it looks
+  // exactly like one.
+  assert.match(flow.note, /aperture problem/i);
+  assert.match(flow.note, /NORMAL FLOW/);
+
+  // It reads the previous frame and holds nothing.
+  assert.equal(flow.temporal, true);
+  assert.match(body, /uPrevious/);
+  assert.equal(flow.state, undefined);
+});
+
+test('Background reuses the learned model the novelty channel already uses', () => {
+  const background = filterById('background');
+
+  // RULE 4. A second background model would be a second answer to "what is
+  // normally here", and two filters disagreeing about that is the same drift
+  // the Sobel consolidation removed.
+  assert.equal(background.state, NOVELTY_STATE, 'the SAME state pass object, not a copy');
+
+  const body = background.fragment.slice(background.fragment.indexOf('void main'));
+  // Distance in COLOUR, not just brightness: a thing can arrive at the same
+  // lightness as the wall behind it and still not belong there.
+  assert.match(body, /float departure = clamp\(length\(scene - background\) \* DEPARTURE, 0\.0, 1\.0\);/);
+  assert.match(body, /mix\(scene \* BELONGS, scene, lit\)/, 'what belongs is dimmed, not erased');
+
+  // NOT temporal, and that is the entire point: comparing adjacent frames is
+  // what Motion does, and what this exists to avoid — a slow mover almost
+  // vanishes from a frame difference and stands out against a learned scene.
+  assert.equal(background.temporal, false);
+  assert.ok(!body.includes('uPrevious'));
+
+  // The honest cost is in the note: a model that never absorbed anything
+  // could not follow the light changing either.
+  assert.match(background.note, /absorbed into the background/i);
+});

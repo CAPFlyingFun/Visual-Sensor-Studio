@@ -347,6 +347,40 @@ export const NOVELTY_STATE = HEADER + `void main() {
   gl_FragColor = vec4(next, 1.0);
 }`;
 
+/**
+ * AMPLIFY — the temporal band-pass, ported from V1's MotionAmplifier.
+ *
+ * Two exponential averages of each pixel, one fast and one slow. Their
+ * DIFFERENCE is a band-pass in time: changes slower than the slow filter
+ * cancel, changes faster than the fast one are never captured, and what
+ * survives is movement in between. Multiply that band, add it back, and a
+ * wall breathing or a tripod creeping becomes visible.
+ *
+ * The cheap relative of Eulerian video magnification — the temporal filtering
+ * without the spatial pyramid, which is the part that costs.
+ *
+ * BOTH FILTERS IN ONE TEXTURE. A state pass owns exactly one RGBA target, and
+ * this needs two running values, so fast lives in .r and slow in .g. That is
+ * why it is luma rather than three colour channels: six values would need two
+ * targets, and the band is a brightness question anyway.
+ *
+ * SEEDED FROM THE FIRST FRAME. The state clears to zero on a filter change,
+ * and starting both averages at zero would make the opening second one
+ * full-scale transient that never happened. Alpha carries "primed" — it is
+ * written 1.0 and clears to 0, so the first pass can tell.
+ */
+export const AMPLIFY_STATE = HEADER + `const float FAST = 0.5;
+const float SLOW = 0.06;
+
+void main() {
+  float now = luma(texture2D(uFrame, vUv).rgb);
+  vec4 held = texture2D(uState, vUv);
+  float primed = held.a;
+  float fast = mix(now, held.r + (now - held.r) * FAST, primed);
+  float slow = mix(now, held.g + (now - held.g) * SLOW, primed);
+  gl_FragColor = vec4(fast, slow, 0.0, 1.0);
+}`;
+
 export const FILTERS: readonly FilterDefinition[] = [
   {
     id: 'rgb',
@@ -887,6 +921,142 @@ void main() {
   float thin = 1.0 - clamp(luma(washed), 0.0, 1.0);
   washed *= 1.0 - PAPER_GRAIN * grain * (0.35 + 0.65 * thin);
   gl_FragColor = vec4(withAids(clamp(washed, 0.0, 1.0), vUv), 1.0);
+}`
+  },
+  {
+    id: 'amplify',
+    note: 'Movement too small to see, multiplied. Two exponential averages of each pixel — one fast, one slow — and their difference is a band-pass in time; what survives is motion in between, added back twelve times over. It amplifies NOISE as readily as motion, because both live in that band, and it magnifies intensity change, so a flat wall that moves shows nothing while its edge shows a lot.',
+    name: 'Amplify',
+    family: 'motion',
+    // NOT temporal in this codebase's sense, which is precise and worth
+    // keeping precise: `temporal` means the shader reads uPrevious, the frame
+    // before. Amplify never looks at the previous frame — it looks at its own
+    // two running averages, which is what `state` expresses. The registry
+    // test compares this flag against what the shader actually samples, and
+    // it caught the claim before the device did.
+    temporal: false,
+    supportsPhoto: true,
+    supportsVideo: true,
+    state: AMPLIFY_STATE,
+    /*
+     * THREE LIMITS, carried over from V1 because they show up immediately if
+     * ignored and are the reason this is honest rather than magic:
+     *  - Noise is amplified as readily as motion; both live in the band.
+     *  - It magnifies INTENSITY change, which corresponds to movement only
+     *    where there is a gradient for movement to change.
+     *  - Large motion breaks the linear assumption and produces ghosting
+     *    rather than a bigger version of the truth.
+     *
+     * THE BAND IS AT ANALYSIS RESOLUTION, like every state pass here, while
+     * the scene under it is full size. That is the same trade Speed and
+     * Trails make and it is invisible at the gain this uses.
+     *
+     * V1 rendered grey; this keeps the picture's colour and adds the band to
+     * all three channels, which changes nothing about what is measured.
+     */
+    fragment: HEADER + `const float GAIN = 12.0;
+
+void main() {
+  vec3 scene = texture2D(uFrame, vUv).rgb;
+  vec4 held = texture2D(uState, vUv);
+  float band = held.r - held.g;
+  gl_FragColor = vec4(withAids(clamp(scene + band * GAIN, 0.0, 1.0), vUv), 1.0);
+}`
+  },
+  {
+    id: 'flow',
+    note: 'Which way things are moving: hue is the direction, brightness is the speed. This is NORMAL FLOW — the component of motion along the local gradient — so an edge sliding along its own length reads as still. That is the aperture problem, not a bug, and it is why a moving blank wall shows nothing.',
+    name: 'Flow',
+    family: 'motion',
+    temporal: true,
+    supportsPhoto: true,
+    supportsVideo: true,
+    /*
+     * DIRECTION, WHICH SPEED DOES NOT HAVE. Speed already measures how fast
+     * (SPEED_STATE, the same estimator); this measures which way, from the
+     * gradient constraint: a brightness change over time, divided by the
+     * spatial gradient, gives the motion component ALONG that gradient.
+     *
+     *   v = -It * (Ix, Iy) / (Ix^2 + Iy^2)
+     *
+     * WHAT IT CANNOT SEE, said in the note because it looks like a fault:
+     * only the component along the gradient is recoverable from one pixel.
+     * A long edge sliding along itself changes nothing locally and reads as
+     * still — the aperture problem, which is a property of the measurement
+     * and not of this implementation. V1 solved it by block matching over a
+     * neighbourhood, which a per-pixel fragment shader cannot do.
+     *
+     * No state pass: the previous frame is all it needs.
+     */
+    fragment: HEADER + `const float NOISE_FLOOR = 0.012;
+const float FULL_SPEED = 0.055;
+
+vec3 hueWheel(float h) {
+  vec3 p = abs(fract(vec3(h) + vec3(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+  return clamp(p - 1.0, 0.0, 1.0);
+}
+
+void main() {
+  float now = luma(texture2D(uFrame, vUv).rgb);
+  float before = luma(texture2D(uPrevious, vUv).rgb);
+  float dx = luma(texture2D(uFrame, vUv + uTexel * vec2(1.0, 0.0)).rgb)
+           - luma(texture2D(uFrame, vUv - uTexel * vec2(1.0, 0.0)).rgb);
+  float dy = luma(texture2D(uFrame, vUv + uTexel * vec2(0.0, 1.0)).rgb)
+           - luma(texture2D(uFrame, vUv - uTexel * vec2(0.0, 1.0)).rgb);
+
+  // SIGNED in time, unlike Speed's magnitude — the sign is the whole of the
+  // direction. The epsilon is what stops a flat region, where the gradient is
+  // zero and the division is meaningless, from reporting a huge velocity.
+  float dt = now - before;
+  vec2 v = -dt * vec2(dx, dy) / (dx * dx + dy * dy + 0.0016);
+
+  float speed = length(v);
+  float lit = smoothstep(NOISE_FLOOR, FULL_SPEED, speed);
+  // atan(y, x) over -pi..pi, mapped onto the wheel.
+  float angle = atan(v.y, v.x) / 6.2831853 + 0.5;
+  gl_FragColor = vec4(withAids(hueWheel(angle) * lit, vUv), 1.0);
+}`
+  },
+  {
+    id: 'background',
+    note: 'What does not belong in this scene. A background is learned over the first couple of seconds and everything close to it is dimmed away, so only what arrived stays lit — including something moving too slowly for frame difference to catch. Stand still long enough and you are absorbed into the background, which is the honest cost of a model that also adapts to changing light.',
+    name: 'Background',
+    family: 'time',
+    // Same distinction as Amplify: the learned background is state, not the
+    // previous frame. Not reading uPrevious is the entire point — comparing
+    // adjacent frames is what Motion does, and what this exists to avoid.
+    temporal: false,
+    supportsPhoto: true,
+    supportsVideo: true,
+    // THE SAME LEARNED BACKGROUND THE novelty LENS CHANNEL USES (Rule 4).
+    // A second background model would be a second answer to "what is normally
+    // here", and two filters disagreeing about that is exactly the kind of
+    // drift the Sobel consolidation was about. NOVELTY_STATE self-primes: it
+    // adopts the frame whole while its store is still black, so a genuinely
+    // black scene re-primes every frame and costs nothing, having no novelty
+    // to report.
+    state: NOVELTY_STATE,
+    /*
+     * WHY THIS IS NOT FRAME DIFFERENCE. Motion compares ADJACENT frames, so
+     * anything moving slowly almost vanishes — a person creeping, a shadow
+     * travelling. Comparing against a learned background makes "not normally
+     * here" visible however slowly it arrived.
+     *
+     * The honest trade, in the note: a slow enough mover is eventually
+     * absorbed. A model that never absorbed anything could not follow the
+     * light changing either.
+     */
+    fragment: HEADER + `const float DEPARTURE = 2.2;
+const float BELONGS = 0.16;
+
+void main() {
+  vec3 scene = texture2D(uFrame, vUv).rgb;
+  vec3 background = texture2D(uState, vUv).rgb;
+  // Distance in colour, not just brightness: something can arrive at the same
+  // lightness as the wall behind it and still not belong there.
+  float departure = clamp(length(scene - background) * DEPARTURE, 0.0, 1.0);
+  float lit = smoothstep(0.10, 0.38, departure);
+  gl_FragColor = vec4(withAids(mix(scene * BELONGS, scene, lit), vUv), 1.0);
 }`
   }
 ];
