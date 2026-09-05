@@ -330,8 +330,30 @@
     body.viewer[data-viewer-fit="full"] .viewfinder {
       width: 100%; height: 100dvh; aspect-ratio: auto;
     }
-    /* The live readouts move to the TOP of the picture: the bottom of the box
-       is where the controls stack, and a HUD there would sit under a thumb. */
+    /*
+     * WHILE THE PICKER IS ARMED, THE PICTURE IS THE CONTROL — it has to be
+     * seen AND tapped. So the sheet is capped and the frame is sized to what
+     * is left above it, instead of the panel being laid over the very thing
+     * it is asking you to touch.
+     *
+     * Found on the device (Joshua, 2026-09-05: "the picker when big screen
+     * wasn't centered to the viewer and stuck on whole screen"). With his
+     * 3024x4032 stream the frame stands 573 tall and the sheet opened at 614
+     * — the bottom quarter of the picture, including anything he wanted to
+     * sample down there, was behind an opaque panel. The 4:3 test camera hid
+     * it: its frame is only 323 tall, so the overlap measured 13px.
+     *
+     * This must come after the FULL rule, which it shares specificity with:
+     * a cropped view while picking would put part of the frame out of reach.
+     */
+    body.viewer[data-picking="on"] .viewfinder-wrap {
+      align-items: start; padding-top: calc(var(--safe-top) + 82px);
+    }
+    body.viewer[data-picking="on"] .viewfinder {
+      width: min(100%, calc(48dvh * var(--viewer-ar, .75)));
+      height: auto; aspect-ratio: var(--viewer-ar, .75);
+    }
+    body.viewer[data-picking="on"] .viewer-sheet { max-height: 40dvh; }
     /* Borrowed into the header, so it is LAID OUT rather than positioned:
        one rule serves FIT and FULL, and neither can put it over the tier
        ladder or halfway down the screen. */
@@ -420,7 +442,8 @@
     /* The wheel: the real filter strip, on a sheet that opens from the
        bottom-left button and closes itself the moment a filter is chosen. */
     .viewer-wheel {
-      position: absolute; left: 0; right: 0; bottom: 0; z-index: 2;
+      position: absolute; left: 50%; right: auto; transform: translateX(-50%);
+      width: min(100%, 520px); border-radius: 18px 18px 0 0; bottom: 0; z-index: 2;
       max-height: 62dvh; overflow-y: auto;
       padding: 12px 12px calc(var(--safe-bottom) + 12px);
       background: rgba(4, 9, 15, .93); border-top: 1px solid var(--line);
@@ -429,7 +452,8 @@
     /* The sheet: the lens workbench and the colour picker, edited without
        leaving the picture they are changing. */
     .viewer-sheet {
-      position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
+      position: absolute; left: 50%; right: auto; transform: translateX(-50%);
+      width: min(100%, 520px); border-radius: 18px 18px 0 0; bottom: 0; z-index: 3;
       max-height: 82dvh; overflow-y: auto;
       padding: 10px 0 calc(var(--safe-bottom) + 10px);
       background: rgba(4, 9, 15, .95); border-top: 1px solid var(--line2);
@@ -499,7 +523,7 @@
     <h1>Visual Sensor Studio</h1>
     <span>
       <button type="button" class="chip" id="v2ViewerEnter" title="Full screen viewer">&#9974; Full screen</button>
-      <span class="pill" id="v2Badge">v0.85.0</span>
+      <span class="pill" id="v2Badge">v0.85.1</span>
     </span>
   </header>
 

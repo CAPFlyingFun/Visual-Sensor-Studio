@@ -2894,3 +2894,38 @@ test('choosing a filter closes the wheel — but an unavailable one does not', (
   assert.match(block.slice(0, 400), /classList\.contains\('unavailable'\)\) return/);
   assert.match(block.slice(0, 400), /viewerWheel\(false\)/);
 });
+
+test('an armed picker keeps the whole frame above the sheet', () => {
+  // Found on the device: with a 3024x4032 stream the frame stands 573 tall and
+  // the sheet opened at 614, so the bottom quarter of the picture — the part
+  // the picker exists to let you TAP — sat behind an opaque panel. The 4:3
+  // test camera hid it, because its frame is only 323 tall and the overlap
+  // measured 13px.
+  const pick = VIEWER_HTML.slice(VIEWER_HTML.indexOf('body.viewer[data-picking="on"] .viewfinder-wrap'));
+  assert.match(pick.slice(0, 400), /align-items: start/);
+  assert.match(pick.slice(0, 400), /width: min\(100%, calc\(48dvh \* var\(--viewer-ar/);
+  assert.match(pick.slice(0, 500), /\.viewer-sheet \{ max-height: 40dvh; \}/);
+
+  // IT MUST OUTRANK FULL, which it ties with on specificity — so order is the
+  // only thing deciding it, and a cropped view while picking would put part of
+  // the frame out of reach of the finger.
+  assert.ok(VIEWER_HTML.indexOf('body.viewer[data-picking="on"] .viewfinder {')
+    > VIEWER_HTML.indexOf('body.viewer[data-viewer-fit="full"] .viewfinder {'),
+    'the picking rule comes after the full rule');
+
+  // Keyed on the picker being ARMED, not on which card is open: the workbench
+  // can be open at the same time, and what needs the room is the tapping.
+  const picker = VIEWER_APP.slice(VIEWER_APP.indexOf('function setPickerActive'));
+  assert.match(picker.slice(0, 900), /if \(on\) document\.body\.dataset\.picking = 'on';/);
+  assert.match(picker.slice(0, 900), /else delete document\.body\.dataset\.picking;/);
+
+  // The sheets are panels fitted to the viewer, not full-bleed slabs.
+  // Anchored at the base indent: '.viewer-sheet {' on its own also matches
+  // inside 'body.viewer[data-picking="on"] .viewer-sheet {', which sits
+  // earlier in the file and is not the rule being asked about.
+  for (const cls of ['\n    .viewer-wheel {', '\n    .viewer-sheet {']) {
+    const rule = VIEWER_HTML.slice(VIEWER_HTML.indexOf(cls));
+    assert.match(rule.slice(0, 260), /width: min\(100%, 520px\)/, `${cls} is fitted`);
+    assert.match(rule.slice(0, 260), /border-radius: 18px 18px 0 0/, `${cls} reads as a sheet`);
+  }
+});

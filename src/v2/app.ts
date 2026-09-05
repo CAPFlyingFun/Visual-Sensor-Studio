@@ -842,6 +842,14 @@ function buildGuides(): void {
     button.addEventListener('click', () => {
       updateState({ guide: guide.id });
       remember(GUIDE_STORE_KEY, guide.id);
+      // DRAWN NOW, not on the next throttled pass. renderGuides lives in
+      // renderTextPanels, which runs at most every 250ms and can be deferred
+      // by a queued timeout for up to another 250ms — so a tap on a viewing
+      // aid could take a quarter of a second to change the picture it is
+      // about. setPickerActive already calls this directly for exactly that
+      // reason; the two buttons that own these overlays now do the same.
+      // (It is keyed, so calling it twice in a frame costs one comparison.)
+      renderGuides();
     });
     holder.appendChild(button);
   }
@@ -849,6 +857,7 @@ function buildGuides(): void {
     const on = !readState().reticle;
     updateState({ reticle: on });
     remember(RETICLE_STORE_KEY, on ? '1' : '0');
+    renderGuides();
   });
 }
 
@@ -4769,6 +4778,11 @@ function setPickerActive(on: boolean): void {
   renderGuides();
   byId('v2PickerCard').hidden = !on;
   byId('v2Viewfinder').classList.toggle('picking', on);
+  // The viewer sizes the frame around an ARMED picker rather than around
+  // which card happens to be open: what needs the room is the tapping, and
+  // the workbench can be open at the same time.
+  if (on) document.body.dataset.picking = 'on';
+  else delete document.body.dataset.picking;
   byId<HTMLButtonElement>('v2PickColor').classList.toggle('active', on);
   renderPickerLensRow();
   if (on) setText('v2PickerHint', readState().camera?.state === 'live'
