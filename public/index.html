@@ -95,7 +95,11 @@
     /* THE ZOOM STICK. A rate control, not a position one: where it sits says
        how FAST the zoom moves, and it springs back to the middle on release.
        Wide and short so a thumb can hold a small deflection steadily. */
-    .zoomstick { width: 100%; margin: 6px 0 2px; accent-color: var(--blue); height: 26px; }
+    /* In a flex row, width:100% is a basis of the whole row — it demanded
+       everything and squeezed the zoom stops into a scroll. The stops get
+       their natural width first; the stick takes what is left, down to a
+       usable minimum. */
+    .zoomstick { flex: 1 1 110px; min-width: 90px; width: auto; margin: 0; accent-color: var(--blue); height: 26px; }
     .capture button.recording { color: #ff5c5c; border-color: #ff5c5c; box-shadow: 0 0 0 1px rgba(255, 92, 92, .35); }
     .share-save { margin-top: 9px; min-height: 42px; padding: 0 16px; border-radius: 11px; border: 1px solid var(--blue); background: #10203a; color: #cfe4ff; font-size: 12px; font-weight: 600; }
     .enable-overlay {
@@ -137,10 +141,18 @@
     .hud .dot[data-state="requesting"] { background: var(--blue); }
     .hud .dot[data-state="error"], .hud .dot[data-state="suspended"] { background: var(--red); }
 
-    .quickbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; align-items: center; padding: 8px 10px; background: #08111a; }
+    /* TWO FULL-WIDTH ROWS, not a 2x2 grid. As a grid the second column was
+       sized by its widest item, and once the tier ladder moved in there that
+       was ~230px of it — which left the zoom stops about 140px and clipped
+       them behind a scroll. Rows that each distribute their own width cannot
+       do that to one another. */
+    .quickbar { display: flex; flex-direction: column; gap: 8px; padding: 8px 10px; background: #08111a; }
+    .qrow { display: flex; gap: 9px; align-items: center; min-width: 0; }
+    /* The stops keep their own width and only shrink as a last resort. */
+    .qrow > .zoom { flex: 0 1 auto; }
     .zoom { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
     .zoom::-webkit-scrollbar { display: none; }
-    .zoom button { min-width: 45px; height: 38px; border: 1px solid var(--line); background: #0c1721; border-radius: 10px; flex: 0 0 auto; }
+    .zoom button { min-width: 40px; height: 34px; font-size: 12px; border: 1px solid var(--line); background: #0c1721; border-radius: 10px; flex: 0 0 auto; }
     .zoom button.active { border-color: var(--blue); box-shadow: inset 0 0 0 1px rgba(67, 141, 255, .3); color: #fff; }
     /* An effect is chosen for the look, not as a stronger reading — set
        apart from the ladder so it cannot read as its top rung. */
@@ -148,16 +160,21 @@
     /* Tier availability speaks through color: green = this camera can fill
        the class, red = it cannot (tap explains via toast). */
     .tiers button { color: var(--green); }
-    /* The quickbar's copy sits beside the capture buttons, so it is narrower
-       and scrolls rather than pushing them off the row. */
+    /* The quickbar's copy sits beside the capture buttons and takes the rest
+       of the row, scrolling rather than pushing them off it. */
     .tiers.compact button { min-width: 40px; height: 34px; font-size: 11px; }
-    .quickbar .tiers.compact { justify-self: end; max-width: 100%; }
+    .quickbar .tiers.compact { flex: 1 1 auto; justify-content: flex-end; }
     .tiers button.unavailable { color: var(--red); opacity: .6; }
     .toast { position: fixed; left: 50%; bottom: 86px; transform: translateX(-50%); max-width: 86vw;
       padding: 10px 14px; background: #1a2836; border: 1px solid var(--line2); border-radius: 12px;
       font-size: 12px; line-height: 1.45; color: #fff; box-shadow: 0 6px 24px rgba(0, 0, 0, .5); z-index: 50; }
     .capture { display: flex; gap: 8px; }
-    .capture button { width: 43px; height: 43px; border-radius: 50%; border: 1px solid #6b7b89; background: #0b141c; font-size: 15px; }
+    /* flex: 0 0 auto or these stop being circles. A flex item shrinks by
+       default, so a squeezed row narrowed the WIDTH while the height stayed
+       43px and the buttons rendered as ovals (Joshua, 2026-09-05: "the 3
+       round buttons are skewed"). .zoom button already carried this guard,
+       which is why the tier buttons beside them stayed square. */
+    .capture button { flex: 0 0 auto; width: 43px; height: 43px; border-radius: 50%; border: 1px solid #6b7b89; background: #0b141c; font-size: 15px; }
     .capture button[disabled] { opacity: .4; }
 
     .section { padding: 12px 11px 0; }
@@ -259,7 +276,7 @@
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
-    <span class="pill" id="v2Badge">v0.80.0</span>
+    <span class="pill" id="v2Badge">v0.81.0</span>
   </header>
 
   <div class="camera-layout">
@@ -291,9 +308,12 @@
         </div>
       </div>
       <div class="quickbar">
-        <div class="zoom" id="v2ZoomStops" aria-label="Zoom presets"></div>
-        <input type="range" id="v2ZoomStick" class="zoomstick" min="-1" max="1" step="0.01" value="0"
-          aria-label="Zoom rate — push right to zoom in, left to zoom out" hidden />
+        <div class="qrow">
+          <div class="zoom" id="v2ZoomStops" aria-label="Zoom presets"></div>
+          <input type="range" id="v2ZoomStick" class="zoomstick" min="-1" max="1" step="0.01" value="0"
+            aria-label="Zoom rate — push right to zoom in, left to zoom out" hidden />
+        </div>
+        <div class="qrow">
         <div class="capture">
           <button type="button" id="v2PhotoButton" title="Photo" disabled>◉</button>
           <button type="button" id="v2RecordButton" title="Record" disabled>⏺</button>
@@ -303,6 +323,7 @@
              same list by the same code — a size is chosen far too often to
              live only behind a scroll. -->
         <div class="zoom tiers compact" id="v2StreamTiersTop" aria-label="Stream size"></div>
+        </div>
       </div>
     </div>
 

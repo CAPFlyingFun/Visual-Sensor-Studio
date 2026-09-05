@@ -1198,3 +1198,27 @@ test('the size ladder appears twice and is built once', () => {
   // index.html must lose one row of buttons, not every control wired after it.
   assert.match(appTs, /document\.getElementById\('v2StreamTiersTop'\)/);
 });
+
+test('the quickbar is two rows, and its round buttons stay round', () => {
+  // TWO FULL-WIDTH ROWS, not a 2x2 grid. As a grid the second column was
+  // sized by its widest item, and once the tier ladder moved in there that was
+  // ~230px of it — leaving the zoom stops about 140px and clipping them behind
+  // a scroll (Joshua, 2026-09-05, with 0.5x and 1x scrolled off screen). Rows
+  // that each distribute their own width cannot do that to one another.
+  assert.match(v2Html, /\.quickbar \{ display: flex; flex-direction: column;/);
+  assert.match(v2Html, /\.qrow \{ display: flex;/);
+  assert.equal((v2Html.match(/<div class="qrow">/g) ?? []).length, 2);
+
+  // A FLEX ITEM SHRINKS BY DEFAULT, so a squeezed row narrowed the capture
+  // buttons' WIDTH while their height stayed 43px and they rendered as ovals.
+  // .zoom button already carried this guard, which is why the tier buttons
+  // beside them stayed square.
+  assert.match(v2Html, /\.capture button \{ flex: 0 0 auto; width: 43px; height: 43px;/);
+
+  // width:100% on a flex item is a basis of the whole row: the stick demanded
+  // everything and squeezed the stops. The stops keep their natural width and
+  // the stick takes what is left.
+  assert.match(v2Html, /\.zoomstick \{ flex: 1 1 110px;/);
+  assert.match(v2Html, /\.qrow > \.zoom \{ flex: 0 1 auto; \}/);
+  assert.ok(!/\.zoomstick \{ width: 100%/.test(v2Html));
+});
