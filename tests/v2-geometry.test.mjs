@@ -757,7 +757,7 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
       // A fresh device carries the starter lens and the Custom + entry.
       const STARTERS = ['Coloring Book Style', 'Colour Splash', 'Colour Hide',
         'Paper → Pink', 'Hue Map', 'Colour Strength', 'Rare Colour',
-        'Background Subtract', 'Rarity Map', 'Inverted Brightness',
+        'Background Subtract', 'Rarity Map', 'Inverted Brightness', 'Relief',
         'Camouflage Breaker', 'Colour Edges', 'Red Channel'];
       const strip = await page.evaluate(() => ({
         lenses: [...document.querySelectorAll('#v2FilterStrip [data-filter^="lens:"]')].map((b) => b.textContent),

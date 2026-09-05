@@ -156,6 +156,44 @@ export const STARTER_LENSES: readonly CustomLens[] = [
     sceneBlend: 0
   },
   {
+    // RELIEF, the one V1 mode with no way to reach it from the strip.
+    //
+    // The V1-to-V2 audit classified relief as "B — math ported to the 'relief'
+    // channel; no starter uses it, cheap to add", and cheap to add it stayed
+    // for two days. The channel has been here the whole time; nothing shipped
+    // in the app used it, so the only route to V1's Relief was the downloadable
+    // Contour lens, which is not somewhere anyone looks first.
+    //
+    // WHAT IT IS, and the note says so because the picture is persuasive: a
+    // SHADING estimate, not a depth reading. It is the frame's brightness
+    // stretched into its own measured range plus an edge term, and bright
+    // standing for near is how a lit surface usually behaves — not a
+    // measurement. A white wall reads as near. There is no depth sensor on a
+    // web page, and a convincing relief map is exactly the kind of picture
+    // that gets believed.
+    //
+    // GAMMA 0.5, AND THE REASON IS MEASURED. ch_relief stretches into
+    // uLumaRange, which is an absolute min and max — one bright thing in a
+    // dark room pins it at 0..1 and the stretch becomes an identity. Measured
+    // on Joshua's own room while fixing Grid: min 0.0000, max 1.0000, with
+    // 62% of the rendered frame too dark to read. A square root was what
+    // fixed Grid on that exact frame, and relief lands in the same place for
+    // the same reason. He can edit it in the workbench like any other lens.
+    version: 1,
+    id: 'lens-v2-relief',
+    note: 'Shading as height: bright reads as near, dark as far. An estimate from the light, not a depth measurement — a white wall reads as near.',
+    name: 'Relief',
+    color: { channel: 'relief', low: 0, high: 255, gamma: 0.5 },
+    stops: [
+      { at: 0, color: '#0b1020' },
+      { at: 0.45, color: '#3f6d8c' },
+      { at: 0.75, color: '#c8b184' },
+      { at: 1, color: '#fff6e2' }
+    ],
+    base: 'black',
+    sceneBlend: 0
+  },
+  {
     // The Lens Pack's Adaptive Camouflage Breaker, which was never one field:
     // colour from how UNUSUAL a pixel's hue is, brightness from whether it
     // sits on a colour boundary. A thing hiding by matching its background

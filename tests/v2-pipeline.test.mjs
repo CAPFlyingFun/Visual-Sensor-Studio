@@ -2764,3 +2764,30 @@ test('Chrono and Slit Scan exist — the audit said they could not', () => {
     assert.ok(filter.supportsPhoto && filter.supportsVideo);
   }
 });
+
+test('Relief is reachable from the strip, not only from the gallery', () => {
+  const starters = readFileSync(
+    new URL('../src/v2/filters/starter-lenses.ts', import.meta.url), 'utf8');
+
+  // The V1-to-V2 audit classified relief as "B - math ported to the 'relief'
+  // channel; no starter uses it, cheap to add". The channel had been there the
+  // whole time and nothing shipped in the app used it, so the only route to
+  // V1's Relief was the downloadable Contour lens — not somewhere anyone looks
+  // first. It is the last V1 mode to become reachable.
+  assert.match(starters, /id: 'lens-v2-relief'/);
+  assert.match(starters, /channel: 'relief'/);
+
+  // GAMMA BELOW 1, and the reason is the one Grid was fixed for: ch_relief
+  // stretches into uLumaRange, an ABSOLUTE min and max, so one bright thing in
+  // a dark room pins it at 0..1 and the stretch becomes an identity.
+  const gamma = Number(starters.match(/channel: 'relief', low: 0, high: 255, gamma: ([\d.]+)/)[1]);
+  assert.ok(gamma > 0 && gamma < 1, `a curve, not an identity: ${gamma}`);
+
+  // THE NOTE MUST NOT SELL IT AS DEPTH. Bright standing for near is how a lit
+  // surface usually behaves, not a measurement, and a convincing relief map is
+  // exactly the kind of picture that gets believed. Grid's note carries the
+  // same warning for the same reason.
+  const note = starters.slice(starters.indexOf("id: 'lens-v2-relief'"));
+  assert.match(note.slice(0, 600), /not a depth measurement/i);
+  assert.match(note.slice(0, 600), /white wall reads as near/i);
+});
