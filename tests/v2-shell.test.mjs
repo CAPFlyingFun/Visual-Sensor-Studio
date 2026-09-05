@@ -1151,3 +1151,50 @@ test('the still path carries the census, so a saved Grid is the Grid you saw', (
   assert.ok((appTs.match(/lumaRange: exposure\.range/g) ?? []).length >= 3,
     'all the full-size render paths carry it');
 });
+
+test('the chosen stream size is remembered, and applied before the first stream', () => {
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+
+  // Joshua, 2026-09-05: "you can set your default settings locally so like I
+  // can set at MAX so I don't have to each open." It did not — the tier booted
+  // from DEFAULT_STREAM_TIER every launch, so choosing MAX lasted one session.
+  assert.match(appTs, /const TIER_STORE_KEY = 'vss\.v2\.streamTier\.v1';/);
+  assert.match(appTs, /localStorage\.setItem\(TIER_STORE_KEY, id\);/);
+
+  // READ AGAINST THE REGISTRY, not trusted. A tier id that no longer exists —
+  // a renamed rung, a build from another version left in storage — must fall
+  // back rather than leave the app asking the camera for a size nothing
+  // describes.
+  assert.match(appTs, /return saved && tierById\(saved\) \? saved : DEFAULT_STREAM_TIER;/);
+  const stored = appTs.slice(appTs.indexOf('function storedStreamTier()'),
+    appTs.indexOf('function applyStreamTier('));
+  assert.match(stored, /\} catch \{/, 'a private window must not break the camera');
+
+  // APPLIED AT BOOT, BEFORE THE CAMERA IS ASKED FOR ANYTHING. applyStreamTier
+  // only sets a preference while the camera is inactive, so the FIRST stream
+  // is negotiated at the remembered size rather than started at the default
+  // and renegotiated a beat later.
+  assert.match(appTs, /applyStreamTier\(storedStreamTier\(\)\);/);
+  assert.ok(appTs.indexOf('applyStreamTier(storedStreamTier())') > appTs.indexOf('buildStreamTiers();'),
+    'the buttons exist before one of them is made active');
+});
+
+test('the size ladder appears twice and is built once', () => {
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+
+  // A size is chosen far too often to live only behind a scroll, and the
+  // settings copy keeps the explanation beside it — so both exist. Building
+  // them from ONE loop is what stops the quickbar's copy from quietly falling
+  // behind when a rung is added or a label changes (Rule 4).
+  assert.match(v2Html, /id="v2StreamTiersTop"/);
+  assert.match(v2Html, /id="v2StreamTiers"/);
+  assert.match(appTs, /function tierHolders\(\): HTMLElement\[\] \{/);
+  assert.match(appTs, /for \(const holder of tierHolders\(\)\) buildTierRow\(holder\);/);
+  assert.match(appTs, /for \(const holder of tierHolders\(\)\) renderTierRow\(/);
+  // Exactly one place creates a tier button, and one place attaches its click.
+  assert.equal((appTs.match(/dataset\.streamTier = tier\.id;/g) ?? []).length, 1);
+
+  // getElementById for the new holder: a fresh app.js against a cached older
+  // index.html must lose one row of buttons, not every control wired after it.
+  assert.match(appTs, /document\.getElementById\('v2StreamTiersTop'\)/);
+});

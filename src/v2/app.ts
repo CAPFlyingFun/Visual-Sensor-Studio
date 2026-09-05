@@ -51,7 +51,9 @@ import { ENCODER_PROBE_LADDER, runEncoderProbe } from './capture/encoder-probe.j
 import {
   envelopeFromMeasurement, measurementFromRows, type EnvelopeMeasurement
 } from './capture/encoder-envelope.js';
-import { STREAM_TIERS, tierAvailable, tierById } from './camera/stream-tiers.js';
+import {
+  DEFAULT_STREAM_TIER, STREAM_TIERS, tierAvailable, tierById
+} from './camera/stream-tiers.js';
 import {
   FILTERS, allFilters, canReverse, filterById, isReversed, setCustomFilters,
   setReversedFilters
@@ -169,6 +171,7 @@ window.addEventListener('resize', refreshGeometry);
 const ENVELOPE_STORE_KEY = 'vss.v2.encoderEnvelope.v1';
 const FORCE_MAX_STORE_KEY = 'vss.v2.forceMaxRecord.v1';
 const LOSSLESS_STORE_KEY = 'vss.v2.visuallyLossless.v1';
+const TIER_STORE_KEY = 'vss.v2.streamTier.v1';
 
 function storedEnvelopeMeasurement(): EnvelopeMeasurement | null {
   try {
@@ -679,11 +682,38 @@ function capabilityShortSide(): number | null {
   return cap ? Math.min(cap.width, cap.height) : null;
 }
 
+/**
+ * The chosen stream tier, remembered.
+ *
+ * Joshua, 2026-09-05: "since it is a PWA, you can set your default settings
+ * locally so like I can set at MAX so I don't have to each open." He was
+ * right that it did not: the tier booted from DEFAULT_STREAM_TIER every
+ * launch, so choosing MAX lasted exactly one session.
+ *
+ * Read defensively against the registry rather than trusted — a tier id that
+ * no longer exists (a renamed rung, a build from a different version left in
+ * storage) must fall back to the default rather than leave the app asking the
+ * camera for a size nothing describes.
+ */
+function storedStreamTier(): string {
+  try {
+    const saved = localStorage.getItem(TIER_STORE_KEY);
+    return saved && tierById(saved) ? saved : DEFAULT_STREAM_TIER;
+  } catch {
+    return DEFAULT_STREAM_TIER;
+  }
+}
+
 function applyStreamTier(id: string): void {
   const tier = tierById(id);
   if (!tier || readState().recording || readState().captureActive) return;
   if (!tierAvailable(tier, capabilityShortSide())) return;
   updateState({ streamTier: id });
+  try {
+    localStorage.setItem(TIER_STORE_KEY, id);
+  } catch {
+    // Storage is optional; the session still honours the choice.
+  }
   // The tier's record policy applies immediately, even if the camera later
   // declines the stream change itself.
   refreshGeometry();
@@ -708,8 +738,32 @@ function showToast(message: string): void {
   }, 5000);
 }
 
+/**
+ * Every holder that shows the tier ladder.
+ *
+ * TWO PLACES, ONE LIST, ONE HANDLER (Rule 4). Joshua, 2026-09-05: "add and
+ * move sizes in the top header so it's easier... slightly annoying that you
+ * have to keep scrolling." A size is chosen far too often to live only
+ * behind a scroll, and the settings copy keeps the explanation beside it —
+ * so both exist and neither is a second implementation. Building them from
+ * one loop is what stops the quickbar's copy from quietly falling behind
+ * when a rung is added.
+ *
+ * getElementById for the new one: a fresh app.js against a cached older
+ * index.html must lose one row of buttons, not every control after it.
+ */
+function tierHolders(): HTMLElement[] {
+  const holders = [byId('v2StreamTiers')];
+  const top = document.getElementById('v2StreamTiersTop');
+  if (top) holders.push(top);
+  return holders;
+}
+
 function buildStreamTiers(): void {
-  const holder = byId('v2StreamTiers');
+  for (const holder of tierHolders()) buildTierRow(holder);
+}
+
+function buildTierRow(holder: HTMLElement): void {
   for (const tier of STREAM_TIERS) {
     const button = document.createElement('button');
     button.type = 'button';
@@ -740,11 +794,17 @@ function renderStreamTiers(): void {
   const key = `${streamTier}|${busy}|${capShort ?? 'unknown'}`;
   if (key === renderedTierKey) return;
   renderedTierKey = key;
+  for (const holder of tierHolders()) renderTierRow(holder, streamTier, capShort, busy);
+}
+
+function renderTierRow(
+  holder: HTMLElement, streamTier: string, capShort: number | null, busy: boolean
+): void {
   // A class this camera cannot fill shows RED (Joshua, 2026-09-01) — the
   // color is the state, and the tap explains itself via toast, so the button
   // stays enabled and no standing text crowds the strip. Only properties
   // change here; the buttons themselves stay stable under fingers.
-  for (const button of byId('v2StreamTiers').querySelectorAll<HTMLButtonElement>('[data-stream-tier]')) {
+  for (const button of holder.querySelectorAll<HTMLButtonElement>('[data-stream-tier]')) {
     const tier = tierById(button.dataset.streamTier ?? '');
     const available = tier !== null && tierAvailable(tier, capShort);
     button.classList.toggle('active', button.dataset.streamTier === streamTier);
@@ -4787,6 +4847,13 @@ loadLensList();
 syncCustomFilters();
 rebuildLensEntries();
 buildStreamTiers();
+// THE REMEMBERED TIER, APPLIED BEFORE THE CAMERA IS ASKED FOR ANYTHING.
+// applyStreamTier only sets a preference while the camera is inactive, which
+// is exactly what a boot needs: the FIRST stream is then negotiated at the
+// remembered size rather than started at the default and renegotiated a beat
+// later. tierAvailable answers true while the capability is unknown, so a
+// remembered MAX is not refused for lack of evidence at boot.
+applyStreamTier(storedStreamTier());
 buildDock();
 showRoute('camera');
 

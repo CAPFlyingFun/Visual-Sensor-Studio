@@ -148,6 +148,10 @@
     /* Tier availability speaks through color: green = this camera can fill
        the class, red = it cannot (tap explains via toast). */
     .tiers button { color: var(--green); }
+    /* The quickbar's copy sits beside the capture buttons, so it is narrower
+       and scrolls rather than pushing them off the row. */
+    .tiers.compact button { min-width: 40px; height: 34px; font-size: 11px; }
+    .quickbar .tiers.compact { justify-self: end; max-width: 100%; }
     .tiers button.unavailable { color: var(--red); opacity: .6; }
     .toast { position: fixed; left: 50%; bottom: 86px; transform: translateX(-50%); max-width: 86vw;
       padding: 10px 14px; background: #1a2836; border: 1px solid var(--line2); border-radius: 12px;
@@ -255,7 +259,7 @@
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
-    <span class="pill" id="v2Badge">v0.79.0</span>
+    <span class="pill" id="v2Badge">v0.80.0</span>
   </header>
 
   <div class="camera-layout">
@@ -295,6 +299,10 @@
           <button type="button" id="v2RecordButton" title="Record" disabled>⏺</button>
           <button type="button" id="v2SwitchCamera" title="Switch camera" disabled>⟲</button>
         </div>
+        <!-- The same tiers as the ones under Camera Stream, built from the
+             same list by the same code — a size is chosen far too often to
+             live only behind a scroll. -->
+        <div class="zoom tiers compact" id="v2StreamTiersTop" aria-label="Stream size"></div>
       </div>
     </div>
 
