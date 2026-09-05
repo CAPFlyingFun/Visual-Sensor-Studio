@@ -14,7 +14,8 @@ import {
 } from '../.test-build/v2/camera/stream-tiers.js';
 import { readState } from '../.test-build/v2/state.js';
 import {
-  AGE_STATE, FILTERS, MOTION_STATE, NOVELTY_STATE, SHADER_HEADER, allFilters, canReverse,
+  AGE_STATE, CHRONO_STATE, FILTERS, MOTION_STATE, NOVELTY_STATE, SHADER_HEADER,
+  SLITSCAN_STATE, allFilters, canReverse,
   filterById, ironbowLut, isReversed, setCustomFilters, setReversedFilters
 } from '../.test-build/v2/filters/registry.js';
 import { ironbowColor } from '../.test-build/vision/motion-ironbow.js';
@@ -594,8 +595,8 @@ test('FILTERS is the one list: unique ids, honest metadata, real shaders', () =>
       `${filter.id}: temporal metadata and shader body must agree`);
   }
   assert.deepEqual(FILTERS.map((f) => f.id),
-    ['rgb', 'ironbow', 'difference', 'motion', 'speed', 'trails', 'edges', 'grid',
-     'poly', 'cel', 'ink', 'wash', 'amplify', 'flow', 'background']);
+    ['rgb', 'ironbow', 'difference', 'motion', 'speed', 'trails', 'chrono', 'slitscan',
+     'edges', 'grid', 'poly', 'cel', 'ink', 'wash', 'amplify', 'flow', 'background']);
   // Milestone D's second stage: Speed and Trails carry their memory in a
   // state pass, at ANALYSIS resolution, and decline stills like Motion.
   for (const id of ['speed', 'trails']) {
@@ -2712,4 +2713,54 @@ test('Motion is V1\'s Motion, and Difference stops wearing its name', () => {
   assert.match(MOTION_STATE, /\) \/ 6\.0;/);
   assert.ok(!motion.fragment.slice(motion.fragment.indexOf('void main')).includes('uPrevious'),
     'the display pass differences nothing');
+});
+
+test('Chrono and Slit Scan exist — the audit said they could not', () => {
+  // THE CARD SAID: "Chrono-C+E, worse than missing: one-uv-per-pixel model
+  // can't express a multi-tap composite without new machinery. Slit Scan-C+E,
+  // same plus time-as-spatial-axis is less compatible still."
+  //
+  // Wrong on both counts, and Joshua caught it: "if it can work on the older
+  // version, it will work in this version." A shader may sample uState at ANY
+  // uv, not only vUv — which is the entire objection — and the state is
+  // already a ping-pong pair, which IS the per-pixel memory a multi-tap
+  // composite needs. No machinery was added for either of these.
+  const chrono = filterById('chrono');
+  const slit = filterById('slitscan');
+  assert.ok(chrono && slit);
+
+  // CHRONO: three taps and a phase counter in one RGBA texture.
+  assert.match(CHRONO_STATE, /vec3 stepped = mix\(held\.rgb, vec3\(held\.g, held\.b, now\), shift\);/,
+    'red the oldest, green the middle, blue the newest — V1\'s order');
+  // The shift must happen every SPACING frames, and a fragment shader has no
+  // frame counter, so the counter lives in the texture with the taps.
+  assert.match(CHRONO_STATE, /float phase = held\.a \+ 1\.0 \/ SPACING;/);
+  assert.match(CHRONO_STATE, /float shift = step\(1\.0, phase\);/);
+  assert.match(CHRONO_STATE, /fract\(phase\)/);
+  assert.match(CHRONO_STATE, /const float SPACING = 4\.0;/, "V1's chronoSpacing default");
+  // Primed off the VALUES, not alpha — the renderer clears state with alpha
+  // ONE, the trap that made Amplify a white screen.
+  assert.match(CHRONO_STATE, /float primed = step\(0\.0001, held\.r \+ held\.g \+ held\.b\);/);
+  assert.ok(!/held\.a\s*[;)]/.test(CHRONO_STATE.replace('held.a + 1.0', '')),
+    'alpha is a phase here, never a primed flag');
+
+  // SLIT SCAN: a one-texel scroll. THE OFFSET SAMPLE IS THE WHOLE POINT — it
+  // is the "any uv" the audit said was impossible.
+  assert.match(SLITSCAN_STATE, /texture2D\(uState, vec2\(vUv\.x \+ uTexel\.x, vUv\.y\)\)/,
+    'reads its own state at a DIFFERENT uv, which is what was called impossible');
+  assert.match(SLITSCAN_STATE, /float newest = step\(1\.0 - uTexel\.x, vUv\.x\);/,
+    'the newest slice enters at the right, so time runs left to right as V1 read it');
+  assert.match(SLITSCAN_STATE, /luma\(texture2D\(uFrame, vec2\(COLUMN, vUv\.y\)\)\.rgb\)/,
+    'one column of the camera, not the whole frame');
+
+  // Both hold their picture in the state; neither differences frames.
+  // Sliced past the shared header, which DECLARES uPrevious as a uniform —
+  // checking the whole string finds the declaration, not a use.
+  for (const filter of [chrono, slit]) {
+    assert.equal(filter.temporal, false);
+    assert.ok(!filter.state.slice(SHADER_HEADER.length).includes('uPrevious'),
+      `${filter.id} holds memory rather than differencing frames`);
+    assert.match(filter.fragment.slice(filter.fragment.indexOf('void main')), /uState/);
+    assert.ok(filter.supportsPhoto && filter.supportsVideo);
+  }
 });

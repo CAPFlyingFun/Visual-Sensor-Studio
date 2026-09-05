@@ -522,6 +522,80 @@ void main() {
  * frames are point-sampled on the same grid, so still is still. The mask is
  * magnified afterwards, which is what a mask survives.
  */
+/**
+ * CHRONO'S THREE MOMENTS, in one RGBA texture.
+ *
+ * V1 kept a ring of grey frames and read three taps out of it: red the
+ * oldest, green the middle, blue the newest. Anything that has not moved
+ * lands identically in all three and comes out grey; anything that moved
+ * splits into coloured fringes, and because the channels are ordered in time
+ * the ORDER of the colours gives the direction. That is the difference from
+ * Speed: which way, not how fast.
+ *
+ * THE AUDIT CARD SAID THIS COULD NOT BE DONE HERE — "one-uv-per-pixel model
+ * can't express a multi-tap composite without new machinery" — and that was
+ * wrong twice over. A shader may sample uState at ANY uv, not only vUv; and
+ * the state is already a ping-pong pair, which is exactly the arbitrary
+ * per-pixel memory a multi-tap composite needs. Joshua, 2026-09-05: "if it
+ * can work on the older version, it will work in this version."
+ *
+ * ALPHA IS A PHASE, NOT A FLAG. The taps must shift every SPACING frames,
+ * and a fragment shader has no frame counter — so the counter lives in the
+ * texture with them, advancing 1/SPACING each frame and wrapping to trigger
+ * the shift. No new uniform, and the register keeps V1's exact frame spacing
+ * rather than approximating it with an exponential average.
+ *
+ * Three taps and a phase is exactly four channels, which is the whole budget
+ * and a happy accident rather than a design.
+ */
+export const CHRONO_STATE = HEADER + `const float SPACING = 4.0;
+
+void main() {
+  vec4 held = texture2D(uState, vUv);
+  float now = luma(texture2D(uFrame, vUv).rgb);
+
+  float phase = held.a + 1.0 / SPACING;
+  float shift = step(1.0, phase);
+  vec3 stepped = mix(held.rgb, vec3(held.g, held.b, now), shift);
+
+  // Seeded from the first frame, off the VALUES (the renderer clears state
+  // with alpha ONE, so alpha cannot say "fresh"). All three taps start equal,
+  // which reads as the grey a motionless scene should be, instead of filling
+  // in over twelve frames as blue-then-cyan-then-grey.
+  float primed = step(0.0001, held.r + held.g + held.b);
+  gl_FragColor = vec4(mix(vec3(now), stepped, primed), fract(phase));
+}`;
+
+/**
+ * SLIT SCAN — time as a spatial axis.
+ *
+ * One column of the camera is sampled each frame and written at the right
+ * edge; everything already in the strip shifts one texel left. Time therefore
+ * runs left to right, which is the direction V1 read its ring out in and the
+ * direction a reader expects a history to run.
+ *
+ * The audit called this "worse than missing... time-as-spatial-axis is less
+ * compatible still". It is a one-texel scroll: read uState at vUv + one texel
+ * in x, write it here. V1 rotated a cursor to avoid copying the strip, which
+ * is the right economy on a CPU and pointless on a GPU, where the whole
+ * texture is rewritten every pass anyway.
+ *
+ * The scroll is EXACT rather than resampled: the offset is precisely one
+ * texel and the state pass renders at the state texture's own size, so each
+ * fragment centre lands on a texel centre and LINEAR filtering returns that
+ * texel unchanged. A history that blurred a little on every frame would turn
+ * to fog within a few seconds.
+ */
+export const SLITSCAN_STATE = HEADER + `const float COLUMN = 0.5;
+
+void main() {
+  float newest = step(1.0 - uTexel.x, vUv.x);
+  float sampled = luma(texture2D(uFrame, vec2(COLUMN, vUv.y)).rgb);
+  float carried = texture2D(uState, vec2(vUv.x + uTexel.x, vUv.y)).r;
+  float value = mix(carried, sampled, newest);
+  gl_FragColor = vec4(value, value, value, 1.0);
+}`;
+
 export const MOTION_STATE = HEADER + `float delta(vec2 uv) {
   return abs(luma(texture2D(uFrame, uv).rgb) - luma(texture2D(uPrevious, uv).rgb));
 }
@@ -692,6 +766,39 @@ void main() {
     fragment: HEADER + `void main() {
   float t = texture2D(uState, vUv).r;
   gl_FragColor = vec4(withAids(texture2D(uRamp, vec2(t, 0.5)).rgb, vUv), 1.0);
+}`
+  },
+  {
+    id: 'chrono',
+    note: 'Three moments at once: red is the oldest, green the middle, blue the newest. Anything that has not moved lands identically in all three and comes out grey, so a still room looks like itself — and anything that moved splits into coloured fringes whose ORDER gives the direction it travelled. Red leading means it came from there; blue leading means it is heading there.',
+    name: 'Chrono',
+    family: 'time',
+    temporal: false,
+    supportsPhoto: true,
+    supportsVideo: true,
+    state: CHRONO_STATE,
+    // The taps are already composed in the state's RGB — this pass only shows
+    // them. See CHRONO_STATE for why three taps and a phase counter fit one
+    // RGBA texture, and why the audit's "needs new machinery" was wrong.
+    fragment: HEADER + `void main() {
+  gl_FragColor = vec4(withAids(texture2D(uState, vUv).rgb, vUv), 1.0);
+}`
+  },
+  {
+    id: 'slitscan',
+    note: 'A single column of the camera, recorded over time: the newest slice enters at the right and the history scrolls left, so the picture is one line of the room with time as its horizontal axis. Stand still and it draws straight bands; move across the line and it draws what moved, stretched by how long it took.',
+    name: 'Slit Scan',
+    family: 'time',
+    temporal: false,
+    supportsPhoto: true,
+    supportsVideo: true,
+    state: SLITSCAN_STATE,
+    // The strip IS the state; this pass only reads it out. The history is
+    // held at ANALYSIS resolution, so its width is how many moments it can
+    // hold — roughly 384 of them, about thirteen seconds at 30 fps.
+    fragment: HEADER + `void main() {
+  float value = texture2D(uState, vUv).r;
+  gl_FragColor = vec4(withAids(vec3(value), vUv), 1.0);
 }`
   },
   {
