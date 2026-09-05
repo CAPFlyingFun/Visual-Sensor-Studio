@@ -70,6 +70,26 @@ export interface FilterDefinition {
 }
 
 export const SHADER_HEADER = `precision mediump float;
+/*
+ * HIGHP WHERE THE HARDWARE HAS IT, for the hash below and nothing else.
+ *
+ * mediump is fp16 on Apple's GPUs, and a value at 20000 has an fp16 ULP of
+ * SIXTEEN — every representable neighbour is an exact multiple of it, so
+ * fract() of such a number is identically zero. The hash's final term reaches
+ * about that, which means it returned a CONSTANT on the one device this app
+ * is built for while working perfectly in the desktop Chromium the tests run
+ * in. Ink lost its paper grain and Wash lost both its grain and its wobble,
+ * silently and only on the phone.
+ *
+ * Guarded, because highp in a fragment shader is optional in GLSL ES 1.00 and
+ * using it unguarded is a compile error where it is absent. Where it is
+ * absent the hash degrades as before rather than failing to build.
+ */
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+#define NOISE_P highp
+#else
+#define NOISE_P mediump
+#endif
 varying vec2 vUv;
 uniform sampler2D uFrame;
 uniform sampler2D uRamp;
@@ -92,6 +112,21 @@ float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
  * at the render size, and that difference is the only thing that ever
  * separated the copies.
  */
+/*
+ * VALUE NOISE, ONCE (Rule 4).
+ *
+ * Ink and Wash each carried an identical private copy, which is the same
+ * duplication the Sobel had — and it meant the precision bug above had to be
+ * found and fixed twice. "Hash without sine" because sin() at large arguments
+ * loses precision at mediump, which on a phone is a visible seam rather than
+ * a rounding error.
+ */
+NOISE_P float hash(vec2 seed) {
+  NOISE_P vec3 q = fract(vec3(seed.xyx) * 0.1031);
+  q += dot(q, q.yzx + 33.33);
+  return fract((q.x + q.y) * q.z);
+}
+
 /*
  * A SOBEL STEP MEASURED IN THE FRAME, not in texels.
  *
@@ -905,14 +940,6 @@ const vec3 GRAPHITE = vec3(0.13, 0.12, 0.15);
 const float EDGE_FULL = 0.26;
 const float EDGE_REFERENCE = 1200.0;
 
-// Hash without sine: sin() at large arguments loses precision at mediump,
-// which on a phone is a visible seam rather than a rounding error.
-float hash(vec2 p) {
-  vec3 q = fract(vec3(p.xyx) * 0.1031);
-  q += dot(q, q.yzx + 33.33);
-  return fract((q.x + q.y) * q.z);
-}
-
 // One family of parallel strokes, at an angle, in FRAME coordinates.
 float hatch(vec2 p, float c, float sn, float width) {
   float v = p.x * c + p.y * sn;
@@ -981,12 +1008,6 @@ const float EDGE_REFERENCE = 1200.0;
 const float POOL_BANDS = 8.0;
 const float PAPER_GRAIN = 0.13;
 const float LIFT = 1.06;
-
-float hash(vec2 p) {
-  vec3 q = fract(vec3(p.xyx) * 0.1031);
-  q += dot(q, q.yzx + 33.33);
-  return fract((q.x + q.y) * q.z);
-}
 
 void main() {
   // Where this pixel reaches for its colour, nudged by a value that is

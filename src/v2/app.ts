@@ -947,13 +947,24 @@ function buildAlignment(): void {
  * would otherwise anchor itself to nothing and report a confident zero.
  */
 /**
- * The zoom the aligner and the steady gate must both scale by. A camera zoom
- * and a digital crop magnify identically as far as pixel motion is concerned,
- * so both count; 'none' and a missing reading are 1.
+ * How much the FRAME the renderer sees is magnified — which is not the same
+ * question as what the zoom control reads.
+ *
+ * CAMERA zoom happens in the ISP before a frame ever reaches us, so a 10x
+ * frame really does move ten times as many pixels for the same rotation, and
+ * the aligner must be told. DIGITAL zoom in this app is a CSS transform on
+ * the video element (camera-bootstrap.js, applyDigitalZoomPreview) — and a
+ * CSS transform does not touch texImage2D, so the texture the renderer
+ * uploads is not magnified at all.
+ *
+ * Reporting it here would be the exact mirror of the bug this function was
+ * added to fix: instead of predicting a tenth of the true shift, it would
+ * predict several times too much, and Stabilization would smear a picture it
+ * was asked to steady. Only camera zoom counts.
  */
 function zoomMagnification(): number {
   const zoom = readState().zoom;
-  return zoom && zoom.kind !== 'none' && zoom.value > 0 ? zoom.value : 1;
+  return zoom && zoom.kind === 'camera' && zoom.value > 0 ? zoom.value : 1;
 }
 
 function alignmentFor(frames: number, target: FrameSize):
@@ -1493,8 +1504,8 @@ async function saveNightPhoto(size: FrameSize): Promise<void> {
   offerShare('v2SharePhoto',
     new File([still.blob], still.fileName, { type: 'image/jpeg' }), 'v2PhotoResult');
   setText('v2PhotoResult', `Saved ${still.width}×${still.height} · `
-    + `${(still.bytes / 1e6).toFixed(2)} MB JPEG · ${still.reason}`);
-  nightSaved = `saved ${still.width}×${still.height}, ${(still.bytes / 1e6).toFixed(2)} MB`;
+    + `${describeFileSize(still.bytes)} JPEG · ${still.reason}`);
+  nightSaved = `saved ${still.width}×${still.height}, ${describeFileSize(still.bytes)}`;
 }
 /** What the last completed Night capture wrote, for the note. */
 let nightSaved = '';
@@ -2170,7 +2181,7 @@ async function saveImport(): Promise<void> {
   offerShare('v2SharePhoto',
     new File([still.blob], still.fileName, { type: 'image/jpeg' }), 'v2PhotoResult');
   setText('v2ImportNote', `Saved ${still.width}×${still.height} · `
-    + `${(still.bytes / 1e6).toFixed(2)} MB · ${importedName} is untouched`);
+    + `${describeFileSize(still.bytes)} · ${importedName} is untouched`);
 }
 
 /**
@@ -2348,7 +2359,7 @@ async function saveImportClip(): Promise<void> {
         : ` · every one of ${presented} frames filtered`;
     setText('v2ImportNote', `${importCancelled ? 'Stopped early' : 'Saved'} `
       + `${result.encodedWidth}×${result.encodedHeight} · `
-      + `${result.seconds.toFixed(1)}s · ${(result.blob.size / 1e6).toFixed(2)} MB${frames} · `
+      + `${result.seconds.toFixed(1)}s · ${describeFileSize(result.blob.size)}${frames} · `
       + `silent · ${importedName} is untouched`);
   } finally {
     importSaving = false;
@@ -2981,7 +2992,7 @@ function renderDiagnostics(): void {
     : '—');
   setText('v2DiagPhotoPolicy', 'maximum available stream on shutter');
   setText('v2DiagLastPhoto', lastPhoto
-    ? `${lastPhoto.width}×${lastPhoto.height} · ${(lastPhoto.bytes / 1e6).toFixed(2)} MB JPEG · as saved`
+    ? `${lastPhoto.width}×${lastPhoto.height} · ${describeFileSize(lastPhoto.bytes)} JPEG · as saved`
     : 'none yet');
   const { activeFilter, recording, lastClip, encoderEnvelope } = readState();
   // When the record policy binds, its REASON belongs on screen before the

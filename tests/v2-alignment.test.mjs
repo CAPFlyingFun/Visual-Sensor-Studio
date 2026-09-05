@@ -381,6 +381,19 @@ test('every consumer of focal pixels is given the zoom', () => {
     assert.match(call, /zoomMagnification\(\)/,
       `every focal estimate carries the zoom, got: ${call}`);
   }
-  // A digital crop magnifies exactly as a camera zoom does, so both count.
-  assert.match(appTs, /zoom && zoom\.kind !== 'none' && zoom\.value > 0 \? zoom\.value : 1/);
+  // ONLY CAMERA ZOOM, and this assertion used to say the opposite: "a digital
+  // crop magnifies exactly as a camera zoom does, so both count". That is true
+  // of a crop in general and false of THIS app's. Camera zoom happens in the
+  // ISP before a frame reaches us, so the texture really is magnified. Digital
+  // zoom here is a CSS transform on the video element
+  // (camera-bootstrap.js, applyDigitalZoomPreview), and a CSS transform does
+  // not touch texImage2D — the texture the renderer uploads is unmagnified.
+  //
+  // Counting it would be the exact mirror of the bug this whole test exists
+  // for: instead of predicting a tenth of the true shift, the aligner would
+  // predict several times too much and Stabilization would smear a picture it
+  // was asked to steady.
+  assert.match(appTs, /zoom && zoom\.kind === 'camera' && zoom\.value > 0 \? zoom\.value : 1/);
+  assert.match(appTs, /CSS transform does not touch texImage2D/,
+    'and the reason is written where the next person will change it');
 });

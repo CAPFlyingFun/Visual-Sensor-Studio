@@ -2465,8 +2465,26 @@ test('Ink builds shade the way a pen does, and at frame scale', () => {
   // sin() at large arguments loses precision at mediump — a visible seam on a
   // phone, not a rounding error. Checked against the CODE: the comment that
   // explains this names the function it is warning about.
+  // ONE HASH, in the header, at a precision where fract() still means
+  // something. Ink and Wash each carried an identical copy — the same
+  // duplication the Sobel had — and mediump is fp16 on Apple's GPUs, where a
+  // value at 20000 has a ULP of 16 and fract() is identically zero. The hash
+  // returned a CONSTANT on the only device this app is built for, while
+  // working perfectly in the Chromium these tests run in: Ink lost its paper
+  // grain, Wash lost its grain and its wobble.
   assert.ok(!glslCode(ink.fragment).includes('sin('), 'the hash avoids sin entirely');
-  assert.match(ink.fragment, /float hash\(vec2 p\) \{/);
+  // Counted, not merely absent: every filter's source INCLUDES the header, so
+  // "does it contain a hash" is always true. Exactly one definition is the
+  // claim, and it is the header's.
+  for (const id of ['ink', 'wash']) {
+    const source = filterById(id).fragment;
+    assert.equal((source.match(/float hash\(/g) ?? []).length, 1,
+      `${id} must use the shared hash, not carry a second`);
+  }
+  assert.match(SHADER_HEADER, /NOISE_P float hash\(vec2 seed\) \{/);
+  assert.match(SHADER_HEADER, /#ifdef GL_FRAGMENT_PRECISION_HIGH/,
+    'guarded, because highp in a fragment shader is optional in GLSL ES 1.00');
+  assert.match(SHADER_HEADER, /NOISE_P vec3 q = fract\(vec3\(seed\.xyx\) \* 0\.1031\);/);
 });
 
 test('Wash darkens its rims rather than outlining them', () => {
