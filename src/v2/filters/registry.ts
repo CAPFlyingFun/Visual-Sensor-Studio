@@ -92,6 +92,32 @@ float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
  * at the render size, and that difference is the only thing that ever
  * separated the copies.
  */
+/*
+ * A SOBEL STEP MEASURED IN THE FRAME, not in texels.
+ *
+ * uTexel is one texel of the TARGET, and the same shader runs at a ~1170-wide
+ * preview and at a 3024-wide still off the same full-resolution camera
+ * texture. A one-texel Sobel therefore reaches ~2.6 source pixels in the
+ * preview and ~1 in the still, so a real edge — 2 to 4 pixels wide after
+ * optics and demosaic — yields roughly half the gradient in the saved photo.
+ * Against a fixed threshold that turns Cel's solid outline into a grey smear
+ * and takes the rim off a Wash exactly when the shutter is pressed.
+ *
+ * This is the same trap Grid's line width and Ink's hatch spacing were both
+ * already fixed for: a picture must not change because it was drawn bigger.
+ * REFERENCE is the width the thresholds were tuned at; the step is that
+ * fraction of the frame, square in pixels via the aspect term.
+ *
+ * Edges and the peaking aid keep their own texel step deliberately — Edges is
+ * a measurement of THIS render at ITS resolution, and the aid measures at the
+ * aid's. Only the three painterly filters, whose thresholds are absolute,
+ * need the frame-relative one.
+ */
+vec2 frameStep(float reference) {
+  float x = 1.0 / reference;
+  return vec2(x, x * (uTexel.y / uTexel.x));
+}
+
 float sobelLuma(vec2 uv, vec2 texel) {
   float tl = luma(texture2D(uFrame, uv + texel * vec2(-1.0, -1.0)).rgb);
   float  l = luma(texture2D(uFrame, uv + texel * vec2(-1.0,  0.0)).rgb);
@@ -344,7 +370,19 @@ export const NOVELTY_STATE = HEADER + `void main() {
   vec3 background = texture2D(uState, vUv).rgb;
   float learned = step(0.004, luma(background));
   vec3 next = mix(now, mix(background, now, 0.02), learned);
-  gl_FragColor = vec4(next, 1.0);
+  // ALPHA CARRIES THE DEPARTURE, measured HERE where it means something.
+  //
+  // A display pass cannot compute this honestly: the state lives at ANALYSIS
+  // resolution and the display runs at preview or photo size, so subtracting
+  // one from the other subtracts a sharp image from a bilinear magnification
+  // of a coarse one. On a motionless scene that residual is largest exactly
+  // at the edges, and Background lit every edge in the room permanently as a
+  // result. Both pictures are the same size in here, so a static scene reads
+  // as static. The mask is magnified afterwards, which is what a mask can
+  // survive; a subtraction is not.
+  //
+  // ch_novelty reads only .rgb, so this costs the lens channel nothing.
+  gl_FragColor = vec4(next, clamp(length(now - background) * 2.2, 0.0, 1.0));
 }`;
 
 /**
@@ -364,18 +402,82 @@ export const NOVELTY_STATE = HEADER + `void main() {
  * why it is luma rather than three colour channels: six values would need two
  * targets, and the band is a brightness question anyway.
  *
- * SEEDED FROM THE FIRST FRAME. The state clears to zero on a filter change,
- * and starting both averages at zero would make the opening second one
- * full-scale transient that never happened. Alpha carries "primed" — it is
- * written 1.0 and clears to 0, so the first pass can tell.
+ * SEEDED FROM THE FIRST FRAME, AND NOT BY WAY OF ALPHA.
+ *
+ * This first read `held.a` as a primed flag, on the stated belief that the
+ * state "is written 1.0 and clears to 0". It does not: advanceState clears
+ * every state texture with gl.clearColor(0, 0, 0, 1) — alpha ONE. So primed
+ * was 1 on the very first pass, the seeding branch was unreachable, and both
+ * averages started from zero after all. band = 0.44 * luma on frame one,
+ * times a gain of 12, is a blown-white viewfinder for about a second, every
+ * time Amplify is chosen or the preview is resized. Precisely the transient
+ * the seeding was written to prevent.
+ *
+ * It self-primes off the VALUES now, the same way NOVELTY_STATE does, which
+ * needs nothing of the renderer: both averages at exactly zero can only mean
+ * a cleared texture. A genuinely black scene re-seeds every frame and costs
+ * nothing, having a band of zero either way.
  */
+/**
+ * FLOW'S ESTIMATE, at ANALYSIS resolution — where `now` and `before` are the
+ * same size.
+ *
+ * This began in the display pass, and that was wrong for a reason worth
+ * keeping: uPrevious is the history snapshotted at analysis size, while the
+ * display runs at preview or photo size, so on a MOTIONLESS scene
+ * `now - before` is not zero — it is a sharp frame minus a bilinear
+ * magnification of a coarse one, largest exactly where the gradient is. Flow
+ * then DIVIDES by that gradient, so every edge in a still room lit up at full
+ * brightness with a confident direction. A filter that reports a velocity for
+ * something that is not moving is the fabricated measurement this project
+ * refuses.
+ *
+ * Speed never had the bug because SPEED_STATE runs here, in a state pass,
+ * where both frames are point-sampled on the same grid. Flow now does too.
+ * The state holds direction in .r (0..1 around the wheel) and speed in .g.
+ */
+export const FLOW_STATE = HEADER + `const float NOISE_FLOOR = 0.012;
+const float FULL_SPEED = 0.055;
+
+void main() {
+  float now = luma(texture2D(uFrame, vUv).rgb);
+  float before = luma(texture2D(uPrevious, vUv).rgb);
+  float dx = luma(texture2D(uFrame, vUv + uTexel * vec2(1.0, 0.0)).rgb)
+           - luma(texture2D(uFrame, vUv - uTexel * vec2(1.0, 0.0)).rgb);
+  float dy = luma(texture2D(uFrame, vUv + uTexel * vec2(0.0, 1.0)).rgb)
+           - luma(texture2D(uFrame, vUv - uTexel * vec2(0.0, 1.0)).rgb);
+
+  // SIGNED in time, unlike Speed's magnitude — the sign is the whole of the
+  // direction. The gate before the division is Speed's, and it is the second
+  // half of why Speed was well behaved: a difference too small to be motion
+  // must not be divided by a small gradient and become a large velocity.
+  float dt = now - before;
+  float gated = dt * smoothstep(0.008, 0.035, abs(dt));
+  vec2 v = -gated * vec2(dx, dy) / (dx * dx + dy * dy + 0.0016);
+
+  // THE SPEED IS SMOOTHED OVER FRAMES; THE DIRECTION IS NOT.
+  //
+  // Per-pixel normal flow is a noisy estimate, and Speed already carries the
+  // same easing for the same reason. But an ANGLE cannot be averaged: it
+  // wraps, so a pixel flickering between just-under and just-over a turn
+  // would smooth to the exact opposite direction. A stale direction is also
+  // worse than a noisy one — it would point somewhere nothing is moving. So
+  // the magnitude carries the memory and the angle is always this frame's.
+  //
+  // Cleared state is zero, which reads as no motion — nothing to prime.
+  float target = smoothstep(NOISE_FLOOR, FULL_SPEED, length(v));
+  float lit = mix(texture2D(uState, vUv).g, target, 0.4);
+  float angle = atan(v.y, v.x) / 6.2831853 + 0.5;
+  gl_FragColor = vec4(angle, lit, 0.0, 1.0);
+}`;
+
 export const AMPLIFY_STATE = HEADER + `const float FAST = 0.5;
 const float SLOW = 0.06;
 
 void main() {
   float now = luma(texture2D(uFrame, vUv).rgb);
   vec4 held = texture2D(uState, vUv);
-  float primed = held.a;
+  float primed = step(0.0001, held.r + held.g);
   float fast = mix(now, held.r + (now - held.r) * FAST, primed);
   float slow = mix(now, held.g + (now - held.g) * SLOW, primed);
   gl_FragColor = vec4(fast, slow, 0.0, 1.0);
@@ -747,6 +849,7 @@ void main() {
 const float VALUE_GAMMA = 0.7;
 const float SATURATION = 1.25;
 const float INK_FULL = 0.30;
+const float EDGE_REFERENCE = 1200.0;
 const vec3 INK = vec3(0.04, 0.03, 0.05);
 
 void main() {
@@ -764,7 +867,7 @@ void main() {
 
   // Ink where the picture has a boundary, softened over the approach so the
   // line has a drawn edge rather than a staircase.
-  float ink = smoothstep(INK_FULL * 0.35, INK_FULL, sobelLuma(vUv, uTexel));
+  float ink = smoothstep(INK_FULL * 0.35, INK_FULL, sobelLuma(vUv, frameStep(EDGE_REFERENCE)));
   gl_FragColor = vec4(withAids(mix(painted, INK, ink), vUv), 1.0);
 }`
   },
@@ -800,6 +903,7 @@ const float STROKE = 0.34;
 const vec3 PAPER = vec3(0.96, 0.94, 0.88);
 const vec3 GRAPHITE = vec3(0.13, 0.12, 0.15);
 const float EDGE_FULL = 0.26;
+const float EDGE_REFERENCE = 1200.0;
 
 // Hash without sine: sin() at large arguments loses precision at mediump,
 // which on a phone is a visible seam rather than a rounding error.
@@ -830,7 +934,7 @@ void main() {
   shade = max(shade, hatch(p * 1.7, 0.0, 1.0, STROKE) * step(y, 0.16));
 
   // The outline, drawn over everything the hatching has built up.
-  float stroke = smoothstep(EDGE_FULL * 0.3, EDGE_FULL, sobelLuma(vUv, uTexel));
+  float stroke = smoothstep(EDGE_FULL * 0.3, EDGE_FULL, sobelLuma(vUv, frameStep(EDGE_REFERENCE)));
 
   float grain = hash(floor(vUv / max(uTexel, vec2(1e-6)) * 0.5)) * 0.05;
   vec3 paper = PAPER - grain;
@@ -873,6 +977,7 @@ void main() {
     fragment: HEADER + `const float BLEED = 6.0;
 const float WOBBLE = 1.6;
 const float RIM = 1.2;
+const float EDGE_REFERENCE = 1200.0;
 const float POOL_BANDS = 8.0;
 const float PAPER_GRAIN = 0.13;
 const float LIFT = 1.06;
@@ -913,7 +1018,7 @@ void main() {
   pool = clamp(pool * (flatten / pooled), 0.0, 1.0);
 
   // Pigment gathering at the rim of the pool.
-  float rim = clamp(sobelLuma(vUv, uTexel) * RIM, 0.0, 0.75);
+  float rim = clamp(sobelLuma(vUv, frameStep(EDGE_REFERENCE)) * RIM, 0.0, 0.75);
   vec3 washed = pool * (1.0 - rim);
 
   // Paper, strongest where the wash is thin.
@@ -965,56 +1070,37 @@ void main() {
   },
   {
     id: 'flow',
-    note: 'Which way things are moving: hue is the direction, brightness is the speed. This is NORMAL FLOW — the component of motion along the local gradient — so an edge sliding along its own length reads as still. That is the aperture problem, not a bug, and it is why a moving blank wall shows nothing.',
+    note: 'Which way things are moving: hue is the direction, brightness is the speed. This is NORMAL FLOW — the component of motion along the local gradient — so an edge sliding along its own length reads as still. That is the aperture problem, not a bug, and it is why a moving blank wall shows nothing. Measured at analysis resolution, like Speed.',
     name: 'Flow',
     family: 'motion',
     temporal: true,
     supportsPhoto: true,
     supportsVideo: true,
     /*
-     * DIRECTION, WHICH SPEED DOES NOT HAVE. Speed already measures how fast
-     * (SPEED_STATE, the same estimator); this measures which way, from the
-     * gradient constraint: a brightness change over time, divided by the
-     * spatial gradient, gives the motion component ALONG that gradient.
+     * DIRECTION, WHICH SPEED DOES NOT HAVE. Speed measures how fast; this
+     * measures which way, from the gradient constraint
+     * v = -It * (Ix, Iy) / (Ix^2 + Iy^2).
      *
-     *   v = -It * (Ix, Iy) / (Ix^2 + Iy^2)
+     * THE ESTIMATE IS IN A STATE PASS (FLOW_STATE), not here, and that is the
+     * whole correctness of it — see the comment there. This pass only turns
+     * the stored angle and speed into a colour.
      *
      * WHAT IT CANNOT SEE, said in the note because it looks like a fault:
-     * only the component along the gradient is recoverable from one pixel.
-     * A long edge sliding along itself changes nothing locally and reads as
-     * still — the aperture problem, which is a property of the measurement
-     * and not of this implementation. V1 solved it by block matching over a
-     * neighbourhood, which a per-pixel fragment shader cannot do.
-     *
-     * No state pass: the previous frame is all it needs.
+     * only the component along the gradient is recoverable from one pixel, so
+     * a long edge sliding along itself reads as still — the aperture problem,
+     * a property of the measurement rather than of this implementation. V1
+     * solved it by block matching over a neighbourhood, which a per-pixel
+     * fragment shader cannot do.
      */
-    fragment: HEADER + `const float NOISE_FLOOR = 0.012;
-const float FULL_SPEED = 0.055;
-
-vec3 hueWheel(float h) {
+    state: FLOW_STATE,
+    fragment: HEADER + `vec3 hueWheel(float h) {
   vec3 p = abs(fract(vec3(h) + vec3(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
   return clamp(p - 1.0, 0.0, 1.0);
 }
 
 void main() {
-  float now = luma(texture2D(uFrame, vUv).rgb);
-  float before = luma(texture2D(uPrevious, vUv).rgb);
-  float dx = luma(texture2D(uFrame, vUv + uTexel * vec2(1.0, 0.0)).rgb)
-           - luma(texture2D(uFrame, vUv - uTexel * vec2(1.0, 0.0)).rgb);
-  float dy = luma(texture2D(uFrame, vUv + uTexel * vec2(0.0, 1.0)).rgb)
-           - luma(texture2D(uFrame, vUv - uTexel * vec2(0.0, 1.0)).rgb);
-
-  // SIGNED in time, unlike Speed's magnitude — the sign is the whole of the
-  // direction. The epsilon is what stops a flat region, where the gradient is
-  // zero and the division is meaningless, from reporting a huge velocity.
-  float dt = now - before;
-  vec2 v = -dt * vec2(dx, dy) / (dx * dx + dy * dy + 0.0016);
-
-  float speed = length(v);
-  float lit = smoothstep(NOISE_FLOOR, FULL_SPEED, speed);
-  // atan(y, x) over -pi..pi, mapped onto the wheel.
-  float angle = atan(v.y, v.x) / 6.2831853 + 0.5;
-  gl_FragColor = vec4(withAids(hueWheel(angle) * lit, vUv), 1.0);
+  vec2 field = texture2D(uState, vUv).rg;
+  gl_FragColor = vec4(withAids(hueWheel(field.r) * field.g, vUv), 1.0);
 }`
   },
   {
@@ -1046,16 +1132,18 @@ void main() {
      * absorbed. A model that never absorbed anything could not follow the
      * light changing either.
      */
-    fragment: HEADER + `const float DEPARTURE = 2.2;
-const float BELONGS = 0.16;
+    fragment: HEADER + `const float BELONGS = 0.16;
 
 void main() {
   vec3 scene = texture2D(uFrame, vUv).rgb;
-  vec3 background = texture2D(uState, vUv).rgb;
-  // Distance in colour, not just brightness: something can arrive at the same
-  // lightness as the wall behind it and still not belong there.
-  float departure = clamp(length(scene - background) * DEPARTURE, 0.0, 1.0);
-  float lit = smoothstep(0.10, 0.38, departure);
+  // THE DEPARTURE COMES FROM THE STATE PASS, measured there against a
+  // background of the same size. Subtracting the two here looked equivalent
+  // and was not: the state lives at analysis resolution and this runs at
+  // preview or photo size, so a motionless scene produced a sharp-minus-blur
+  // residual — largest at every edge — and the room stayed permanently lit.
+  // Distance in colour, not just brightness, because a thing can arrive at
+  // the same lightness as the wall behind it and still not belong.
+  float lit = smoothstep(0.10, 0.38, texture2D(uState, vUv).a);
   gl_FragColor = vec4(withAids(mix(scene * BELONGS, scene, lit), vUv), 1.0);
 }`
   }

@@ -1862,6 +1862,10 @@ let importPresented = 0;
 let importCancelled = false;
 /** Resolves the export's single wait, so cancelling takes the same exit as ending. */
 let importCancelWait: (() => void) | null = null;
+/** Bumped whenever playback stops, so a callback already in flight retires itself. */
+let importLoop = 0;
+let importFrameHandle = 0;
+let importRafHandle = 0;
 
 /**
  * Why this filter cannot be applied to the imported media, or ''.
@@ -1885,6 +1889,11 @@ function importRefusal(filterId: string, isClip = false): string {
 }
 
 function clearImport(): void {
+  // The controls are hidden during an export, so this should be unreachable
+  // then — but tearing the element down mid-export leaves an unresolvable
+  // await and a recorder nobody stops, which is too expensive to leave
+  // resting on a `hidden` attribute alone.
+  if (importSaving) return;
   stopImportPlayback();
   if (importedClip) {
     importedClip.removeAttribute('src');
@@ -1927,7 +1936,8 @@ function renderImport(): boolean {
     setText('v2ImportReading', '');
     return false;
   }
-  if (!renderer.uploadStill(image) || !renderer.render(activeFilter, size)) {
+  if (!renderer.uploadStill(image)
+    || !renderer.render(activeFilter, size, undefined, { lumaRange: exposure.range })) {
     setText('v2ImportNote', 'That picture could not be rendered.');
     return false;
   }
@@ -2002,21 +2012,44 @@ type FrameStepper = HTMLVideoElement & {
   requestVideoFrameCallback?: (cb: (now: number, meta: FrameMeta) => void) => number;
 };
 
+/**
+ * ONE LOOP, AND IT IS CANCELLED RATHER THAN ABANDONED.
+ *
+ * A pending requestVideoFrameCallback on a PAUSED element does not fire —
+ * there are no new frames to present — so it also never retires. This drove
+ * the loop with the handle thrown away, and stopImportPlayback only flipped a
+ * flag, so every Pause then Play left the old callback pending and registered
+ * a second: both fired on the next frame, both re-registered, and the loops
+ * DOUBLED each cycle. Two renders per decoded frame is not a performance
+ * nuisance, it is wrong output — drawImportFrame snapshots history, so the
+ * second render compares the frame against itself and a temporal filter
+ * exports black. saveImportClip pauses and resumes with no await between, so
+ * every export took that path.
+ *
+ * The handle is kept and cancelled now, and a generation counter retires any
+ * callback that was already in flight when the loop was stopped.
+ */
 function driveImport(): void {
   if (!importPlaying) return;
   const clip = importedClip as FrameStepper | null;
   if (!clip) return;
+  const generation = importLoop;
   if (typeof clip.requestVideoFrameCallback === 'function') {
-    clip.requestVideoFrameCallback((_now, meta) => {
-      if (!importPlaying) return;
+    importFrameHandle = clip.requestVideoFrameCallback((_now, meta) => {
+      importFrameHandle = 0;
+      if (!importPlaying || generation !== importLoop) return;
       if (typeof meta.presentedFrames === 'number') importPresented = meta.presentedFrames;
       drawImportFrame();
       driveImport();
     });
     return;
   }
-  drawImportFrame();
-  window.requestAnimationFrame(driveImport);
+  importRafHandle = window.requestAnimationFrame(() => {
+    importRafHandle = 0;
+    if (!importPlaying || generation !== importLoop) return;
+    drawImportFrame();
+    driveImport();
+  });
 }
 
 function startImportPlayback(): void {
@@ -2029,6 +2062,18 @@ function startImportPlayback(): void {
 
 function stopImportPlayback(): void {
   importPlaying = false;
+  // Retire the loop explicitly. The generation bump covers a callback already
+  // in flight; the cancels cover one merely pending.
+  importLoop += 1;
+  const stepper = importedClip as (FrameStepper & {
+    cancelVideoFrameCallback?: (handle: number) => void;
+  }) | null;
+  if (importFrameHandle && typeof stepper?.cancelVideoFrameCallback === 'function') {
+    stepper.cancelVideoFrameCallback(importFrameHandle);
+  }
+  importFrameHandle = 0;
+  if (importRafHandle) window.cancelAnimationFrame(importRafHandle);
+  importRafHandle = 0;
   importedClip?.pause();
   const play = document.getElementById('v2ImportPlay');
   if (play) play.textContent = '▶︎ Play';
@@ -2063,6 +2108,7 @@ async function loadClip(file: File): Promise<void> {
   byId('v2ImportClear').hidden = false;
   byId('v2ImportPlay').hidden = false;
   byId('v2ImportSave').hidden = false;
+  setImportControls(true);
   const size = frameSize(clip.videoWidth, clip.videoHeight);
   setText('v2ImportNote', `${file.name} · through ${filterById(readState().activeFilter)?.name ?? ''}`);
   setText('v2ImportReading', `${size?.width ?? 0}×${size?.height ?? 0} · `
@@ -2114,7 +2160,8 @@ async function saveImport(): Promise<void> {
   }, {
     preRendered: true,
     label: `import-${readState().activeFilter}`,
-    visuallyLossless: readState().visuallyLossless
+    visuallyLossless: readState().visuallyLossless,
+    lumaRange: exposure.range
   });
   if (!still) {
     setText('v2ImportNote', 'The picture rendered but could not be encoded.');
@@ -2167,6 +2214,24 @@ function renderImportPanel(): void {
 const importRecorder = new ClipRecorder();
 let importSaving = false;
 
+/**
+ * Which import controls a person may reach right now.
+ *
+ * Hidden rather than disabled: a disabled button that reappears enabled a
+ * minute later reads as a glitch, and there is nothing useful to do with
+ * Play, Clear or Choose while an export is running. Stop export replaces
+ * them for the duration.
+ */
+function setImportControls(idle: boolean): void {
+  const holder = importedClip ?? importedImage;
+  for (const id of ['v2ImportPick', 'v2ImportClear']) {
+    const button = document.getElementById(id);
+    if (button) button.hidden = !idle && Boolean(holder);
+  }
+  const play = document.getElementById('v2ImportPlay');
+  if (play) play.hidden = !idle || !importedClip;
+}
+
 async function saveImportClip(): Promise<void> {
   const clip = importedClip;
   if (!clip || importSaving) return;
@@ -2201,6 +2266,24 @@ async function saveImportClip(): Promise<void> {
     // at 1x, so a minute of footage is a minute of apparently nothing.
     const cancel = document.getElementById('v2ImportCancel');
     if (cancel) cancel.hidden = false;
+    // THE EXPORT OWNS THE PANEL WHILE IT RUNS, and every one of these was a
+    // real way to break it. A real-time export of a minute-long clip is
+    // exactly when a hand reaches for another button.
+    //
+    // Clear or Choose-a-file tore the element down mid-export: load() fires
+    // `emptied`, never `ended`, so the await below never resolved — the
+    // interval kept overwriting the note forever with a NaN duration, the
+    // recorder was never stopped, and it went on encoding a canvas the
+    // camera had by then reclaimed.
+    //
+    // Pause was worse. It set importPlaying false, and that flag is the ONLY
+    // thing standing the camera down off the shared render target, so the
+    // preview resized the very canvas being captured — mid-recording — and
+    // began feeding live camera frames into the middle of the export.
+    //
+    // Stop export is the one control that belongs to this moment, so it is
+    // the one that stays.
+    setImportControls(false);
     importCancelled = false;
     importFrames = 0;
     // A BASELINE, NOT A RESET. presentedFrames is the browser's cumulative
@@ -2230,6 +2313,7 @@ async function saveImportClip(): Promise<void> {
     await ended;
     window.clearInterval(tick);
     if (cancel) cancel.hidden = true;
+    setImportControls(true);
     importCancelWait = null;
     stopImportPlayback();
     clip.loop = wasLooping;
@@ -3594,7 +3678,13 @@ async function takePhoto(): Promise<void> {
       return capturePhoto(renderer, video, readState().activeFilter, {
         ...photo,
         reason: CAPTURE_REASONS[escalation]
-      }, { visuallyLossless: readState().visuallyLossless });
+      }, {
+        visuallyLossless: readState().visuallyLossless,
+        // THE SAME CENSUS THE PREVIEW USED. Grid stretches its height into
+        // this range; without it the still fell back to [0, 1] and saved a
+        // different picture from the one the shutter was pressed on.
+        lumaRange: exposure.range
+      });
     }, { now: () => performance.now() });
     if (outcome.still) {
       updateState({

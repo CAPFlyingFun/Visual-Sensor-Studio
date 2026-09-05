@@ -2402,11 +2402,23 @@ test('the Sobel is written once and shared by everything that reads an edge', ()
   assert.ok(!edges.fragment.slice(edges.fragment.indexOf('void main')).includes('2.0 * r + br'),
     'and no longer carries its own copy');
 
+  // The painterly three read it with a FRAME-RELATIVE step. uTexel is one
+  // texel of the TARGET, and the same shader runs at a ~1170-wide preview and
+  // a 3024-wide still off the same camera texture — so a one-texel Sobel
+  // reaches ~2.6 source pixels in the preview and ~1 in the still, halving the
+  // gradient exactly when the shutter is pressed. Their thresholds are
+  // absolute, so a solid Cel outline became a grey smear in the saved photo.
   for (const id of ['cel', 'ink', 'wash']) {
     const filter = filterById(id);
     assert.match(filter.fragment.slice(filter.fragment.indexOf('void main')),
-      /sobelLuma\(vUv, uTexel\)/, `${id} reads edges through the shared one`);
+      /sobelLuma\(vUv, frameStep\(EDGE_REFERENCE\)\)/,
+      `${id} must measure an edge in the frame, not in texels`);
   }
+  assert.match(SHADER_HEADER, /vec2 frameStep\(float reference\) \{/);
+  // Edges and the aid keep the texel step deliberately: each measures THIS
+  // render at ITS own resolution.
+  assert.match(edges.fragment, /sobelLuma\(vUv, uTexel\)/);
+  assert.match(SHADER_HEADER, /sobelLuma\(uv, uAidTexel\)/);
 });
 
 test('Cel bands the VALUE so hue survives, and says its curve is a stylisation', () => {
@@ -2523,9 +2535,15 @@ test('Amplify holds two running averages in one state texture', () => {
   // SEEDED FROM THE FIRST FRAME. State clears to zero on a filter change, so
   // starting both averages at zero would make the opening second one
   // full-scale transient that never happened. Alpha carries "primed".
-  assert.match(state, /float primed = held\.a;/);
-  assert.match(state, /gl_FragColor = vec4\(fast, slow, 0\.0, 1\.0\);/,
-    'alpha is written 1.0, and clears to 0, which is how the first pass knows');
+  // THE PRIMING MUST NOT RIDE ON ALPHA. It did, on the stated belief that the
+  // state "clears to 0" — advanceState clears every state texture with
+  // gl.clearColor(0, 0, 0, 1), alpha ONE, so primed read 1 on the first pass,
+  // the seeding branch was unreachable, and both averages started from zero.
+  // Measured in a browser: the whole viewfinder went to mean 255, 100% white,
+  // for over a second on every switch to Amplify. Self-priming off the values
+  // needs nothing of the renderer.
+  assert.match(state, /float primed = step\(0\.0001, held\.r \+ held\.g\);/);
+  assert.ok(!/held\.a/.test(state), 'alpha is not a reliable primed flag here');
 
   // The band is the DIFFERENCE, multiplied and added back.
   const body = amplify.fragment.slice(amplify.fragment.indexOf('void main'));
@@ -2544,10 +2562,10 @@ test('Amplify holds two running averages in one state texture', () => {
 
 test('Flow reports direction, and admits what direction it cannot see', () => {
   const flow = filterById('flow');
-  const body = flow.fragment.slice(flow.fragment.indexOf('void main'));
+  const body = flow.state.slice(flow.state.indexOf('void main'));
 
   // The gradient constraint: v = -It * (Ix, Iy) / (Ix^2 + Iy^2).
-  assert.match(body, /vec2 v = -dt \* vec2\(dx, dy\) \/ \(dx \* dx \+ dy \* dy \+ 0\.0016\);/);
+  assert.match(body, /vec2 v = -gated \* vec2\(dx, dy\) \/ \(dx \* dx \+ dy \* dy \+ 0\.0016\);/);
   // SIGNED in time, unlike Speed's magnitude — the sign IS the direction.
   assert.match(body, /float dt = now - before;/);
   assert.ok(!/abs\(now - before\)/.test(body), 'an absolute difference has no direction in it');
@@ -2556,7 +2574,21 @@ test('Flow reports direction, and admits what direction it cannot see', () => {
   assert.match(body, /\+ 0\.0016\)/);
 
   assert.match(body, /float angle = atan\(v\.y, v\.x\)/, 'direction becomes hue');
-  assert.match(body, /hueWheel\(angle\) \* lit/, 'and speed becomes brightness');
+  assert.match(flow.fragment, /hueWheel\(field\.r\) \* field\.g/, 'and speed becomes brightness');
+
+  // THE ESTIMATE BELONGS IN A STATE PASS, at analysis size. In the display
+  // pass it compared a full-resolution frame against uPrevious — the history
+  // snapshotted at 384 — so a MOTIONLESS scene produced a sharp-minus-blur
+  // residual, largest exactly at the edges, which Flow then DIVIDED by the
+  // gradient. Every edge in a still room lit at full brightness with a
+  // confident direction: a velocity reported for something not moving.
+  assert.ok(flow.state, 'the estimate runs where both frames are the same size');
+  assert.ok(!flow.fragment.slice(flow.fragment.indexOf('void main')).includes('uPrevious'),
+    'the display pass no longer differences anything');
+  // Speed's gate, which was the other half of why Speed never had this bug.
+  assert.match(body, /float gated = dt \* smoothstep\(0\.008, 0\.035, abs\(dt\)\);/);
+  // Magnitude carries the memory; an angle cannot be averaged because it wraps.
+  assert.match(body, /float lit = mix\(texture2D\(uState, vUv\)\.g, target, 0\.4\);/);
 
   // THE APERTURE PROBLEM IS IN THE NOTE. Only the component along the
   // gradient is recoverable from one pixel, so an edge sliding along its own
@@ -2565,10 +2597,8 @@ test('Flow reports direction, and admits what direction it cannot see', () => {
   assert.match(flow.note, /aperture problem/i);
   assert.match(flow.note, /NORMAL FLOW/);
 
-  // It reads the previous frame and holds nothing.
   assert.equal(flow.temporal, true);
-  assert.match(body, /uPrevious/);
-  assert.equal(flow.state, undefined);
+  assert.match(body, /uPrevious/, 'the state pass is what reads the frame before');
 });
 
 test('Background reuses the learned model the novelty channel already uses', () => {
@@ -2580,10 +2610,20 @@ test('Background reuses the learned model the novelty channel already uses', () 
   assert.equal(background.state, NOVELTY_STATE, 'the SAME state pass object, not a copy');
 
   const body = background.fragment.slice(background.fragment.indexOf('void main'));
-  // Distance in COLOUR, not just brightness: a thing can arrive at the same
-  // lightness as the wall behind it and still not belong there.
-  assert.match(body, /float departure = clamp\(length\(scene - background\) \* DEPARTURE, 0\.0, 1\.0\);/);
+  // THE DEPARTURE IS MEASURED IN THE STATE PASS, where the background and the
+  // frame are the same size. Subtracting them in the DISPLAY pass looked
+  // equivalent and was not: the state lives at analysis resolution, so a
+  // motionless scene produced a sharp-minus-blur residual at every edge and
+  // the room stayed permanently lit — the opposite of this filter's product.
+  // A mask survives being magnified; a subtraction does not.
+  assert.match(NOVELTY_STATE, /clamp\(length\(now - background\) \* 2\.2, 0\.0, 1\.0\)/,
+    'the model publishes the departure it implies');
+  assert.match(body, /texture2D\(uState, vUv\)\.a/, 'and the display reads it rather than recomputing');
+  assert.ok(!body.includes('length(scene - background)'), 'no cross-resolution subtraction');
   assert.match(body, /mix\(scene \* BELONGS, scene, lit\)/, 'what belongs is dimmed, not erased');
+  // ch_novelty reads only .rgb, so carrying this in alpha costs it nothing.
+  const lensShader = readFileSync(new URL('../src/v2/filters/lens-shader.ts', import.meta.url), 'utf8');
+  assert.match(lensShader, /luma\(texture2D\(uState, uv\)\.rgb\)/);
 
   // NOT temporal, and that is the entire point: comparing adjacent frames is
   // what Motion does, and what this exists to avoid — a slow mover almost

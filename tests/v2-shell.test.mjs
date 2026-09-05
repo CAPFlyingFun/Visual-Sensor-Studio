@@ -406,7 +406,14 @@ test('Night stacks at the size the TIER chose, not the size the screen is', () =
   // so a Night result and a normal photo cannot disagree about what the
   // chosen tier means.
   const photoTs = readFileSync(new URL('../src/v2/capture/photo.ts', import.meta.url), 'utf8');
-  assert.match(photoTs, /renderer\.render\(filterId, \{ width: photo\.width, height: photo\.height \}\)/);
+  // The PHOTO row's size, and nothing else deciding it. It now also carries
+  // the frame's measured luma range — Grid stretches its height into that,
+  // and without it the still fell back to [0, 1] and saved a different
+  // picture from the preview the shutter was pressed on. The size arguments
+  // are unchanged, which is what this test is really guarding.
+  assert.match(photoTs, /renderer\.render\(filterId, \{ width: photo\.width, height: photo\.height \},/);
+  assert.match(photoTs, /undefined, options\.lumaRange \? \{ lumaRange: options\.lumaRange \} : undefined/,
+    'and still passes no stateSize');
 });
 
 test('Night measures its own result, then lifts it, then saves what it lifted', () => {
@@ -638,7 +645,7 @@ test('an imported photo goes through the SAME filters and saves as a new file', 
 
   // ONE shader path: the import renders through renderer.render() with the
   // ACTIVE filter, never a second import-only implementation (Rule 4).
-  assert.match(appTs, /renderer\.uploadStill\(image\) \|\| !renderer\.render\(activeFilter, size\)/);
+  assert.match(appTs, /renderer\.uploadStill\(image\)\s*\n\s*\|\| !renderer\.render\(activeFilter, size, undefined, \{ lumaRange: exposure\.range \}\)/);
   // At the picture's OWN size — an import is not quietly downscaled.
   assert.match(appTs, /const size = frameSize\(image\.naturalWidth, image\.naturalHeight\);/);
   // And saved through the one save path, not a second encoder.
@@ -667,8 +674,13 @@ test('an import cannot disturb the live camera pipeline', () => {
   assert.match(renderTs, /filter\.state && stateSize \? this\.advanceState\(filter, stateSize\) : null/,
     'no stateSize means no state pass');
   // The import call site really does pass neither.
-  assert.match(appTs, /renderer\.render\(activeFilter, size\)\)/,
-    'the import render takes a size and nothing else');
+  // THE POINT IS THE ABSENT stateSize, not the argument count: an imported
+  // still must not advance the live camera's temporal state. It now also
+  // carries lumaRange, because without it Grid's stretch fell back to [0,1]
+  // and the saved picture differed from the preview — but stateSize stays
+  // undefined, which is what keeps the live pipeline undisturbed.
+  assert.match(appTs, /renderer\.render\(activeFilter, size, undefined, \{ lumaRange: exposure\.range \}\)/,
+    'an import still passes no stateSize, so no state pass runs');
   // snapshotHistory stays the delivery loop's business alone.
   const importBlock = appTs.slice(appTs.indexOf('function renderImport()'),
     appTs.indexOf('function renderImport()') + 1600);
@@ -978,12 +990,27 @@ test('an imported clip renders once per DECODED frame, and counts what it missed
   // ready, not when the clip has a new frame. A filter slower than the refresh
   // then skips frames while the clip plays on, and the export comes out the
   // right LENGTH with fewer distinct frames in it.
-  assert.match(drive, /clip\.requestVideoFrameCallback\(\(_now, meta\) => \{/,
-    'the clip drives the renders, not the display');
+  assert.match(drive, /importFrameHandle = clip\.requestVideoFrameCallback\(\(_now, meta\) => \{/,
+    'the clip drives the renders, and the handle is KEPT');
+
+  // A pending callback on a PAUSED element never fires, so it never retires
+  // either. Throwing the handle away meant every Pause/Play left the old one
+  // pending and registered a second: both fired on the next frame, both
+  // re-registered, and the loops DOUBLED each cycle. That is not a
+  // performance nuisance — drawImportFrame snapshots history, so the second
+  // render compares the frame against itself and a temporal filter exports
+  // black. saveImportClip pauses and resumes with no await between, so every
+  // export took that path.
+  assert.match(appTs, /stepper\.cancelVideoFrameCallback\(importFrameHandle\);/);
+  assert.match(appTs, /if \(importRafHandle\) window\.cancelAnimationFrame\(importRafHandle\);/);
+  assert.match(appTs, /const generation = importLoop;/);
+  assert.match(appTs, /if \(!importPlaying \|\| generation !== importLoop\) return;/,
+    'and a callback already in flight retires itself');
   assert.match(drive, /meta\.presentedFrames === 'number'/,
     'and the browser\'s own frame count is read while it is there');
   // The fallback survives, because rVFC is not everywhere.
-  assert.match(drive, /window\.requestAnimationFrame\(driveImport\);/);
+  assert.match(drive, /importRafHandle = window\.requestAnimationFrame\(\(\) => \{/,
+    'the fallback keeps its handle too, for the same reason');
 
   // A BASELINE, NOT A RESET. presentedFrames is cumulative for the element's
   // lifetime and nothing here can zero it — the clip has been playing since
@@ -1072,4 +1099,55 @@ test('a suspended camera is not an unstarted one, and says so', () => {
 
   // "not started" survives for the one state where it is true.
   assert.match(appTs, /: 'not started'\);/);
+});
+
+test('an export owns the import panel, because every other button broke it', () => {
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+
+  // TWO CRITICAL WAYS THIS BROKE, both reachable by a hand reaching for
+  // another button during a real-time export of a minute-long clip.
+  //
+  // CLEAR (or Choose-a-file) tore the element down mid-export. load() fires
+  // `emptied`, never `ended`, so the export's single await never resolved:
+  // the 250 ms interval overwrote the note forever with a NaN duration, the
+  // recorder was never stopped, and it went on encoding a canvas the camera
+  // had by then reclaimed.
+  //
+  // PAUSE was worse. importPlaying is the ONLY thing standing the camera down
+  // off the shared render target (renderPreview: `if (importPlaying) return`),
+  // so pausing let the preview RESIZE the very canvas being captured,
+  // mid-recording, and feed live camera frames into the middle of the export.
+  assert.match(appTs, /function setImportControls\(idle: boolean\): void \{/);
+  assert.match(appTs, /setImportControls\(false\);/, 'the export takes the panel');
+  assert.match(appTs, /setImportControls\(true\);/, 'and gives it back');
+
+  const save = appTs.slice(appTs.indexOf('async function saveImportClip()'),
+    appTs.indexOf('function buildImport()'));
+  assert.ok(save.indexOf('setImportControls(false)') < save.indexOf('startImportPlayback()'),
+    'the panel is locked BEFORE the clip starts playing');
+  assert.ok(save.includes('setImportControls(true)'), 'and unlocked on the way out');
+
+  // Belt and braces: a teardown mid-export leaves an unresolvable await and a
+  // recorder nobody stops, which is too expensive to rest on a hidden attribute.
+  const clear = appTs.slice(appTs.indexOf('function clearImport()'),
+    appTs.indexOf('function renderImport()'));
+  assert.match(clear, /if \(importSaving\) return;/,
+    'clearImport refuses to run during an export');
+});
+
+test('the still path carries the census, so a saved Grid is the Grid you saw', () => {
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+  const photoTs = readFileSync(new URL('../src/v2/capture/photo.ts', import.meta.url), 'utf8');
+
+  // Grid is the only needsLumaRange filter, and its stretch is the difference
+  // between a readable mesh and a flat sheet — measured on a real room, 62% of
+  // the frame unreadable without it. capturePhoto rendered with no extras at
+  // all, so every saved Grid silently fell back to [0, 1].
+  assert.match(photoTs, /lumaRange\?: \[number, number\];/);
+  assert.match(appTs, /lumaRange: exposure\.range\n\s*\}\);/,
+    'the shutter hands over the same census the preview used');
+  // Every full-size render path, not just the shutter: the Night save, the
+  // import still, and the import clip export all draw at a photo geometry.
+  assert.ok((appTs.match(/lumaRange: exposure\.range/g) ?? []).length >= 3,
+    'all the full-size render paths carry it');
 });

@@ -146,6 +146,12 @@ export interface CaptureOptions {
   /** Names the file in place of the filter id (e.g. 'night'). */
   label?: string;
   /**
+   * The frame's measured [min, max] luma. Grid stretches its height into this
+   * range, and without it the still silently falls back to [0, 1] and comes
+   * out a different picture from the preview the shutter was pressed on.
+   */
+  lumaRange?: [number, number];
+  /**
    * Measure how far this frame compresses before it changes, and save at
    * that quality instead of at 1.00. Off means the old behaviour byte for
    * byte. Never changes the PHOTO GEOMETRY — MAX MEANS MAX is about pixels,
@@ -170,7 +176,8 @@ export async function capturePhoto(
   const t0 = performance.now();
   if (!options.preRendered) {
     if (!renderer.uploadFrame(video)) return null;
-    if (!renderer.render(filterId, { width: photo.width, height: photo.height })) return null;
+    if (!renderer.render(filterId, { width: photo.width, height: photo.height },
+      undefined, options.lumaRange ? { lumaRange: options.lumaRange } : undefined)) return null;
   }
 
   photoCanvas ??= document.createElement('canvas');
