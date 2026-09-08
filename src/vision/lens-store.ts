@@ -175,7 +175,12 @@ export function sanitiseLens(raw: unknown): CustomLens {
     output: OUTPUTS.has(String(source.output)) ? (source.output as LensOutput) : undefined,
     reference: hexOrUndefined(source.reference),
     target: hexOrUndefined(source.target),
-    fill: sanitiseFill(source.fill)
+    fill: sanitiseFill(source.fill),
+    // 0 is "one palette", which is what a lens written before this meant — so
+    // it stores as absent and the two documents stay the same document.
+    shapeHue: clamp(finite(source.shapeHue, 0), 0, 1) > 0
+      ? clamp(finite(source.shapeHue, 0), 0, 1)
+      : undefined
   };
 }
 

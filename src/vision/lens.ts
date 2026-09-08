@@ -349,6 +349,24 @@ export interface CustomLens {
    * drew, which is what every lens written before this existed means.
    */
   fill?: LensFill;
+  /**
+   * SHAPE HUE, 0..1 — how far each shape's colour is shifted away from the
+   * ramp's, by a hue drawn for that shape and held along the whole of it.
+   * Absent or 0 means the lens paints one palette, exactly as before.
+   *
+   * Joshua, 2026-09-08: "is it possible to randomly change colors on outlines
+   * meaning each outline is in a new color?"
+   *
+   * NOT a contour label. A camera has no object IDs, and finding true
+   * connected components would take a multi-pass labelling this cannot afford
+   * per frame. What it does instead: hash the NEIGHBOURHOOD's own quantised
+   * tone and hue into a colour. Two objects that differ in either almost
+   * always draw different colours; every pixel along one object's outline
+   * reads the same neighbourhood, so it keeps one colour rather than
+   * shimmering. Two unrelated objects of the same tone and hue WILL collide,
+   * and that is the honest limit of doing this in a single pass.
+   */
+  shapeHue?: number;
 }
 
 /**

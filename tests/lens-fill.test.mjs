@@ -159,6 +159,52 @@ test('Blue Antenna ships, and Blue Outline is not touched', () => {
     'his own Blue Outline is his, and is not overwritten by a starter');
 });
 
+test('a colour per shape is held along the outline, never given to the dark', () => {
+  const lens = sanitiseLens({ ...BLUE_OUTLINE, shapeHue: 1 });
+  assert.equal(lens.shapeHue, 1);
+  // Zero is "one palette", which is what every lens before this meant — so it
+  // stores as absent and the two documents stay the same document.
+  assert.equal(sanitiseLens({ ...BLUE_OUTLINE, shapeHue: 0 }).shapeHue, undefined);
+
+  const code = compileLens(lens).fragment;
+  assert.ok(code.includes('vec3 shapeTint('), 'the tint is emitted');
+  // NOTHING THE LENS LEFT DARK IS GIVEN A COLOUR. Without this the black
+  // background picks up a hue and the whole picture turns to soup.
+  assert.match(code, /if \(hsv\.z <= 0\.001\) return c;/);
+  // The hue is SET rather than rotated, and saturation is lifted with it: the
+  // top of this ramp is #eafaff, which has almost no hue to rotate, so the
+  // brightest edges — the ones most worth telling apart — would have stayed
+  // white.
+  assert.match(code, /mix\(hsv\.x, drawn, SHAPE_HUE\)/);
+  assert.match(code, /max\(hsv\.y, 0\.62 \* SHAPE_HUE\)/);
+  // Keyed on the NEIGHBOURHOOD, not the pixel: that is what holds one colour
+  // along a whole contour instead of shimmering along it.
+  assert.match(code, /shapeTint\(c, ringStats\(vUv, frameStep\(900\.0\) \* SHAPE_RING\)\.x, scene\)/);
+
+  // Where a fill is also on, the tint reuses the neighbourhood the fill has
+  // already measured rather than taking eight more taps for a second opinion.
+  const both = compileLens(sanitiseLens({ ...BLUE_OUTLINE, shapeHue: 1, fill: FILL })).fragment;
+  assert.match(both, /shapeTint\(c, fill\.y, scene\)/);
+  assert.equal((both.match(/vec2 ringStats\(/g) ?? []).length, 1, 'one definition of the ring');
+
+  // Paint mode only, like the fill and for the same reason.
+  for (const output of ['mask', 'swap']) {
+    const other = compileLens(sanitiseLens({ ...BLUE_OUTLINE, output, shapeHue: 1 })).fragment;
+    assert.ok(!other.includes('shapeTint'), `${output} is left alone`);
+  }
+  // And it is in the revision, or a live edit would not redraw.
+  assert.notEqual(compileLens(sanitiseLens(BLUE_OUTLINE)).revision, compileLens(lens).revision);
+});
+
+test('Prism ships as the shape-colour starter', () => {
+  const prism = STARTER_LENSES.find((lens) => lens.id === 'lens-v2-prism');
+  assert.ok(prism, 'Prism is a starter');
+  assert.equal(prism.shapeHue, 1);
+  assert.equal(prism.fill, undefined, 'outlines are what was asked about');
+  assert.match(prism.note, /Not object recognition/,
+    'and the note states the limit rather than hiding it');
+});
+
 test('the modal luma is the background, and the mean is not', () => {
   /*
    * A bimodal frame — dark walls under a bright popcorn ceiling, which is the

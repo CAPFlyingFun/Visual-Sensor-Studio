@@ -77,7 +77,7 @@ export function lensRevision(lens: CustomLens): string {
   const text = JSON.stringify([
     lens.color, lens.brightness ?? null, lens.stops, lens.base, lens.sceneBlend,
     lens.output ?? 'paint', lens.reference ?? '', lens.target ?? '',
-    lens.brightnessFloor ?? 0, lens.fill ?? null
+    lens.brightnessFloor ?? 0, lens.fill ?? null, lens.shapeHue ?? 0
   ]);
   let hash = 5381;
   for (let i = 0; i < text.length; i++) hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
@@ -236,6 +236,32 @@ const COLOUR_GAP = COLOUR_GAP_GLSL;
  * in the photograph. A shape must not stop being a shape because it was drawn
  * bigger.
  */
+/**
+ * Mean and variance of luma on a ring of eight, at a frame-relative radius.
+ *
+ * Shared, because the fill and the shape hue both need a NEIGHBOURHOOD rather
+ * than a pixel, and two copies of eight taps would be two chances to disagree
+ * about what "around here" means (Rule 4). Sampling a ring gives the mean for
+ * free and the variance for free with it — the same eight taps — which is why
+ * the fill costs about what Wash costs rather than what a blur pyramid would.
+ */
+const RING_STATS_GLSL = `vec2 ringStats(vec2 uv, vec2 r) {
+  float s = 0.0;
+  float q = 0.0;
+  float y;
+  y = luma(texture2D(uFrame, uv + vec2( r.x, 0.0)).rgb); s += y; q += y * y;
+  y = luma(texture2D(uFrame, uv + vec2(-r.x, 0.0)).rgb); s += y; q += y * y;
+  y = luma(texture2D(uFrame, uv + vec2(0.0,  r.y)).rgb); s += y; q += y * y;
+  y = luma(texture2D(uFrame, uv + vec2(0.0, -r.y)).rgb); s += y; q += y * y;
+  vec2 d = r * 0.70710678;
+  y = luma(texture2D(uFrame, uv + vec2( d.x,  d.y)).rgb); s += y; q += y * y;
+  y = luma(texture2D(uFrame, uv + vec2( d.x, -d.y)).rgb); s += y; q += y * y;
+  y = luma(texture2D(uFrame, uv + vec2(-d.x,  d.y)).rgb); s += y; q += y * y;
+  y = luma(texture2D(uFrame, uv + vec2(-d.x, -d.y)).rgb); s += y; q += y * y;
+  float mean = s * 0.125;
+  return vec2(mean, max(q * 0.125 - mean * mean, 0.0));
+}`;
+
 const FILL_REFERENCE = 900;
 
 /**
@@ -277,25 +303,6 @@ const float FILL_ROUGH_LO = ${glslFloat(ROUGH_LO)};
 const float FILL_ROUGH_HI = ${glslFloat(ROUGH_HI)};
 const float FILL_REJECT = ${glslFloat(fill.textureReject)};
 const float FILL_STRENGTH = ${glslFloat(fill.strength)};
-
-// Mean and variance of luma on a ring of eight. The variance is half the
-// method and it costs nothing beyond the taps the mean already needs.
-vec2 ringStats(vec2 uv, vec2 r) {
-  float s = 0.0;
-  float q = 0.0;
-  float y;
-  y = luma(texture2D(uFrame, uv + vec2( r.x, 0.0)).rgb); s += y; q += y * y;
-  y = luma(texture2D(uFrame, uv + vec2(-r.x, 0.0)).rgb); s += y; q += y * y;
-  y = luma(texture2D(uFrame, uv + vec2(0.0,  r.y)).rgb); s += y; q += y * y;
-  y = luma(texture2D(uFrame, uv + vec2(0.0, -r.y)).rgb); s += y; q += y * y;
-  vec2 d = r * 0.70710678;
-  y = luma(texture2D(uFrame, uv + vec2( d.x,  d.y)).rgb); s += y; q += y * y;
-  y = luma(texture2D(uFrame, uv + vec2( d.x, -d.y)).rgb); s += y; q += y * y;
-  y = luma(texture2D(uFrame, uv + vec2(-d.x,  d.y)).rgb); s += y; q += y * y;
-  y = luma(texture2D(uFrame, uv + vec2(-d.x, -d.y)).rgb); s += y; q += y * y;
-  float mean = s * 0.125;
-  return vec2(mean, max(q * 0.125 - mean * mean, 0.0));
-}
 
 /*
  * Returns BOTH halves of the answer: how much of a body is here, and how
@@ -349,6 +356,53 @@ vec2 regionFill(vec2 uv) {
   // so the Detail control widens the averaging as it widens the reach, and a
   // broad setting reads the picture in flat slabs rather than in speckle.
   return vec2(clamp(body * coherent, 0.0, 1.0) * FILL_STRENGTH, (fine.x + wide.x) * 0.5);
+}`;
+}
+
+/**
+ * SHAPE HUE — a colour per shape, held along the whole of its outline.
+ *
+ * NOT a contour label, and the note on CustomLens.shapeHue says so. Finding
+ * true connected components would take a multi-pass labelling no live camera
+ * frame can afford here. This hashes the NEIGHBOURHOOD's quantised tone and
+ * hue instead:
+ *
+ *   two objects differing in either almost always draw different colours
+ *   every pixel along one outline reads the same neighbourhood, so the
+ *     colour is held rather than shimmering along the line
+ *   two unrelated objects of the same tone AND hue collide — the honest
+ *     limit of doing this in one pass
+ *
+ * QUANTISED COARSELY ON PURPOSE. A fine bucketing puts a boundary through the
+ * middle of every gradient, and an object lying across one would flicker
+ * between two colours as the sensor noise moved it back and forth.
+ *
+ * The hue is SET rather than rotated, and saturation is lifted with the
+ * strength — a ramp whose top is nearly white (Blue Outline's #eafaff) has
+ * almost no hue to rotate, so rotating alone would have left the brightest
+ * edges, the ones most worth telling apart, still white. Value is untouched,
+ * which is what keeps an unlit background black: a colour is given to what
+ * the lens already lit, never to what it did not.
+ */
+function shapeHueGlsl(strength: number): string {
+  return `const float SHAPE_HUE = ${glslFloat(strength)};
+const float SHAPE_RING = 8.0;
+const float SHAPE_TONE_STEPS = 7.0;
+const float SHAPE_HUE_STEPS = 9.0;
+
+vec3 shapeTint(vec3 c, float tone, vec3 scene) {
+  vec3 hsv = rgb2hsv(c);
+  // Nothing the lens left dark is given a colour.
+  if (hsv.z <= 0.001) return c;
+  vec3 sceneHsv = rgb2hsv(scene);
+  // Grey has no hue worth bucketing by, so tone carries the whole key there.
+  float hueKey = floor(sceneHsv.x * SHAPE_HUE_STEPS) * step(0.12, sceneHsv.y);
+  vec2 bucket = vec2(floor(clamp(tone, 0.0, 1.0) * SHAPE_TONE_STEPS), hueKey);
+  float drawn = hash(bucket * 37.0 + 11.0);
+  return hsv2rgb(vec3(
+    mix(hsv.x, drawn, SHAPE_HUE),
+    clamp(max(hsv.y, 0.62 * SHAPE_HUE), 0.0, 1.0),
+    hsv.z));
 }`;
 }
 
@@ -435,8 +489,12 @@ export function compileLens(lens: CustomLens): FilterDefinition {
   // background of zero and light the whole picture.
   const needsLumaRange = channels.has('relief') || Boolean(lens.fill);
   const output = lens.output ?? 'paint';
+  // Shape hue re-colours what the lens PAINTED, so like the fill it belongs to
+  // paint mode; mask and swap are showing the camera's own colours and
+  // recolouring those would be a different instrument.
+  const shapeHue = output === 'paint' ? (lens.shapeHue ?? 0) : 0;
   const needsGap = [...channels].some((c) => c === 'colourDistance' || c === 'backgroundDistance');
-  const needsHsv = needsGap || output === 'swap'
+  const needsHsv = needsGap || output === 'swap' || shapeHue > 0
     || [...channels].some((c) => c === 'hue' || c === 'saturation' || c === 'rarity'
       || c === 'chromaEdge');
   const needsReference = [...channels].some((c) => channelInfo(c).needsReference);
@@ -482,7 +540,7 @@ export function compileLens(lens: CustomLens): FilterDefinition {
   return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + 1e-10)), d / (q.x + 1e-10), q.x);
 }
 ` : '')
-    + (output === 'swap' ? `vec3 hsv2rgb(vec3 c) {
+    + (output === 'swap' || shapeHue > 0 ? `vec3 hsv2rgb(vec3 c) {
   vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
   vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
   return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
@@ -496,7 +554,9 @@ export function compileLens(lens: CustomLens): FilterDefinition {
     // relief came first and would not compile.
     + [...channels].sort((a, b) => channelRank(a) - channelRank(b))
       .map(channelGlsl).join('\n') + '\n'
+    + (fill || shapeHue > 0 ? RING_STATS_GLSL : '')
     + (fill ? fillGlsl(fill) + '\n' : '')
+    + (shapeHue > 0 ? shapeHueGlsl(shapeHue) + '\n' : '')
     + normaliseGlsl('normColour', lens.color) + '\n'
     + (lens.brightness ? normaliseGlsl('normBright', lens.brightness) + '\n' : '')
     + `void main() {
@@ -517,6 +577,11 @@ ${fill ? `  // THE BODY, UNDER THE EDGE. A per-channel max rather than a blend, 
   // ramp and the same normalisation the outline was painted with — not this
   // one pixel's, which made a lit body mottled.
   c = max(c, texture2D(uRamp, vec2(normColour(fill.y * 255.0), 0.5)).rgb * fill.x);\n` : ''}\
+${shapeHue > 0 ? `  // A COLOUR PER SHAPE, over the outline AND the body it belongs to, so the
+  // two agree. The neighbourhood's average tone is the key: it is what the
+  // fill already measured where there is one, and its own ring where there is
+  // not — one definition of "around here" either way.
+  c = shapeTint(c, ${fill ? 'fill.y' : 'ringStats(vUv, frameStep(900.0) * SHAPE_RING).x'}, scene);\n` : ''}\
 ${blend > 0 ? `  c = mix(c, vec3(sceneY), ${glslFloat(blend)});\n` : ''}\
   gl_FragColor = vec4(withAids(c, vUv), 1.0);
 }`;

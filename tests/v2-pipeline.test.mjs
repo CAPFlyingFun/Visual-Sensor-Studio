@@ -1102,7 +1102,9 @@ test('the three output modes are one lens document away from each other', () => 
   assert.match(paint, /rgb2hsv/, 'but hue needs HSV to be measured at all');
 
   // A lens written before output modes existed still means what it meant.
-  const book = STARTER_LENSES[0];
+  // BY ID, not by position — the second test in this file to be broken by a
+  // lens being added above it rather than by anything it was checking.
+  const book = STARTER_LENSES.find((l) => l.id === 'lens-mtjarl1w-pcpts4');
   assert.equal(book.output, undefined);
   assert.match(compileLens(book).fragment, /texture2D\(uRamp, vec2\(t, 0\.5\)\)/);
   assert.doesNotMatch(compileLens(book).fragment, /rgb2hsv/, 'and pays for nothing it does not use');

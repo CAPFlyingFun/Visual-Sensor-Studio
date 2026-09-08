@@ -16,6 +16,38 @@ const RED = '#c81e28';
 export const STARTER_LENSES: readonly CustomLens[] = [
   {
     /*
+     * PRISM — a colour per shape, over Blue Outline's line work.
+     *
+     * Joshua, 2026-09-08: "is it possible to randomly change colors on
+     * outlines meaning each outline is in a new color?"
+     *
+     * Yes, with one honest limit, which the note states rather than hides: a
+     * camera has no object IDs and true connected components would take a
+     * multi-pass labelling no live frame can afford, so the colour is hashed
+     * from the neighbourhood's own tone and hue. Different objects almost
+     * always draw different colours and one outline holds one colour; two
+     * unrelated things of the same tone AND hue collide.
+     *
+     * No fill, because outlines are what he asked about — and the fill is one
+     * slider away in the workbench for anyone who wants both.
+     */
+    version: 1,
+    id: 'lens-v2-prism',
+    note: 'Line work where every shape draws its own colour and keeps it along its whole outline. Not object recognition — the colour is hashed from the neighbourhood\'s tone and hue, so two unrelated things of the same tone and hue will share one.',
+    name: 'Prism',
+    color: { channel: 'luma', low: 0, high: 255, gamma: 0.8 },
+    stops: [
+      { at: 0, color: '#03121f' },
+      { at: 0.5, color: '#2f9fd6' },
+      { at: 1, color: '#eafaff' }
+    ],
+    brightness: { channel: 'edges', low: 0, high: 240, gamma: 0.8 },
+    base: 'black',
+    sceneBlend: 0,
+    shapeHue: 1
+  },
+  {
+    /*
      * BLUE ANTENNA — Blue Outline's palette with the bodies filled in.
      *
      * Joshua's own Blue Outline lens is the starting point and is left

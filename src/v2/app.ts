@@ -4444,11 +4444,30 @@ function renderLensFill(): void {
   if (!draft || !holder) return;
   holder.replaceChildren();
   const paints = (draft.output ?? 'paint') === 'paint';
+  if (paints) {
+    // A COLOUR PER SHAPE. Independent of the fill — it re-colours whatever the
+    // lens painted, outline alone or outline and body together.
+    const hueNote = document.createElement('p');
+    hueNote.className = 'hint';
+    hueNote.textContent = (draft.shapeHue ?? 0) > 0
+      ? 'Each shape draws its own colour and holds it along its outline. Not object '
+        + 'recognition: shapes of the same tone and hue will share a colour.'
+      : 'Off — one palette for the whole picture. Raise it to give each shape its own colour.';
+    holder.appendChild(hueNote);
+    bindingField(holder, 'v2LensShapeHue', 'Shape colour', { min: 0, max: 1, step: 0.01 },
+      () => draft.shapeHue ?? 0,
+      (v) => {
+        const next = Math.min(1, Math.max(0, v));
+        draft.shapeHue = next > 0 ? next : undefined;
+        renderLensFill();
+      });
+  }
   const note = document.createElement('p');
   note.className = 'hint';
   if (!paints) {
-    note.textContent = 'Region fill needs “paint false colour” — the other two modes '
-      + 'keep the camera’s own colours, and there is no ramp to lift a body toward.';
+    note.textContent = 'Region fill and shape colour both need “paint false colour” — the '
+      + 'other two modes keep the camera’s own colours, and there is no painted colour to '
+      + 'lift a body toward or to re-hue.';
     holder.appendChild(note);
     return;
   }
