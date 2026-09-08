@@ -77,7 +77,7 @@ test('fill fields this build cannot honour are NAMED, never silently dropped', (
 test('the fill is a body signal, not a dilated edge', () => {
   const filter = compileLens(sanitiseLens({ ...BLUE_OUTLINE, fill: FILL }));
   const code = filter.fragment;
-  assert.ok(code.includes('vec2 regionFill(vec2 uv)'), 'the fill is emitted');
+  assert.ok(code.includes('vec2 regionFill(vec4 k)'), 'the fill is emitted');
 
   // THE LOAD-BEARING LINE. The body is distance from the frame's prevailing
   // level, which the middle of a slab answers as loudly as its rim. Two
@@ -86,10 +86,10 @@ test('the fill is a body signal, not a dilated edge', () => {
   // door at exactly 0.00) and the broad ring's MEAN (a band-pass, so the bare
   // wall beside a lamp reached 0.90 while the door stayed at 0.00).
   const body = code.slice(code.indexOf('float body ='));
-  assert.match(body.slice(0, 120), /abs\(wide\.x - uBackground\)/);
+  assert.match(body.slice(0, 120), /abs\(k\.y - uBackground\)/);
 
   // It must never read the edge map — that is the difference it exists for.
-  const fillBody = code.slice(code.indexOf('float regionFill'), code.indexOf('float normColour'));
+  const fillBody = code.slice(code.indexOf('vec2 regionFill'), code.indexOf('float normColour'));
   assert.ok(!/sobelLuma|ch_edges/.test(fillBody), 'the fill never looks at the edges');
 
   // Composed UNDER the edge: a per-channel max, so a lit outline keeps all of
@@ -106,12 +106,12 @@ test('the fill is a body signal, not a dilated edge', () => {
   // in a test that only asked whether a fill was emitted.
   assert.ok(!/regionFill\(vUv\)\)/.test(code.slice(code.indexOf('c = max(c,'))),
     'the fill is read once into a vec2, not called inline for its amount alone');
-  assert.match(code, /return vec2\(clamp\(body \* coherent[^;]*, \(fine\.x \+ wide\.x\) \* 0\.5\);/,
+  assert.match(code, /return vec2\(clamp\(body \* coherent[^;]*, \(k\.x \+ k\.y\) \* 0\.5\);/,
     'and the second component is the mean of the samples already taken');
 
   // The radii are frame-relative, so a 3024-wide still is the same picture as
   // the preview it was framed in rather than a quarter of the reach.
-  assert.match(code, /frameStep\(FILL_REFERENCE\)/);
+  assert.match(code, /frameStep\(RING_REFERENCE\)/);
   assert.ok(!/uTexel \* FILL_/.test(code), 'never a radius in texels');
 });
 
@@ -179,13 +179,12 @@ test('a colour per shape is held along the outline, never given to the dark', ()
   assert.match(code, /max\(hsv\.y, 0\.62 \* SHAPE_HUE\)/);
   // Keyed on the NEIGHBOURHOOD, not the pixel: that is what holds one colour
   // along a whole contour instead of shimmering along it.
-  assert.match(code, /shapeTint\(c, ringStats\(vUv, frameStep\(900\.0\) \* SHAPE_RING\)\.x, scene\)/);
+  assert.match(code, /shapeTint\(c, \(k\.x \+ k\.y\) \* 0\.5, scene\)/);
 
-  // Where a fill is also on, the tint reuses the neighbourhood the fill has
-  // already measured rather than taking eight more taps for a second opinion.
+  // Sixteen taps, taken once, whether or not a fill is also asking.
   const both = compileLens(sanitiseLens({ ...BLUE_OUTLINE, shapeHue: 1, fill: FILL })).fragment;
-  assert.match(both, /shapeTint\(c, fill\.y, scene\)/);
   assert.equal((both.match(/vec2 ringStats\(/g) ?? []).length, 1, 'one definition of the ring');
+  assert.equal((both.match(/vec4 k = ringKey\(vUv\);/g) ?? []).length, 1, 'read once');
 
   // Paint mode only, like the fill and for the same reason.
   for (const output of ['mask', 'swap']) {
@@ -221,4 +220,63 @@ test('the modal luma is the background, and the mean is not', () => {
   assert.ok(Math.abs(reading.mode - 18 / 255) < 0.02,
     `mode ${reading.mode.toFixed(3)} sits on the walls`);
   assert.ok(reading.mean > 0.2, `mean ${reading.mean.toFixed(3)} sits on neither`);
+});
+
+test('kinds colour by what an edge IS, and push the big things back', () => {
+  const lens = sanitiseLens({ ...BLUE_OUTLINE, kinds: { strength: 0.9, depth: 0.5 } });
+  assert.deepEqual(lens.kinds, { strength: 0.9, depth: 0.5 });
+  // Strength zero is off, and off is the absence of the block.
+  assert.equal(sanitiseLens({ ...BLUE_OUTLINE, kinds: { strength: 0, depth: 1 } }).kinds, undefined);
+
+  const code = compileLens(lens).fragment;
+  assert.ok(code.includes('vec3 kindTint('), 'the kinds are emitted');
+
+  // ONE SOBEL, split so its DIRECTION is available (Rule 4) — a second copy
+  // of the eight taps could drift from the one the edge map uses.
+  assert.match(code, /sobelGrad\(uv, frameStep\(KIND_REFERENCE\)\)/);
+
+  // MEASURED COARSELY. At the edge map's own scale the gradient direction
+  // wobbles pixel to pixel along one contour and the picture came back as
+  // rainbow speckle; a wider step lets a long straight edge hold one
+  // direction, and organic gradients disagree at that distance and cancel.
+  assert.match(code, /const float KIND_REFERENCE = 220\.0;/);
+
+  // SNAPPED, not blended: a continuous mix of hues is a gradient wearing the
+  // word "categories".
+  assert.match(code, /mix\(HUE_GROWN, HUE_BUILT, step\(0\.5, built\)\)/);
+
+  // TWO KINDS, and the third was cut rather than faked. A "text" colour that
+  // cannot tell a label from a tea towel is decoration, and four measured
+  // attempts is when to stop.
+  assert.ok(!code.includes('HUE_DETAIL'), 'no third kind is emitted');
+
+  // DEPTH IS SPENT ON VALUE ALONE. Moving a large shape's hue would say it
+  // changed kind, which it did not.
+  assert.match(code, /hsv\.z \* depth/);
+  assert.match(code, /float big = 1\.0 - smoothstep\([^)]*abs\(rings\.x - rings\.y\)\)/);
+
+  // Sixteen taps, taken once, shared by every feature that asks.
+  const both = compileLens(sanitiseLens({ ...BLUE_OUTLINE, kinds: lens.kinds, fill: FILL })).fragment;
+  assert.equal((both.match(/vec4 ringKey\(/g) ?? []).length, 1);
+  assert.match(both, /vec4 k = ringKey\(vUv\);/);
+  assert.match(both, /regionFill\(k\)/);
+  assert.match(both, /kindTint\(c, vUv, k\)/);
+
+  // Kinds and a random hue answer the same question, so the kinds win and the
+  // random one is not even emitted.
+  const clash = compileLens(sanitiseLens({ ...BLUE_OUTLINE, shapeHue: 1, kinds: lens.kinds })).fragment;
+  assert.ok(clash.includes('kindTint') && !clash.includes('shapeTint'));
+
+  // Paint mode only, and in the revision so a live edit redraws.
+  assert.ok(!compileLens(sanitiseLens({ ...BLUE_OUTLINE, output: 'mask', kinds: lens.kinds }))
+    .fragment.includes('kindTint'));
+  assert.notEqual(compileLens(sanitiseLens(BLUE_OUTLINE)).revision, compileLens(lens).revision);
+});
+
+test('Blueprint ships, and says which kind it does NOT offer', () => {
+  const blueprint = STARTER_LENSES.find((lens) => lens.id === 'lens-v2-blueprint');
+  assert.ok(blueprint, 'Blueprint is a starter');
+  assert.ok(blueprint.kinds.strength > 0 && blueprint.kinds.depth > 0);
+  assert.match(blueprint.note, /text and closed contours need to be traced, not measured/,
+    'the missing kind is named rather than quietly absent');
 });

@@ -29,7 +29,7 @@ import {
   MIN_STOPS,
   type ChannelId,
   type CustomLens,
-  type LensBase, type LensFill, type LensOutput,
+  type LensBase, type LensFill, type LensOutput, type LensShapeKinds,
   type LensBinding,
   type LensStop
 } from './lens.js';
@@ -108,6 +108,17 @@ export function newLensId(): string {
  * half-validated lens reaching the renderer is how a stranger's file turns
  * into a crash in the camera loop.
  */
+/** Colour by kind and depth by size. Strength zero IS off, so it stores absent. */
+function sanitiseKinds(raw: unknown): LensShapeKinds | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const source = raw as Record<string, unknown>;
+  const kinds: LensShapeKinds = {
+    strength: clamp(finite(source.strength, 0), 0, 1),
+    depth: clamp(finite(source.depth, 0.5), 0, 1)
+  };
+  return kinds.strength > 0 ? kinds : undefined;
+}
+
 /** The four fill numbers, each 0..1. Absent stays absent. */
 function sanitiseFill(raw: unknown): LensFill | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
@@ -180,7 +191,8 @@ export function sanitiseLens(raw: unknown): CustomLens {
     // it stores as absent and the two documents stay the same document.
     shapeHue: clamp(finite(source.shapeHue, 0), 0, 1) > 0
       ? clamp(finite(source.shapeHue, 0), 0, 1)
-      : undefined
+      : undefined,
+    kinds: sanitiseKinds(source.kinds)
   };
 }
 

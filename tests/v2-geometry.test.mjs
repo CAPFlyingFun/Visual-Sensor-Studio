@@ -755,7 +755,7 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
       await page.waitForTimeout(400);
 
       // A fresh device carries the starter lens and the Custom + entry.
-      const STARTERS = ['Prism', 'Blue Antenna', 'Coloring Book Style', 'Colour Splash', 'Colour Hide',
+      const STARTERS = ['Blueprint', 'Prism', 'Blue Antenna', 'Coloring Book Style', 'Colour Splash', 'Colour Hide',
         'Paper → Pink', 'Hue Map', 'Colour Strength', 'Rare Colour',
         'Background Subtract', 'Rarity Map', 'Inverted Brightness', 'Relief',
         'Camouflage Breaker', 'Colour Edges', 'Red Channel'];
@@ -1948,10 +1948,20 @@ test('zebra and peaking draw on the preview, and clear again (fake device)',
       // leaves can only be told apart from the picture on a scene with no red
       // in it — counting it over Ironbow measured the ramp's own oranges and
       // "cleared" never came true.
+      /*
+       * AGAINST ITS OWN BASELINE, not against a fixed fraction of the frame.
+       * The fake camera's scene MOVES, so the share of it above the zebra
+       * threshold changes frame to frame; pinned at 0.005 this measured
+       * 0.00415 in a full run and passed twice on its own minutes later.
+       * What the test means is "turning it on marks pixels that were not
+       * marked before", and that survives a moving picture.
+       */
+      const beforeZebra = (await marks()).stripe;
       await page.click('[data-zebra="70"]');
       await page.waitForTimeout(600);
       const striped = await marks();
-      assert.ok(striped.stripe > 0.005, `zebra stripes the bright areas: ${striped.stripe}`);
+      assert.ok(striped.stripe > beforeZebra + 0.002,
+        `zebra stripes the bright areas: ${beforeZebra} -> ${striped.stripe}`);
       assert.match(await page.textContent('#v2ZebraNote'), /skin tones/);
       await page.click('[data-zebra="off"]');
       await page.waitForTimeout(600);

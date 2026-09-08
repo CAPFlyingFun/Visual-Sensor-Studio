@@ -16,6 +16,39 @@ const RED = '#c81e28';
 export const STARTER_LENSES: readonly CustomLens[] = [
   {
     /*
+     * BLUEPRINT — colour by kind, and depth by size.
+     *
+     * Joshua, 2026-09-08: "maybe we can have it look for shapes like
+     * square/rectangle window... each of those types could be a color... the
+     * bigger the size, the more back it is and the smaller, in front."
+     *
+     * Two kinds, not the three he listed, and the note says which is missing
+     * rather than pretending: built things (straight, axis-aligned — windows,
+     * doors, cabinets, screens) against grown ones. Text and "edges that
+     * connect back to themselves" are not per-pixel questions and were cut
+     * after four measured attempts rather than shipped as decoration.
+     *
+     * The depth is his layering, and it is a real measurement: a fine ring
+     * and a broad ring that agree mean the pixel sits inside something large,
+     * so it is dimmed and falls behind the small things in front of it.
+     */
+    version: 1,
+    id: 'lens-v2-blueprint',
+    note: 'Straight, built shapes — windows, doors, cabinets, screens — take one colour and curved, grown ones another, with large shapes dimmed so they sit behind small ones. Two kinds only: text and closed contours need to be traced, not measured, so they are not offered.',
+    name: 'Blueprint',
+    color: { channel: 'luma', low: 0, high: 255, gamma: 0.8 },
+    stops: [
+      { at: 0, color: '#03121f' },
+      { at: 0.5, color: '#2f9fd6' },
+      { at: 1, color: '#eafaff' }
+    ],
+    brightness: { channel: 'edges', low: 0, high: 240, gamma: 0.8 },
+    base: 'black',
+    sceneBlend: 0,
+    kinds: { strength: 0.9, depth: 0.5 }
+  },
+  {
+    /*
      * PRISM — a colour per shape, over Blue Outline's line work.
      *
      * Joshua, 2026-09-08: "is it possible to randomly change colors on

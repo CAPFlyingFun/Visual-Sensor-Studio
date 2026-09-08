@@ -367,6 +367,48 @@ export interface CustomLens {
    * and that is the honest limit of doing this in a single pass.
    */
   shapeHue?: number;
+  /**
+   * Optional SHAPE KINDS — colour by what kind of edge this is, and push the
+   * big things back. Absent means the lens paints one palette.
+   */
+  kinds?: LensShapeKinds;
+}
+
+/**
+ * COLOUR BY KIND, AND DEPTH BY SIZE.
+ *
+ * Joshua, 2026-09-08: "maybe we can have it look for shapes like
+ * square/rectangle window, edges that connect back to itself, texts, etc, and
+ * each of those types could be a color... the bigger the size, the more back
+ * it is and the smaller, in front, to kind of simulate depth."
+ *
+ * TWO OF THOSE ARE MEASURABLE PER PIXEL AND ONE IS NOT, and the difference is
+ * worth stating rather than blurring:
+ *
+ *   RECTILINEAR vs ORGANIC — measurable, and nearly free. The Sobel already
+ *     computes the gradient; its DIRECTION says whether an edge runs with the
+ *     axes. Windows, cabinet doors, screens and picture frames are built from
+ *     horizontal and vertical edges; leaves, hands and folds are not.
+ *
+ *   SIZE, hence depth — measurable. A fine ring and a broad ring that AGREE
+ *     mean the pixel sits inside something large and uniform; disagreeing
+ *     means small detail is nearby. Large reads as far, small as near, which
+ *     is the layering he described.
+ *
+ *   "EDGES THAT CONNECT BACK TO THEMSELVES", and TEXT — not per-pixel
+ *     questions. Closure is a property of a whole contour and needs the
+ *     connected-component labelling this pipeline deliberately does not run;
+ *     text needs to be read, not measured. The closest honest proxy for
+ *     closure is already here — an edge bounding a filled region usually IS a
+ *     closed contour — and fine dense detail is reported as its own kind
+ *     WITHOUT being called text, because it cannot tell lettering from a
+ *     patterned tea towel.
+ */
+export interface LensShapeKinds {
+  /** 0..1 — how strongly the kind sets the colour. */
+  strength: number;
+  /** 0..1 — how far large shapes are pushed back behind small ones. */
+  depth: number;
 }
 
 /**

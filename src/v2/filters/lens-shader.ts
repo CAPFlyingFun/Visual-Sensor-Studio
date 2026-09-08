@@ -77,7 +77,7 @@ export function lensRevision(lens: CustomLens): string {
   const text = JSON.stringify([
     lens.color, lens.brightness ?? null, lens.stops, lens.base, lens.sceneBlend,
     lens.output ?? 'paint', lens.reference ?? '', lens.target ?? '',
-    lens.brightnessFloor ?? 0, lens.fill ?? null, lens.shapeHue ?? 0
+    lens.brightnessFloor ?? 0, lens.fill ?? null, lens.shapeHue ?? 0, lens.kinds ?? null
   ]);
   let hash = 5381;
   for (let i = 0; i < text.length; i++) hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
@@ -262,6 +262,29 @@ const RING_STATS_GLSL = `vec2 ringStats(vec2 uv, vec2 r) {
   return vec2(mean, max(q * 0.125 - mean * mean, 0.0));
 }`;
 
+/**
+ * ONE READING OF "AROUND HERE", shared by every feature that needs it.
+ *
+ * x  the fine ring's mean        y  the broad ring's mean
+ * z  the fine ring's deviation   w  the broad ring's deviation
+ *
+ * Sixteen taps, taken once. The fill, the shape hue and the kinds all ask the
+ * same question about the same neighbourhood, and three private copies would
+ * be forty-eight taps and three chances to disagree about where "here" ends.
+ */
+function ringKeyGlsl(broad: number): string {
+  return `const float RING_REFERENCE = 900.0;
+const float RING_FINE = 4.3;
+const float RING_BROAD = ${glslFloat(broad)};
+
+vec4 ringKey(vec2 uv) {
+  vec2 unit = frameStep(RING_REFERENCE);
+  vec2 f = ringStats(uv, unit * RING_FINE);
+  vec2 w = ringStats(uv, unit * RING_BROAD);
+  return vec4(f.x, w.x, sqrt(f.y), sqrt(w.y));
+}`;
+}
+
 const FILL_REFERENCE = 900;
 
 /**
@@ -278,26 +301,28 @@ const FILL_REFERENCE = 900;
 const ROUGH_LO = 0.022;
 const ROUGH_HI = 0.070;
 
+/**
+ * The broad ring's radius, from the lens's Detail setting.
+ *
+ * Fine ←→ Broad: how much detail is smoothed away before a patch is asked
+ * what level it sits at. Small shapes survive a fine setting; a broad one
+ * reads the picture in slabs. The FINE ring is fixed at 4.3 whatever this
+ * says — it has one job, "is this grain?", and grain is only grain at the
+ * scale of grain; asked at a broad radius it calls every object boundary
+ * texture and cuts a dark halo just inside every outline.
+ */
+function broadRadius(lens: CustomLens): number {
+  return lens.fill ? 3 + 15 * Math.min(1, Math.max(0, lens.fill.scale)) : 8;
+}
+
 function fillGlsl(fill: NonNullable<CustomLens['fill']>): string {
-  // Fine ←→ Broad: how much detail is smoothed away before a patch is asked
-  // what level it sits at. Small shapes survive a fine setting; a broad one
-  // reads the picture in slabs.
-  const broad = 3 + 15 * Math.min(1, Math.max(0, fill.scale));
-  // The texture ring stays SMALL whatever the detail setting. It has one job
-  // — is this grain? — and grain is only grain at the scale of grain; asked
-  // at a broad radius it reports every object boundary as texture and cuts a
-  // dark halo just inside every outline.
-  const fine = 4.3;
   // Eager ← sensitivity → strict, in distance from the room's own level.
   // Measured on the built scene (background 0.070): flat wall 0.007, door
   // 0.044, picture frame 0.110, lamp 0.573. The band has to clear the wall
   // and admit the door, and those two are a factor of six apart — that
   // margin is the whole of what this control spends.
   const bodyLo = 0.060 - 0.052 * Math.min(1, Math.max(0, fill.sensitivity));
-  return `const float FILL_REFERENCE = ${glslFloat(FILL_REFERENCE)};
-const float FILL_BROAD = ${glslFloat(broad)};
-const float FILL_FINE = ${glslFloat(fine)};
-const float FILL_BODY_LO = ${glslFloat(bodyLo)};
+  return `const float FILL_BODY_LO = ${glslFloat(bodyLo)};
 const float FILL_BODY_HI = ${glslFloat(bodyLo * 2.4)};
 const float FILL_ROUGH_LO = ${glslFloat(ROUGH_LO)};
 const float FILL_ROUGH_HI = ${glslFloat(ROUGH_HI)};
@@ -320,11 +345,7 @@ const float FILL_STRENGTH = ${glslFloat(fill.strength)};
  * samples already taken is what a body's brightness means, it costs nothing
  * extra, and it only goes very bright or very dark when the whole body does.
  */
-vec2 regionFill(vec2 uv) {
-  vec2 unit = frameStep(FILL_REFERENCE);
-  vec2 fine = ringStats(uv, unit * FILL_FINE);
-  vec2 wide = ringStats(uv, unit * FILL_BROAD);
-
+vec2 regionFill(vec4 k) {
   /*
    * THE BODY: how far this patch's level stands from the ROOM's level.
    *
@@ -346,16 +367,16 @@ vec2 regionFill(vec2 uv) {
    *    background answers with zero by construction, because the background
    *    is what set that level.
    */
-  float body = smoothstep(FILL_BODY_LO, FILL_BODY_HI, abs(wide.x - uBackground));
+  float body = smoothstep(FILL_BODY_LO, FILL_BODY_HI, abs(k.y - uBackground));
 
   // And is not simply rough at the scale of its own grain. Without this the
   // popcorn ceiling floods: measured, it goes from 0.31 to 1.00.
-  float coherent = 1.0 - FILL_REJECT * smoothstep(FILL_ROUGH_LO, FILL_ROUGH_HI, sqrt(fine.y));
+  float coherent = 1.0 - FILL_REJECT * smoothstep(FILL_ROUGH_LO, FILL_ROUGH_HI, k.z);
 
   // x: how much body. y: how bright that body is, averaged over both rings —
   // so the Detail control widens the averaging as it widens the reach, and a
   // broad setting reads the picture in flat slabs rather than in speckle.
-  return vec2(clamp(body * coherent, 0.0, 1.0) * FILL_STRENGTH, (fine.x + wide.x) * 0.5);
+  return vec2(clamp(body * coherent, 0.0, 1.0) * FILL_STRENGTH, (k.x + k.y) * 0.5);
 }`;
 }
 
@@ -386,7 +407,6 @@ vec2 regionFill(vec2 uv) {
  */
 function shapeHueGlsl(strength: number): string {
   return `const float SHAPE_HUE = ${glslFloat(strength)};
-const float SHAPE_RING = 8.0;
 const float SHAPE_TONE_STEPS = 7.0;
 const float SHAPE_HUE_STEPS = 9.0;
 
@@ -403,6 +423,101 @@ vec3 shapeTint(vec3 c, float tone, vec3 scene) {
     mix(hsv.x, drawn, SHAPE_HUE),
     clamp(max(hsv.y, 0.62 * SHAPE_HUE), 0.0, 1.0),
     hsv.z));
+}`;
+}
+
+/**
+ * COLOUR BY KIND, AND DEPTH BY SIZE — the shader half of LensShapeKinds.
+ *
+ * Two measurements, each honest about what it is:
+ *
+ * RECTILINEAR-NESS, from the gradient's direction. An axis-aligned edge has
+ * all of its gradient in one component; a diagonal splits it evenly. So
+ * max/(|gx|+|gy|) runs from 0.707 for a perfect diagonal to 1.0 for a
+ * perfect horizontal or vertical, and the whole useful range sits in that
+ * narrow band — which is why the smoothstep is placed where it is rather
+ * than across 0..1, where it would report everything as rectilinear.
+ *
+ * SIZE, from the two rings AGREEING. Inside something large and uniform the
+ * fine and broad neighbourhoods read the same level; near small detail they
+ * do not. That is the band-pass measured and rejected as a FILL signal two
+ * versions ago — it was the wrong answer to "what is a body" and it is the
+ * right answer to "how big is what I am standing on".
+ *
+ * Depth is spent on VALUE alone. Pushing a large shape back by dimming it is
+ * what the eye reads as distance; moving its hue would say it changed kind,
+ * which it did not.
+ */
+function kindsGlsl(kinds: NonNullable<CustomLens['kinds']>): string {
+  return `const float KIND_STRENGTH = ${glslFloat(kinds.strength)};
+const float KIND_DEPTH = ${glslFloat(kinds.depth)};
+/*
+ * THE DIRECTION IS MEASURED COARSELY, and that is the whole difference
+ * between categories and confetti.
+ *
+ * At the edge map's own scale the gradient's direction wobbles from pixel to
+ * pixel along a single contour, so the colour alternated down every line and
+ * the picture came back as rainbow speckle. A step four times wider spans
+ * enough of the edge that a long straight one holds one direction, and it
+ * also suppresses what it should: foliage's gradients disagree at that
+ * distance and cancel, so organic edges stop claiming to be axis-aligned.
+ */
+const float KIND_REFERENCE = 220.0;
+/*
+ * TWO KINDS, AND THERE WERE MEANT TO BE THREE.
+ *
+ * Built things cyan, grown things amber. A third — fine dense detail, for
+ * lettering and patterns — was built, measured on Joshua's own frames four
+ * different ways, and cut. It could not be made to mean anything:
+ *
+ *   grain alone                 every outline in the kitchen came back
+ *                               magenta; the fine ring straddles ANY edge
+ *   grain + rings agreeing      every thin straight line became "text"
+ *   + the broad ring busy too   unchanged, because a broad ring straddles a
+ *                               thin line as well
+ *
+ * Each attempt was a proxy standing in for a question — "is this writing?" —
+ * that a per-pixel test cannot ask. Reading text needs to READ it. Two kinds
+ * that are real beat three where the third is decoration.
+ */
+const float HUE_BUILT = 0.52;
+const float HUE_GROWN = 0.10;
+
+vec3 kindTint(vec3 c, vec2 uv, vec4 rings) {
+  vec3 hsv = rgb2hsv(c);
+  // Nothing the lens left dark is given a kind.
+  if (hsv.z <= 0.001) return c;
+
+  vec2 g = sobelGrad(uv, frameStep(KIND_REFERENCE));
+  float sum = abs(g.x) + abs(g.y);
+  // A gradient too weak to have a direction is not asked for one.
+  float directed = smoothstep(0.02, 0.10, sum);
+  float axis = max(abs(g.x), abs(g.y)) / max(sum, 1e-5);
+  // The band sits where it does because the useful range is narrow: 0.707 is
+  // a perfect diagonal and 1.0 a perfect horizontal or vertical, so a
+  // smoothstep across 0..1 would call the whole picture rectilinear. Where
+  // exactly to put it inside that band is the one number here that wants a
+  // real camera and a real room rather than a screenshot to settle.
+  float built = smoothstep(0.74, 0.93, axis) * directed;
+
+  // HOW BIG IS WHAT I AM STANDING ON. Agreement between the fine and broad
+  // rings means a large uniform neighbourhood; disagreement means small
+  // detail near by. One measurement, used twice below.
+  float big = 1.0 - smoothstep(0.010, 0.075, abs(rings.x - rings.y));
+
+  /*
+   * SNAPPED, NOT BLENDED. Mixing hues by a continuous score puts every
+   * intermediate colour on the screen, which is a gradient wearing the word
+   * "categories". He asked for kinds — "each of those types could be a
+   * color" — so a pixel gets one of two and no blend of them.
+   */
+  float hue = mix(HUE_GROWN, HUE_BUILT, step(0.5, built));
+  float depth = mix(1.0, mix(1.0, 0.45, big), KIND_DEPTH);
+
+  return hsv2rgb(vec3(
+    mix(hsv.x, hue, KIND_STRENGTH),
+    clamp(max(hsv.y, 0.60 * KIND_STRENGTH), 0.0, 1.0),
+    hsv.z * depth));
 }`;
 }
 
@@ -493,8 +608,12 @@ export function compileLens(lens: CustomLens): FilterDefinition {
   // paint mode; mask and swap are showing the camera's own colours and
   // recolouring those would be a different instrument.
   const shapeHue = output === 'paint' ? (lens.shapeHue ?? 0) : 0;
+  // Colour by KIND and colour at RANDOM are two answers to the same question,
+  // so a lens that asks for both gets the kinds — the one that means
+  // something. Both re-colour what the lens painted, so both are paint-mode.
+  const kinds = output === 'paint' ? lens.kinds : undefined;
   const needsGap = [...channels].some((c) => c === 'colourDistance' || c === 'backgroundDistance');
-  const needsHsv = needsGap || output === 'swap' || shapeHue > 0
+  const needsHsv = needsGap || output === 'swap' || shapeHue > 0 || Boolean(kinds)
     || [...channels].some((c) => c === 'hue' || c === 'saturation' || c === 'rarity'
       || c === 'chromaEdge');
   const needsReference = [...channels].some((c) => channelInfo(c).needsReference);
@@ -540,7 +659,7 @@ export function compileLens(lens: CustomLens): FilterDefinition {
   return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + 1e-10)), d / (q.x + 1e-10), q.x);
 }
 ` : '')
-    + (output === 'swap' || shapeHue > 0 ? `vec3 hsv2rgb(vec3 c) {
+    + (output === 'swap' || shapeHue > 0 || kinds ? `vec3 hsv2rgb(vec3 c) {
   vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
   vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
   return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
@@ -554,9 +673,12 @@ export function compileLens(lens: CustomLens): FilterDefinition {
     // relief came first and would not compile.
     + [...channels].sort((a, b) => channelRank(a) - channelRank(b))
       .map(channelGlsl).join('\n') + '\n'
-    + (fill || shapeHue > 0 ? RING_STATS_GLSL : '')
+    + (fill || shapeHue > 0 || kinds
+      ? RING_STATS_GLSL + ringKeyGlsl(broadRadius(lens)) + '\n'
+      : '')
     + (fill ? fillGlsl(fill) + '\n' : '')
-    + (shapeHue > 0 ? shapeHueGlsl(shapeHue) + '\n' : '')
+    + (shapeHue > 0 && !kinds ? shapeHueGlsl(shapeHue) + '\n' : '')
+    + (kinds ? kindsGlsl(kinds) + '\n' : '')
     + normaliseGlsl('normColour', lens.color) + '\n'
     + (lens.brightness ? normaliseGlsl('normBright', lens.brightness) + '\n' : '')
     + `void main() {
@@ -568,20 +690,23 @@ ${lens.color.channel === 'speed' ? `  if (raw <= 0.0) { gl_FragColor = vec4(with
   float t = normColour(raw);
   ${paint}
 ${lens.brightness ? `  c *= mix(${glslFloat(floor)}, 1.0, normBright(ch_${lens.brightness.channel}(vUv)));\n` : ''}\
+${fill || shapeHue > 0 || kinds ? `  // SIXTEEN TAPS, TAKEN ONCE. Every feature below asks the same question
+  // about the same neighbourhood.
+  vec4 k = ringKey(vUv);\n` : ''}\
 ${fill ? `  // THE BODY, UNDER THE EDGE. A per-channel max rather than a blend, so a
   // lit edge keeps every bit of its brightness and only the dark interior is
   // raised — outline at full, body at the fill's own strength, background
   // still black.
-  vec2 fill = regionFill(vUv);
+  vec2 fill = regionFill(k);
   // The body's OWN average brightness sets its tone, read through the same
   // ramp and the same normalisation the outline was painted with — not this
   // one pixel's, which made a lit body mottled.
   c = max(c, texture2D(uRamp, vec2(normColour(fill.y * 255.0), 0.5)).rgb * fill.x);\n` : ''}\
-${shapeHue > 0 ? `  // A COLOUR PER SHAPE, over the outline AND the body it belongs to, so the
-  // two agree. The neighbourhood's average tone is the key: it is what the
-  // fill already measured where there is one, and its own ring where there is
-  // not — one definition of "around here" either way.
-  c = shapeTint(c, ${fill ? 'fill.y' : 'ringStats(vUv, frameStep(900.0) * SHAPE_RING).x'}, scene);\n` : ''}\
+${shapeHue > 0 && !kinds ? `  // A COLOUR PER SHAPE, over the outline AND the body it belongs to, so the
+  // two agree.
+  c = shapeTint(c, (k.x + k.y) * 0.5, scene);\n` : ''}\
+${kinds ? `  // A COLOUR PER KIND, and the big things pushed back behind the small ones.
+  c = kindTint(c, vUv, k);\n` : ''}\
 ${blend > 0 ? `  c = mix(c, vec3(sceneY), ${glslFloat(blend)});\n` : ''}\
   gl_FragColor = vec4(withAids(c, vUv), 1.0);
 }`;

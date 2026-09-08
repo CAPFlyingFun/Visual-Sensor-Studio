@@ -153,7 +153,17 @@ vec2 frameStep(float reference) {
   return vec2(x, x * (uTexel.y / uTexel.x));
 }
 
-float sobelLuma(vec2 uv, vec2 texel) {
+/*
+ * THE GRADIENT ITSELF, because its DIRECTION is a measurement too.
+ *
+ * sobelLuma throws away everything but the magnitude, which is all an edge
+ * map needs. But the same eight taps also say which way the edge runs, and
+ * that is what separates a window frame or a cabinet door from a leaf or a
+ * hand: rectilinear things are built from horizontal and vertical edges and
+ * organic things are not. Split so there is still ONE Sobel (Rule 4) rather
+ * than a second copy that could drift from this one.
+ */
+vec2 sobelGrad(vec2 uv, vec2 texel) {
   float tl = luma(texture2D(uFrame, uv + texel * vec2(-1.0, -1.0)).rgb);
   float  l = luma(texture2D(uFrame, uv + texel * vec2(-1.0,  0.0)).rgb);
   float bl = luma(texture2D(uFrame, uv + texel * vec2(-1.0,  1.0)).rgb);
@@ -162,9 +172,12 @@ float sobelLuma(vec2 uv, vec2 texel) {
   float br = luma(texture2D(uFrame, uv + texel * vec2( 1.0,  1.0)).rgb);
   float  t = luma(texture2D(uFrame, uv + texel * vec2( 0.0, -1.0)).rgb);
   float  b = luma(texture2D(uFrame, uv + texel * vec2( 0.0,  1.0)).rgb);
-  float gx = (tr + 2.0 * r + br) - (tl + 2.0 * l + bl);
-  float gy = (bl + 2.0 * b + br) - (tl + 2.0 * t + tr);
-  return length(vec2(gx, gy));
+  return vec2((tr + 2.0 * r + br) - (tl + 2.0 * l + bl),
+              (bl + 2.0 * b + br) - (tl + 2.0 * t + tr));
+}
+
+float sobelLuma(vec2 uv, vec2 texel) {
+  return length(sobelGrad(uv, texel));
 }
 // The frame's colour histogram (64 texels, red channel = share of the
 // commonest hue) and its prevailing colour as HSV. Both are measurements of

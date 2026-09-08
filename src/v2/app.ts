@@ -4454,6 +4454,34 @@ function renderLensFill(): void {
         + 'recognition: shapes of the same tone and hue will share a colour.'
       : 'Off — one palette for the whole picture. Raise it to give each shape its own colour.';
     holder.appendChild(hueNote);
+    // COLOUR BY KIND, and depth by size. Offered beside the random hue
+    // because they answer the same question; the compiler prefers the kinds
+    // when a lens asks for both, and the note says so.
+    const kindNote = document.createElement('p');
+    kindNote.className = 'hint';
+    kindNote.textContent = draft.kinds
+      ? 'Built things (straight, axis-aligned — windows, doors, screens) take one colour '
+        + 'and grown things another. Large shapes are pushed back behind small ones. '
+        + 'Overrides Shape colour.'
+      : 'Off. Raise it to colour edges by kind — straight, built shapes apart from curved, '
+        + 'grown ones — instead of at random.';
+    holder.appendChild(kindNote);
+    bindingField(holder, 'v2LensKindStrength', 'Colour by kind', { min: 0, max: 1, step: 0.01 },
+      () => draft.kinds?.strength ?? 0,
+      (v) => {
+        const next = Math.min(1, Math.max(0, v));
+        draft.kinds = next > 0 ? { strength: next, depth: draft.kinds?.depth ?? 0.5 } : undefined;
+        renderLensFill();
+      });
+    if (draft.kinds) {
+      bindingField(holder, 'v2LensKindDepth', 'Depth by size', { min: 0, max: 1, step: 0.01 },
+        () => draft.kinds?.depth ?? 0.5,
+        (v) => {
+          const kinds = draft.kinds;
+          if (kinds) kinds.depth = Math.min(1, Math.max(0, v));
+          renderLensFill();
+        });
+    }
     bindingField(holder, 'v2LensShapeHue', 'Shape colour', { min: 0, max: 1, step: 0.01 },
       () => draft.shapeHue ?? 0,
       (v) => {
