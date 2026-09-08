@@ -152,6 +152,12 @@ export interface CaptureOptions {
    */
   lumaRange?: [number, number];
   /**
+   * The frame's modal luma, from the same census. The region fill measures
+   * every patch against it, so a still saved without it would fill against a
+   * background of zero and light up the whole picture.
+   */
+  background?: number;
+  /**
    * Measure how far this frame compresses before it changes, and save at
    * that quality instead of at 1.00. Off means the old behaviour byte for
    * byte. Never changes the PHOTO GEOMETRY — MAX MEANS MAX is about pixels,
@@ -177,7 +183,9 @@ export async function capturePhoto(
   if (!options.preRendered) {
     if (!renderer.uploadFrame(video)) return null;
     if (!renderer.render(filterId, { width: photo.width, height: photo.height },
-      undefined, options.lumaRange ? { lumaRange: options.lumaRange } : undefined)) return null;
+      undefined, options.lumaRange !== undefined || options.background !== undefined
+        ? { lumaRange: options.lumaRange, background: options.background }
+        : undefined)) return null;
   }
 
   photoCanvas ??= document.createElement('canvas');

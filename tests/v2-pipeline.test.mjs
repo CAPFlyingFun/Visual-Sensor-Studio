@@ -806,7 +806,10 @@ test('countMp4Frames reads the video track\'s sample tables, flat and fragmented
 /* --- Milestone E: a lens is data compiled to the one filter shape ---------- */
 
 test('a custom lens compiles to a V2 filter in legacy units, with its own ramp', () => {
-  const [book] = STARTER_LENSES;
+  // By id, not by position: this test is about how a lens COMPILES, and
+  // pinning it to STARTER_LENSES[0] made it fail the day a lens was added
+  // above it.
+  const book = STARTER_LENSES.find((lens) => lens.id === 'lens-mtjarl1w-pcpts4');
   assert.equal(book.name, 'Coloring Book Style');
   assert.deepEqual(JSON.parse(JSON.stringify(sanitiseLens(book))), JSON.parse(JSON.stringify(book)),
     'the starter is already a clean document');

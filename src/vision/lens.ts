@@ -344,6 +344,47 @@ export interface CustomLens {
   reference?: string;
   /** '#rrggbb' — what `swap` recolours matched pixels toward. */
   target?: string;
+  /**
+   * Optional REGION FILL. Absent means the lens draws exactly what it always
+   * drew, which is what every lens written before this existed means.
+   */
+  fill?: LensFill;
+}
+
+/**
+ * REGION FILL — the body of a shape, not a fatter outline.
+ *
+ * Joshua, 2026-09-08, against Smalland's antenna mode: "EDGE THICKENING =
+ * bright border becomes fat. OBJECT FILL = the entire visible object body
+ * gains a luminous value. I want the second."
+ *
+ * A camera has no object IDs, so this is an image-processing approximation
+ * built on ONE measurement made at two scales: the variance of luma over a
+ * ring of eight samples. That single number, read twice, separates the two
+ * things that have to be told apart:
+ *
+ *   FINE ring, high variance   → texture (popcorn ceiling, carpet, grass)
+ *   BROAD ring, high variance  → a boundary is in this neighbourhood, so
+ *                                this pixel is part of, or beside, a shape
+ *
+ * A featureless wall is low at both and stays dark. A popcorn ceiling is high
+ * at both, and the fine reading is what vetoes it — otherwise it would flood
+ * into one bright slab, which is the failure mode this design exists to
+ * avoid. A door face, a lampshade or a picture frame is low fine, high broad,
+ * and fills.
+ *
+ * Four numbers, because ten sliders describing one measurement is a worse
+ * instrument than four that each move something visible.
+ */
+export interface LensFill {
+  /** 0..1 — how bright a filled body is, with a lit edge at full. */
+  strength: number;
+  /** 0..1 — Fine ←→ Broad: the radius the body is gathered over. */
+  scale: number;
+  /** 0..1 — how readily an area fills. 0 strict, 1 eager. */
+  sensitivity: number;
+  /** 0..1 — how hard fine texture is refused. 0 none, 1 hardest. */
+  textureReject: number;
 }
 
 /**

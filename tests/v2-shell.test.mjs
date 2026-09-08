@@ -412,8 +412,15 @@ test('Night stacks at the size the TIER chose, not the size the screen is', () =
   // picture from the preview the shutter was pressed on. The size arguments
   // are unchanged, which is what this test is really guarding.
   assert.match(photoTs, /renderer\.render\(filterId, \{ width: photo\.width, height: photo\.height \},/);
-  assert.match(photoTs, /undefined, options\.lumaRange \? \{ lumaRange: options\.lumaRange \} : undefined/,
+  // THE POINT IS THE `undefined` IN THE THIRD ARGUMENT, not the shape of the
+  // fourth: a still must not advance the live camera's temporal state. The
+  // fourth now carries the background level as well, because the region fill
+  // measures every patch against it and a still rendered without one fills
+  // against zero and lights the whole picture.
+  assert.match(photoTs, /\n\s*undefined, options\.lumaRange !== undefined/,
     'and still passes no stateSize');
+  assert.match(photoTs, /background: options\.background/,
+    'the still carries the census the fill measures against');
 });
 
 test('Night measures its own result, then lifts it, then saves what it lifted', () => {
@@ -645,7 +652,7 @@ test('an imported photo goes through the SAME filters and saves as a new file', 
 
   // ONE shader path: the import renders through renderer.render() with the
   // ACTIVE filter, never a second import-only implementation (Rule 4).
-  assert.match(appTs, /renderer\.uploadStill\(image\)\s*\n\s*\|\| !renderer\.render\(activeFilter, size, undefined, \{ lumaRange: exposure\.range \}\)/);
+  assert.match(appTs, /renderer\.uploadStill\(image\)\s*\n\s*\|\| !renderer\.render\(activeFilter, size, undefined,\n\s*\{ lumaRange: exposure\.range, background: exposure\.mode \}\)/);
   // At the picture's OWN size — an import is not quietly downscaled.
   assert.match(appTs, /const size = frameSize\(image\.naturalWidth, image\.naturalHeight\);/);
   // And saved through the one save path, not a second encoder.
@@ -679,7 +686,7 @@ test('an import cannot disturb the live camera pipeline', () => {
   // carries lumaRange, because without it Grid's stretch fell back to [0,1]
   // and the saved picture differed from the preview — but stateSize stays
   // undefined, which is what keeps the live pipeline undisturbed.
-  assert.match(appTs, /renderer\.render\(activeFilter, size, undefined, \{ lumaRange: exposure\.range \}\)/,
+  assert.match(appTs, /renderer\.render\(activeFilter, size, undefined,\n\s*\{ lumaRange: exposure\.range, background: exposure\.mode \}\)/,
     'an import still passes no stateSize, so no state pass runs');
   // snapshotHistory stays the delivery loop's business alone.
   const importBlock = appTs.slice(appTs.indexOf('function renderImport()'),
@@ -1144,7 +1151,7 @@ test('the still path carries the census, so a saved Grid is the Grid you saw', (
   // the frame unreadable without it. capturePhoto rendered with no extras at
   // all, so every saved Grid silently fell back to [0, 1].
   assert.match(photoTs, /lumaRange\?: \[number, number\];/);
-  assert.match(appTs, /lumaRange: exposure\.range\n\s*\}\);/,
+  assert.match(appTs, /lumaRange: exposure\.range,\n\s*background: exposure\.mode\n\s*\}\);/,
     'the shutter hands over the same census the preview used');
   // Every full-size render path, not just the shutter: the Night save, the
   // import still, and the import clip export all draw at a photo geometry.

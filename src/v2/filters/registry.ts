@@ -190,6 +190,17 @@ uniform vec3 uDominant;
 // CONTRAST-STRETCHED shading, so it needs to know where this frame's darkest
 // and brightest actually sit rather than assuming 0..1.
 uniform vec2 uLumaRange;
+/*
+ * THE FRAME'S PREVAILING LEVEL — the middle of its fullest luma bin, from
+ * the same census that measures the range above, so it costs nothing extra.
+ *
+ * It is the MODE and not the mean on purpose. A bimodal frame — dark walls
+ * under a bright popcorn ceiling, which is the room this was built in — has
+ * a mean that sits between the two and describes no part of the picture, so
+ * the walls read as anomalous as the ceiling. The mode lands on the walls,
+ * which is what a background is.
+ */
+uniform float uBackground;
 uniform float uZebra;
 uniform float uPeak;
 uniform vec2 uAidTexel;

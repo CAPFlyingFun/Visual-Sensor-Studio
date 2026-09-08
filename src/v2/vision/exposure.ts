@@ -33,6 +33,18 @@ export interface ExposureReading {
   bins: Uint8Array;
   /** Mean luma, 0..1. */
   mean: number;
+  /**
+   * MODAL luma, 0..1 — the middle of the fullest bin, which is the level
+   * most of the picture actually sits at.
+   *
+   * The mean is not that, and the difference matters wherever a frame is
+   * bimodal. Joshua's room is: dark walls under a bright popcorn ceiling.
+   * Its mean lands between the two and describes nothing in the picture, so
+   * the walls read as far from it as the ceiling does. The mode lands ON the
+   * walls, which is what "the background of this scene" means. Free here —
+   * the bins are already counted.
+   */
+  mode: number;
   /** Share of pixels whose luminance is clipped, 0..1. */
   clipped: number;
   /** Share of pixels whose luminance is crushed, 0..1. */
@@ -54,6 +66,7 @@ export function emptyExposure(): ExposureReading {
   return {
     bins: new Uint8Array(EXPOSURE_BINS),
     mean: 0,
+    mode: 0,
     range: [0, 1],
     clipped: 0,
     crushed: 0,
@@ -91,7 +104,10 @@ export function buildExposure(data: ArrayLike<number>): ExposureReading {
   }
 
   let peak = 0;
-  for (const count of counts) if (count > peak) peak = count;
+  let peakBin = 0;
+  for (let i = 0; i < EXPOSURE_BINS; i++) {
+    if (counts[i] > peak) { peak = counts[i]; peakBin = i; }
+  }
   const bins = new Uint8Array(EXPOSURE_BINS);
   if (peak > 0) {
     for (let i = 0; i < EXPOSURE_BINS; i++) bins[i] = Math.round(counts[i] / peak * 255);
@@ -100,6 +116,8 @@ export function buildExposure(data: ArrayLike<number>): ExposureReading {
   return {
     bins,
     mean: total / pixels / 255,
+    // The middle of the fullest bin, not its edge.
+    mode: (peakBin + 0.5) / EXPOSURE_BINS,
     range: [low / 255, high / 255],
     clipped: clipped / pixels,
     crushed: crushed / pixels,

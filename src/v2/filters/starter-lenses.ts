@@ -15,6 +15,44 @@ const RED = '#c81e28';
 
 export const STARTER_LENSES: readonly CustomLens[] = [
   {
+    /*
+     * BLUE ANTENNA — Blue Outline's palette with the bodies filled in.
+     *
+     * Joshua's own Blue Outline lens is the starting point and is left
+     * exactly alone: he asked to compare the two side by side, so this is a
+     * second lens rather than an edit of the first. Same channels, same
+     * ramp, same black ground; the whole difference is the fill block.
+     *
+     * The four numbers are where the measurements landed (see
+     * tests/lens-fill.test.mjs, which renders the room they were read on):
+     *
+     *   strength 0.42       the body at a little under half, so a lit edge
+     *                       still reads as the brighter thing
+     *   scale 0.35          fine enough that a lamp and a picture frame stay
+     *                       separate shapes rather than merging into a slab
+     *   sensitivity 0.72    a door sits about 0.044 from the room's level and
+     *                       a bare wall about 0.007; this admits the first
+     *                       and refuses the second
+     *   textureReject 0.90  the popcorn ceiling reads 0.068 rough against
+     *                       0.012 for a lampshade, and unvetoed it floods
+     *                       from 0.31 to 1.00
+     */
+    version: 1,
+    id: 'lens-v2-blue-antenna',
+    note: 'Blue Outline with the shapes filled in: the edge at full brightness, the body behind it at about 40%, and fine texture — popcorn, carpet, grass — refused so it stays detail instead of flooding. Not recognition: it measures how far each patch sits from the room\'s own level.',
+    name: 'Blue Antenna',
+    color: { channel: 'luma', low: 0, high: 255, gamma: 0.8 },
+    stops: [
+      { at: 0, color: '#03121f' },
+      { at: 0.5, color: '#2f9fd6' },
+      { at: 1, color: '#eafaff' }
+    ],
+    brightness: { channel: 'edges', low: 0, high: 240, gamma: 0.8 },
+    base: 'black',
+    sceneBlend: 0,
+    fill: { strength: 0.42, scale: 0.35, sensitivity: 0.72, textureReject: 0.9 }
+  },
+  {
     version: 1,
     id: 'lens-mtjarl1w-pcpts4',
     note: 'Ink lines on cream: edge strength drawn as line art.',

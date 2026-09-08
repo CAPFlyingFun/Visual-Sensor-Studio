@@ -29,7 +29,7 @@ import {
   MIN_STOPS,
   type ChannelId,
   type CustomLens,
-  type LensBase, type LensOutput,
+  type LensBase, type LensFill, type LensOutput,
   type LensBinding,
   type LensStop
 } from './lens.js';
@@ -108,6 +108,50 @@ export function newLensId(): string {
  * half-validated lens reaching the renderer is how a stranger's file turns
  * into a crash in the camera loop.
  */
+/** The four fill numbers, each 0..1. Absent stays absent. */
+function sanitiseFill(raw: unknown): LensFill | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const source = raw as Record<string, unknown>;
+  const fill: LensFill = {
+    strength: clamp(finite(source.strength, 0), 0, 1),
+    scale: clamp(finite(source.scale, 0.5), 0, 1),
+    sensitivity: clamp(finite(source.sensitivity, 0.5), 0, 1),
+    textureReject: clamp(finite(source.textureReject, 0.7), 0, 1)
+  };
+  // Strength zero IS off, and off is the absence of the block rather than a
+  // block that says nothing — so a lens with the fill turned down to nothing
+  // is byte-for-byte the lens that never had one.
+  return fill.strength > 0 ? fill : undefined;
+}
+
+/**
+ * The fill keys this build understands. Anything else in a `fill` block is
+ * REPORTED rather than quietly dropped — see unsupportedFillKeys.
+ */
+const FILL_KEYS = new Set(['strength', 'scale', 'sensitivity', 'textureReject']);
+
+/**
+ * Fill keys a document carries that this build does nothing with.
+ *
+ * This exists because of a real afternoon: a lens was written elsewhere with
+ * a hand-designed fill block — enabled, bridgeGapPx, closingRadiusPx,
+ * fillStrength, boundaryCoverage, minRegionAreaPx and six more — and the
+ * import LOOKED like it worked. It loaded, it rendered, and it rendered
+ * exactly the same picture as the lens without the block, because the parser
+ * ignored every field it did not know. An hour was spent adjusting numbers
+ * that nothing read (Joshua, 2026-09-08: "the current lens parser/render
+ * pipeline simply ignores unsupported fill properties").
+ *
+ * A lens is data from a stranger and dropping what cannot be honoured is
+ * right; doing it silently is not.
+ */
+export function unsupportedFillKeys(raw: unknown): string[] {
+  const source = (raw ?? {}) as Record<string, unknown>;
+  const fill = source.fill;
+  if (!fill || typeof fill !== 'object') return [];
+  return Object.keys(fill as Record<string, unknown>).filter((key) => !FILL_KEYS.has(key));
+}
+
 export function sanitiseLens(raw: unknown): CustomLens {
   const source = (raw ?? {}) as Record<string, unknown>;
   const color = sanitiseBinding(source.color, 'speed');
@@ -130,7 +174,8 @@ export function sanitiseLens(raw: unknown): CustomLens {
     sceneBlend: clamp(finite(source.sceneBlend, 0), 0, 1),
     output: OUTPUTS.has(String(source.output)) ? (source.output as LensOutput) : undefined,
     reference: hexOrUndefined(source.reference),
-    target: hexOrUndefined(source.target)
+    target: hexOrUndefined(source.target),
+    fill: sanitiseFill(source.fill)
   };
 }
 

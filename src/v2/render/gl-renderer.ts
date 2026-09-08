@@ -753,6 +753,8 @@ export class GlRenderer {
       histogram?: { bins: Uint8Array; dominant: [number, number, number]; version: number };
       /** The frame's measured [min, max] luma, 0..1 — relief's stretch. */
       lumaRange?: [number, number];
+      /** The frame's modal luma, 0..1 — see uBackground in SHADER_HEADER. */
+      background?: number;
       /** Frames to average together — see render/frame-average.ts. 1 = none. */
       frames?: number;
       /**
@@ -814,6 +816,7 @@ export class GlRenderer {
     const frame = this.frameSize.width > 0 ? this.frameSize : target;
     gl.uniform2f(gl.getUniformLocation(program, 'uAidTexel'),
       1 / frame.width, 1 / frame.height);
+    gl.uniform1f(gl.getUniformLocation(program, 'uBackground'), extras.background ?? 0);
     const range = extras.lumaRange ?? [0, 1];
     gl.uniform2f(gl.getUniformLocation(program, 'uLumaRange'), range[0], range[1]);
     gl.uniform1f(gl.getUniformLocation(program, 'uZebra'), extras.aids?.zebra ?? 0);

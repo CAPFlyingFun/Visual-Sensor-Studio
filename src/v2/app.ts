@@ -83,7 +83,9 @@ import {
 import { buildHistogram, emptyHistogram } from './vision/frame-histogram.js';
 import { matchShare } from './vision/colour-gap.js';
 import { tipFor } from './ui/coach.js';
-import { deleteLens, loadLenses, newLensId, sanitiseLens, saveLens } from '../vision/lens-store.js';
+import {
+  deleteLens, loadLenses, newLensId, sanitiseLens, saveLens, unsupportedFillKeys
+} from '../vision/lens-store.js';
 import { RAMP_PRESETS } from '../vision/lens-preview.js';
 import { GlRenderer, type NightRecovery } from './render/gl-renderer.js';
 import { capturePhoto } from './capture/photo.js';
@@ -410,6 +412,7 @@ function renderPreview(now: number): void {
     // rather than blend two different pictures.
     ...alignmentFor(frames, target),
     lumaRange: exposure.range,
+    background: exposure.mode,
     // VIEWING AIDS reach the preview and nothing else. The photo and clip
     // paths below pass none, so stripes can never be baked into a file.
     aids: {
@@ -2017,7 +2020,8 @@ function renderImport(): boolean {
     return false;
   }
   if (!renderer.uploadStill(image)
-    || !renderer.render(activeFilter, size, undefined, { lumaRange: exposure.range })) {
+    || !renderer.render(activeFilter, size, undefined,
+      { lumaRange: exposure.range, background: exposure.mode })) {
     setText('v2ImportNote', 'That picture could not be rendered.');
     return false;
   }
@@ -2241,7 +2245,8 @@ async function saveImport(): Promise<void> {
     preRendered: true,
     label: `import-${readState().activeFilter}`,
     visuallyLossless: readState().visuallyLossless,
-    lumaRange: exposure.range
+    lumaRange: exposure.range,
+    background: exposure.mode
   });
   if (!still) {
     setText('v2ImportNote', 'The picture rendered but could not be encoded.');
@@ -4021,7 +4026,8 @@ async function takePhoto(): Promise<void> {
         // THE SAME CENSUS THE PREVIEW USED. Grid stretches its height into
         // this range; without it the still fell back to [0, 1] and saved a
         // different picture from the one the shutter was pressed on.
-        lumaRange: exposure.range
+        lumaRange: exposure.range,
+        background: exposure.mode
       });
     }, { now: () => performance.now() });
     if (outcome.still) {
@@ -4416,6 +4422,55 @@ function renderLensBindings(): void {
   blend.replaceChildren();
   bindingField(blend, 'v2LensBlendField', 'Picture', { min: 0, max: 1, step: 0.01 },
     () => draft.sceneBlend, (v) => { draft.sceneBlend = Math.min(1, Math.max(0, v)); });
+  renderLensFill();
+}
+
+/**
+ * REGION FILL — four controls, and only four.
+ *
+ * Joshua asked for the shortest set that covers the behaviour: "Do not create
+ * ten technical sliders if four understandable controls can cover the same
+ * behaviour." Strength at zero IS off, and the document stores it as absent,
+ * so a lens turned all the way down is byte-for-byte a lens that never had a
+ * fill — which is what keeps every older lens loading unchanged.
+ *
+ * Only offered where it does something: the fill lifts a region toward the
+ * RAMP, and mask and swap paint the camera's own colours instead. A control
+ * that silently did nothing would be worse than one that is not there.
+ */
+function renderLensFill(): void {
+  const draft = lensDraft;
+  const holder = document.getElementById('v2LensFill');
+  if (!draft || !holder) return;
+  holder.replaceChildren();
+  const paints = (draft.output ?? 'paint') === 'paint';
+  const note = document.createElement('p');
+  note.className = 'hint';
+  if (!paints) {
+    note.textContent = 'Region fill needs “paint false colour” — the other two modes '
+      + 'keep the camera’s own colours, and there is no ramp to lift a body toward.';
+    holder.appendChild(note);
+    return;
+  }
+  note.textContent = draft.fill
+    ? 'Bodies are filled behind the edges. Strength 0 turns it off.'
+    : 'Off. Raise Fill strength to give coherent shapes a luminous body as well as an outline.';
+  holder.appendChild(note);
+  const fill = draft.fill ?? { strength: 0, scale: 0.35, sensitivity: 0.72, textureReject: 0.9 };
+  const set = (patch: Partial<typeof fill>): void => {
+    const next = { ...fill, ...patch };
+    draft.fill = next.strength > 0 ? next : undefined;
+    renderLensFill();
+  };
+  bindingField(holder, 'v2LensFillStrength', 'Fill strength', { min: 0, max: 1, step: 0.01 },
+    () => fill.strength, (v) => set({ strength: Math.min(1, Math.max(0, v)) }));
+  if (!draft.fill) return;
+  bindingField(holder, 'v2LensFillScale', 'Detail', { min: 0, max: 1, step: 0.01 },
+    () => fill.scale, (v) => set({ scale: Math.min(1, Math.max(0, v)) }));
+  bindingField(holder, 'v2LensFillSensitivity', 'Fills easily', { min: 0, max: 1, step: 0.01 },
+    () => fill.sensitivity, (v) => set({ sensitivity: Math.min(1, Math.max(0, v)) }));
+  bindingField(holder, 'v2LensFillTexture', 'Refuse texture', { min: 0, max: 1, step: 0.01 },
+    () => fill.textureReject, (v) => set({ textureReject: Math.min(1, Math.max(0, v)) }));
 }
 
 function renderLensStops(): void {
@@ -4611,23 +4666,40 @@ function exportLensDraft(): void {
 }
 
 /** Accepts {lenses:[...]}, a bare array, or one lens — every item sanitised on the way in. */
-function importLensDocuments(text: string): CustomLens[] {
+/**
+ * An imported file's lenses, and the fill fields this build did nothing with.
+ *
+ * The second half exists because of a real afternoon. A lens was authored
+ * elsewhere with a hand-designed fill block — enabled, bridgeGapPx,
+ * closingRadiusPx, fillStrength, boundaryCoverage, minRegionAreaPx and six
+ * more — and importing it LOOKED like it worked: it loaded, it rendered, and
+ * it rendered exactly the same picture as the lens without the block, because
+ * the parser dropped every field it did not know. Time went into tuning
+ * numbers that nothing read (Joshua, 2026-09-08: "the current lens
+ * parser/render pipeline simply ignores unsupported fill properties").
+ *
+ * Dropping what cannot be honoured is right — a lens is data from a stranger.
+ * Doing it silently is not.
+ */
+function importLensDocuments(text: string): { lenses: CustomLens[]; ignored: string[] } {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
-    return [];
+    return { lenses: [], ignored: [] };
   }
   const items = Array.isArray(parsed)
     ? parsed
     : parsed && typeof parsed === 'object' && Array.isArray((parsed as { lenses?: unknown }).lenses)
       ? (parsed as { lenses: unknown[] }).lenses
       : [parsed];
-  return items.map(sanitiseLens);
+  const ignored = new Set<string>();
+  for (const item of items) for (const key of unsupportedFillKeys(item)) ignored.add(key);
+  return { lenses: items.map(sanitiseLens), ignored: [...ignored] };
 }
 
 async function importLensFile(file: File): Promise<void> {
-  const imported = importLensDocuments(await file.text());
+  const { lenses: imported, ignored } = importLensDocuments(await file.text());
   if (imported.length === 0) {
     showToast('That file did not contain a lens.');
     return;
@@ -4636,7 +4708,15 @@ async function importLensFile(file: File): Promise<void> {
   syncCustomFilters();
   rebuildLensEntries();
   updateState({ activeFilter: lensFilterId(imported[0]) });
-  showToast(`Imported ${imported.length === 1 ? `“${imported[0].name}”` : `${imported.length} lenses`}`);
+  if (ignored.length > 0) {
+    // Named, not counted: knowing WHICH fields did nothing is the difference
+    // between fixing the document and guessing at it.
+    showToast(`Imported, but this build has no ${ignored.slice(0, 4).join(', ')}`
+      + `${ignored.length > 4 ? ` and ${ignored.length - 4} more` : ''} in a fill — `
+      + 'it understands strength, scale, sensitivity and textureReject.');
+  } else {
+    showToast(`Imported ${imported.length === 1 ? `“${imported[0].name}”` : `${imported.length} lenses`}`);
+  }
   renderPreview(performance.now());
 }
 

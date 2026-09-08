@@ -755,7 +755,7 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
       await page.waitForTimeout(400);
 
       // A fresh device carries the starter lens and the Custom + entry.
-      const STARTERS = ['Coloring Book Style', 'Colour Splash', 'Colour Hide',
+      const STARTERS = ['Blue Antenna', 'Coloring Book Style', 'Colour Splash', 'Colour Hide',
         'Paper → Pink', 'Hue Map', 'Colour Strength', 'Rare Colour',
         'Background Subtract', 'Rarity Map', 'Inverted Brightness', 'Relief',
         'Camouflage Breaker', 'Colour Edges', 'Red Channel'];
@@ -2166,6 +2166,177 @@ test('Reverse flips the picture for the session and restores it (fake device)',
       await page.waitForTimeout(600);
       assert.match(await page.textContent('#v2ReverseRamp'), /Reverse$/,
         'a reload starts from the saved lens');
+
+      await page.close();
+      await context.close();
+    });
+  });
+
+/*
+ * REGION FILL, measured on the GPU.
+ *
+ * The room below is the scene every threshold in fillGlsl was read off, so it
+ * belongs in the suite rather than in a scratch file: change a constant and
+ * this says which of the four things it broke. Four regions, four different
+ * answers required:
+ *
+ *   wall     flat, and the level the background is measured AT — must stay dark
+ *   door     a large flat slab, darker than nothing and brighter than the wall
+ *   lamp     a bright smooth body
+ *   popcorn  dense fine texture, the trap: a naive fill floods it into a slab
+ */
+test('the region fill fills bodies and refuses texture (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({ viewport: { width: 1000, height: 900 } });
+      const page = await context.newPage();
+      const errors = [];
+      page.on('pageerror', (e) => errors.push(String(e)));
+      await page.goto(`${base}/index.html`);
+      await page.waitForTimeout(400);
+
+      const measured = await page.evaluate(async () => {
+        const { GlRenderer } = await import('./app/v2/render/gl-renderer.js');
+        const { compileLens } = await import('./app/v2/filters/lens-shader.js');
+        const { setCustomFilters } = await import('./app/v2/filters/registry.js');
+        const { STARTER_LENSES } = await import('./app/v2/filters/starter-lenses.js');
+
+        const W = 900, H = 1200;
+        const scene = document.createElement('canvas');
+        scene.width = W; scene.height = H;
+        const g = scene.getContext('2d');
+        g.fillStyle = 'rgb(16,16,18)'; g.fillRect(0, 0, W, H);          // wall
+        g.save(); g.beginPath(); g.rect(0, 0, W, 420); g.clip();        // popcorn ceiling
+        g.fillStyle = 'rgb(84,84,86)'; g.fillRect(0, 0, W, 420);
+        // mulberry32, via Math.imul. A plain LCG written in doubles loses its
+        // low bits the moment seed * 1103515245 passes 2^53 and degenerates
+        // into a pattern — which is not texture, and a texture-rejection test
+        // whose texture is a pattern is measuring nothing.
+        let seed = 7;
+        const rnd = () => {
+          seed = (seed + 0x6d2b79f5) | 0;
+          let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+          t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+        for (let n = 0; n < 26000; n++) {
+          const v = 40 + rnd() * 90;
+          g.fillStyle = `rgb(${v | 0},${v | 0},${(v + 2) | 0})`;
+          g.beginPath(); g.arc(rnd() * W, rnd() * 420, 1.4 + rnd() * 2.2, 0, 6.283); g.fill();
+        }
+        g.restore();
+        g.fillStyle = 'rgb(30,29,32)'; g.fillRect(90, 470, 300, 700);   // door
+        g.strokeStyle = 'rgb(64,62,68)'; g.lineWidth = 4;
+        g.strokeRect(90, 470, 300, 700);
+        g.strokeRect(130, 520, 220, 260); g.strokeRect(130, 830, 220, 290);
+        const grad = g.createRadialGradient(640, 900, 10, 640, 900, 150);
+        grad.addColorStop(0, 'rgb(210,208,200)'); grad.addColorStop(1, 'rgb(70,68,66)');
+        g.fillStyle = grad;                                            // lamp
+        g.beginPath(); g.ellipse(640, 900, 150, 120, 0, 0, 6.283); g.fill();
+
+        // The background the shader is given is the frame's MODAL luma, binned
+        // exactly as buildExposure bins it.
+        const data = g.getImageData(0, 0, W, H).data;
+        const counts = new Uint32Array(64);
+        for (let i = 0; i < data.length; i += 4) {
+          const y = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+          counts[Math.min(63, Math.floor(y / 256 * 64))]++;
+        }
+        let peak = 0, peakBin = 0;
+        for (let i = 0; i < 64; i++) if (counts[i] > peak) { peak = counts[i]; peakBin = i; }
+        const background = (peakBin + 0.5) / 64;
+
+        const image = new Image();
+        image.src = scene.toDataURL();
+        await image.decode();
+
+        const out = document.createElement('canvas');
+        out.width = W; out.height = H;
+        const renderer = new GlRenderer(out);
+        if (renderer.unavailableReason) return { skip: renderer.unavailableReason };
+        const antenna = STARTER_LENSES.find((l) => l.id === 'lens-v2-blue-antenna');
+
+        const REGIONS = {
+          wall: [430, 1060, 300, 110], popcorn: [220, 120, 300, 200],
+          door: [160, 570, 160, 160], lamp: [560, 840, 160, 120]
+        };
+        const read = (lens, id) => {
+          const filter = compileLens({ ...lens, id });
+          setCustomFilters([filter]);
+          renderer.uploadStill(image);
+          renderer.render(filter.id, { width: W, height: H }, undefined, { background });
+          const copy = document.createElement('canvas');
+          copy.width = W; copy.height = H;
+          const ctx = copy.getContext('2d');
+          ctx.drawImage(out, 0, 0);
+          const result = {};
+          for (const [name, [x, y, w, h]] of Object.entries(REGIONS)) {
+            const px = ctx.getImageData(x, y, w, h).data;
+            let sum = 0;
+            for (let i = 0; i < px.length; i += 4) {
+              sum += 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2];
+            }
+            result[name] = sum / (px.length / 4);
+          }
+          return result;
+        };
+        // The fine-scale roughness the veto is keyed on, per region, so a
+        // failure says which reading moved rather than only that one did.
+        const rough = (() => {
+          const filter = compileLens({ ...antenna, id: 'probe-rough' });
+          const head = filter.fragment.slice(0, filter.fragment.indexOf('void main()'));
+          setCustomFilters([{ ...filter, id: 'probe-rough', revision: 'rough',
+            fragment: head + 'void main() { gl_FragColor = vec4(vec3('
+              + 'sqrt(ringStats(vUv, frameStep(FILL_REFERENCE) * FILL_FINE).y) * 4.0), 1.0); }' }]);
+          renderer.uploadStill(image);
+          renderer.render('probe-rough', { width: W, height: H }, undefined, { background });
+          const copy = document.createElement('canvas');
+          copy.width = W; copy.height = H;
+          const ctx = copy.getContext('2d');
+          ctx.drawImage(out, 0, 0);
+          const result = {};
+          for (const [name, [x, y, w, h]] of Object.entries(REGIONS)) {
+            const px = ctx.getImageData(x, y, w, h).data;
+            let sum = 0;
+            for (let i = 0; i < px.length; i += 4) sum += px[i];
+            result[name] = +(sum / (px.length / 4) / 255 / 4).toFixed(4);
+          }
+          return result;
+        })();
+        return {
+          background,
+          rough,
+          outline: read({ ...antenna, fill: undefined }, 'probe-outline'),
+          antenna: read(antenna, 'probe-antenna'),
+          unvetoed: read({ ...antenna, fill: { ...antenna.fill, textureReject: 0 } }, 'probe-flood')
+        };
+      });
+
+      assert.deepEqual(errors, [], 'the fill shader compiles and runs');
+      if (measured.skip) {
+        await page.close(); await context.close();
+        return; // no GPU here; the shader text is covered in lens-fill.test.mjs
+      }
+
+      // The background is measured ON the wall, so the wall is the one region
+      // that must be as dark filled as unfilled. This is the check that failed
+      // for the two rejected designs: both lit the bare wall.
+      assert.ok(measured.antenna.wall < measured.outline.wall + 2,
+        `the wall stays dark (${measured.antenna.wall.toFixed(1)} vs ${measured.outline.wall.toFixed(1)})`);
+
+      // A bright smooth body gains a body — this is the whole feature.
+      assert.ok(measured.antenna.lamp > measured.outline.lamp * 3,
+        `the lamp fills (${measured.outline.lamp.toFixed(1)} → ${measured.antenna.lamp.toFixed(1)})`);
+
+      // THE TRAP. Dense fine texture must not flood into a bright slab, and
+      // without the veto it does — which is what the third reading proves.
+      assert.ok(measured.unvetoed.popcorn > measured.antenna.popcorn + 5,
+        `the veto is doing work (${measured.unvetoed.popcorn.toFixed(1)} unvetoed`
+        + ` vs ${measured.antenna.popcorn.toFixed(1)})`);
+      assert.ok(measured.antenna.popcorn < measured.outline.popcorn * 1.35,
+        `the ceiling stays texture (${measured.outline.popcorn.toFixed(1)} →`
+        + ` ${measured.antenna.popcorn.toFixed(1)}; roughness `
+        + JSON.stringify(measured.rough) + ')');
 
       await page.close();
       await context.close();

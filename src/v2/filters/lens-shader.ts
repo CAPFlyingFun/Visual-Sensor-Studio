@@ -77,7 +77,7 @@ export function lensRevision(lens: CustomLens): string {
   const text = JSON.stringify([
     lens.color, lens.brightness ?? null, lens.stops, lens.base, lens.sceneBlend,
     lens.output ?? 'paint', lens.reference ?? '', lens.target ?? '',
-    lens.brightnessFloor ?? 0
+    lens.brightnessFloor ?? 0, lens.fill ?? null
   ]);
   let hash = 5381;
   for (let i = 0; i < text.length; i++) hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
@@ -204,6 +204,134 @@ float ch_chromaEdge(vec2 uv) {
  */
 const COLOUR_GAP = COLOUR_GAP_GLSL;
 
+/**
+ * REGION FILL — the body of a shape, in seventeen taps.
+ *
+ * Joshua, 2026-09-08, against Smalland's antenna mode: "EDGE THICKENING =
+ * bright border becomes fat. OBJECT FILL = the entire visible object body
+ * gains a luminous value. I want the second."
+ *
+ * The method is two rings of eight samples. Sampling a ring gives the mean
+ * for free and the VARIANCE for free with it — the same eight taps — which is
+ * why this costs about what Wash costs rather than what a blur pyramid would.
+ *
+ *   body      how far the patch's own level stands from the ROOM's level
+ *   texture   the fine ring's variance: grain, and grain is not a shape
+ *
+ * IT IS NOT A DILATED EDGE. A dilation spreads the edge MAP, so a thin line
+ * becomes a thick line and the middle of a shape stays as empty as it was.
+ * Nothing here ever looks at the edge map: each pixel is asked about the
+ * picture, so the middle of a slab answers on its own account.
+ *
+ * WHY THIS PASS AND NOT THE STATE PASS. The state pass runs at analysis
+ * resolution and would be about nine times cheaper. It is also SKIPPED for
+ * stills — capture/photo.ts renders with no stateSize — so a fill computed
+ * there would be missing from every photograph while showing in the
+ * viewfinder that framed it. One shader for preview, photo and clip (Rule 4)
+ * is worth the taps.
+ *
+ * The radii are FRAME-RELATIVE for the same reason Ink's hatch and Cel's ink
+ * threshold are: the same shader draws a 1170-wide preview and a 3024-wide
+ * still, and a radius in texels would gather a quarter as much of the picture
+ * in the photograph. A shape must not stop being a shape because it was drawn
+ * bigger.
+ */
+const FILL_REFERENCE = 900;
+
+/**
+ * MEASURED, NOT CHOSEN. Fine-scale standard deviation over the ring, read off
+ * a built room scene (tests/lens-fill.test.mjs renders the same one):
+ *
+ *   flat painted slab   0.000       lamp shade   0.012
+ *   popcorn ceiling     0.068
+ *
+ * The rejection band spans that gap, with its low end lifted clear of the
+ * sensor noise a dim room actually carries rather than sitting at the
+ * synthetic zero.
+ */
+const ROUGH_LO = 0.022;
+const ROUGH_HI = 0.070;
+
+function fillGlsl(fill: NonNullable<CustomLens['fill']>): string {
+  // Fine ←→ Broad: how much detail is smoothed away before a patch is asked
+  // what level it sits at. Small shapes survive a fine setting; a broad one
+  // reads the picture in slabs.
+  const broad = 3 + 15 * Math.min(1, Math.max(0, fill.scale));
+  // The texture ring stays SMALL whatever the detail setting. It has one job
+  // — is this grain? — and grain is only grain at the scale of grain; asked
+  // at a broad radius it reports every object boundary as texture and cuts a
+  // dark halo just inside every outline.
+  const fine = 4.3;
+  // Eager ← sensitivity → strict, in distance from the room's own level.
+  // Measured on the built scene (background 0.070): flat wall 0.007, door
+  // 0.044, picture frame 0.110, lamp 0.573. The band has to clear the wall
+  // and admit the door, and those two are a factor of six apart — that
+  // margin is the whole of what this control spends.
+  const bodyLo = 0.060 - 0.052 * Math.min(1, Math.max(0, fill.sensitivity));
+  return `const float FILL_REFERENCE = ${glslFloat(FILL_REFERENCE)};
+const float FILL_BROAD = ${glslFloat(broad)};
+const float FILL_FINE = ${glslFloat(fine)};
+const float FILL_BODY_LO = ${glslFloat(bodyLo)};
+const float FILL_BODY_HI = ${glslFloat(bodyLo * 2.4)};
+const float FILL_ROUGH_LO = ${glslFloat(ROUGH_LO)};
+const float FILL_ROUGH_HI = ${glslFloat(ROUGH_HI)};
+const float FILL_REJECT = ${glslFloat(fill.textureReject)};
+const float FILL_STRENGTH = ${glslFloat(fill.strength)};
+
+// Mean and variance of luma on a ring of eight. The variance is half the
+// method and it costs nothing beyond the taps the mean already needs.
+vec2 ringStats(vec2 uv, vec2 r) {
+  float s = 0.0;
+  float q = 0.0;
+  float y;
+  y = luma(texture2D(uFrame, uv + vec2( r.x, 0.0)).rgb); s += y; q += y * y;
+  y = luma(texture2D(uFrame, uv + vec2(-r.x, 0.0)).rgb); s += y; q += y * y;
+  y = luma(texture2D(uFrame, uv + vec2(0.0,  r.y)).rgb); s += y; q += y * y;
+  y = luma(texture2D(uFrame, uv + vec2(0.0, -r.y)).rgb); s += y; q += y * y;
+  vec2 d = r * 0.70710678;
+  y = luma(texture2D(uFrame, uv + vec2( d.x,  d.y)).rgb); s += y; q += y * y;
+  y = luma(texture2D(uFrame, uv + vec2( d.x, -d.y)).rgb); s += y; q += y * y;
+  y = luma(texture2D(uFrame, uv + vec2(-d.x,  d.y)).rgb); s += y; q += y * y;
+  y = luma(texture2D(uFrame, uv + vec2(-d.x, -d.y)).rgb); s += y; q += y * y;
+  float mean = s * 0.125;
+  return vec2(mean, max(q * 0.125 - mean * mean, 0.0));
+}
+
+float regionFill(vec2 uv) {
+  vec2 unit = frameStep(FILL_REFERENCE);
+  vec2 fine = ringStats(uv, unit * FILL_FINE);
+  vec2 wide = ringStats(uv, unit * FILL_BROAD);
+
+  /*
+   * THE BODY: how far this patch's level stands from the ROOM's level.
+   *
+   * This is the line between a fill and a fat outline, and it took three
+   * tries to find. Each of the first two was rejected by measurement on a
+   * built scene, not by taste:
+   *
+   * 1. Broad-ring VARIANCE — "is there a boundary near me". True in a band
+   *    around every outline and false in the middle of everything: a soft
+   *    dilation wearing another name. It left a door and a picture frame at
+   *    exactly 0.00.
+   * 2. Broad-ring MEAN — "am I different from what surrounds me". Fills the
+   *    lamp completely (0.00 → 1.00), but it is a band-pass, so a shape only
+   *    fills while it is smaller than the ring: the door stayed at 0.00 while
+   *    the empty WALL beside the lamp reached 0.90. Every object grew a halo
+   *    and the background glowed as brightly as the objects did.
+   * 3. This. Distance from the frame's prevailing level, which the middle of
+   *    a slab answers as loudly as its rim, at any size — and which the
+   *    background answers with zero by construction, because the background
+   *    is what set that level.
+   */
+  float body = smoothstep(FILL_BODY_LO, FILL_BODY_HI, abs(wide.x - uBackground));
+
+  // And is not simply rough at the scale of its own grain. Without this the
+  // popcorn ceiling floods: measured, it goes from 0.31 to 1.00.
+  float coherent = 1.0 - FILL_REJECT * smoothstep(FILL_ROUGH_LO, FILL_ROUGH_HI, sqrt(fine.y));
+  return clamp(body * coherent, 0.0, 1.0) * FILL_STRENGTH;
+}`;
+}
+
 function normaliseGlsl(name: string, binding: LensBinding): string {
   const gamma = binding.gamma > 0 ? binding.gamma : 1;
   return `float ${name}(float raw) {
@@ -281,7 +409,11 @@ export function compileLens(lens: CustomLens): FilterDefinition {
   if (channels.has('relief')) channels.add('edges');
   const temporal = [...channels].some((c) => channelInfo(c).temporal);
   const stateful = [...channels].filter((c) => STATEFUL_CHANNELS.includes(c));
-  const needsLumaRange = channels.has('relief');
+  // The fill measures every patch against the frame's prevailing level,
+  // which rides on the same census the luma range does — so asking for one
+  // asks for both, and a still rendered without it would fill against a
+  // background of zero and light the whole picture.
+  const needsLumaRange = channels.has('relief') || Boolean(lens.fill);
   const output = lens.output ?? 'paint';
   const needsGap = [...channels].some((c) => c === 'colourDistance' || c === 'backgroundDistance');
   const needsHsv = needsGap || output === 'swap'
@@ -295,6 +427,14 @@ export function compileLens(lens: CustomLens): FilterDefinition {
     ? 'vec3(sceneY)'
     : lens.base === 'grey' ? 'vec3(28.0 / 255.0)' : 'vec3(0.0)';
   const blend = Math.min(1, Math.max(0, lens.sceneBlend));
+  /*
+   * FILL IS A PAINT-MODE EFFECT. `mask` keeps the camera's own colours and
+   * `swap` recolours matched pixels; in both, the picture on screen is the
+   * scene rather than the ramp, and lifting a region toward a ramp colour
+   * there would be a third thing the lens does rather than the same thing
+   * done to a body. Ignored rather than refused: a lens is still a lens.
+   */
+  const fill = output === 'paint' ? lens.fill : undefined;
   // The second field DIMS to this and no further. At 0 (the default) it still
   // multiplies straight to black, which is what every lens written before the
   // floor existed meant; above 0 the colour field survives a second field
@@ -336,6 +476,7 @@ export function compileLens(lens: CustomLens): FilterDefinition {
     // relief came first and would not compile.
     + [...channels].sort((a, b) => channelRank(a) - channelRank(b))
       .map(channelGlsl).join('\n') + '\n'
+    + (fill ? fillGlsl(fill) + '\n' : '')
     + normaliseGlsl('normColour', lens.color) + '\n'
     + (lens.brightness ? normaliseGlsl('normBright', lens.brightness) + '\n' : '')
     + `void main() {
@@ -347,6 +488,12 @@ ${lens.color.channel === 'speed' ? `  if (raw <= 0.0) { gl_FragColor = vec4(with
   float t = normColour(raw);
   ${paint}
 ${lens.brightness ? `  c *= mix(${glslFloat(floor)}, 1.0, normBright(ch_${lens.brightness.channel}(vUv)));\n` : ''}\
+${fill ? `  // THE BODY, UNDER THE EDGE. A per-channel max rather than a blend, so a
+  // lit edge keeps every bit of its brightness and only the dark interior is
+  // raised — outline at full, body at the fill's own strength, background
+  // still black. The ramp is read at the same t the edge was painted from, so
+  // a bright shape fills brighter and the palette stays one palette.
+  c = max(c, texture2D(uRamp, vec2(t, 0.5)).rgb * regionFill(vUv));\n` : ''}\
 ${blend > 0 ? `  c = mix(c, vec3(sceneY), ${glslFloat(blend)});\n` : ''}\
   gl_FragColor = vec4(withAids(c, vUv), 1.0);
 }`;
