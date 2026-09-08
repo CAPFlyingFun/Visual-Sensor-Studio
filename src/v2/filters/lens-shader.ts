@@ -297,7 +297,23 @@ vec2 ringStats(vec2 uv, vec2 r) {
   return vec2(mean, max(q * 0.125 - mean * mean, 0.0));
 }
 
-float regionFill(vec2 uv) {
+/*
+ * Returns BOTH halves of the answer: how much of a body is here, and how
+ * bright that body is.
+ *
+ * Joshua, 2026-09-08: "could the brightness of the object set the brightness
+ * of the fill? It could take an average sample in that fill for the average
+ * brightness so it's not super bright or dark unless it all is."
+ *
+ * He is right, and the first version was wrong in a way a kitchen shows
+ * plainly: the body was painted at the ramp position of EACH PIXEL, so a
+ * specular highlight on a jar lit up white while the shadow a few pixels away
+ * dropped to the bottom of the ramp. The body ended up as mottled as the
+ * picture it was supposed to be simplifying. The average of the sixteen
+ * samples already taken is what a body's brightness means, it costs nothing
+ * extra, and it only goes very bright or very dark when the whole body does.
+ */
+vec2 regionFill(vec2 uv) {
   vec2 unit = frameStep(FILL_REFERENCE);
   vec2 fine = ringStats(uv, unit * FILL_FINE);
   vec2 wide = ringStats(uv, unit * FILL_BROAD);
@@ -328,7 +344,11 @@ float regionFill(vec2 uv) {
   // And is not simply rough at the scale of its own grain. Without this the
   // popcorn ceiling floods: measured, it goes from 0.31 to 1.00.
   float coherent = 1.0 - FILL_REJECT * smoothstep(FILL_ROUGH_LO, FILL_ROUGH_HI, sqrt(fine.y));
-  return clamp(body * coherent, 0.0, 1.0) * FILL_STRENGTH;
+
+  // x: how much body. y: how bright that body is, averaged over both rings —
+  // so the Detail control widens the averaging as it widens the reach, and a
+  // broad setting reads the picture in flat slabs rather than in speckle.
+  return vec2(clamp(body * coherent, 0.0, 1.0) * FILL_STRENGTH, (fine.x + wide.x) * 0.5);
 }`;
 }
 
@@ -491,9 +511,12 @@ ${lens.brightness ? `  c *= mix(${glslFloat(floor)}, 1.0, normBright(ch_${lens.b
 ${fill ? `  // THE BODY, UNDER THE EDGE. A per-channel max rather than a blend, so a
   // lit edge keeps every bit of its brightness and only the dark interior is
   // raised — outline at full, body at the fill's own strength, background
-  // still black. The ramp is read at the same t the edge was painted from, so
-  // a bright shape fills brighter and the palette stays one palette.
-  c = max(c, texture2D(uRamp, vec2(t, 0.5)).rgb * regionFill(vUv));\n` : ''}\
+  // still black.
+  vec2 fill = regionFill(vUv);
+  // The body's OWN average brightness sets its tone, read through the same
+  // ramp and the same normalisation the outline was painted with — not this
+  // one pixel's, which made a lit body mottled.
+  c = max(c, texture2D(uRamp, vec2(normColour(fill.y * 255.0), 0.5)).rgb * fill.x);\n` : ''}\
 ${blend > 0 ? `  c = mix(c, vec3(sceneY), ${glslFloat(blend)});\n` : ''}\
   gl_FragColor = vec4(withAids(c, vUv), 1.0);
 }`;

@@ -77,7 +77,7 @@ test('fill fields this build cannot honour are NAMED, never silently dropped', (
 test('the fill is a body signal, not a dilated edge', () => {
   const filter = compileLens(sanitiseLens({ ...BLUE_OUTLINE, fill: FILL }));
   const code = filter.fragment;
-  assert.ok(code.includes('float regionFill(vec2 uv)'), 'the fill is emitted');
+  assert.ok(code.includes('vec2 regionFill(vec2 uv)'), 'the fill is emitted');
 
   // THE LOAD-BEARING LINE. The body is distance from the frame's prevailing
   // level, which the middle of a slab answers as loudly as its rim. Two
@@ -94,9 +94,20 @@ test('the fill is a body signal, not a dilated edge', () => {
 
   // Composed UNDER the edge: a per-channel max, so a lit outline keeps all of
   // its brightness and only the dark interior is raised.
-  assert.match(code, /c = max\(c, texture2D\(uRamp, vec2\(t, 0\.5\)\)\.rgb \* regionFill\(vUv\)\)/);
+  assert.match(code, /c = max\(c, texture2D\(uRamp, vec2\(normColour\(fill\.y \* 255\.0\), 0\.5\)\)\.rgb \* fill\.x\)/);
   assert.ok(code.indexOf('c *= mix(') < code.indexOf('c = max(c,'),
     'the edge term is applied before the body is put under it');
+
+  // THE BODY'S TONE IS ITS OWN AVERAGE, not this pixel's. Painted at the
+  // per-pixel ramp position a specular highlight on a jar went white while
+  // the shadow beside it dropped to the bottom of the ramp, and the body came
+  // out as mottled as the picture it was meant to simplify (Joshua's kitchen,
+  // 2026-09-08). A regression to `vec2(t, 0.5)` here would look like nothing
+  // in a test that only asked whether a fill was emitted.
+  assert.ok(!/regionFill\(vUv\)\)/.test(code.slice(code.indexOf('c = max(c,'))),
+    'the fill is read once into a vec2, not called inline for its amount alone');
+  assert.match(code, /return vec2\(clamp\(body \* coherent[^;]*, \(fine\.x \+ wide\.x\) \* 0\.5\);/,
+    'and the second component is the mean of the samples already taken');
 
   // The radii are frame-relative, so a 3024-wide still is the same picture as
   // the preview it was framed in rather than a quarter of the reach.
