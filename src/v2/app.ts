@@ -4490,6 +4490,35 @@ function renderLensFill(): void {
         renderLensFill();
       });
   }
+  // THE RULED GRID. Not gated on paint mode — a ruling over a mask or a swap
+  // is just as reasonable, because it is drawn OVER the finished picture
+  // rather than being a way of painting it.
+  const gridNote = document.createElement('p');
+  gridNote.className = 'hint';
+  gridNote.textContent = draft.grid
+    ? `${draft.grid.cells} square cells across the short side. The long side takes whole `
+      + 'cells and the remainder is split at both ends. Compares distances; measures nothing '
+      + 'absolute.'
+    : 'Off. Raise Grid to rule square cells over the picture.';
+  holder.appendChild(gridNote);
+  bindingField(holder, 'v2LensGrid', 'Grid', { min: 0, max: 1, step: 0.01 },
+    () => draft.grid?.strength ?? 0,
+    (v) => {
+      const next = Math.min(1, Math.max(0, v));
+      draft.grid = next > 0 ? { cells: draft.grid?.cells ?? 12, strength: next } : undefined;
+      renderLensFill();
+    });
+  if (draft.grid) {
+    bindingField(holder, 'v2LensGridCells', 'Cells across', { min: 5, max: 30, step: 1 },
+      () => draft.grid?.cells ?? 12,
+      (v) => {
+        const grid = draft.grid;
+        // Whole cells only: half a cell is not a cell.
+        if (grid) grid.cells = Math.round(Math.min(30, Math.max(5, v)));
+        renderLensFill();
+      });
+  }
+
   const note = document.createElement('p');
   note.className = 'hint';
   if (!paints) {

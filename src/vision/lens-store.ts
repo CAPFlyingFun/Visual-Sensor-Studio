@@ -29,7 +29,7 @@ import {
   MIN_STOPS,
   type ChannelId,
   type CustomLens,
-  type LensBase, type LensFill, type LensOutput, type LensShapeKinds,
+  type LensBase, type LensFill, type LensGrid, type LensOutput, type LensShapeKinds,
   type LensBinding,
   type LensStop
 } from './lens.js';
@@ -108,6 +108,17 @@ export function newLensId(): string {
  * half-validated lens reaching the renderer is how a stranger's file turns
  * into a crash in the camera loop.
  */
+/** The ruled grid. 5..30 whole cells across the short side; strength 0 is off. */
+function sanitiseGrid(raw: unknown): LensGrid | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const source = raw as Record<string, unknown>;
+  const grid: LensGrid = {
+    cells: Math.round(clamp(finite(source.cells, 12), 5, 30)),
+    strength: clamp(finite(source.strength, 0), 0, 1)
+  };
+  return grid.strength > 0 ? grid : undefined;
+}
+
 /** Colour by kind and depth by size. Strength zero IS off, so it stores absent. */
 function sanitiseKinds(raw: unknown): LensShapeKinds | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
@@ -192,7 +203,8 @@ export function sanitiseLens(raw: unknown): CustomLens {
     shapeHue: clamp(finite(source.shapeHue, 0), 0, 1) > 0
       ? clamp(finite(source.shapeHue, 0), 0, 1)
       : undefined,
-    kinds: sanitiseKinds(source.kinds)
+    kinds: sanitiseKinds(source.kinds),
+    grid: sanitiseGrid(source.grid)
   };
 }
 

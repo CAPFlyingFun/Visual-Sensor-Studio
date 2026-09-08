@@ -372,6 +372,35 @@ export interface CustomLens {
    * big things back. Absent means the lens paints one palette.
    */
   kinds?: LensShapeKinds;
+  /** Optional ruled GRID over the drawing. Absent means none. */
+  grid?: LensGrid;
+}
+
+/**
+ * A RULED GRID, in square cells.
+ *
+ * Joshua, 2026-09-08: "maybe like a 20x20 grid... or options from 5x5 up to
+ * 30x30. Only issue is with my phone being a 4:3, it would be a 5 x 6.667,
+ * could round down to a 5x6 with a slight gap on each long side."
+ *
+ * He solved it in the asking, and the reason his answer is the right one is
+ * worth writing down: SQUARE CELLS are the whole point. A grid that stretched
+ * its cells to fit both sides would put a different distance in a horizontal
+ * cell than a vertical one, and comparing across the picture — the only thing
+ * a grid like this is good for — would silently lie. So the count is set on
+ * the SHORT side, the long side takes as many whole cells as fit, and the
+ * remainder is split evenly at both ends.
+ *
+ * IT MEASURES NOTHING ABSOLUTE, and the preset's note says so. Equal cells
+ * give you "twice as wide as that" and never "eight inches": a camera has no
+ * idea how far away anything is, and without a known distance in the frame
+ * there is no scale to read off.
+ */
+export interface LensGrid {
+  /** Cells across the SHORT side, 5..30. */
+  cells: number;
+  /** 0..1 — how bright the ruling is. */
+  strength: number;
 }
 
 /**

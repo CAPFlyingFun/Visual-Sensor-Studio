@@ -77,7 +77,8 @@ export function lensRevision(lens: CustomLens): string {
   const text = JSON.stringify([
     lens.color, lens.brightness ?? null, lens.stops, lens.base, lens.sceneBlend,
     lens.output ?? 'paint', lens.reference ?? '', lens.target ?? '',
-    lens.brightnessFloor ?? 0, lens.fill ?? null, lens.shapeHue ?? 0, lens.kinds ?? null
+    lens.brightnessFloor ?? 0, lens.fill ?? null, lens.shapeHue ?? 0, lens.kinds ?? null,
+    lens.grid ?? null
   ]);
   let hash = 5381;
   for (let i = 0; i < text.length; i++) hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
@@ -521,6 +522,53 @@ vec3 kindTint(vec3 c, vec2 uv, vec4 rings) {
 }`;
 }
 
+/**
+ * THE RULED GRID — square cells, and the leftover split at both ends.
+ *
+ * The arithmetic is the whole feature and Joshua wrote it himself: a 4:3
+ * frame at five cells across is 6.667 down, so the long side takes SIX whole
+ * cells and the two thirds of a cell left over becomes an equal margin top
+ * and bottom. Cells stay square, which is the only reason a grid like this is
+ * worth anything — stretching them to fit both sides would put a different
+ * distance in a horizontal cell than a vertical one, and comparing across the
+ * picture would quietly lie.
+ *
+ * It is DRAWN, not measured, and it is drawn in the render rather than in the
+ * viewfinder's composition guides on purpose: those are overlay only and
+ * never reach a file, and a blueprint with no grid in the saved picture is
+ * not a blueprint. Nothing it rules over changes; it is added on top.
+ *
+ * The line's width is frame-relative for the reason Ink's hatch and Cel's ink
+ * threshold are: the same shader draws a 1170-wide preview and a 3024-wide
+ * still, and a width in texels would rule a bold grid on one and a hairline
+ * on the other.
+ */
+function gridGlsl(grid: NonNullable<CustomLens['grid']>): string {
+  return `const float GRID_CELLS = ${glslFloat(Math.round(grid.cells))};
+const float GRID_STRENGTH = ${glslFloat(grid.strength)};
+
+float gridRule(vec2 uv) {
+  vec2 size = vec2(1.0 / max(uTexel.x, 1e-6), 1.0 / max(uTexel.y, 1e-6));
+  // THE COUNT IS ON THE SHORT SIDE. That is what keeps the cells square.
+  float cell = min(size.x, size.y) / GRID_CELLS;
+  vec2 count = floor(size / cell + 0.001);
+  vec2 margin = (size - count * cell) * 0.5;
+  vec2 g = (uv * size - margin) / cell;
+
+  // Pixels to the nearest ruling, on each axis.
+  vec2 toLine = abs(g - floor(g + 0.5)) * cell;
+  // Only inside the ruled area, and the outer border counts as a ruling.
+  vec2 inside = step(-0.5, g) * step(g, count + 0.5);
+  // halfWidth, not the obvious name: that one is RESERVED in GLSL ES 1.00
+  // and a shader using it fails to compile. This build has been bitten by it
+  // once already, and the scan that was meant to catch it never looked at
+  // compiled lenses.
+  float halfWidth = max(0.6, min(size.x, size.y) * 0.0009);
+  float line = 1.0 - smoothstep(halfWidth, halfWidth + 1.0, min(toLine.x, toLine.y));
+  return line * inside.x * inside.y;
+}`;
+}
+
 function normaliseGlsl(name: string, binding: LensBinding): string {
   const gamma = binding.gamma > 0 ? binding.gamma : 1;
   return `float ${name}(float raw) {
@@ -612,6 +660,10 @@ export function compileLens(lens: CustomLens): FilterDefinition {
   // so a lens that asks for both gets the kinds — the one that means
   // something. Both re-colour what the lens painted, so both are paint-mode.
   const kinds = output === 'paint' ? lens.kinds : undefined;
+  // The grid is a DRAWING over the finished picture rather than a way of
+  // painting it, so unlike the fill and the kinds it works in every output
+  // mode — ruling a mask or a swap is just as reasonable.
+  const grid = lens.grid;
   const needsGap = [...channels].some((c) => c === 'colourDistance' || c === 'backgroundDistance');
   const needsHsv = needsGap || output === 'swap' || shapeHue > 0 || Boolean(kinds)
     || [...channels].some((c) => c === 'hue' || c === 'saturation' || c === 'rarity'
@@ -679,6 +731,7 @@ export function compileLens(lens: CustomLens): FilterDefinition {
     + (fill ? fillGlsl(fill) + '\n' : '')
     + (shapeHue > 0 && !kinds ? shapeHueGlsl(shapeHue) + '\n' : '')
     + (kinds ? kindsGlsl(kinds) + '\n' : '')
+    + (grid ? gridGlsl(grid) + '\n' : '')
     + normaliseGlsl('normColour', lens.color) + '\n'
     + (lens.brightness ? normaliseGlsl('normBright', lens.brightness) + '\n' : '')
     + `void main() {
@@ -708,6 +761,10 @@ ${shapeHue > 0 && !kinds ? `  // A COLOUR PER SHAPE, over the outline AND the bo
 ${kinds ? `  // A COLOUR PER KIND, and the big things pushed back behind the small ones.
   c = kindTint(c, vUv, k);\n` : ''}\
 ${blend > 0 ? `  c = mix(c, vec3(sceneY), ${glslFloat(blend)});\n` : ''}\
+${grid ? `  // THE RULING, OVER EVERYTHING. Drawn in the ramp's brightest colour so it
+  // belongs to the same palette, and added rather than blended so it never
+  // takes anything away from the picture underneath it.
+  c = max(c, texture2D(uRamp, vec2(1.0, 0.5)).rgb * gridRule(vUv) * GRID_STRENGTH);\n` : ''}\
   gl_FragColor = vec4(withAids(c, vUv), 1.0);
 }`;
 

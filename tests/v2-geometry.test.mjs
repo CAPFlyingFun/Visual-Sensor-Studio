@@ -755,7 +755,7 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
       await page.waitForTimeout(400);
 
       // A fresh device carries the starter lens and the Custom + entry.
-      const STARTERS = ['Blueprint', 'Prism', 'Blue Antenna', 'Coloring Book Style', 'Colour Splash', 'Colour Hide',
+      const STARTERS = ['Survey', 'Blueprint', 'Prism', 'Blue Antenna', 'Coloring Book Style', 'Colour Splash', 'Colour Hide',
         'Paper → Pink', 'Hue Map', 'Colour Strength', 'Rare Colour',
         'Background Subtract', 'Rarity Map', 'Inverted Brightness', 'Relief',
         'Camouflage Breaker', 'Colour Edges', 'Red Channel'];

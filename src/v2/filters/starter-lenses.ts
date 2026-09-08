@@ -33,9 +33,13 @@ export const STARTER_LENSES: readonly CustomLens[] = [
      * so it is dimmed and falls behind the small things in front of it.
      */
     version: 1,
-    id: 'lens-v2-blueprint',
+    id: 'lens-v2-survey',
     note: 'Straight, built shapes — windows, doors, cabinets, screens — take one colour and curved, grown ones another, with large shapes dimmed so they sit behind small ones. Two kinds only: text and closed contours need to be traced, not measured, so they are not offered.',
-    name: 'Blueprint',
+    // RENAMED. It shipped as "Blueprint" and Joshua pointed out the obvious:
+    // "there is no blue in there". It is cyan and amber, and what it does is
+    // survey what KIND of edge each thing is — so it is called that, and the
+    // name Blueprint went to the lens below that earns it.
+    name: 'Survey',
     color: { channel: 'luma', low: 0, high: 255, gamma: 0.8 },
     stops: [
       { at: 0, color: '#03121f' },
@@ -46,6 +50,38 @@ export const STARTER_LENSES: readonly CustomLens[] = [
     base: 'black',
     sceneBlend: 0,
     kinds: { strength: 0.9, depth: 0.5 }
+  },
+  {
+    /*
+     * BLUEPRINT — line work on a ruled grid, and actually blue.
+     *
+     * Joshua, 2026-09-08: "maybe could add like a blueprint grid overlay with
+     * the same outline stuff to look like a blueprint style image... would be
+     * helpful for measuring although would purposely not have any set sizes."
+     *
+     * The grid is drawn into the RENDER rather than into the viewfinder's
+     * composition guides, which are overlay-only and never reach a file: a
+     * blueprint with no grid in the saved picture is not a blueprint.
+     *
+     * Twelve cells across the short side. On his 4:3 phone that rules twelve
+     * by sixteen whole square cells with no remainder at all, which is a
+     * happy accident of 12; at five it would be five by six with two thirds
+     * of a cell split top and bottom, exactly as he worked out.
+     */
+    version: 1,
+    id: 'lens-v2-blueprint',
+    note: 'Line work on a ruled grid, in blueprint blue. Cells are SQUARE and equal — the count is set across the short side and the long side takes whole cells — so they compare distances but measure nothing absolute: a camera cannot know how far away anything is.',
+    name: 'Blueprint',
+    color: { channel: 'luma', low: 0, high: 255, gamma: 0.8 },
+    stops: [
+      { at: 0, color: '#071a33' },
+      { at: 0.45, color: '#2f6fd0' },
+      { at: 1, color: '#dcebff' }
+    ],
+    brightness: { channel: 'edges', low: 0, high: 240, gamma: 0.8 },
+    base: 'black',
+    sceneBlend: 0,
+    grid: { cells: 12, strength: 0.5 }
   },
   {
     /*
