@@ -884,6 +884,12 @@ function buildFrameAverage(): void {
     button.addEventListener('click', () => {
       updateState({ frameAverage: level.id });
       remember(FRAME_AVERAGE_STORE_KEY, level.id);
+      // DRAWN NOW, for the reason the guides and the reticle are: this note
+      // lives in renderTextPanels, which runs at most every 250ms and can be
+      // deferred by a queued timeout for up to another 250ms — so a tap could
+      // take half a second to change the sentence describing what it just
+      // did. It is keyed, so calling it twice in a frame costs a comparison.
+      renderFrameAverage();
     });
     holder.appendChild(button);
   }

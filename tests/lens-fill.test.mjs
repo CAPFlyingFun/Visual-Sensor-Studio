@@ -368,3 +368,37 @@ test('the grid rules SQUARE cells, counted on the short side', () => {
   }
   assert.notEqual(compileLens(sanitiseLens(BLUE_OUTLINE)).revision, compileLens(lens).revision);
 });
+
+test('the cloud lenses sort by colourlessness, and admit where that fails', () => {
+  const sort = STARTER_LENSES.find((lens) => lens.id === 'lens-v2-cloud-sort');
+  const storm = STARTER_LENSES.find((lens) => lens.id === 'lens-v2-cloud-storm');
+  assert.ok(sort && storm, 'both cloud lenses ship');
+
+  /*
+   * NOT A LUMA RAMP, which is the whole point. Every cloud lens Joshua had
+   * been given was one, and brightness cannot tell a white cloud from bright
+   * sky — both are simply high. A cloud is white by being COLOURLESS.
+   */
+  for (const lens of [sort, storm]) {
+    assert.equal(lens.color.channel, 'colourDistance');
+    assert.equal(lens.reference, '#ffffff');
+    // Range inverted — NEAR white is the top of the ramp, not the bottom.
+    assert.ok(lens.color.low > lens.color.high, 'near white reads high');
+    assert.equal(lens.stops[lens.stops.length - 1].color, '#ffffff', 'cloud is full white');
+    // "green darker": the bottom of the ramp is greener than it is blue.
+    const bottom = lens.stops[0].color;
+    assert.ok(parseInt(bottom.slice(3, 5), 16) >= parseInt(bottom.slice(5, 7), 16),
+      `${lens.name}: the darkest stop is a green, not a blue`);
+  }
+  assert.ok(storm.color.gamma > sort.color.gamma, 'Storm is the steeper curve');
+
+  // THE LIMIT IS IN THE NOTE. colourGap weights hue by the saturation of BOTH
+  // colours and white has none, so a white reference reads only saturation
+  // and brightness. Measured: at golden hour the cloud moves from 25 to 67
+  // while the sky sits at 96, and the lens flattens.
+  assert.match(sort.note, /golden hour/,
+    'the sunset case is stated rather than left to be discovered');
+  assert.match(sort.note, /Pick colour/, 'and the one-tap fix is named');
+  // Storm is a look, not a reading, and says so.
+  assert.match(storm.note, /A look rather than a reading/);
+});

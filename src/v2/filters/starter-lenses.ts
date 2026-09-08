@@ -16,7 +16,7 @@ const RED = '#c81e28';
 export const STARTER_LENSES: readonly CustomLens[] = [
   {
     /*
-     * BLUEPRINT — colour by kind, and depth by size.
+     * SURVEY — colour by kind, and depth by size.
      *
      * Joshua, 2026-09-08: "maybe we can have it look for shapes like
      * square/rectangle window... each of those types could be a color... the
@@ -50,6 +50,78 @@ export const STARTER_LENSES: readonly CustomLens[] = [
     base: 'black',
     sceneBlend: 0,
     kinds: { strength: 0.9, depth: 0.5 }
+  },
+  {
+    /*
+     * CLOUD SORT — a sky sorted by how COLOURLESS each pixel is.
+     *
+     * Joshua, 2026-09-08, on three photographs of clouds: "maybe make green
+     * darker and white more vibrant and blue medium?"
+     *
+     * That is a complete specification; the work was finding what measures
+     * it. Every lens he had been given for this was a LUMA ramp, and
+     * brightness cannot tell a white cloud from bright sky — both are simply
+     * high, which is why they all came back looking like a recoloured
+     * photograph.
+     *
+     * Measured at three points in his own frame:
+     *
+     *              luma   saturation   distance from white
+     *   tree         58           44                   121
+     *   sky         136          118                    92
+     *   cloud       222           33                    25
+     *
+     * Saturation alone fails — trees at 44 and clouds at 33 are nearly the
+     * same reading. Distance from white separates all three, in exactly the
+     * order he asked for, because a cloud is white by being COLOURLESS rather
+     * than by being bright.
+     *
+     * ONE THING TO KNOW, and the note carries it: colourGap weights its hue
+     * term by the saturation of BOTH colours, and white has none — so a white
+     * reference is blind to hue and reads only saturation and brightness. At
+     * golden hour the cloud measures 67 against a sky at 96, where in
+     * daylight it was 25 against 92. It flattens. Sampling a real cloud with
+     * the picker puts it back at 0, against a sky at 154.
+     */
+    version: 1,
+    id: 'lens-v2-cloud-sort',
+    note: 'Sorts a sky by distance from WHITE, not by brightness — measured on a real frame: cloud 25, sky 92, tree 121. At golden hour the cloud moves to 67 and nearly meets the sky at 96, so sample a cloud with Pick colour and it re-sorts around that instead.',
+    name: 'Cloud Sort',
+    color: { channel: 'colourDistance', low: 132, high: 18, gamma: 1 },
+    reference: '#ffffff',
+    stops: [
+      { at: 0, color: '#04150b' },
+      { at: 0.3, color: '#12407e' },
+      { at: 0.52, color: '#2f7fd6' },
+      { at: 0.8, color: '#bfe2ff' },
+      { at: 1, color: '#ffffff' }
+    ],
+    brightness: { channel: 'luma', low: 20, high: 230, gamma: 0.8 },
+    brightnessFloor: 0.12,
+    base: 'black',
+    sceneBlend: 0
+  },
+  {
+    // The same sort, pushed. A look rather than a reading, and the note says
+    // which it is: the drama is in the curve, not in the weather.
+    version: 1,
+    id: 'lens-v2-cloud-storm',
+    note: 'Cloud Storm is Cloud Sort with steeper curves on both fields, so thin cirrus that barely registers in the photograph builds into visible structure. A look rather than a reading: the drama is in the curve, not in the weather.',
+    name: 'Cloud Storm',
+    color: { channel: 'colourDistance', low: 132, high: 18, gamma: 1.25 },
+    reference: '#ffffff',
+    stops: [
+      { at: 0, color: '#03100a' },
+      { at: 0.26, color: '#0c327a' },
+      { at: 0.5, color: '#1f6fd2' },
+      { at: 0.72, color: '#68b9f5' },
+      { at: 0.9, color: '#cdefff' },
+      { at: 1, color: '#ffffff' }
+    ],
+    brightness: { channel: 'luma', low: 15, high: 238, gamma: 0.75 },
+    brightnessFloor: 0.1,
+    base: 'black',
+    sceneBlend: 0
   },
   {
     /*
