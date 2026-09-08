@@ -174,6 +174,8 @@ const ENVELOPE_STORE_KEY = 'vss.v2.encoderEnvelope.v1';
 const FORCE_MAX_STORE_KEY = 'vss.v2.forceMaxRecord.v1';
 const LOSSLESS_STORE_KEY = 'vss.v2.visuallyLossless.v1';
 const TIER_STORE_KEY = 'vss.v2.streamTier.v1';
+const FILTER_STORE_KEY = 'vss.v2.activeFilter.v1';
+const FILTER_START_KEY = 'vss.v2.filterStart.v1';
 
 function storedEnvelopeMeasurement(): EnvelopeMeasurement | null {
   try {
@@ -755,6 +757,85 @@ function showToast(message: string): void {
  * getElementById for the new one: a fresh app.js against a cached older
  * index.html must lose one row of buttons, not every control after it.
  */
+/**
+ * THE LENS THE APP OPENS WITH.
+ *
+ * Joshua, 2026-09-08: "make the app remember the last use lens and have a
+ * settings to load last filter or no filter (RGB)."
+ *
+ * Both halves matter and they pull opposite ways, which is why it is a
+ * choice rather than a default someone has to live with. Coming back to the
+ * lens you were using is what a tool should do. Opening on a false-colour
+ * ramp when you wanted to point the camera at something and just LOOK is
+ * not — and on this app that is a real risk, because several lenses paint a
+ * dim room almost black and read as a broken camera rather than as a lens.
+ */
+function startsOnLastFilter(): boolean {
+  try {
+    // 'last' is the default because it is the behaviour he asked for; the
+    // absence of a stored answer means nobody has chosen yet, not RGB.
+    return localStorage.getItem(FILTER_START_KEY) !== 'rgb';
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * The remembered filter, checked against what this build can actually run.
+ *
+ * Read defensively rather than trusted, exactly as the stream tier is: a
+ * lens that has since been deleted, a filter id from a different version, or
+ * one whose channel this build cannot compute would otherwise leave the app
+ * opening on something that is not there. RGB is the fallback because it is
+ * the one filter that always exists and never hides the picture.
+ */
+function storedActiveFilter(): string {
+  if (!startsOnLastFilter()) return 'rgb';
+  try {
+    const saved = localStorage.getItem(FILTER_STORE_KEY);
+    if (!saved) return 'rgb';
+    const filter = allFilters().find((f) => f.id === saved);
+    // An unavailable filter never looks functional, and opening ON one would
+    // be exactly that.
+    return filter && !filter.unavailableReason ? saved : 'rgb';
+  } catch {
+    return 'rgb';
+  }
+}
+
+/** Two chips: come back to the last lens, or always open on the raw picture. */
+function buildFilterStart(): void {
+  const holder = document.getElementById('v2FilterStartRow');
+  if (!holder) return;
+  for (const [id, label] of [['last', 'Last lens'], ['rgb', 'RGB']] as const) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    button.dataset.filterStart = id;
+    button.addEventListener('click', () => {
+      remember(FILTER_START_KEY, id);
+      renderFilterStart();
+    });
+    holder.appendChild(button);
+  }
+  renderFilterStart();
+}
+
+function renderFilterStart(): void {
+  const holder = document.getElementById('v2FilterStartRow');
+  if (!holder) return;
+  const last = startsOnLastFilter();
+  for (const button of holder.querySelectorAll<HTMLButtonElement>('[data-filter-start]')) {
+    button.classList.toggle('active', (button.dataset.filterStart === 'last') === last);
+  }
+  const note = document.getElementById('v2FilterStartNote');
+  if (note) {
+    note.textContent = last
+      ? 'Opens on the lens you were last using.'
+      : 'Always opens on the camera’s own picture, whatever was in use last.';
+  }
+}
+
 function tierHolders(): HTMLElement[] {
   const holders = [byId('v2StreamTiers')];
   const top = document.getElementById('v2StreamTiersTop');
@@ -3651,7 +3732,33 @@ function renderTextPanels(): void {
   renderPickerLensRow();
 }
 
+/**
+ * REMEMBERED HERE rather than at each place that sets it. The filter is
+ * chosen from the strip, from the viewer's wheel, by an import, by the
+ * picker's shortcut and by a lens being deleted — five paths, and a sixth
+ * would have been added without this one noticing.
+ */
+let rememberedFilter = '';
+/*
+ * NOTHING IS SAVED UNTIL THE BOOT HAS READ WHAT WAS SAVED, and this is not
+ * belt and braces — it is the whole difference between the feature working
+ * and doing nothing.
+ *
+ * subscribe() invokes its listener SYNCHRONOUSLY when it is registered, at
+ * module load, long before the boot lines at the foot of this file run. At
+ * that moment the active filter is still the default, so the listener wrote
+ * 'rgb' over the remembered lens and the boot then read back exactly what it
+ * had just destroyed. Every reload came up on RGB, and the static test that
+ * checks this wiring passed the whole time — a browser found it.
+ */
+let filterMemoryReady = false;
+
 subscribe(() => {
+  const active = readState().activeFilter;
+  if (filterMemoryReady && active !== rememberedFilter) {
+    rememberedFilter = active;
+    remember(FILTER_STORE_KEY, active);
+  }
   renderControls();
   renderViewer();
   renderZoomStops();
@@ -5288,6 +5395,27 @@ buildStreamTiers();
 // later. tierAvailable answers true while the capability is unknown, so a
 // remembered MAX is not refused for lack of evidence at boot.
 applyStreamTier(storedStreamTier());
+/*
+ * THE REMEMBERED LENS, APPLIED AFTER THE LENSES EXIST. storedActiveFilter
+ * looks the id up in allFilters(), so this has to come after loadLensList
+ * and syncCustomFilters or every remembered lens would fail its own check
+ * and fall back to RGB.
+ */
+buildFilterStart();
+/*
+ * PRIMED BEFORE THE STATE MOVES, and that is not a nicety.
+ *
+ * The subscriber writes the active filter to storage whenever it changes.
+ * Booting in RGB mode sets the filter to 'rgb', so without this the very act
+ * of opening the app would overwrite the remembered lens with RGB — and
+ * switching the preference back to "Last lens" would return you to nothing.
+ * Priming the tracker means the boot's own assignment is not a change, so
+ * the remembered lens survives any number of RGB starts.
+ */
+rememberedFilter = storedActiveFilter();
+updateState({ activeFilter: rememberedFilter });
+// From here a change of filter is the person's, not the boot's.
+filterMemoryReady = true;
 buildDock();
 showRoute('camera');
 viewerSetMode(viewerRecall(VIEWER_MODE_KEY, 'photo') === 'video' ? 'video' : 'photo');

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import { compileLens } from '../.test-build/v2/filters/lens-shader.js';
 import { sanitiseLens, unsupportedFillKeys } from '../.test-build/vision/lens-store.js';
@@ -401,4 +402,49 @@ test('the cloud lenses sort by colourlessness, and admit where that fails', () =
   assert.match(sort.note, /Pick colour/, 'and the one-tap fix is named');
   // Storm is a look, not a reading, and says so.
   assert.match(storm.note, /A look rather than a reading/);
+});
+
+test('the app remembers the last lens, and can be told not to open on it', () => {
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+
+  // Written from the SUBSCRIBER, not from each place that sets the filter:
+  // the strip, the viewer's wheel, an import, the picker's shortcut and a
+  // lens being deleted are five paths, and a sixth would have been added
+  // without one of them noticing.
+  const sub = appTs.slice(appTs.indexOf('subscribe(() => {'));
+  assert.match(sub.slice(0, 500), /remember\(FILTER_STORE_KEY, active\)/);
+
+  // READ DEFENSIVELY. A deleted lens, an id from another version, or one
+  // whose channel this build cannot compute must not leave the app opening
+  // on something that is not there — and an unavailable filter never looks
+  // functional, so opening ON one is exactly that.
+  const stored = appTs.slice(appTs.indexOf('function storedActiveFilter'));
+  assert.match(stored.slice(0, 700), /allFilters\(\)\.find\(\(f\) => f\.id === saved\)/);
+  assert.match(stored.slice(0, 700), /filter && !filter\.unavailableReason \? saved : 'rgb'/);
+
+  /*
+   * THE BOOT MUST NOT EAT THE MEMORY, and priming alone did not stop it.
+   *
+   * subscribe() invokes its listener SYNCHRONOUSLY when registered, at module
+   * load, long before the boot lines run — so the listener wrote 'rgb' over
+   * the remembered lens and the boot read back what it had just destroyed.
+   * Every reload came up on RGB while THIS TEST PASSED; a browser found it.
+   * The gate is what actually fixes it, so the gate is what is pinned.
+   */
+  assert.match(sub.slice(0, 500), /if \(filterMemoryReady && active !== rememberedFilter\)/,
+    'nothing is saved until the boot has read what was saved');
+  const boot = appTs.indexOf('rememberedFilter = storedActiveFilter();');
+  assert.ok(boot > 0, 'the tracker is primed at boot');
+  assert.ok(boot < appTs.indexOf('updateState({ activeFilter: rememberedFilter })'),
+    'and primed BEFORE the state moves');
+  assert.ok(appTs.indexOf('filterMemoryReady = true;') > boot,
+    'and the gate opens only after the remembered choice has been applied');
+
+  // Applied after the lenses exist, or every remembered lens would fail its
+  // own lookup and fall back to RGB.
+  assert.ok(appTs.indexOf('syncCustomFilters();\nrebuildLensEntries();') < boot,
+    'the lenses are loaded before the remembered one is looked up');
+
+  // 'last' is the default: no stored answer means nobody has chosen yet.
+  assert.match(appTs, /localStorage\.getItem\(FILTER_START_KEY\) !== 'rgb'/);
 });

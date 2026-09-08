@@ -523,7 +523,7 @@
     <h1>Visual Sensor Studio</h1>
     <span>
       <button type="button" class="chip" id="v2ViewerEnter" title="Full screen viewer">&#9974; Full screen</button>
-      <span class="pill" id="v2Badge">v0.91.0</span>
+      <span class="pill" id="v2Badge">v0.92.0</span>
     </span>
   </header>
 
@@ -657,6 +657,12 @@
               <label class="coach-mute"><input type="checkbox" id="v2CoachMute" /> Don’t show this again</label>
             </div>
           </div>
+          <!-- What the app opens with. A preference, so it lives beside the
+               strip rather than travelling into the viewer's filter wheel —
+               it is set once, not reached for while shooting. -->
+          <div class="section-title" style="margin-top:10px"><h2>On launch</h2></div>
+          <div class="zoom guides" id="v2FilterStartRow" aria-label="Filter on launch"></div>
+          <p class="hint" id="v2FilterStartNote"></p>
           <div class="button-row" id="v2LensActions" hidden>
             <button type="button" class="btn" id="v2ReverseRamp" hidden>🔄 Reverse</button>
             <button type="button" class="btn" id="v2LensEdit">Edit lens</button>
