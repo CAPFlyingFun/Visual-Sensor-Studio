@@ -727,6 +727,31 @@ export class GlRenderer {
     return true;
   }
 
+  /**
+   * The same upload, for a frame HELD from the camera — the negative the
+   * review step keeps after the shutter so the shot can be looked at, and
+   * changed, without asking the camera for it again.
+   *
+   * A third entry point for the same reason the second one exists: the
+   * emptiness tests differ. An ImageBitmap reports width 0 only once it has
+   * been closed, and closing it is exactly what the review does when the
+   * shot is let go — so this is the one source that can go empty UNDER the
+   * caller rather than before it.
+   */
+  uploadHeld(frame: ImageBitmap): boolean {
+    const gl = this.gl;
+    if (!gl || gl.isContextLost() || frame.width === 0) return false;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.frameTexture);
+    try {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame);
+      this.frameSize = { width: frame.width, height: frame.height };
+    } catch {
+      return false;
+    }
+    return true;
+  }
+
   uploadFrame(video: HTMLVideoElement): boolean {
     const gl = this.gl;
     if (!gl || gl.isContextLost() || video.videoWidth === 0) return false;

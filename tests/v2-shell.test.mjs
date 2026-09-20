@@ -890,13 +890,20 @@ test('a shared file carries a MIME the system can map, not the recorder\'s full 
   assert.match(appTs, /\$\{result\.mimeType \|\| 'container unreported'\}/,
     'the clip readout still states exactly what the recorder negotiated');
 
-  // A REFUSED SHARE IS NOT SILENT. Hiding the button with no explanation
-  // reads as "the app cannot save"; the file is in Files either way.
+  // A REFUSED SHARE IS NOT SILENT — and what it says has to be TRUE. Hiding
+  // the button with no explanation reads as "the app cannot save"; saying the
+  // file was "saved to Files instead" was worse, because offerShare has never
+  // written anything to disk and that line described a save that did not
+  // happen.
   const offer = appTs.slice(appTs.indexOf('function offerShare('),
-    appTs.indexOf('function offerShare(') + 1600);
+    appTs.indexOf('function offerShare(') + 2400);
   assert.match(offer, /button\.hidden = true;\s*\n\s*if \(reportTo\) \{/,
     'a device that will not share the file says so');
-  assert.match(offer, /saved to Files instead/, 'and says where the file actually is');
+  assert.match(offer, /nothing has been written to disk/,
+    'and says what is actually so about the file');
+  const claim = offer.slice(offer.indexOf('const note = '));
+  assert.ok(!/saved to Files instead/.test(claim.slice(0, 400)),
+    'no note claims a save this function does not perform');
   // APPENDED, never substituted: the line already carries size, duration and
   // rate, and an explanation that ate them would trade one missing answer
   // for several.

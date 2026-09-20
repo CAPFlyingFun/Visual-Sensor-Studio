@@ -173,9 +173,21 @@ export interface CaptureOptions {
   visuallyLossless?: boolean;
 }
 
+/**
+ * What a still is rendered FROM: the live camera element, or a frame already
+ * held from it.
+ *
+ * Both are the same picture through the same shader at the same size; the
+ * only difference is which upload the texture comes from. That is what lets
+ * the review step re-render a shot — a different clarity, a different lens —
+ * and still be looking at the capture path rather than a second one that
+ * would drift from it (Rule 4).
+ */
+export type StillSource = HTMLVideoElement | ImageBitmap;
+
 export async function capturePhoto(
   renderer: GlRenderer,
-  video: HTMLVideoElement,
+  source: StillSource,
   filterId: string,
   photo: SizedWithReason,
   options: CaptureOptions = {}
@@ -188,7 +200,14 @@ export async function capturePhoto(
   // picture that was already sharp. render() below asks for none, on purpose.
   const t0 = performance.now();
   if (!options.preRendered) {
-    if (!renderer.uploadFrame(video)) return null;
+    // 'videoWidth' in source rather than instanceof: this module is loaded in
+    // environments where the DOM constructor is not a global, and a capture
+    // that threw a ReferenceError there would be a test-only failure wearing
+    // the costume of a camera one.
+    const uploaded = 'videoWidth' in source
+      ? renderer.uploadFrame(source)
+      : renderer.uploadHeld(source);
+    if (!uploaded) return null;
     if (!renderer.render(filterId, { width: photo.width, height: photo.height },
       undefined, {
         lumaRange: options.lumaRange,

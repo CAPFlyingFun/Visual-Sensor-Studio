@@ -2227,8 +2227,19 @@ test('Night saves the STACK, at the tier\'s size, and still consults no lens', (
   // the single most damaging thing this path could get wrong.
   assert.match(nightBlock, /preRendered: true, label: 'night'/);
   const photo = readFileSync(new URL('../src/v2/capture/photo.ts', import.meta.url), 'utf8');
-  assert.match(photo, /if \(!options\.preRendered\) \{[\s\S]{0,200}uploadFrame/,
-    'the upload and the re-render are BOTH skipped for a pre-rendered save');
+  // The GUARD'S OWN BODY, not a character distance from its opening brace:
+  // this used to be /\{[\s\S]{0,200}uploadFrame/ and broke when a comment was
+  // added inside, which says nothing about whether the upload is guarded.
+  const guard = photo.slice(photo.indexOf('if (!options.preRendered) {'));
+  const guarded = guard.slice(0, guard.indexOf('\n  }\n'));
+  assert.match(guarded, /uploadFrame\(source\)/,
+    'a live frame is uploaded only when the canvas is not already holding one');
+  assert.match(guarded, /uploadHeld\(source\)/,
+    'and so is a held one');
+  assert.match(guarded, /renderer\.render\(filterId/,
+    'the re-render is inside the same guard — BOTH are skipped for a '
+    + 'pre-rendered save, or Night would save the single frame that happened '
+    + 'to be arriving instead of its four-second stack');
 
   // MAX MEANS MAX is unchanged: the size saved is the accumulator's own
   // frozen size, which is the photo row the tier resolved — never a

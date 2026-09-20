@@ -372,6 +372,78 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
       const timing = await page.textContent('#v2PhotoTiming');
       assert.match(timing, /Max frame ready \+\d+ ms/, 'the shutter timeline is instrumented');
       assert.match(timing, /Total \d+ ms/);
+
+      // THE SHOT IS HELD WHERE IT CAN BE LOOKED AT. The default shutter no
+      // longer leaves the photo only on the Captures card: the file goes on
+      // screen first, and the card says so instead of offering a Share button
+      // for a picture the review is still able to change.
+      await page.waitForSelector('#v2Review:not([hidden])', { timeout: 5000 });
+      // HEADLESS CHROMIUM CANNOT SHARE AT ALL, so the Save button is hidden
+      // here and a sentence takes its place. That is the honest branch, not a
+      // broken one — iOS, where the app is used, always has a share sheet —
+      // so what is asserted is that the two agree with each other.
+      const canShare = await page.evaluate(() =>
+        typeof navigator.share === 'function');
+      const review = await page.evaluate(() => ({
+        note: document.getElementById('v2ReviewNote')?.textContent ?? '',
+        width: document.getElementById('v2ReviewCanvas').width,
+        height: document.getElementById('v2ReviewCanvas').height,
+        mainShareHidden: document.getElementById('v2SharePhoto').hidden,
+        saveHidden: document.getElementById('v2ReviewSave').hidden
+      }));
+      assert.match(line, / · held for review$/,
+        `the Captures card says where the photo actually is, got "${line}"`);
+      assert.equal(review.mainShareHidden, true,
+        'one photo, one Share button — the card does not offer a second one');
+      assert.deepEqual([review.width, review.height], [savedW, savedH],
+        'the review canvas is the FILE, drawn back at the saved size');
+      assert.match(review.note, /^Held — /,
+        `the review never says "Saved" for a file nothing has written, got "${review.note}"`);
+      assert.match(review.note, /nothing has been written yet/);
+      assert.equal(review.saveHidden, !canShare,
+        'the held shot is shareable exactly where the platform can share it');
+      if (!canShare) {
+        assert.match(review.note, /cannot be shared here/,
+          'and where it cannot, the review says so rather than going quiet');
+      }
+
+      // A CHANGED SETTING RE-RUNS THE CAPTURE. What this measures is the
+      // geometry: the re-run must use the size the shutter HELD, not re-resolve
+      // from the live stream that has since been restored to something smaller.
+      await page.click('#v2ReviewClarity [data-clarity="high"]');
+      // 'busy' is the re-capture's own signal, and the only one that works on
+      // a platform where the Save button never appears.
+      await page.waitForFunction(() => {
+        const note = document.getElementById('v2ReviewNote')?.textContent ?? '';
+        return note.startsWith('Held — ')
+          && !document.getElementById('v2Review').classList.contains('busy');
+      }, null, { timeout: 90000 });
+      const reshot = await page.evaluate(() => ({
+        note: document.getElementById('v2ReviewNote')?.textContent ?? '',
+        width: document.getElementById('v2ReviewCanvas').width,
+        height: document.getElementById('v2ReviewCanvas').height,
+        settingsActive: document.querySelector('#v2ClarityRow .active')?.dataset.clarity ?? '',
+        reviewActive: document.querySelector('#v2ReviewClarity .active')?.dataset.clarity ?? ''
+      }));
+      assert.deepEqual([reshot.width, reshot.height], [savedW, savedH],
+        `the re-capture keeps the held photo geometry, got "${reshot.note}"`);
+      assert.equal(reshot.reviewActive, 'high');
+      assert.equal(reshot.settingsActive, 'high',
+        'two rows of clarity buttons, one idea of which level is on');
+
+      // RETAKE MEANS RETAKE. A discard that left the file shareable on the
+      // card behind would not be one.
+      await page.click('#v2ReviewRetake');
+      // waitForSelector waits for VISIBLE, which a hidden element never is.
+      await page.waitForFunction(() =>
+        document.getElementById('v2Review').hidden === true, null, { timeout: 3000 });
+      const dropped = await page.evaluate(() => ({
+        shareHidden: document.getElementById('v2SharePhoto').hidden,
+        line: document.getElementById('v2PhotoResult')?.textContent ?? ''
+      }));
+      assert.equal(dropped.shareHidden, true,
+        'a retaken photo leaves no Share button behind it');
+      assert.match(dropped.line, /^Retaken — /, `got "${dropped.line}"`);
       // The truth table renders on a throttle, so give the row its beat.
       await page.waitForFunction(([w, h]) =>
         (document.getElementById('v2DiagLastPhoto')?.textContent ?? '').startsWith(`${w}×${h}`),
@@ -1392,7 +1464,7 @@ test('recording truth: native and filtered clips measured from their files (fake
       // instrument: it is the answer to "why is this not in my album?", and
       // headless Chromium takes that branch because it cannot share at all.
       assert.match(summary,
-        /^Saved \d+\.\ds · \d+×\d+( · \d+ fps)? · [\d.]+ MB( · cannot be shared here \([^)]*\) — saved to Files instead; open it there to add it to Photos)?$/,
+        /^Saved \d+\.\ds · \d+×\d+( · \d+ fps)? · [\d.]+ MB( · cannot be shared here \([^)]*\) — this browser has no share sheet, so the file is held in the page and nothing has been written to disk)?$/,
         `the main screen gets the result, not the instruments, got "${summary}"`);
       // The instruments stay in the More readout, where they belong.
       for (const instrument of ['chunk', 'finalised in', 'fed ', 'Mb/s measured']) {

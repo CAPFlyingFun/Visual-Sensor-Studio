@@ -459,6 +459,39 @@
       background: rgba(4, 9, 15, .95); border-top: 1px solid var(--line2);
       backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
     }
+    /* -------------------------------------------------------------------
+       THE REVIEW. Its own fixed layer rather than another viewer slot, and
+       deliberately so: the shutter fires from the full-screen viewer and from
+       the ordinary page alike, and a review that only existed in one of them
+       would be a camera that holds your shot on some days. Above the viewer
+       (61) because for as long as it is up, it IS the screen.
+       ------------------------------------------------------------------- */
+    body[data-review="on"] { overflow: hidden; }
+    /* The review is modal: the page's own furniture goes away under it, the
+       same way it does for the viewer. */
+    body[data-review="on"] .dock, body[data-review="on"] .quickbar { display: none; }
+    .review {
+      position: fixed; inset: 0; z-index: 80;
+      display: flex; flex-direction: column; gap: 8px;
+      background: #000;
+      padding: calc(var(--safe-top) + 8px) 12px calc(var(--safe-bottom) + 10px);
+    }
+    .review[hidden] { display: none; }
+    .review-note { margin: 0; font-size: 11px; line-height: 1.45; color: #c7d5e2; }
+    .review-note strong { color: #ffd34d; font-weight: 700; }
+    /* min-height: 0 or the flex item refuses to shrink and the picture pushes
+       the actions off the bottom of the screen — where Save is not a button. */
+    .review-frame { flex: 1 1 auto; min-height: 0; display: grid; place-items: center; }
+    .review-frame canvas {
+      max-width: 100%; max-height: 100%; width: auto; height: auto;
+      display: block; border-radius: 8px;
+    }
+    .review-bottom { display: grid; gap: 10px; }
+    .review-actions { display: flex; align-items: center; gap: 8px; }
+    .review-actions .btn { flex: 0 0 auto; margin: 0; }
+    .review-actions .share-save { flex: 1 1 auto; margin: 0; }
+    .review.busy .review-frame canvas { opacity: .45; }
+
     /* Only the stage's own toast may outrank the sheets. */
     body.viewer .toast { z-index: 70; bottom: calc(var(--safe-bottom) + 200px); }
 
@@ -523,7 +556,7 @@
     <h1>Visual Sensor Studio</h1>
     <span>
       <button type="button" class="chip" id="v2ViewerEnter" title="Full screen viewer">&#9974; Full screen</button>
-      <span class="pill" id="v2Badge">v0.93.0</span>
+      <span class="pill" id="v2Badge">v0.94.0</span>
     </span>
   </header>
 
@@ -626,6 +659,31 @@
           </div>
         </div>
         <div class="viewer-sheet" id="v2ViewerSheet" hidden></div>
+      </div>
+    </div>
+
+    <!-- THE REVIEW. The shutter always held the shot — nothing in this app
+         has ever written a photo by itself, the JPEG waits for a Share tap —
+         but a hold you cannot look at is indistinguishable from no hold. So
+         the picture below is the FILE, drawn back from the bytes that would
+         go to Photos, and changing clarity re-runs the capture rather than
+         previewing what a capture might do.
+
+         OUTSIDE .viewfinder-wrap, and that is load-bearing rather than
+         tidiness: the wrap is positioned with a z-index of its own, so a
+         child of it is confined to that layer no matter what number it
+         carries — and the dock, at 50, would have painted straight over a
+         review sitting at 80 inside a wrap at 20. -->
+    <div class="review" id="v2Review" hidden>
+      <p class="review-note" id="v2ReviewNote"></p>
+      <div class="review-frame"><canvas id="v2ReviewCanvas"></canvas></div>
+      <div class="review-bottom">
+        <div class="zoom guides" id="v2ReviewClarity" aria-label="Clarity"></div>
+        <div class="review-actions">
+          <button type="button" class="btn" id="v2ReviewRetake">Retake</button>
+          <button type="button" class="btn" id="v2ReviewKeep">Keep</button>
+          <button type="button" class="share-save" id="v2ReviewSave" hidden>Share &middot; Save to Photos</button>
+        </div>
       </div>
     </div>
 
@@ -818,6 +876,16 @@
           </div>
           <div class="zoom guides" id="v2ClarityRow" aria-label="Clarity"></div>
           <p class="hint" id="v2ClarityNote"></p>
+          <label class="coach-mute"><input type="checkbox" id="v2ReviewHold" />
+          <strong>Hold each shot for review</strong> &mdash; on by default</label>
+          <p class="hint">
+            The shutter keeps the frame it fired on, so the saved file can be looked at
+            &mdash; and its clarity changed and the capture re-run &mdash; before it goes
+            anywhere. Off, the shutter behaves exactly as it did: the photo lands on the
+            Captures card and waits there for a Share tap. Holding the frame costs one
+            extra full-size copy at the moment of capture, which is time the camera spends
+            in its escalated mode.
+          </p>
           <button type="button" class="btn" id="v2ExposureToggle" aria-expanded="false">▮ Show histogram</button>
           <div id="v2ExposurePanel" hidden>
             <canvas id="v2ExposureGraph" width="256" height="72"

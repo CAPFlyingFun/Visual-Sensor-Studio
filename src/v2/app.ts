@@ -41,7 +41,8 @@ import {
   rateFrom, readSteadiness, smoothRate, type SteadyReading
 } from './vision/steadiness.js';
 import {
-  resolveGeometry, DEFAULT_GEOMETRY_INPUTS, type GeometryInputs
+  resolveGeometry, DEFAULT_GEOMETRY_INPUTS,
+  type GeometryInputs, type SizedWithReason
 } from './camera/geometry.js';
 import { captureAtMaxStream, type Escalation, type ShutterStream } from './capture/shutter.js';
 import { ClipRecorder, type ClipResult } from './capture/record.js';
@@ -88,7 +89,7 @@ import {
 } from '../vision/lens-store.js';
 import { RAMP_PRESETS } from '../vision/lens-preview.js';
 import { GlRenderer, type NightRecovery } from './render/gl-renderer.js';
-import { capturePhoto } from './capture/photo.js';
+import { capturePhoto, type PhotoResult } from './capture/photo.js';
 import { describeFileSize, describeQuality } from './capture/visually-lossless.js';
 import {
   NIGHT_COUNTDOWN_MS, NIGHT_TARGET_FRAMES, NIGHT_TARGET_MS, NIGHT_TICK_MS,
@@ -177,6 +178,7 @@ const TIER_STORE_KEY = 'vss.v2.streamTier.v1';
 const FILTER_STORE_KEY = 'vss.v2.activeFilter.v1';
 const FILTER_START_KEY = 'vss.v2.filterStart.v1';
 const CLARITY_STORE_KEY = 'vss.v2.clarity.v1';
+const REVIEW_STORE_KEY = 'vss.v2.reviewHold.v1';
 
 function storedEnvelopeMeasurement(): EnvelopeMeasurement | null {
   try {
@@ -875,31 +877,49 @@ function clarityExtras(): { amount: number; floor: number } | undefined {
   return level && level.amount > 0 ? { amount: level.amount, floor: level.floor } : undefined;
 }
 
+/**
+ * The clarity control exists in TWO places — in settings, and on the review
+ * screen where the shot it changes is the thing being looked at. They are two
+ * rows of buttons, never two ideas of what a level means: both are built from
+ * CLARITY_LEVELS, both call setClarityLevel, and both are redrawn from the one
+ * variable it sets (Rule 4).
+ */
+const CLARITY_HOLDERS = ['v2ClarityRow', 'v2ReviewClarity'];
+
+function setClarityLevel(id: string): void {
+  clarityLevel = id;
+  remember(CLARITY_STORE_KEY, id);
+  renderClarity();
+  renderPreview(performance.now());
+  // A held shot is re-captured at the new clarity, not merely re-previewed:
+  // the review's whole claim is that the picture on it is the file.
+  if (held) void refreshReview();
+}
+
 function buildClarity(): void {
-  const holder = document.getElementById('v2ClarityRow');
-  if (!holder) return;
-  for (const level of CLARITY_LEVELS) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = level.label;
-    button.dataset.clarity = level.id;
-    button.addEventListener('click', () => {
-      clarityLevel = level.id;
-      remember(CLARITY_STORE_KEY, level.id);
-      renderClarity();
-      renderPreview(performance.now());
-    });
-    holder.appendChild(button);
+  for (const holderId of CLARITY_HOLDERS) {
+    const holder = document.getElementById(holderId);
+    if (!holder) continue;
+    for (const level of CLARITY_LEVELS) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = level.label;
+      button.dataset.clarity = level.id;
+      button.addEventListener('click', () => setClarityLevel(level.id));
+      holder.appendChild(button);
+    }
   }
   clarityLevel = storedClarity();
   renderClarity();
 }
 
 function renderClarity(): void {
-  const holder = document.getElementById('v2ClarityRow');
-  if (!holder) return;
-  for (const button of holder.querySelectorAll<HTMLButtonElement>('[data-clarity]')) {
-    button.classList.toggle('active', button.dataset.clarity === clarityLevel);
+  for (const holderId of CLARITY_HOLDERS) {
+    const holder = document.getElementById(holderId);
+    if (!holder) continue;
+    for (const button of holder.querySelectorAll<HTMLButtonElement>('[data-clarity]')) {
+      button.classList.toggle('active', button.dataset.clarity === clarityLevel);
+    }
   }
   const note = document.getElementById('v2ClarityNote');
   if (note) {
@@ -3956,7 +3976,15 @@ function shareMimeType(reported: string, fallback: string): string {
   return base || fallback;
 }
 
-function offerShare(buttonId: string, file: File, reportTo?: string): void {
+/**
+ * onShared fires when the share sheet RESOLVES — which WebKit reports for a
+ * completed hand-off and, indistinguishably, for some dismissals. So it is
+ * only ever used to close a screen the file has already left by, never to
+ * claim the file was saved: the review screen closing is not a receipt.
+ */
+function offerShare(
+  buttonId: string, file: File, reportTo?: string, onShared?: () => void
+): void {
   const button = byId<HTMLButtonElement>(buttonId);
   const nav = navigator as Navigator & {
     canShare?: (data: { files: File[] }) => boolean;
@@ -3965,8 +3993,15 @@ function offerShare(buttonId: string, file: File, reportTo?: string): void {
   if (typeof nav.share !== 'function' || nav.canShare?.({ files: [file] }) === false) {
     // HIDDEN, BUT NOT SILENT. A refused file used to remove the button with
     // no explanation, which reads exactly like "the app cannot save" — and
-    // that is the report this change came from. The file HAS been written to
-    // the browser's downloads either way, so say both.
+    // that is the report this change came from.
+    //
+    // What it said INSTEAD was not true: "saved to Files instead" described a
+    // download nothing here performs — offerShare has only ever handed a file
+    // to the share sheet, and the one anchor download in this app belongs to
+    // the lens export. A readout must not fabricate a save any more than it
+    // may fabricate a measurement, so the line now says what is actually so.
+    // Only a browser without a share sheet ever sees it; iOS, where the app
+    // is used, always has one.
     button.hidden = true;
     if (reportTo) {
       const target = byId(reportTo);
@@ -3975,7 +4010,8 @@ function offerShare(buttonId: string, file: File, reportTo?: string): void {
       // that matter — size, duration, rate — and an explanation that ate them
       // would trade one missing answer for several.
       const note = `cannot be shared here (${file.type || 'unknown type'}) — `
-        + 'saved to Files instead; open it there to add it to Photos';
+        + 'this browser has no share sheet, so the file is held in the page '
+        + 'and nothing has been written to disk';
       if (!current.includes('cannot be shared here')) {
         setText(reportTo, current ? `${current} · ${note}` : note);
       }
@@ -3984,7 +4020,7 @@ function offerShare(buttonId: string, file: File, reportTo?: string): void {
   }
   button.hidden = false;
   button.onclick = () => {
-    void nav.share?.({ files: [file] }).catch((error: unknown) => {
+    void nav.share?.({ files: [file] }).then(() => onShared?.()).catch((error: unknown) => {
       // A dismissed sheet is a choice, not an error — WebKit reports that as
       // AbortError. Anything ELSE is the share itself refusing the file, and
       // that refusal is exactly the measurement a "didn't save" report
@@ -4184,6 +4220,259 @@ const CAPTURE_REASONS: Record<Escalation, string> = {
   declined: 'the camera declined a larger mode'
 };
 
+/* --- THE REVIEW: the shot held where it can actually be looked at -------- */
+
+/**
+ * WHY THE SHUTTER NOW KEEPS THE FRAME, NOT JUST THE FILE.
+ *
+ * Joshua, 2026-09-20: "could add it after you take it and before you save
+ * which holds to edit or save." The shutter already held — nothing in this
+ * app has ever written a photo by itself, the JPEG has always waited for a
+ * Share tap — but a hold you cannot see is indistinguishable from no hold at
+ * all, and it certainly cannot be edited.
+ *
+ * So the shutter keeps the FRAME it fired on as well. With the frame in hand
+ * a changed setting is answered by re-running the capture — the same shader,
+ * the same size, the same encoder, the same quality search — rather than by
+ * a preview that would be free to disagree with what saving produces. The
+ * picture on the review screen is drawn back from the file's own bytes for
+ * the same reason.
+ *
+ * The frame is grabbed inside the escalated-stream window, because that is
+ * the only moment the camera is in its maximum mode; a frame taken after the
+ * restore would be a different picture at a different size from the one the
+ * file was made from. That copy is real time spent in the escalated mode,
+ * which is why this is a setting rather than a fact.
+ */
+interface HeldShot {
+  negative: ImageBitmap;
+  photo: SizedWithReason;
+  lumaRange: [number, number];
+  background: number;
+  /** The current file — replaced whole whenever the capture is re-run. */
+  still: PhotoResult;
+  /** Whatever the shutter had to say about the stream restore, carried along. */
+  tail: string;
+}
+
+let held: HeldShot | null = null;
+/** Which re-capture is the current one, so a later change outranks an earlier. */
+let reviewRun = 0;
+
+function storedReviewHold(): boolean {
+  try {
+    return localStorage.getItem(REVIEW_STORE_KEY) !== 'no';
+  } catch {
+    return true;
+  }
+}
+let reviewHold = storedReviewHold();
+
+/**
+ * getElementById, never byId, for everything in this section — a fresh app.js
+ * booting against a cached older index.html must cost the review and nothing
+ * else (the 2026-09-03 lesson, same as the viewer's).
+ */
+function reviewEl<T extends HTMLElement>(id: string): T | null {
+  return document.getElementById(id) as T | null;
+}
+
+function reviewText(id: string, text: string): void {
+  const node = reviewEl(id);
+  if (node) node.textContent = text;
+}
+
+/**
+ * ONE line for a finished still, three callers: the shutter, the review, and
+ * the Captures card after the review is let go. The verb is a parameter
+ * because "Saved" would be a lie on a screen whose whole point is that
+ * nothing has been written yet.
+ */
+function stillLine(verb: string, still: PhotoResult, tail = ''): string {
+  return `${verb} ${still.width}×${still.height} · `
+    + `${describeFileSize(still.bytes)} JPEG · `
+    + `${describeQuality(still.choice)} · `
+    + `${still.reason}${tail}`;
+}
+
+/** The fired-on frame, kept as a texture the GPU can be handed again. */
+async function grabNegative(source: HTMLVideoElement): Promise<ImageBitmap | null> {
+  if (typeof createImageBitmap !== 'function' || source.videoWidth === 0) return null;
+  try {
+    return await createImageBitmap(source);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Draw the encoded file back from its own bytes.
+ *
+ * Not the render that made it: a JPEG is what actually reaches Photos, and a
+ * review that showed the pre-encode render would be hiding the one stage
+ * that can still change the picture. A draw that fails CLEARS the canvas —
+ * leaving the previous shot up under a note describing this one is exactly
+ * the readout-fabricates-a-measurement failure, in pictures.
+ */
+async function drawHeld(still: PhotoResult): Promise<boolean> {
+  const canvas = reviewEl<HTMLCanvasElement>('v2ReviewCanvas');
+  if (!canvas) return false;
+  const context = canvas.getContext('2d');
+  let bitmap: ImageBitmap | null = null;
+  if (typeof createImageBitmap === 'function') {
+    try {
+      bitmap = await createImageBitmap(still.blob);
+    } catch {
+      bitmap = null;
+    }
+  }
+  if (!bitmap || !context) {
+    canvas.width = 1;
+    canvas.height = 1;
+    bitmap?.close();
+    return false;
+  }
+  try {
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    context.drawImage(bitmap, 0, 0);
+  } finally {
+    bitmap.close();
+  }
+  return true;
+}
+
+/**
+ * Put the current held file on screen and wire the button that shares it.
+ *
+ * Carries the run it was started for, because drawing the file back is an
+ * await: a tap that starts a re-capture while this one is still decoding must
+ * not have its "re-running…" note overwritten, and its Share button re-armed,
+ * with the PREVIOUS version of the picture.
+ */
+async function showHeld(still: PhotoResult, run: number): Promise<void> {
+  const drawn = await drawHeld(still);
+  if (run !== reviewRun || held?.still !== still) return;
+  const line = stillLine('Held —', still);
+  reviewText('v2ReviewNote', drawn
+    ? `${line} · nothing has been written yet`
+    : `${line} · this build could not draw the file back, so the frame above `
+      + 'is NOT it — save and check the result in Photos');
+  const save = reviewEl<HTMLButtonElement>('v2ReviewSave');
+  if (!save) return;
+  offerShare('v2ReviewSave',
+    new File([still.blob], still.fileName, { type: 'image/jpeg' }),
+    'v2ReviewNote', () => closeReview(true));
+}
+
+/** Open the review on a shot. False means it could not be shown at all. */
+function openReview(shot: HeldShot): boolean {
+  const layer = reviewEl('v2Review');
+  if (!layer) return false;
+  // A shot already held is let go first. The shutter is behind this layer and
+  // cannot normally be reached while it is up, but a negative dropped without
+  // close() is a full-size GPU frame that nothing ever reclaims.
+  releaseHeld();
+  held = shot;
+  layer.hidden = false;
+  layer.classList.remove('busy');
+  document.body.dataset.review = 'on';
+  void showHeld(shot.still, reviewRun);
+  return true;
+}
+
+function releaseHeld(): void {
+  held?.negative.close();
+  held = null;
+  reviewRun++;
+}
+
+/**
+ * Leave the review. `keep` hands the file to the Captures card exactly as an
+ * unreviewed shutter would; anything else has to say plainly that the picture
+ * is gone, because a Retake that quietly left the photo shareable somewhere
+ * else would not be a retake.
+ */
+function closeReview(keep: boolean): void {
+  const still = held?.still ?? null;
+  const tail = held?.tail ?? '';
+  releaseHeld();
+  const layer = reviewEl('v2Review');
+  if (layer) {
+    layer.hidden = true;
+    layer.classList.remove('busy');
+  }
+  delete document.body.dataset.review;
+  const save = reviewEl<HTMLButtonElement>('v2ReviewSave');
+  if (save) save.hidden = true;
+  if (keep && still) {
+    offerShare('v2SharePhoto',
+      new File([still.blob], still.fileName, { type: 'image/jpeg' }), 'v2PhotoResult');
+    setText('v2PhotoResult', stillLine('Saved', still, tail));
+  } else {
+    byId<HTMLButtonElement>('v2SharePhoto').hidden = true;
+    setText('v2PhotoResult', 'Retaken — that photo was never written anywhere.');
+  }
+}
+
+/**
+ * Re-run the capture on the held frame at whatever the settings now say.
+ *
+ * The share button goes away for the duration on purpose: while this is
+ * running, the file the button holds is no longer the file the screen is
+ * about to describe, and a button that saves the previous version under the
+ * new version's readout is the worst of both.
+ */
+async function refreshReview(): Promise<void> {
+  const shot = held;
+  if (!shot) return;
+  const run = ++reviewRun;
+  const layer = reviewEl('v2Review');
+  layer?.classList.add('busy');
+  const save = reviewEl<HTMLButtonElement>('v2ReviewSave');
+  if (save) save.hidden = true;
+  reviewText('v2ReviewNote', 'Re-running the capture at the new setting…');
+  const still = await capturePhoto(
+    renderer, shot.negative, readState().activeFilter, shot.photo, {
+      visuallyLossless: readState().visuallyLossless,
+      lumaRange: shot.lumaRange,
+      background: shot.background,
+      clarity: clarityExtras()
+    });
+  // A newer change, or a retake, owns the screen now — this answer is stale.
+  if (run !== reviewRun || held !== shot) return;
+  layer?.classList.remove('busy');
+  if (!still) {
+    // The shot the shutter took goes back up, readout and Share button and
+    // all, with the failure APPENDED rather than substituted: replacing the
+    // line would trade one unanswered question for four.
+    await showHeld(shot.still, run);
+    const note = reviewEl('v2ReviewNote');
+    if (note && run === reviewRun && held === shot) {
+      note.textContent = `${note.textContent} · that setting could not be `
+        + 'rendered, so this is still the shot as it was captured';
+    }
+    return;
+  }
+  shot.still = still;
+  await showHeld(still, run);
+}
+
+function buildReview(): void {
+  reviewEl('v2ReviewRetake')?.addEventListener('click', () => closeReview(false));
+  reviewEl('v2ReviewKeep')?.addEventListener('click', () => closeReview(true));
+  const toggle = reviewEl<HTMLInputElement>('v2ReviewHold');
+  if (!toggle) return;
+  toggle.checked = reviewHold;
+  toggle.addEventListener('change', () => {
+    reviewHold = toggle.checked;
+    remember(REVIEW_STORE_KEY, reviewHold ? 'yes' : 'no');
+    // Turning the hold off while one is open would strand the shot behind a
+    // layer nothing reopens; let it go the same way Retake does.
+    if (!reviewHold && held) closeReview(false);
+  });
+}
+
 let capturing = false;
 async function takePhoto(): Promise<void> {
   const { camera: status, recording, activeFilter } = readState();
@@ -4200,17 +4489,32 @@ async function takePhoto(): Promise<void> {
   byId('v2ShutterFlash').classList.add('firing');
   setText('v2PhotoResult', 'Capturing at the camera’s maximum…');
   setText('v2PhotoTiming', '');
+  // Held in an object rather than in three separate locals: these are written
+  // inside the callback below and read after it, and a plain `let` assigned
+  // only from a closure is narrowed by the compiler to the initialiser it
+  // never keeps.
+  const shot: {
+    negative: ImageBitmap | null;
+    photo: SizedWithReason | null;
+    lumaRange: [number, number];
+    background: number;
+  } = { negative: null, photo: null, lumaRange: exposure.range, background: exposure.mode };
   try {
     const outcome = await captureAtMaxStream(shutterStream(), async (dims, escalation) => {
       const source = frameSize(dims.width, dims.height);
       if (!source) return null;
       // The same authority, evaluated on the stream ACTUALLY delivering right
       // now — requested numbers never reach the render or the file name.
-      const photo = resolveGeometry(source, DEFAULT_GEOMETRY_INPUTS).photo;
-      return capturePhoto(renderer, video, readState().activeFilter, {
-        ...photo,
-        reason: CAPTURE_REASONS[escalation]
-      }, {
+      const resolved = resolveGeometry(source, DEFAULT_GEOMETRY_INPUTS).photo;
+      const photo = { ...resolved, reason: CAPTURE_REASONS[escalation] };
+      shot.photo = photo;
+      shot.lumaRange = exposure.range;
+      shot.background = exposure.mode;
+      // THE NEGATIVE, AND IT CAN ONLY BE TAKEN HERE. This is the one moment
+      // the camera is in its maximum mode; a frame grabbed after the restore
+      // would be a different picture at a different size from the file.
+      if (reviewHold) shot.negative = await grabNegative(video);
+      return capturePhoto(renderer, video, readState().activeFilter, photo, {
         visuallyLossless: readState().visuallyLossless,
         // THE SAME CENSUS THE PREVIEW USED. Grid stretches its height into
         // this range; without it the still fell back to [0, 1] and saved a
@@ -4223,26 +4527,31 @@ async function takePhoto(): Promise<void> {
         clarity: clarityExtras()
       });
     }, { now: () => performance.now() });
-    if (outcome.still) {
-      updateState({
-        lastPhoto: {
-          width: outcome.still.width,
-          height: outcome.still.height,
-          bytes: outcome.still.bytes
-        }
-      });
-      offerShare('v2SharePhoto',
-        new File([outcome.still.blob], outcome.still.fileName, { type: 'image/jpeg' }),
-        'v2PhotoResult');
-    }
-    const restoreNote = outcome.restoration === 'refused' || outcome.restoration === 'unconfirmed'
+    const tail = outcome.restoration === 'refused' || outcome.restoration === 'unconfirmed'
       ? ` · live stream not confirmed back (${outcome.restoration})`
       : '';
-    setText('v2PhotoResult', outcome.still
-      ? `Saved ${outcome.still.width}×${outcome.still.height} · `
-        + `${describeFileSize(outcome.still.bytes)} JPEG · `
-        + `${describeQuality(outcome.still.choice)} · `
-        + `${outcome.still.reason}${restoreNote}`
+    const still = outcome.still;
+    if (still) {
+      updateState({
+        lastPhoto: { width: still.width, height: still.height, bytes: still.bytes }
+      });
+    }
+    // The review takes the shot INSTEAD of the Captures card, not as well as
+    // it: two live Share buttons on one photo, one of them behind a layer, is
+    // two answers to "where is my picture".
+    const reviewing = still !== null && shot.negative !== null && shot.photo !== null
+      && openReview({
+        negative: shot.negative, photo: shot.photo, lumaRange: shot.lumaRange,
+        background: shot.background, still, tail
+      });
+    if (!reviewing) shot.negative?.close();
+    if (still && !reviewing) {
+      offerShare('v2SharePhoto',
+        new File([still.blob], still.fileName, { type: 'image/jpeg' }), 'v2PhotoResult');
+    }
+    if (still && reviewing) byId<HTMLButtonElement>('v2SharePhoto').hidden = true;
+    setText('v2PhotoResult', still
+      ? `${stillLine('Saved', still, tail)}${reviewing ? ' · held for review' : ''}`
       : 'The photo could not be rendered.');
     setText('v2PhotoTiming', shutterTimingReport(outcome));
   } finally {
@@ -5482,6 +5791,7 @@ applyStreamTier(storedStreamTier());
  * and fall back to RGB.
  */
 buildFilterStart();
+buildReview();
 buildClarity();
 /*
  * PRIMED BEFORE THE STATE MOVES, and that is not a nicety.
