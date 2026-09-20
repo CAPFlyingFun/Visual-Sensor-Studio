@@ -322,7 +322,7 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
         'the VIEWFINDER row is display geometry, stated as such');
 
       // Edges: the Sobel shader writes vec3(g) — every pixel exactly grey.
-      await page.click('[data-filter="edges"]');
+      await page.click('#v2FilterStrip [data-filter="edges"]');
       await page.waitForTimeout(600);
       const edges = await sampleCanvas();
       assert.ok(edges.maxChroma <= 2,
@@ -331,7 +331,7 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
       // Ironbow: every pixel must lie ON the legacy ramp — the LUT uploaded to
       // the GPU is ironbowColor itself, and no arbitrary colour (the fake
       // device's green, say) is anywhere near that ramp.
-      await page.click('[data-filter="ironbow"]');
+      await page.click('#v2FilterStrip [data-filter="ironbow"]');
       await page.waitForTimeout(600);
       const ironbow = await sampleCanvas();
       assert.ok(ironbow.maxChroma > 20, 'the ramp is colour, not grey');
@@ -496,7 +496,7 @@ test('Milestone D: Motion renders honest frame change on the GPU (fake device)',
         /\d+(\.\d+)? rendered fps/.test(document.getElementById('v2DiagPreview')?.textContent ?? ''),
         null, { timeout: 8000 });
 
-      await page.click('[data-filter="difference"]');
+      await page.click('#v2FilterStrip [data-filter="difference"]');
       // Let history warm up past the first-frame artefact and settle.
       await page.waitForTimeout(900);
       const seen = await page.evaluate(() => {
@@ -544,7 +544,7 @@ test('Milestone D: Motion renders honest frame change on the GPU (fake device)',
         'the ANALYSIS row says its buffer is in use');
 
       // Back to RGB: the photo returns with the capability.
-      await page.click('[data-filter="rgb"]');
+      await page.click('#v2FilterStrip [data-filter="rgb"]');
       await page.waitForFunction(() =>
         document.getElementById('v2PhotoButton').disabled === false, null, { timeout: 3000 });
 
@@ -698,7 +698,7 @@ test('Milestone D: Speed and Trails carry their memory in a state pass at ANALYS
       });
 
       for (const id of ['speed', 'trails']) {
-        await page.click(`[data-filter="${id}"]`);
+        await page.click(`#v2FilterStrip [data-filter="${id}"]`);
         // Let the state pass run for a while: the fake device's moving
         // pattern feeds real change into the accumulation.
         await page.waitForTimeout(1200);
@@ -718,7 +718,7 @@ test('Milestone D: Speed and Trails carry their memory in a state pass at ANALYS
       // not a fair judge of it.)
 
       // RGB has no state and re-enables the shutter.
-      await page.click('[data-filter="rgb"]');
+      await page.click('#v2FilterStrip [data-filter="rgb"]');
       await page.waitForTimeout(300);
       assert.equal(await page.evaluate(() => document.getElementById('v2PhotoButton').disabled), false);
       await page.close();
@@ -847,7 +847,7 @@ test('Milestone E: the lens workbench edits a live custom lens with exact number
 
       // The starter lens renders: pixels on ITS ramp (cream to ink), and a
       // photo is allowed because edges recompute at full size.
-      await page.click('[data-filter="lens:lens-mtjarl1w-pcpts4"]');
+      await page.click('#v2FilterStrip [data-filter="lens:lens-mtjarl1w-pcpts4"]');
       await page.waitForTimeout(700);
       const book = await page.evaluate(() => {
         const canvas = document.getElementById('v2PreviewCanvas');
@@ -1105,7 +1105,7 @@ test('colour lenses: mask keeps the camera\'s colour, swap recolours, both take 
         ['lens:lens-v2-rare-colour', /little else in view shares.*whole frame’s colours/s],
         ['lens:lens-v2-background-subtract', /prevailing colour.*whole frame’s colours/s]
       ]) {
-        await page.click(`[data-filter="${id}"]`);
+        await page.click(`#v2FilterStrip [data-filter="${id}"]`);
         await page.waitForTimeout(700);
         const seen = await look();
         assert.ok(!/shader failed/i.test(seen.stage), `${id}: compiles, got "${seen.stage}"`);
@@ -1115,7 +1115,7 @@ test('colour lenses: mask keeps the camera\'s colour, swap recolours, both take 
       }
 
       // A lens that needs a step explains itself, and the box can do the step.
-      await page.click('[data-filter="lens:lens-v2-colour-splash"]');
+      await page.click('#v2FilterStrip [data-filter="lens:lens-v2-colour-splash"]');
       await page.waitForTimeout(500);
       const coach = await page.evaluate(() => ({
         shown: !document.getElementById('v2Coach').hidden,
@@ -1149,21 +1149,21 @@ test('colour lenses: mask keeps the camera\'s colour, swap recolours, both take 
       await page.waitForFunction(() =>
         /\d+(\.\d+)? rendered fps/.test(document.getElementById('v2DiagPreview')?.textContent ?? ''),
         null, { timeout: 8000 });
-      await page.click('[data-filter="lens:lens-v2-colour-splash"]');
+      await page.click('#v2FilterStrip [data-filter="lens:lens-v2-colour-splash"]');
       await page.waitForTimeout(500);
       assert.equal(await page.isVisible('#v2Coach'), false,
         'don’t show this again means across launches');
       // A different kind of lens still coaches — muting is per tip, not global.
-      await page.click('[data-filter="lens:lens-v2-rare-colour"]');
+      await page.click('#v2FilterStrip [data-filter="lens:lens-v2-rare-colour"]');
       await page.waitForTimeout(500);
       assert.equal(await page.isVisible('#v2Coach'), true, 'another tip is still offered');
       await page.click('#v2CoachClose');
 
       // Colour Splash is the mask mode: mostly grey, with matched colour kept.
-      await page.click('[data-filter="lens:lens-v2-colour-splash"]');
+      await page.click('#v2FilterStrip [data-filter="lens:lens-v2-colour-splash"]');
       await page.waitForTimeout(700);
       const splash = await look();
-      await page.click('[data-filter="rgb"]');
+      await page.click('#v2FilterStrip [data-filter="rgb"]');
       await page.waitForTimeout(500);
       const raw = await look();
       assert.ok(splash.coloured < raw.coloured,
@@ -1173,7 +1173,7 @@ test('colour lenses: mask keeps the camera\'s colour, swap recolours, both take 
       // the note and title must still change with the lens.
       const described = [];
       for (const id of ['lens-v2-rare-colour', 'lens-v2-background-subtract', 'lens-v2-rarity-map']) {
-        await page.click(`[data-filter="lens:${id}"]`);
+        await page.click(`#v2FilterStrip [data-filter="lens:${id}"]`);
         await page.waitForTimeout(450);
         described.push(await page.evaluate(() =>
           document.getElementById('v2FilterNote').textContent));
@@ -1182,7 +1182,7 @@ test('colour lenses: mask keeps the camera\'s colour, swap recolours, both take 
         `each lens has its own description, got ${JSON.stringify(described)}`);
 
       // "Save as new" leaves the original alone.
-      await page.click('[data-filter="lens:lens-v2-rarity-map"]');
+      await page.click('#v2FilterStrip [data-filter="lens:lens-v2-rarity-map"]');
       await page.waitForTimeout(300);
       await page.click('#v2LensEdit');
       await page.waitForTimeout(300);
@@ -1210,7 +1210,7 @@ test('colour lenses: mask keeps the camera\'s colour, swap recolours, both take 
       await page.waitForTimeout(200);
 
       // A two-field lens renders, and the workbench can edit both fields.
-      await page.click('[data-filter="lens:lens-v2-camouflage-breaker"]');
+      await page.click('#v2FilterStrip [data-filter="lens:lens-v2-camouflage-breaker"]');
       await page.waitForTimeout(800);
       const breaker = await look();
       assert.ok(!/shader failed/i.test(breaker.stage), `two fields compile, got "${breaker.stage}"`);
@@ -1239,7 +1239,7 @@ test('colour lenses: mask keeps the camera\'s colour, swap recolours, both take 
 
       // The workbench shows the rows the lens actually uses, and the picker's
       // sample can become the reference it measures against.
-      await page.click('[data-filter="lens:lens-v2-colour-splash"]');
+      await page.click('#v2FilterStrip [data-filter="lens:lens-v2-colour-splash"]');
       await page.waitForTimeout(300);
       await page.click('#v2LensEdit');
       await page.waitForTimeout(300);
@@ -1284,7 +1284,7 @@ test('the coach names the lens in hand, even when three share one tip (fake devi
       await page.waitForTimeout(400);
       const titles = [];
       for (const id of ['lens-v2-rare-colour', 'lens-v2-background-subtract', 'lens-v2-rarity-map']) {
-        await page.click(`[data-filter="lens:${id}"]`);
+        await page.click(`#v2FilterStrip [data-filter="lens:${id}"]`);
         await page.waitForTimeout(400);
         assert.equal(await page.isVisible('#v2Coach'), true, `${id} is coached`);
         titles.push(await page.textContent('#v2CoachTitle'));
@@ -1483,7 +1483,7 @@ test('recording truth: native and filtered clips measured from their files (fake
         [nw, nh], { timeout: 3000 });
 
       // FILTERED clip: the same GPU render, frozen at RECORD IN.
-      await page.click('[data-filter="ironbow"]');
+      await page.click('#v2FilterStrip [data-filter="ironbow"]');
       await page.waitForTimeout(300);
       await page.click('#v2RecordButton');
       await page.waitForFunction(() =>
@@ -1540,7 +1540,7 @@ test('a maximum-tier filtered clip records the CHOSEN stream, risk stated up fro
         const m = (document.getElementById('v2DiagSource')?.textContent ?? '').match(/^(\d+)×(\d+)/);
         return m !== null && Math.min(Number(m[1]), Number(m[2])) > 1080;
       }, null, { timeout: 8000 });
-      await page.click('[data-filter="ironbow"]');
+      await page.click('#v2FilterStrip [data-filter="ironbow"]');
       await page.waitForTimeout(300);
 
       // The encoder ceiling announces itself BEFORE the button, beside the
@@ -1736,7 +1736,7 @@ test('picking a colour changes the lens from the picker, and the strip names it 
       // "I did pick a colour, but it appeared to look the same" — the sample
       // used to land in the picker and stop there, because the reference
       // lived in the workbench. Here the picker changes the running lens.
-      await page.click('[data-filter="lens:lens-v2-colour-splash"]');
+      await page.click('#v2FilterStrip [data-filter="lens:lens-v2-colour-splash"]');
       await page.waitForTimeout(600);
       const before = await page.evaluate(() =>
         document.getElementById('v2FilterNote').textContent);
@@ -1775,7 +1775,7 @@ test('picking a colour changes the lens from the picker, and the strip names it 
 
       // A lens that reads the picture itself has no colour to be given, and
       // the button does not pretend otherwise.
-      await page.click('[data-filter="lens:lens-v2-hue-map"]');
+      await page.click('#v2FilterStrip [data-filter="lens:lens-v2-hue-map"]');
       await page.waitForTimeout(600);
       assert.equal(await page.isVisible('#v2PickerUseInLens'), false);
       assert.match(await page.textContent('#v2PickerLensNote'), /does not measure against a colour/);
@@ -1889,7 +1889,7 @@ test('frame averaging is reachable, compiles, and never fades the picture up (fa
         };
       });
 
-      await page.click('[data-filter="ironbow"]');
+      await page.click('#v2FilterStrip [data-filter="ironbow"]');
       await page.waitForTimeout(500);
       await page.click('[data-average="off"]');
       await page.waitForTimeout(500);
@@ -1993,7 +1993,7 @@ test('zebra and peaking draw on the preview, and clear again (fake device)',
         };
       });
 
-      await page.click('[data-filter="rgb"]');
+      await page.click('#v2FilterStrip [data-filter="rgb"]');
       await page.click('[data-peaking="off"]');
       await page.click('[data-zebra="off"]');
       await page.waitForTimeout(600);
@@ -2042,12 +2042,12 @@ test('zebra and peaking draw on the preview, and clear again (fake device)',
       // Under a false-colour ramp only the COMPILE is checked here: that the
       // stripes judge the camera's luminance rather than the palette is a
       // property of the shader text, and is asserted where that can be read.
-      await page.click('[data-filter="ironbow"]');
+      await page.click('#v2FilterStrip [data-filter="ironbow"]');
       await page.click('[data-zebra="70"]');
       await page.waitForTimeout(600);
       assert.ok(!/shader failed/i.test((await marks()).stage), 'zebra compiles under a ramp too');
       await page.click('[data-zebra="off"]');
-      await page.click('[data-filter="rgb"]');
+      await page.click('#v2FilterStrip [data-filter="rgb"]');
       await page.waitForTimeout(400);
 
       // The histogram is an instrument you OPEN, and it costs nothing closed.
@@ -2204,13 +2204,13 @@ test('Reverse flips the picture for the session and restores it (fake device)',
       // filter, so this was offered on RGB, Edges and every mask lens until
       // the check looked at the shader body instead of the whole text.
       for (const id of ['rgb', 'edges', 'lens:lens-v2-colour-splash']) {
-        await page.click(`[data-filter="${id}"]`);
+        await page.click(`#v2FilterStrip [data-filter="${id}"]`);
         await page.waitForTimeout(600);
         assert.equal((await look()).shown, false, `${id} paints no ramp, so no chip`);
       }
 
       // Offered where one IS read, and it really changes the picture.
-      await page.click('[data-filter="lens:lens-v2-hue-map"]');
+      await page.click('#v2FilterStrip [data-filter="lens:lens-v2-hue-map"]');
       await page.waitForTimeout(700);
       const forward = await look();
       assert.equal(forward.shown, true);
@@ -2244,7 +2244,7 @@ test('Reverse flips the picture for the session and restores it (fake device)',
       // Nor does it survive a reload — a look being tried out is not an edit.
       await page.reload();
       await page.waitForTimeout(700);
-      await page.click('[data-filter="lens:lens-v2-hue-map"]');
+      await page.click('#v2FilterStrip [data-filter="lens:lens-v2-hue-map"]');
       await page.waitForTimeout(600);
       assert.match(await page.textContent('#v2ReverseRamp'), /Reverse$/,
         'a reload starts from the saved lens');
@@ -2511,5 +2511,108 @@ test('clarity sharpens by the same amount at preview and photo size (fake device
 
       await page.close();
       await context.close();
+    });
+  });
+
+/*
+ * THE IMPORT EDITOR, driven.
+ *
+ * A real picture goes through the file input, and what is asserted is the
+ * thing a static test cannot reach: the review opens on it, the canvas
+ * carries the picture's OWN size, tapping a lens in the review's strip
+ * re-renders the held picture at that same size, a filter a single frame
+ * cannot feed is disabled rather than tappable, and Discard leaves nothing
+ * claiming to be a file.
+ */
+test('an imported picture opens in the review and is edited there (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const page = await browser.newPage({ viewport: { width: 430, height: 932 } });
+      await page.goto(base);
+      await page.waitForSelector('#v2ImportPick');
+
+      // A PNG with a real range in it: 96×64, a dark half and a bright half,
+      // so the census has something to measure and is not the flat grey that
+      // would make every luma question trivially true.
+      const png = await page.evaluate(async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 96;
+        canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#101418';
+        ctx.fillRect(0, 0, 48, 64);
+        ctx.fillStyle = '#e8f0f6';
+        ctx.fillRect(48, 0, 48, 64);
+        const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        return Array.from(bytes);
+      });
+      await page.setInputFiles('#v2ImportFile', {
+        name: 'two-tone.png', mimeType: 'image/png', buffer: Buffer.from(png)
+      });
+
+      // The review opens on it, and the canvas is the PICTURE'S own size.
+      await page.waitForSelector('#v2Review:not([hidden])', { timeout: 10000 });
+      await page.waitForFunction(() =>
+        (document.getElementById('v2ReviewNote')?.textContent ?? '').startsWith('Held — '),
+        null, { timeout: 30000 });
+      const opened = await page.evaluate(() => ({
+        note: document.getElementById('v2ReviewNote')?.textContent ?? '',
+        width: document.getElementById('v2ReviewCanvas').width,
+        height: document.getElementById('v2ReviewCanvas').height,
+        drop: document.getElementById('v2ReviewRetake')?.textContent ?? '',
+        keep: document.getElementById('v2ReviewKeep')?.textContent ?? '',
+        filters: document.querySelectorAll('#v2ReviewFilters [data-filter]').length,
+        custom: document.querySelectorAll('#v2ReviewFilters [data-lens-new]').length
+      }));
+      assert.deepEqual([opened.width, opened.height], [96, 64],
+        `the imported picture at its own full size, got "${opened.note}"`);
+      assert.match(opened.note, /from two-tone\.png/, 'and it names the file it came from');
+      assert.match(opened.note, /an imported picture at its own full size/);
+      assert.equal(opened.drop, 'Discard', 'you cannot RETAKE a picture the camera never took');
+      assert.equal(opened.keep, 'Done');
+      assert.ok(opened.filters >= 4, `the review carries a filter strip, got ${opened.filters}`);
+      assert.equal(opened.custom, 0, 'but not Custom +, which opens a panel underneath it');
+
+      // A FILTER A SINGLE FRAME CANNOT FEED IS DISABLED, not merely refused
+      // after the tap. Speed builds its picture from a sequence.
+      await page.waitForFunction(() => {
+        const speed = document.querySelector('#v2ReviewFilters [data-filter="speed"]');
+        return speed === null || speed.disabled === true;
+      }, null, { timeout: 5000 });
+
+      // Tapping a lens in the review re-renders the HELD picture, at the
+      // same size — a re-resolve against anything else would change it.
+      await page.click('#v2ReviewFilters [data-filter="ironbow"]');
+      await page.waitForFunction(() => {
+        const note = document.getElementById('v2ReviewNote')?.textContent ?? '';
+        return note.startsWith('Held — ')
+          && !document.getElementById('v2Review').classList.contains('busy');
+      }, null, { timeout: 60000 });
+      const edited = await page.evaluate(() => ({
+        width: document.getElementById('v2ReviewCanvas').width,
+        height: document.getElementById('v2ReviewCanvas').height,
+        active: document.querySelector('#v2ReviewFilters .filter.active')?.dataset.filter ?? '',
+        pageActive: document.querySelector('#v2FilterStrip .filter.active')?.dataset.filter ?? ''
+      }));
+      assert.deepEqual([edited.width, edited.height], [96, 64],
+        'the re-render keeps the held size');
+      assert.equal(edited.active, 'ironbow');
+      assert.equal(edited.pageActive, 'ironbow',
+        'two strips, one idea of which filter is on');
+
+      // DISCARD lets the picture go and claims nothing was written.
+      await page.click('#v2ReviewRetake');
+      await page.waitForFunction(() =>
+        document.getElementById('v2Review').hidden === true, null, { timeout: 5000 });
+      const dropped = await page.evaluate(() => ({
+        line: document.getElementById('v2PhotoResult')?.textContent ?? '',
+        shareHidden: document.getElementById('v2SharePhoto').hidden,
+        canvasHidden: document.getElementById('v2ImportCanvas').hidden
+      }));
+      assert.match(dropped.line, /^Discarded — /, `got "${dropped.line}"`);
+      assert.match(dropped.line, /untouched/, 'and says the original is unharmed');
+      assert.equal(dropped.shareHidden, true, 'nothing left claiming to be a file');
+      assert.equal(dropped.canvasHidden, true, 'and the import is let go with it');
     });
   });

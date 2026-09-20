@@ -486,7 +486,13 @@
       max-width: 100%; max-height: 100%; width: auto; height: auto;
       display: block; border-radius: 8px;
     }
-    .review-bottom { display: grid; gap: 10px; }
+    .review-bottom { display: grid; gap: 8px; }
+    /* Shorter than the page's strip: on the review the PICTURE is the point,
+       and the controls get what is left rather than the other way round. */
+    .review-filters { padding-bottom: 2px; flex: 0 0 auto; }
+    .review-filters .filter { flex: 0 0 64px; padding: 4px; }
+    .review-filters .filter .thumb { height: 30px; }
+    .review-filters .filter small { font-size: 9px; }
     .review-actions { display: flex; align-items: center; gap: 8px; }
     .review-actions .btn { flex: 0 0 auto; margin: 0; }
     .review-actions .share-save { flex: 1 1 auto; margin: 0; }
@@ -556,7 +562,7 @@
     <h1>Visual Sensor Studio</h1>
     <span>
       <button type="button" class="chip" id="v2ViewerEnter" title="Full screen viewer">&#9974; Full screen</button>
-      <span class="pill" id="v2Badge">v0.95.0</span>
+      <span class="pill" id="v2Badge">v0.96.0</span>
     </span>
   </header>
 
@@ -678,6 +684,11 @@
       <p class="review-note" id="v2ReviewNote"></p>
       <div class="review-frame"><canvas id="v2ReviewCanvas"></canvas></div>
       <div class="review-bottom">
+        <!-- The filter strip, SECOND copy and deliberately so: the one on the
+             page lives at the top of the Camera tab, and choosing a lens for
+             an imported picture used to scroll that picture off the screen.
+             Same buttons, same tap, built by the same filterButton. -->
+        <div class="filters review-filters" id="v2ReviewFilters"></div>
         <div class="zoom guides" id="v2ReviewClarity" aria-label="Clarity"></div>
         <div class="review-actions">
           <button type="button" class="btn" id="v2ReviewRetake">Retake</button>

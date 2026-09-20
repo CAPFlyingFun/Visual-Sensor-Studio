@@ -2194,6 +2194,13 @@ function clearImport(): void {
   // await and a recorder nobody stops, which is too expensive to leave
   // resting on a `hidden` attribute alone.
   if (importSaving) return;
+  // A review still holding THIS picture comes down with it. Not via
+  // closeReview: its discard path calls back here, and releasing the hold
+  // first is what makes that one-way rather than a loop.
+  if (held?.kind === 'import') {
+    releaseHeld();
+    hideReviewLayer();
+  }
   stopImportPlayback();
   if (importedClip) {
     importedClip.removeAttribute('src');
@@ -2448,6 +2455,64 @@ async function loadImport(file: File): Promise<void> {
   importedFilter = readState().activeFilter;
   byId('v2ImportClear').hidden = false;
   renderImport();
+  await openImportReview();
+}
+
+/**
+ * Put the imported picture on the review screen — the SAME screen a capture
+ * is held on.
+ *
+ * Joshua, 2026-09-20, on the import: "change the import options so you can
+ * apply filters to photos or enhance it". They always could; the controls
+ * were just nowhere near the picture. The filter strip is at the top of the
+ * Camera tab and Import is at the bottom, so choosing a lens scrolled the
+ * thing you were choosing it FOR off the screen.
+ *
+ * The answer is not a second editor beside the import. It is the editor that
+ * already exists: a held frame, its own census, the capture re-run whenever
+ * a setting changes, and the actual file on screen. An import is that same
+ * problem with a different source, so it gets the same screen (Rule 4).
+ *
+ * Returns quietly where it cannot run — no createImageBitmap, a picture the
+ * GPU refuses — and the inline canvas below the Import section is still
+ * there, still rendered, still saveable. The editor is a better road to the
+ * same place, never the only one.
+ */
+async function openImportReview(): Promise<void> {
+  const image = importedImage;
+  if (!image || typeof createImageBitmap !== 'function') return;
+  const size = frameSize(image.naturalWidth, image.naturalHeight);
+  if (!size) return;
+  let negative: ImageBitmap;
+  try {
+    negative = await createImageBitmap(image);
+  } catch {
+    return;
+  }
+  // The picture may have been cleared or replaced while that decoded.
+  if (importedImage !== image) {
+    negative.close();
+    return;
+  }
+  const census = importExposure ?? emptyExposure();
+  const opened = openReview({
+    kind: 'import',
+    name: importedName,
+    negative,
+    photo: {
+      width: size.width,
+      height: size.height,
+      aspect: size.width / size.height,
+      reason: 'an imported picture at its own full size'
+    },
+    lumaRange: census.range,
+    background: census.mode,
+    // No file yet: openReview asks refreshReview to make the first one, and
+    // the note says what it is doing while a large picture encodes.
+    still: null,
+    tail: ''
+  });
+  if (!opened) negative.close();
 }
 
 /**
@@ -3384,26 +3449,69 @@ function renderControls(): void {
 
 /* --- The filter strip, built from FILTERS (Rules 4 and 5) ----------------- */
 
+/**
+ * The strip exists TWICE: on the page, and on the review screen where a held
+ * picture is edited with the picture itself in front of you. Two rows of
+ * buttons, never two ideas of what a filter is or what tapping one does —
+ * both are built by filterButton and redrawn from the one active id, exactly
+ * as the two clarity rows are (Rule 4).
+ */
+const FILTER_HOLDERS = ['v2FilterStrip', 'v2ReviewFilters'];
+
+function filterHolders(): HTMLElement[] {
+  const holders: HTMLElement[] = [];
+  for (const id of FILTER_HOLDERS) {
+    const holder = document.getElementById(id);
+    if (holder) holders.push(holder);
+  }
+  return holders;
+}
+
+/**
+ * ONE filter button, whichever strip asked for it — and one definition of
+ * what its tap does, which now includes re-running a held picture through
+ * the new filter. That is the whole point of a strip on the review screen.
+ */
+function filterButton(
+  id: string, name: string, unavailableReason: string,
+  decorate: (thumb: HTMLElement) => void
+): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'filter';
+  button.dataset.filter = id;
+  if (unavailableReason) button.classList.add('unavailable');
+  // The strip is built after the first state broadcast, so it carries the
+  // current selection itself rather than waiting for the next change.
+  if (id === readState().activeFilter) button.classList.add('active');
+  const thumb = document.createElement('div');
+  thumb.className = 'thumb';
+  decorate(thumb);
+  const label = document.createElement('small');
+  label.textContent = name;
+  button.append(thumb, label);
+  button.addEventListener('click', () => {
+    // An unavailable lens never looks functional: the tap explains.
+    if (unavailableReason) {
+      showToast(unavailableReason);
+      return;
+    }
+    updateState({ activeFilter: id });
+    // A HELD picture — a capture or an imported photograph — is re-rendered
+    // through the new filter rather than merely re-previewed behind the
+    // layer, because the review's claim is that what is on it is the file.
+    if (held) void refreshReview();
+    else renderPreview(performance.now());
+  });
+  return button;
+}
+
 function buildFilterStrip(): void {
-  const strip = byId('v2FilterStrip');
-  for (const filter of FILTERS) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'filter';
-    button.dataset.filter = filter.id;
-    // The strip is built after the first state broadcast, so it carries the
-    // current selection itself rather than waiting for the next change.
-    if (filter.id === readState().activeFilter) button.classList.add('active');
-    const thumb = document.createElement('div');
-    thumb.className = `thumb thumb-${filter.id}`;
-    const label = document.createElement('small');
-    label.textContent = filter.name;
-    button.append(thumb, label);
-    button.addEventListener('click', () => {
-      updateState({ activeFilter: filter.id });
-      renderPreview(performance.now());
-    });
-    strip.appendChild(button);
+  for (const strip of filterHolders()) {
+    for (const filter of FILTERS) {
+      strip.appendChild(filterButton(filter.id, filter.name, '',
+        (thumb) => thumb.classList.add(`thumb-${filter.id}`)));
+    }
   }
 }
 
@@ -3417,6 +3525,23 @@ function buildFilterStrip(): void {
  */
 let pickerActive = false;
 let pickedColor: SampledColor | null = null;
+
+/**
+ * THE HELD PICTURE, hoisted here for exactly the reason above it.
+ *
+ * The review's own code lives far below, but the filter strip reads this —
+ * a held picture disables the filters one frame cannot feed, and a tap
+ * re-renders it — and renderFilterStrip runs from the subscriber, which
+ * fires SYNCHRONOUSLY at registration during boot. Declared beside the
+ * review, it was still in its temporal dead zone at that moment and the
+ * ReferenceError took the whole module down: 24 browser tests failed at
+ * once, which is what this file's earlier warnings were written from. The
+ * third time is the charm. Behaviour stays with the review; only the two
+ * bindings come up here.
+ */
+let held: HeldShot | null = null;
+/** Which re-capture is the current one, so a later change outranks an earlier. */
+let reviewRun = 0;
 
 /** Does either of a lens's fields read hue? Metadata, never a list of ids. */
 function lensReadsHue(lens: CustomLens): boolean {
@@ -3432,6 +3557,39 @@ function lensReadsHue(lens: CustomLens): boolean {
 const reversed = new Set<string>();
 
 let renderedFilterKey = '';
+/**
+ * One strip's buttons brought in line with the state.
+ *
+ * Its own function because renderFilterStrip runs from the PREVIEW LOOP, and
+ * the review has to be right when that loop is not running at all: open the
+ * app, decline the camera, import a photograph, and nothing would ever have
+ * disabled the filters a single frame cannot feed. An unavailable action
+ * must never look functional, and "unless the camera happens to be live" is
+ * not a qualification that rule has. So the review calls this directly when
+ * it opens and closes, and renderFilterStrip calls the same one for both
+ * strips — one definition of what a button's state is (Rule 4).
+ */
+function syncStrip(strip: HTMLElement, activeFilter: string, rec: boolean): void {
+  // On the REVIEW strip, with a picture held, a filter that needs a sequence
+  // has nothing to read: one frame is all there is.
+  const single = strip.id === 'v2ReviewFilters' && held !== null;
+  for (const button of strip.querySelectorAll<HTMLButtonElement>('[data-filter]')) {
+    const id = button.dataset.filter ?? '';
+    button.classList.toggle('active', id === activeFilter);
+    // Switching filters mid-clip would change the recording path or shader
+    // under the encoder; the strip waits for stop, honestly disabled.
+    button.disabled = rec || (single && heldRefusal(id) !== '');
+  }
+}
+
+/** The review strip alone, from wherever the review's own state just moved. */
+function syncReviewStrip(): void {
+  const strip = document.getElementById('v2ReviewFilters');
+  if (strip) {
+    syncStrip(strip, readState().activeFilter, readState().recording !== null);
+  }
+}
+
 function renderFilterStrip(): void {
   const { activeFilter, recording, geometry, streamTier } = readState();
   const rec = recording !== null;
@@ -3451,16 +3609,14 @@ function renderFilterStrip(): void {
   // without the id having changed.
   const key = `${activeFilter}|${rec}|${cap}|${warning}|${readState().frameAverage}`
     + `|${isReversed(activeFilter)}`
+    // A held picture disables the filters a single frame cannot feed, so the
+    // strip has to redraw when one is taken up or let go.
+    + `|${held ? 'held' : '-'}`
     + `|${filterById(activeFilter)?.revision ?? ''}`
     + `|${matchingShare === null ? '-' : Math.round(matchingShare * 100)}`;
   if (key === renderedFilterKey) return;
   renderedFilterKey = key;
-  for (const button of byId('v2FilterStrip').querySelectorAll<HTMLButtonElement>('[data-filter]')) {
-    button.classList.toggle('active', button.dataset.filter === activeFilter);
-    // Switching filters mid-clip would change the recording path or shader
-    // under the encoder; the strip waits for stop, honestly disabled.
-    button.disabled = rec;
-  }
+  for (const strip of filterHolders()) syncStrip(strip, activeFilter, rec);
   // RECORD IN below SOURCE now has one cause on every path, RGB included:
   // the encoder's frame limit (measured 2026-09-01) — so the note names it
   // for every filter, and photos are exempt because JPEG has no such level.
@@ -4291,19 +4447,38 @@ const CAPTURE_REASONS: Record<Escalation, string> = {
  * which is why this is a setting rather than a fact.
  */
 interface HeldShot {
+  /**
+   * WHERE THE PICTURE CAME FROM, and the only thing the review treats
+   * differently. A capture and an imported photograph are the same problem
+   * once they are held — a frame, a size, a census, and a file made from
+   * them — so they get one screen rather than two editors that drift. What
+   * differs is only what the buttons can honestly be called: you cannot
+   * RETAKE a picture the camera never took.
+   */
+  kind: 'shot' | 'import';
+  /** The source file's name, for an import. Empty for a capture. */
+  name: string;
   negative: ImageBitmap;
   photo: SizedWithReason;
   lumaRange: [number, number];
   background: number;
-  /** The current file — replaced whole whenever the capture is re-run. */
-  still: PhotoResult;
+  /**
+   * The current file — replaced whole whenever the capture is re-run, and
+   * null while the first one is still being made. An import opens the review
+   * before it has been encoded, because encoding a 36 MP picture is not
+   * instant and a blank screen with no explanation is worse than a note.
+   */
+  still: PhotoResult | null;
   /** Whatever the shutter had to say about the stream restore, carried along. */
   tail: string;
 }
 
-let held: HeldShot | null = null;
-/** Which re-capture is the current one, so a later change outranks an earlier. */
-let reviewRun = 0;
+/** What the two left-hand buttons mean, which depends on where the picture came from. */
+const REVIEW_WORDS: Record<HeldShot['kind'], { drop: string; keep: string }> = {
+  shot: { drop: 'Retake', keep: 'Keep' },
+  import: { drop: 'Discard', keep: 'Done' }
+};
+
 
 function storedReviewHold(): boolean {
   try {
@@ -4399,7 +4574,8 @@ async function drawHeld(still: PhotoResult): Promise<boolean> {
 async function showHeld(still: PhotoResult, run: number): Promise<void> {
   const drawn = await drawHeld(still);
   if (run !== reviewRun || held?.still !== still) return;
-  const line = stillLine('Held —', still);
+  const from = held?.name ? ` · from ${held.name}` : '';
+  const line = `${stillLine('Held —', still)}${from}`;
   reviewText('v2ReviewNote', drawn
     ? `${line} · nothing has been written yet`
     : `${line} · this build could not draw the file back, so the frame above `
@@ -4423,7 +4599,16 @@ function openReview(shot: HeldShot): boolean {
   layer.hidden = false;
   layer.classList.remove('busy');
   document.body.dataset.review = 'on';
-  void showHeld(shot.still, reviewRun);
+  syncReviewStrip();
+  const words = REVIEW_WORDS[shot.kind];
+  const drop = reviewEl('v2ReviewRetake');
+  const keep = reviewEl('v2ReviewKeep');
+  if (drop) drop.textContent = words.drop;
+  if (keep) keep.textContent = words.keep;
+  // An import arrives with no file yet — refreshReview is what makes the
+  // first one, and it says so while it works.
+  if (shot.still) void showHeld(shot.still, reviewRun);
+  else void refreshReview();
   return true;
 }
 
@@ -4431,6 +4616,20 @@ function releaseHeld(): void {
   held?.negative.close();
   held = null;
   reviewRun++;
+}
+
+/** Take the layer down. Separate from closeReview, which also decides the file's fate. */
+function hideReviewLayer(): void {
+  // held is already null by the time this runs, so the strip comes back.
+  syncReviewStrip();
+  const layer = reviewEl('v2Review');
+  if (layer) {
+    layer.hidden = true;
+    layer.classList.remove('busy');
+  }
+  delete document.body.dataset.review;
+  const save = reviewEl<HTMLButtonElement>('v2ReviewSave');
+  if (save) save.hidden = true;
 }
 
 /**
@@ -4442,23 +4641,24 @@ function releaseHeld(): void {
 function closeReview(keep: boolean): void {
   const still = held?.still ?? null;
   const tail = held?.tail ?? '';
+  const kind = held?.kind ?? 'shot';
+  // Released FIRST, so the clearImport below sees no held import and cannot
+  // call back into here.
   releaseHeld();
-  const layer = reviewEl('v2Review');
-  if (layer) {
-    layer.hidden = true;
-    layer.classList.remove('busy');
-  }
-  delete document.body.dataset.review;
-  const save = reviewEl<HTMLButtonElement>('v2ReviewSave');
-  if (save) save.hidden = true;
+  hideReviewLayer();
   if (keep && still) {
     offerShare('v2SharePhoto',
       new File([still.blob], still.fileName, { type: 'image/jpeg' }), 'v2PhotoResult');
     setText('v2PhotoResult', stillLine('Saved', still, tail));
   } else {
     byId<HTMLButtonElement>('v2SharePhoto').hidden = true;
-    setText('v2PhotoResult', 'Retaken — that photo was never written anywhere.');
+    setText('v2PhotoResult', kind === 'import'
+      ? 'Discarded — no new file was written, and the picture you chose is untouched.'
+      : 'Retaken — that photo was never written anywhere.');
   }
+  // Discarding an imported picture lets the picture go too, or ✕ Clear would
+  // be the only way to be rid of something the review just said was dropped.
+  if (!keep && kind === 'import') clearImport();
 }
 
 /**
@@ -4469,15 +4669,43 @@ function closeReview(keep: boolean): void {
  * about to describe, and a button that saves the previous version under the
  * new version's readout is the worst of both.
  */
+/**
+ * Why a SINGLE HELD FRAME cannot feed this filter, or '' when it can.
+ *
+ * A held negative is one frame, which is exactly the condition importRefusal
+ * already describes — so the refusal is that one, not a second opinion about
+ * the same thing. supportsPhoto is checked beside it because the shutter
+ * checks it, and a filter that declines a still declines this one too.
+ */
+function heldRefusal(filterId: string): string {
+  const filter = filterById(filterId);
+  if (filter && !(filter.supportsPhoto ?? true)) {
+    return `${filter.name} does not fill a still at this size, so it cannot `
+      + 'be applied to a held picture.';
+  }
+  return importRefusal(filterId);
+}
+
 async function refreshReview(): Promise<void> {
   const shot = held;
   if (!shot) return;
   const run = ++reviewRun;
+  // REFUSED BEFORE ANYTHING IS TORN DOWN. A temporal filter has no sequence
+  // to read in one held frame, and rendering it anyway would put a picture on
+  // screen that means nothing — so the held file stays exactly as it is and
+  // the note says why.
+  const refusal = heldRefusal(readState().activeFilter);
+  if (refusal) {
+    reviewText('v2ReviewNote', refusal);
+    return;
+  }
   const layer = reviewEl('v2Review');
   layer?.classList.add('busy');
   const save = reviewEl<HTMLButtonElement>('v2ReviewSave');
   if (save) save.hidden = true;
-  reviewText('v2ReviewNote', 'Re-running the capture at the new setting…');
+  reviewText('v2ReviewNote', shot.still
+    ? 'Re-running the capture at the new setting…'
+    : `Rendering ${shot.name || 'the picture'} at its full size…`);
   const still = await capturePhoto(
     renderer, shot.negative, readState().activeFilter, shot.photo, {
       visuallyLossless: readState().visuallyLossless,
@@ -4492,6 +4720,14 @@ async function refreshReview(): Promise<void> {
     // The shot the shutter took goes back up, readout and Share button and
     // all, with the failure APPENDED rather than substituted: replacing the
     // line would trade one unanswered question for four.
+    // With no previous file — an import whose FIRST render failed — there is
+    // nothing to put back, and saying so plainly is the whole of what can be
+    // done.
+    if (!shot.still) {
+      reviewText('v2ReviewNote',
+        'That picture could not be rendered through this filter.');
+      return;
+    }
     await showHeld(shot.still, run);
     const note = reviewEl('v2ReviewNote');
     if (note && run === reviewRun && held === shot) {
@@ -4587,6 +4823,7 @@ async function takePhoto(): Promise<void> {
     // two answers to "where is my picture".
     const reviewing = still !== null && shot.negative !== null && shot.photo !== null
       && openReview({
+        kind: 'shot', name: '',
         negative: shot.negative, photo: shot.photo, lumaRange: shot.lumaRange,
         background: shot.background, still, tail
       });
@@ -4802,44 +5039,36 @@ function lensFromFilterId(id: string): CustomLens | null {
 
 /** Rebuild ONLY the custom entries of the strip (list changes, not slider moves). */
 function rebuildLensEntries(): void {
-  const strip = byId('v2FilterStrip');
-  for (const stale of strip.querySelectorAll('[data-filter^="lens:"], [data-lens-new]')) stale.remove();
-  for (const filter of allFilters().filter((f) => f.lens)) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'filter';
-    button.dataset.filter = filter.id;
-    if (filter.unavailableReason) button.classList.add('unavailable');
-    if (filter.id === readState().activeFilter) button.classList.add('active');
+  for (const strip of filterHolders()) {
+    for (const stale of strip.querySelectorAll('[data-filter^="lens:"], [data-lens-new]')) {
+      stale.remove();
+    }
+    for (const filter of allFilters().filter((f) => f.lens)) {
+      strip.appendChild(filterButton(
+        filter.id, filter.name, filter.unavailableReason ?? '',
+        (thumb) => {
+          thumb.style.background =
+            rampToCss(filter.lens?.stops ?? []).replace('90deg', '135deg');
+        }));
+    }
+    // CUSTOM + IS NOT OFFERED ON THE REVIEW. It opens the lens workbench,
+    // which lives on the page underneath the review layer — a button that
+    // appears to do nothing is worse than one that is not there, and an
+    // unavailable action must never look functional.
+    if (strip.id === 'v2ReviewFilters') continue;
+    const custom = document.createElement('button');
+    custom.type = 'button';
+    custom.className = 'filter';
+    custom.dataset.lensNew = '1';
     const thumb = document.createElement('div');
-    thumb.className = 'thumb';
-    thumb.style.background = rampToCss(filter.lens?.stops ?? []).replace('90deg', '135deg');
+    thumb.className = 'thumb custom';
+    thumb.textContent = '＋';
     const label = document.createElement('small');
-    label.textContent = filter.name;
-    button.append(thumb, label);
-    button.addEventListener('click', () => {
-      // An unavailable lens never looks functional: the tap explains.
-      if (filter.unavailableReason) {
-        showToast(filter.unavailableReason);
-        return;
-      }
-      updateState({ activeFilter: filter.id });
-      renderPreview(performance.now());
-    });
-    strip.appendChild(button);
+    label.textContent = 'Custom +';
+    custom.append(thumb, label);
+    custom.addEventListener('click', () => openLensWorkbench(null));
+    strip.appendChild(custom);
   }
-  const custom = document.createElement('button');
-  custom.type = 'button';
-  custom.className = 'filter';
-  custom.dataset.lensNew = '1';
-  const thumb = document.createElement('div');
-  thumb.className = 'thumb custom';
-  thumb.textContent = '＋';
-  const label = document.createElement('small');
-  label.textContent = 'Custom +';
-  custom.append(thumb, label);
-  custom.addEventListener('click', () => openLensWorkbench(null));
-  strip.appendChild(custom);
   renderedFilterKey = '';
 }
 
