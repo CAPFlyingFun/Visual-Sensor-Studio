@@ -90,9 +90,14 @@ test('changing clarity redraws the imported picture', () => {
   // Save has always re-rendered before encoding, so the FILE was right; the
   // canvas was not, and a picture that disagrees with what saving it produces
   // is the same failure the review step exists to prevent.
+  // The redraw moved into afterEdit when Sharpen arrived — three controls
+  // over two settings, all redrawing the same surfaces. What matters is that
+  // changing clarity still reaches the import, not which function says so.
   const set = app.slice(app.indexOf('function setClarityLevel('));
-  const body = set.slice(0, set.indexOf('\n}\n'));
-  assert.match(body, /if \(importedImage\) renderImport\(\)/);
+  assert.match(set.slice(0, set.indexOf('\n}\n')), /applyEdits\(/);
+  const after = app.slice(app.indexOf('function afterEdit()'));
+  const body = after.slice(0, after.indexOf('\n}\n'));
+  assert.match(body, /else if \(importedImage\) renderImport\(\)/);
   assert.match(body, /if \(held\) void refreshReview\(\)/,
     'and a held camera shot is still re-captured');
 });

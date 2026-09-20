@@ -90,7 +90,9 @@ import {
 } from '../vision/lens-store.js';
 import { RAMP_PRESETS } from '../vision/lens-preview.js';
 import { GlRenderer, type NightRecovery } from './render/gl-renderer.js';
-import { capturePhoto, type PhotoResult } from './capture/photo.js';
+import {
+  capturePhoto, renderStill, type CaptureOptions, type PhotoResult
+} from './capture/photo.js';
 import { describeFileSize, describeQuality } from './capture/visually-lossless.js';
 import {
   NIGHT_COUNTDOWN_MS, NIGHT_TARGET_FRAMES, NIGHT_TARGET_MS, NIGHT_TICK_MS,
@@ -901,19 +903,53 @@ function clarityExtras(): { amount: number; floor: number } | undefined {
  */
 const CLARITY_HOLDERS = ['v2ClarityRow', 'v2ReviewClarity'];
 
-function setClarityLevel(id: string): void {
-  clarityLevel = id;
-  remember(CLARITY_STORE_KEY, id);
+/**
+ * WHAT EVERY EDIT CONTROL DOES once it has changed its own setting.
+ *
+ * Clarity, auto-levels and Sharpen all have to redraw the same four things,
+ * and three copies of that list is three chances for one of them to forget a
+ * surface. The order matters: the rows redraw first so the screen agrees
+ * with the setting even if a render below fails.
+ *
+ * A HELD SHOT goes through refreshReview, which previews now and encodes
+ * after the tapping stops. An IMPORT in the panel redraws there —
+ * renderImportPanel only reacts to a FILTER change, so without this the
+ * canvas kept showing the previous level while Save quietly produced the
+ * new one.
+ */
+function afterEdit(): void {
   renderClarity();
+  renderLevels();
+  renderSharpen();
   renderPreview(performance.now());
-  // A held shot is re-captured at the new clarity, not merely re-previewed:
-  // the review's whole claim is that the picture on it is the file.
   if (held) void refreshReview();
-  // And so is an imported one. renderImportPanel only redraws on a FILTER
-  // change, so the canvas kept showing the previous level — Save re-renders
-  // before it encodes, so the FILE was always right, but until you pressed it
-  // the picture on screen disagreed with the picture saving would produce.
-  if (importedImage) renderImport();
+  else if (importedImage) renderImport();
+}
+
+/**
+ * THE ONE WRITER of both edit settings, and the only thing that changes them
+ * after boot.
+ *
+ * Clarity, auto-levels and Sharpen are three controls over two values, and
+ * Sharpen moves both at once. Letting it assign them itself would put a
+ * second writer on each — which is how two rows of buttons start disagreeing
+ * about which level is on — so every one of the three comes through here and
+ * afterEdit runs exactly once per tap, not once per value (Rule 4).
+ *
+ * Safe to sit above the declarations it reads: nothing calls it during module
+ * evaluation, only buildClarity and buildLevels touch the values at boot, and
+ * this file has already paid three times for getting that wrong.
+ */
+function applyEdits(levels: string, clarity: string): void {
+  levelsStep = levels;
+  clarityLevel = clarity;
+  remember(LEVELS_STORE_KEY, levels);
+  remember(CLARITY_STORE_KEY, clarity);
+  afterEdit();
+}
+
+function setClarityLevel(id: string): void {
+  applyEdits(levelsStep, id);
 }
 
 function buildClarity(): void {
@@ -1005,12 +1041,75 @@ function levelsExtras(
 }
 
 function setLevelsStep(id: string): void {
-  levelsStep = id;
-  remember(LEVELS_STORE_KEY, id);
-  renderLevels();
-  renderPreview(performance.now());
-  if (held) void refreshReview();
-  else if (importedImage) renderImport();
+  applyEdits(id, clarityLevel);
+}
+
+/* --- SHARPEN: the two settings Joshua found, in one tap ------------------ */
+
+/**
+ * SHARPEN — auto-levels at Full and clarity at High, together, as one
+ * control.
+ *
+ * Joshua, 2026-09-20, after testing the pair on his own photographs: "doing
+ * Full & High helps with the image and makes it sharper without it looking
+ * distorted… can create a image 'Sharpen' button to use those two
+ * combinations by default". It is exactly that and nothing more — it sets
+ * the two existing settings and changes no maths of its own, so what it does
+ * is always visible in the two rows below it.
+ *
+ * IT TOGGLES, and that is the point rather than a convenience. In the same
+ * message: "some images like with the fence it makes it a bit worse". An
+ * unsharp mask cannot tell a spider's web from mildew on a fence rail — it
+ * raises whatever fine detail is there — so whether this helps is a judgement
+ * about the picture, not something the app can measure. One tap on, one tap
+ * off, with the preview live between them, is what lets that judgement be
+ * made by looking.
+ */
+const SHARPEN_LEVELS = 'full';
+const SHARPEN_CLARITY = 'high';
+const SHARPEN_HOLDERS = ['v2SharpenRow', 'v2ReviewSharpen'];
+
+function sharpenOn(): boolean {
+  return levelsStep === SHARPEN_LEVELS && clarityLevel === SHARPEN_CLARITY;
+}
+
+function toggleSharpen(): void {
+  const on = sharpenOn();
+  applyEdits(on ? 'off' : SHARPEN_LEVELS, on ? 'off' : SHARPEN_CLARITY);
+}
+
+function buildSharpen(): void {
+  for (const holderId of SHARPEN_HOLDERS) {
+    const holder = document.getElementById(holderId);
+    if (!holder) continue;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = 'Sharpen';
+    button.dataset.sharpen = 'on';
+    button.addEventListener('click', () => toggleSharpen());
+    holder.appendChild(button);
+  }
+  renderSharpen();
+}
+
+function renderSharpen(): void {
+  const on = sharpenOn();
+  for (const holderId of SHARPEN_HOLDERS) {
+    const holder = document.getElementById(holderId);
+    if (!holder) continue;
+    for (const button of holder.querySelectorAll<HTMLButtonElement>('[data-sharpen]')) {
+      button.classList.toggle('active', on);
+      button.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+  }
+  const note = document.getElementById('v2SharpenNote');
+  if (!note) return;
+  note.textContent = on
+    ? 'On — auto-levels Full and clarity High, the two rows below. Tap again to '
+      + 'put both back to Off.'
+    : 'Auto-levels Full and clarity High in one tap. It suits some pictures and '
+      + 'not others: the mask raises whatever fine detail is there, and it cannot '
+      + 'tell a spider’s web from grime on a fence rail. Look at it before you save it.';
 }
 
 function buildLevels(): void {
@@ -4759,6 +4858,9 @@ function openReview(shot: HeldShot): boolean {
 }
 
 function releaseHeld(): void {
+  // A pending encode outlives the shot it was queued for otherwise, and wakes
+  // up to render a negative that has already been closed.
+  cancelEncode();
   held?.negative.close();
   held = null;
   reviewRun++;
@@ -4798,9 +4900,14 @@ function closeReview(keep: boolean): void {
     setText('v2PhotoResult', stillLine('Saved', still, tail));
   } else {
     byId<HTMLButtonElement>('v2SharePhoto').hidden = true;
-    setText('v2PhotoResult', kind === 'import'
-      ? 'Discarded — no new file was written, and the picture you chose is untouched.'
-      : 'Retaken — that photo was never written anywhere.');
+    // A KEEP that arrives here had no file to keep: the encode failed, and
+    // saying "discarded" would describe a choice nobody made.
+    setText('v2PhotoResult', keep
+      ? 'That setting could not be encoded, so there is no file to keep. The '
+        + 'picture you chose is untouched.'
+      : kind === 'import'
+        ? 'Discarded — no new file was written, and the picture you chose is untouched.'
+        : 'Retaken — that photo was never written anywhere.');
   }
   // Discarding an imported picture lets the picture go too, or ✕ Clear would
   // be the only way to be rid of something the review just said was dropped.
@@ -4832,10 +4939,130 @@ function heldRefusal(filterId: string): string {
   return importRefusal(filterId);
 }
 
+/**
+ * WHAT THE HELD PICTURE IS RENDERED WITH, in one place.
+ *
+ * The preview and the file must be the same picture or the review is
+ * worthless, and the only way to be sure of that is for both to read one
+ * definition of the settings (Rule 4).
+ *
+ * The levels are the HELD picture's own black and white points, carried with
+ * it — the live camera has moved on and its census describes a different
+ * scene entirely.
+ */
+function heldOptions(shot: HeldShot): CaptureOptions {
+  return {
+    lumaRange: shot.lumaRange,
+    background: shot.background,
+    clarity: clarityExtras(),
+    levels: { ...shot.levels, amount: levelsAmount() }
+  };
+}
+
+/**
+ * Draw the RENDER — the renderer's own canvas, before any encode.
+ *
+ * Deliberately not the same thing as drawHeld, and the note on screen says
+ * which of the two is up at any moment. This one is what a setting change
+ * puts there straight away; the file replaces it a moment later.
+ */
+function drawRender(): boolean {
+  const canvas = reviewEl<HTMLCanvasElement>('v2ReviewCanvas');
+  const source = renderer.targetCanvas;
+  if (!canvas || source.width === 0 || source.height === 0) return false;
+  const context = canvas.getContext('2d');
+  if (!context) return false;
+  canvas.width = source.width;
+  canvas.height = source.height;
+  context.drawImage(source, 0, 0);
+  return true;
+}
+
+/**
+ * HOW LONG AFTER THE LAST TAP THE FILE IS MADE.
+ *
+ * Joshua, 2026-09-20: "each time I press a filter or button it goes right to
+ * export and would be nice if you could see real preview the difference and
+ * then press export if you like it". Every tap used to run a full capture —
+ * a full-size JPEG at quality 1.00 and a decode back from it — so trying
+ * three lenses meant three exports, and on a 36 MP import that is seconds
+ * each. Now a tap renders, and only a PAUSE encodes.
+ *
+ * 420 ms is long enough to step along a row of lenses without paying for the
+ * ones passed through, and short enough that the file is ready by the time a
+ * hand has moved to Save.
+ */
+const REVIEW_ENCODE_DELAY = 420;
+let encodeTimer: ReturnType<typeof setTimeout> | null = null;
+/**
+ * The encode currently running, so a Keep tapped while it is in flight WAITS
+ * for it rather than starting a second one. Encoding a 36 MP still is the
+ * most expensive thing in this app; doing it twice for one picture is the
+ * kind of waste that reads on the device as a hang.
+ */
+let encodePending: Promise<void> | null = null;
+
+function cancelEncode(): void {
+  if (encodeTimer === null) return;
+  clearTimeout(encodeTimer);
+  encodeTimer = null;
+}
+
+function startEncode(shot: HeldShot, run: number): Promise<void> {
+  const running = encodeHeld(shot, run).finally(() => {
+    if (encodePending === running) encodePending = null;
+  });
+  encodePending = running;
+  return running;
+}
+
+/** The preview's line. No file exists yet, so it cannot claim a file's size. */
+function previewLine(shot: HeldShot): string {
+  const from = shot.name ? ` · from ${shot.name}` : '';
+  return `Preview ${shot.photo.width}×${shot.photo.height} · ${shot.photo.reason}${from}`;
+}
+
+/**
+ * Encode the held picture at the current settings and put THE FILE up.
+ *
+ * Separate from the preview on purpose. Until this has run there is no file,
+ * which is why Save is hidden: a button that shares the previous setting's
+ * picture under this setting's readout is worse than a button that is not
+ * there yet.
+ */
+async function encodeHeld(shot: HeldShot, run: number): Promise<void> {
+  if (run !== reviewRun || held !== shot) return;
+  const layer = reviewEl('v2Review');
+  layer?.classList.add('busy');
+  const still = await capturePhoto(
+    renderer, shot.negative, readState().activeFilter, shot.photo, {
+      visuallyLossless: readState().visuallyLossless,
+      ...heldOptions(shot)
+    });
+  // A newer change, or a retake, owns the screen now — this answer is stale.
+  if (run !== reviewRun || held !== shot) return;
+  layer?.classList.remove('busy');
+  if (!still) {
+    // The preview stays up. It is the same render the file would have been
+    // made from, so leaving it there is not a fabrication — but it is now
+    // the ONLY thing on screen, and the line has to say the file failed.
+    reviewText('v2ReviewNote', `${previewLine(shot)} · this setting could not be `
+      + 'encoded, so there is nothing to save at it');
+    return;
+  }
+  shot.still = still;
+  await showHeld(still, run);
+}
+
+/**
+ * Re-run the held picture at whatever the settings now say: PREVIEW first,
+ * file after the tapping stops.
+ */
 async function refreshReview(): Promise<void> {
   const shot = held;
   if (!shot) return;
   const run = ++reviewRun;
+  cancelEncode();
   // REFUSED BEFORE ANYTHING IS TORN DOWN. A temporal filter has no sequence
   // to read in one held frame, and rendering it anyway would put a picture on
   // screen that means nothing — so the held file stays exactly as it is and
@@ -4845,54 +5072,48 @@ async function refreshReview(): Promise<void> {
     reviewText('v2ReviewNote', refusal);
     return;
   }
-  const layer = reviewEl('v2Review');
-  layer?.classList.add('busy');
+  // THE FILE THAT WAS HELD IS LET GO HERE, before anything is drawn. It was
+  // encoded at the previous setting, and from this moment the screen is
+  // describing a different one.
+  shot.still = null;
   const save = reviewEl<HTMLButtonElement>('v2ReviewSave');
   if (save) save.hidden = true;
-  reviewText('v2ReviewNote', shot.still
-    ? 'Re-running the capture at the new setting…'
-    : `Rendering ${shot.name || 'the picture'} at its full size…`);
-  const still = await capturePhoto(
-    renderer, shot.negative, readState().activeFilter, shot.photo, {
-      visuallyLossless: readState().visuallyLossless,
-      lumaRange: shot.lumaRange,
-      background: shot.background,
-      clarity: clarityExtras(),
-      // The HELD picture's own black and white points, carried with it —
-      // the live camera has moved on and its census describes a different
-      // scene entirely.
-      levels: { ...shot.levels, amount: levelsAmount() }
-    });
-  // A newer change, or a retake, owns the screen now — this answer is stale.
+  const drew = renderStill(
+    renderer, shot.negative, readState().activeFilter, shot.photo, heldOptions(shot))
+    && drawRender();
   if (run !== reviewRun || held !== shot) return;
-  layer?.classList.remove('busy');
-  if (!still) {
-    // The shot the shutter took goes back up, readout and Share button and
-    // all, with the failure APPENDED rather than substituted: replacing the
-    // line would trade one unanswered question for four.
-    // With no previous file — an import whose FIRST render failed — there is
-    // nothing to put back, and saying so plainly is the whole of what can be
-    // done.
-    if (!shot.still) {
-      reviewText('v2ReviewNote',
-        'That picture could not be rendered through this filter.');
-      return;
-    }
-    await showHeld(shot.still, run);
-    const note = reviewEl('v2ReviewNote');
-    if (note && run === reviewRun && held === shot) {
-      note.textContent = `${note.textContent} · that setting could not be `
-        + 'rendered, so this is still the shot as it was captured';
-    }
+  if (!drew) {
+    reviewText('v2ReviewNote', 'That picture could not be rendered through this filter.');
     return;
   }
-  shot.still = still;
-  await showHeld(still, run);
+  reviewText('v2ReviewNote', `${previewLine(shot)} · nothing has been written yet`);
+  encodeTimer = setTimeout(() => {
+    encodeTimer = null;
+    void startEncode(shot, run);
+  }, REVIEW_ENCODE_DELAY);
+}
+
+/**
+ * Keep, which has to make sure there IS a file first.
+ *
+ * The encode is debounced, so a tap on Keep within 420 ms of a setting change
+ * arrives before the file does. Waiting for it here is the whole difference
+ * between keeping the picture that is on screen and keeping nothing.
+ */
+async function keepReview(): Promise<void> {
+  const shot = held;
+  if (!shot) return;
+  if (!shot.still) {
+    cancelEncode();
+    await (encodePending ?? startEncode(shot, reviewRun));
+  }
+  if (held !== shot) return;
+  closeReview(true);
 }
 
 function buildReview(): void {
   reviewEl('v2ReviewRetake')?.addEventListener('click', () => closeReview(false));
-  reviewEl('v2ReviewKeep')?.addEventListener('click', () => closeReview(true));
+  reviewEl('v2ReviewKeep')?.addEventListener('click', () => void keepReview());
   const toggle = reviewEl<HTMLInputElement>('v2ReviewHold');
   if (!toggle) return;
   toggle.checked = reviewHold;
@@ -6227,6 +6448,9 @@ buildFilterStart();
 buildReview();
 buildClarity();
 buildLevels();
+// AFTER both: the Sharpen button's state is read from the two settings those
+// restore, so building it first would draw it against defaults.
+buildSharpen();
 /*
  * PRIMED BEFORE THE STATE MOVES, and that is not a nicety.
  *

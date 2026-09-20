@@ -483,7 +483,9 @@ test('Night measures its own result, then lifts it, then saves what it lifted', 
   // frame arriving now and discard the four seconds of stacking.
   assert.match(appTs, /preRendered: true, label: 'night'/);
   const photoTs = readFileSync(new URL('../src/v2/capture/photo.ts', import.meta.url), 'utf8');
-  assert.match(photoTs, /if \(!options\.preRendered\) \{/);
+  assert.match(photoTs, /if \(!options\.preRendered\s*\n?\s*&& !renderStill\(/,
+    'the upload AND the re-render are behind one guard, so a pre-rendered '
+    + 'save touches neither');
   // And the preview stays frozen while the canvas is being encoded.
   const savePoint = appTs.indexOf("nightPhase = 'complete';\n    nightSaved");
   assert.ok(savePoint > -1 && appTs.indexOf('void saveNightPhoto(nightSize);') > savePoint,

@@ -192,6 +192,44 @@ export interface CaptureOptions {
  */
 export type StillSource = HTMLVideoElement | ImageBitmap;
 
+/**
+ * THE RENDER HALF OF A CAPTURE, on its own.
+ *
+ * Split out for the review's live preview, which needs the picture on screen
+ * the instant a setting changes and cannot afford the encode that follows:
+ * a full-size JPEG at quality 1.00, and the decode back from it, are what
+ * made every lens tap feel like an export. The preview draws the renderer's
+ * own canvas; the file is still encoded from this same render, so there is
+ * ONE definition of what a capture looks like (Rule 4) rather than a preview
+ * path quietly drifting from the saved path.
+ *
+ * Nothing here encodes, copies out or allocates. False means the frame could
+ * not be uploaded or the filter could not be drawn.
+ */
+export function renderStill(
+  renderer: GlRenderer,
+  source: StillSource,
+  filterId: string,
+  photo: SizedWithReason,
+  options: CaptureOptions = {}
+): boolean {
+  // 'videoWidth' in source rather than instanceof: this module is loaded in
+  // environments where the DOM constructor is not a global, and a capture
+  // that threw a ReferenceError there would be a test-only failure wearing
+  // the costume of a camera one.
+  const uploaded = 'videoWidth' in source
+    ? renderer.uploadFrame(source)
+    : renderer.uploadHeld(source);
+  if (!uploaded) return false;
+  return renderer.render(filterId, { width: photo.width, height: photo.height },
+    undefined, {
+      lumaRange: options.lumaRange,
+      background: options.background,
+      clarity: options.clarity,
+      levels: options.levels
+    });
+}
+
 export async function capturePhoto(
   renderer: GlRenderer,
   source: StillSource,
@@ -206,23 +244,8 @@ export async function capturePhoto(
   // no such problem, and blending a moving frame into it would only smear a
   // picture that was already sharp. render() below asks for none, on purpose.
   const t0 = performance.now();
-  if (!options.preRendered) {
-    // 'videoWidth' in source rather than instanceof: this module is loaded in
-    // environments where the DOM constructor is not a global, and a capture
-    // that threw a ReferenceError there would be a test-only failure wearing
-    // the costume of a camera one.
-    const uploaded = 'videoWidth' in source
-      ? renderer.uploadFrame(source)
-      : renderer.uploadHeld(source);
-    if (!uploaded) return null;
-    if (!renderer.render(filterId, { width: photo.width, height: photo.height },
-      undefined, {
-        lumaRange: options.lumaRange,
-        background: options.background,
-        clarity: options.clarity,
-        levels: options.levels
-      })) return null;
-  }
+  if (!options.preRendered
+    && !renderStill(renderer, source, filterId, photo, options)) return null;
 
   photoCanvas ??= document.createElement('canvas');
   photoCanvas.width = photo.width;

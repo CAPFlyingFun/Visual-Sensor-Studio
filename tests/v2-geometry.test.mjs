@@ -2515,6 +2515,150 @@ test('clarity sharpens by the same amount at preview and photo size (fake device
   });
 
 /*
+ * A SETTING CHANGE PREVIEWS FIRST AND ENCODES AFTER.
+ *
+ * Joshua, 2026-09-20: "each time I press a filter or button it goes right to
+ * export and would be nice if you could see real preview the difference and
+ * then press export if you like it". Every tap used to run a whole capture —
+ * a full-size JPEG at quality 1.00 and a decode back from it — so stepping
+ * through four lenses cost four exports.
+ *
+ * What is asserted is the ORDER, which is the whole of the fix: the moment
+ * the tap lands there is a picture on screen and no file; a little later
+ * there is a file. And that the readout never confuses the two — while it is
+ * a preview it must not claim a size or a weight it has not measured.
+ *
+ * refreshReview reaches its note with no await in front of it, so reading
+ * straight after .click() is deterministic rather than a race.
+ */
+test('a review setting previews at once and encodes only after the tapping stops (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const page = await browser.newPage({ viewport: { width: 430, height: 932 } });
+      await page.goto(base);
+      await page.waitForSelector('#v2ImportPick');
+
+      const png = await page.evaluate(async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 96;
+        canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#101418';
+        ctx.fillRect(0, 0, 48, 64);
+        ctx.fillStyle = '#e8f0f6';
+        ctx.fillRect(48, 0, 48, 64);
+        const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+        return Array.from(new Uint8Array(await blob.arrayBuffer()));
+      });
+      await page.setInputFiles('#v2ImportFile', {
+        name: 'two-tone.png', mimeType: 'image/png', buffer: Buffer.from(png)
+      });
+      await page.waitForSelector('#v2Review:not([hidden])', { timeout: 10000 });
+      await page.waitForFunction(() =>
+        (document.getElementById('v2ReviewNote')?.textContent ?? '').startsWith('Held — '),
+        null, { timeout: 30000 });
+
+      // THE INSTANT AFTER THE TAP. Same task as the click, so nothing has had
+      // a chance to encode even on a machine that could do it quickly.
+      const instant = await page.evaluate(() => {
+        document.querySelector('#v2ReviewClarity [data-clarity="high"]').click();
+        const canvas = document.getElementById('v2ReviewCanvas');
+        return {
+          note: document.getElementById('v2ReviewNote')?.textContent ?? '',
+          saveHidden: document.getElementById('v2ReviewSave').hidden,
+          width: canvas.width,
+          height: canvas.height
+        };
+      });
+      assert.match(instant.note, /^Preview 96×64 /,
+        `the tap puts a picture up immediately, got "${instant.note}"`);
+      assert.match(instant.note, /nothing has been written yet/);
+      // A PREVIEW MAY NOT QUOTE A FILE'S WEIGHT. stillLine's "· 12 kB JPEG ·"
+      // is a measurement of a thing that does not exist yet.
+      assert.ok(!/JPEG/.test(instant.note),
+        `a preview never describes a file, got "${instant.note}"`);
+      assert.equal(instant.saveHidden, true,
+        'and Save is not offered for a file that has not been made');
+      assert.deepEqual([instant.width, instant.height], [96, 64],
+        'the preview is the picture at its own size');
+
+      // THEN THE FILE ARRIVES ON ITS OWN, with no further tap.
+      await page.waitForFunction(() => {
+        const note = document.getElementById('v2ReviewNote')?.textContent ?? '';
+        return note.startsWith('Held — ')
+          && !document.getElementById('v2Review').classList.contains('busy');
+      }, null, { timeout: 30000 });
+      const settled = await page.evaluate(() => ({
+        note: document.getElementById('v2ReviewNote')?.textContent ?? '',
+        clarity: document.querySelector('#v2ReviewClarity .active')?.dataset.clarity ?? ''
+      }));
+      assert.match(settled.note, /JPEG/,
+        `the settled readout describes the actual file, got "${settled.note}"`);
+      assert.equal(settled.clarity, 'high', 'at the setting that was tapped');
+
+      await page.close();
+    });
+  });
+
+/*
+ * SHARPEN IS THE TWO SETTINGS, NOT A THIRD ONE.
+ *
+ * Joshua found the pair by testing them: "doing Full & High helps with the
+ * image and makes it sharper without it looking distorted… can create a
+ * image 'Sharpen' button to use those two combinations by default". So the
+ * button must move the two rows it stands for — a preset that set some
+ * private third value would be a mystery box — and it must go back off,
+ * because in the same message: "some images like with the fence it makes it
+ * a bit worse", and an A/B is the only way to know which kind a picture is.
+ */
+test('Sharpen sets auto-levels Full and clarity High, and puts them back (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const page = await browser.newPage({ viewport: { width: 430, height: 932 } });
+      await page.goto(base);
+      await page.waitForSelector('#v2SharpenRow [data-sharpen]');
+
+      const read = () => page.evaluate(() => ({
+        levels: document.querySelector('#v2LevelsRow .active')?.dataset.levels ?? '',
+        clarity: document.querySelector('#v2ClarityRow .active')?.dataset.clarity ?? '',
+        on: document.querySelector('#v2SharpenRow [data-sharpen]').classList.contains('active'),
+        pressed: document.querySelector('#v2SharpenRow [data-sharpen]')
+          .getAttribute('aria-pressed')
+      }));
+
+      await page.evaluate(() => {
+        document.querySelector('#v2LevelsRow [data-levels="off"]').click();
+        document.querySelector('#v2ClarityRow [data-clarity="off"]').click();
+      });
+      const before = await read();
+      assert.equal(before.on, false, 'off to begin with');
+
+      await page.click('#v2SharpenRow [data-sharpen]');
+      const on = await read();
+      assert.equal(on.levels, 'full', 'Sharpen IS auto-levels Full');
+      assert.equal(on.clarity, 'high', 'and clarity High');
+      assert.equal(on.on, true);
+      assert.equal(on.pressed, 'true', 'and it says so to a screen reader');
+
+      await page.click('#v2SharpenRow [data-sharpen]');
+      const off = await read();
+      assert.equal(off.levels, 'off', 'one more tap puts both back');
+      assert.equal(off.clarity, 'off');
+      assert.equal(off.on, false);
+
+      // AND IT ONLY LIGHTS FOR THE PAIR. Half of it is not Sharpen, and a
+      // button that claimed otherwise would misdescribe the picture.
+      await page.click('#v2LevelsRow [data-levels="full"]');
+      const half = await read();
+      assert.equal(half.levels, 'full');
+      assert.equal(half.on, false,
+        'auto-levels Full on its own is not Sharpen');
+
+      await page.close();
+    });
+  });
+
+/*
  * CLARITY MUST NOT SPEND MORE PICTURE THAN IT HAS.
  *
  * An unsharp mask overshoots on purpose. What it may not do is drive so far

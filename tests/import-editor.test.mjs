@@ -69,9 +69,11 @@ test('a held frame is ONE frame, so a sequence filter is refused', () => {
   assert.match(refusal, /supportsPhoto \?\? true/,
     'and a filter that declines stills declines this one too');
   // Refused BEFORE the held file is touched.
+  // refreshReview renders the PREVIEW now and leaves the encode to a timer,
+  // so the thing the refusal must come before is the render.
   const refresh = body(app, 'async function refreshReview()');
   const guard = refresh.indexOf('const refusal = heldRefusal(');
-  assert.ok(guard > -1 && guard < refresh.indexOf('capturePhoto('),
+  assert.ok(guard > -1 && guard < refresh.indexOf('renderStill('),
     'the refusal is checked before anything is re-rendered');
   assert.match(refresh, /if \(refusal\) \{\s*\n\s*reviewText\('v2ReviewNote', refusal\);\s*\n\s*return;/,
     'and the held file is left exactly as it was');

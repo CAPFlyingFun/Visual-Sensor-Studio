@@ -58,15 +58,31 @@ test('the negative is grabbed inside the escalated-stream window', () => {
 });
 
 test('the review re-capture reuses the geometry the shutter held', () => {
-  const refresh = app.slice(app.indexOf('async function refreshReview()'));
-  const body = refresh.slice(0, refresh.indexOf('\n}\n'));
+  // TWO calls now — the preview's render and the file's encode — and both
+  // must be the held geometry or the review would be describing one picture
+  // while saving another.
+  const encode = app.slice(app.indexOf('async function encodeHeld('));
+  const body = encode.slice(0, encode.indexOf('\n}\n'));
   assert.match(body, /capturePhoto\(\s*renderer, shot\.negative, readState\(\)\.activeFilter, shot\.photo/,
     'the held photo geometry, not a fresh resolve against the restored stream');
-  assert.match(body, /lumaRange: shot\.lumaRange/);
-  assert.match(body, /background: shot\.background/);
-  assert.match(body, /clarity: clarityExtras\(\)/, 'at whatever clarity now says');
+  const refresh = app.slice(app.indexOf('async function refreshReview()'));
+  const preview = refresh.slice(0, refresh.indexOf('\n}\n'));
+  assert.match(preview, /renderStill\(\s*\n?\s*renderer, shot\.negative, readState\(\)\.activeFilter, shot\.photo/,
+    'and the preview is rendered at that same size');
+
+  // ONE definition of the settings both read, or the preview and the file
+  // would be free to drift apart.
+  assert.match(body, /\.\.\.heldOptions\(shot\)/);
+  assert.match(preview, /heldOptions\(shot\)/);
+  const options = app.slice(app.indexOf('function heldOptions(shot: HeldShot)'));
+  const made = options.slice(0, options.indexOf('\n}\n'));
+  assert.match(made, /lumaRange: shot\.lumaRange/);
+  assert.match(made, /background: shot\.background/);
+  assert.match(made, /clarity: clarityExtras\(\)/, 'at whatever clarity now says');
+
   assert.match(body, /run !== reviewRun \|\| held !== shot/,
     'a later change outranks an earlier one rather than racing it');
+  assert.match(preview, /run !== reviewRun \|\| held !== shot/);
 });
 
 test('two rows of clarity buttons, one idea of what a level means', () => {

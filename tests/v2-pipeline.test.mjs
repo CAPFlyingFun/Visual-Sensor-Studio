@@ -2232,19 +2232,21 @@ test('Night saves the STACK, at the tier\'s size, and still consults no lens', (
   // the single most damaging thing this path could get wrong.
   assert.match(nightBlock, /preRendered: true, label: 'night'/);
   const photo = readFileSync(new URL('../src/v2/capture/photo.ts', import.meta.url), 'utf8');
-  // The GUARD'S OWN BODY, not a character distance from its opening brace:
-  // this used to be /\{[\s\S]{0,200}uploadFrame/ and broke when a comment was
-  // added inside, which says nothing about whether the upload is guarded.
-  const guard = photo.slice(photo.indexOf('if (!options.preRendered) {'));
-  const guarded = guard.slice(0, guard.indexOf('\n  }\n'));
-  assert.match(guarded, /uploadFrame\(source\)/,
-    'a live frame is uploaded only when the canvas is not already holding one');
-  assert.match(guarded, /uploadHeld\(source\)/,
-    'and so is a held one');
-  assert.match(guarded, /renderer\.render\(filterId/,
-    'the re-render is inside the same guard — BOTH are skipped for a '
-    + 'pre-rendered save, or Night would save the single frame that happened '
-    + 'to be arriving instead of its four-second stack');
+  // THE UPLOAD AND THE RE-RENDER ARE ONE THING, renderStill, and the guard
+  // is in front of the whole of it. The review's live preview needs that
+  // half of a capture without the encode that follows, so it was named
+  // rather than duplicated — which leaves exactly one way to skip it.
+  assert.match(photo, /if \(!options\.preRendered\s*\n?\s*&& !renderStill\(renderer, source, filterId, photo, options\)\) return null;/,
+    'a frame is uploaded and re-rendered only when the canvas is not '
+    + 'already holding one — BOTH are skipped for a pre-rendered save, or '
+    + 'Night would save the single frame that happened to be arriving '
+    + 'instead of its four-second stack');
+  const render = photo.slice(photo.indexOf('export function renderStill('));
+  const body = render.slice(0, render.indexOf('\n}\n'));
+  assert.match(body, /uploadFrame\(source\)/,
+    'and that one thing is where the live upload lives');
+  assert.match(body, /uploadHeld\(source\)/, 'and the held one');
+  assert.match(body, /renderer\.render\(filterId/);
 
   // MAX MEANS MAX is unchanged: the size saved is the accumulator's own
   // frozen size, which is the photo row the tier resolved — never a
