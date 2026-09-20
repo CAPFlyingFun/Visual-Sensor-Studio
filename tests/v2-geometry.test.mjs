@@ -2616,3 +2616,136 @@ test('an imported picture opens in the review and is edited there (fake device)'
       assert.equal(dropped.canvasHidden, true, 'and the import is let go with it');
     });
   });
+
+/*
+ * AUTO-LEVELS, measured on the GPU.
+ *
+ * Two things a static test cannot reach. First, that the stretch actually
+ * expands a flat picture's contrast — the whole point, and the thing relief's
+ * note says uLumaRange could NOT do. Second, and more important, that it is
+ * REFUSED where it would be dishonest: Ironbow's output is a palette choice,
+ * and stretching it by the camera's black and white points would correct one
+ * picture by another's numbers.
+ */
+test('auto-levels expands a flat picture, and is refused by a palette (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const page = await browser.newPage({ viewport: { width: 430, height: 932 } });
+      await page.goto(base);
+      await page.waitForSelector('#v2ImportPick');
+
+      // A DELIBERATELY FLAT picture: every pixel between luma 40 and 70, plus
+      // one white and one black pixel. Those two are what pins the absolute
+      // range to 0..1 and makes the old measurement an identity; the
+      // percentile points step over them and find the narrow band.
+      const png = await page.evaluate(async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 64;
+        canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+        const img = ctx.createImageData(64, 64);
+        for (let i = 0; i < 64 * 64; i++) {
+          const y = 40 + (i % 31);
+          img.data[i * 4] = y;
+          img.data[i * 4 + 1] = y;
+          img.data[i * 4 + 2] = y;
+          img.data[i * 4 + 3] = 255;
+        }
+        for (let c = 0; c < 3; c++) { img.data[c] = 255; img.data[4 + c] = 0; }
+        ctx.putImageData(img, 0, 0);
+        const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+        return Array.from(new Uint8Array(await blob.arrayBuffer()));
+      });
+      await page.setInputFiles('#v2ImportFile', {
+        name: 'flat.png', mimeType: 'image/png', buffer: Buffer.from(png)
+      });
+      await page.waitForSelector('#v2Review:not([hidden])', { timeout: 10000 });
+      await page.waitForFunction(() =>
+        (document.getElementById('v2ReviewNote')?.textContent ?? '').startsWith('Held — '),
+        null, { timeout: 30000 });
+
+      /**
+       * The spread of luma actually on the review canvas — as a standard
+       * deviation, and as a PERCENTILE band.
+       *
+       * Never as min-to-max. This picture carries one white pixel and one
+       * black one, so its absolute spread is 255 before and after and says
+       * nothing — which is precisely why the feature measures percentiles
+       * and not uLumaRange. An earlier version of this test asserted on the
+       * absolute spread and failed for exactly that reason.
+       */
+      const spread = async () => page.evaluate(() => {
+        const canvas = document.getElementById('v2ReviewCanvas');
+        const ctx = canvas.getContext('2d');
+        const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const counts = new Uint32Array(256);
+        let n = 0;
+        let sum = 0;
+        let sumSq = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          const y = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+          counts[Math.max(0, Math.min(255, Math.round(y)))]++;
+          sum += y;
+          sumSq += y * y;
+          n++;
+        }
+        const at = (share) => {
+          let seen = 0;
+          for (let i = 0; i < 256; i++) {
+            seen += counts[i];
+            if (seen >= n * share) return i;
+          }
+          return 255;
+        };
+        const mean = sum / n;
+        return {
+          band: at(0.99) - at(0.01),
+          sd: Math.sqrt(Math.max(0, sumSq / n - mean * mean))
+        };
+      });
+
+      const before = await spread();
+      await page.click('#v2ReviewLevels [data-levels="full"]');
+      await page.waitForFunction(() => {
+        const note = document.getElementById('v2ReviewNote')?.textContent ?? '';
+        return note.startsWith('Held — ')
+          && !document.getElementById('v2Review').classList.contains('busy');
+      }, null, { timeout: 60000 });
+      const after = await spread();
+
+      // THE MEASUREMENT. A band of ~31 luma levels stretched to fill the
+      // range is roughly an eightfold expansion; anything above 3x proves the
+      // stretch is real and is not the identity uLumaRange would have given.
+      assert.ok(after.sd > before.sd * 3,
+        `the flat picture's contrast expands: sd ${before.sd.toFixed(2)} -> ${after.sd.toFixed(2)}`);
+      assert.ok(after.band > before.band * 3,
+        `and the band the picture occupies widens: ${before.band} -> ${after.band} levels`);
+
+      // REFUSED BY A PALETTE, tested as the gate itself rather than through
+      // the ramp: render Ironbow at Full and at Off and require the picture
+      // not to move. If the stretch leaked into a palette mapping, it could
+      // not leave the result identical.
+      //
+      // Ramp MEMBERSHIP would have been the obvious check and it is the
+      // wrong instrument here — this canvas is decoded from the JPEG, and
+      // JPEG chroma subsampling rings around the single isolated white pixel
+      // this picture carries on purpose. That ringing put one pixel off the
+      // ramp and said nothing whatever about auto-levels.
+      const settle = () => page.waitForFunction(() => {
+        const note = document.getElementById('v2ReviewNote')?.textContent ?? '';
+        return note.startsWith('Held — ')
+          && !document.getElementById('v2Review').classList.contains('busy');
+      }, null, { timeout: 60000 });
+      await page.click('#v2ReviewFilters [data-filter="ironbow"]');
+      await settle();
+      const rampAtFull = await spread();
+      await page.click('#v2ReviewLevels [data-levels="off"]');
+      await settle();
+      const rampAtOff = await spread();
+      assert.ok(Math.abs(rampAtFull.sd - rampAtOff.sd) < 0.5,
+        'a palette mapping is untouched by auto-levels: Ironbow renders the same at Full and '
+        + `at Off, sd ${rampAtFull.sd.toFixed(2)} vs ${rampAtOff.sd.toFixed(2)}`);
+      assert.equal(rampAtFull.band, rampAtOff.band,
+        `and occupies the same band: ${rampAtFull.band} vs ${rampAtOff.band}`);
+    });
+  });

@@ -463,9 +463,19 @@ test('clarity is an edit, not an aid — it reaches the file', () => {
    * was pressed on. Both go through the same exit, in that order.
    */
   const exit = header.slice(header.indexOf('vec3 present(vec3 color, vec2 uv)'));
-  assert.match(exit.slice(0, 200), /color = withClarity\(color, uv\);/);
-  assert.ok(exit.indexOf('withClarity') < exit.indexOf('uZebra'),
-    'the edit is applied, then the aids are drawn over it');
+  const body = exit.slice(0, exit.indexOf('\n}\n'));
+  assert.match(body, /color = withClarity\(color, uv\);/);
+  assert.ok(body.indexOf('withClarity') < body.indexOf('uZebra'),
+    'the EDITS are applied, then the aids are drawn over them');
+  // Auto-levels is the other edit through this exit, and it goes FIRST: the
+  // stretch decides the tone, clarity works the edges of whatever tone that
+  // turned out to be. Asserted as an ORDER rather than as clarity being the
+  // first line, which is what this test used to check and what adding levels
+  // above it broke — a position in the function, not the invariant.
+  assert.ok(body.indexOf('withLevels') < body.indexOf('withClarity'),
+    'levels stretches the tone before clarity sharpens it');
+  assert.ok(body.indexOf('withLevels') < body.indexOf('uZebra'),
+    'and it, too, lands before the aids');
   assert.match(photoTs, /clarity\?: \{ amount: number; floor: number \}/);
   assert.match(photoTs, /clarity: options\.clarity/, 'the still path carries it');
   assert.match(appTs, /clarity: clarityExtras\(\)/, 'and the shutter supplies it');

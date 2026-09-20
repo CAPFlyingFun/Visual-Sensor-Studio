@@ -79,7 +79,8 @@ import {
   ZEBRA_LEVELS, PEAKING_LEVELS, peakingById, peakingThreshold, zebraById, zebraThreshold
 } from './render/overlays.js';
 import {
-  EXPOSURE_BINS, buildExposure, describeExposure, emptyExposure, type ExposureReading
+  EXPOSURE_BINS, LEVELS_MIN_SPAN, buildExposure, describeExposure, emptyExposure,
+  type ExposureReading
 } from './vision/exposure.js';
 import { buildHistogram, emptyHistogram } from './vision/frame-histogram.js';
 import { matchShare } from './vision/colour-gap.js';
@@ -178,6 +179,7 @@ const TIER_STORE_KEY = 'vss.v2.streamTier.v1';
 const FILTER_STORE_KEY = 'vss.v2.activeFilter.v1';
 const FILTER_START_KEY = 'vss.v2.filterStart.v1';
 const CLARITY_STORE_KEY = 'vss.v2.clarity.v1';
+const LEVELS_STORE_KEY = 'vss.v2.levels.v1';
 const REVIEW_STORE_KEY = 'vss.v2.reviewHold.v1';
 
 function storedEnvelopeMeasurement(): EnvelopeMeasurement | null {
@@ -431,6 +433,7 @@ function renderPreview(now: number): void {
     lumaRange: exposure.range,
     background: exposure.mode,
     clarity: clarityExtras(),
+    levels: levelsExtras(exposure),
     // VIEWING AIDS reach the preview and nothing else. The photo and clip
     // paths below pass none, so stripes can never be baked into a file.
     aids: {
@@ -947,6 +950,129 @@ function renderClarity(): void {
         + 'recovering that needs a known point-spread function this has no way to measure.';
   }
 }
+
+/* --- AUTO-LEVELS: the picture's own black and white points --------------- */
+
+/**
+ * AUTO-LEVELS, and the honest name for what it does.
+ *
+ * Joshua picked this over denoise and white balance, and it is the cheapest
+ * honest win in the list because the measurement was already there — every
+ * frame and every imported picture is already censused, and v0.95.0 made an
+ * import measure ITSELF rather than the camera.
+ *
+ * What it stretches is NOT uLumaRange. That is an absolute min and max, and
+ * relief's note in the registry records what it costs: Joshua's own room
+ * measured 0.0000 to 1.0000, so a stretch between them is an identity. The
+ * percentile points for the same room are 0.141 and 0.281 — a span of 0.14,
+ * which is where the picture actually lives, and filling the range from
+ * there is a sevenfold expansion.
+ *
+ * Off by default. A photograph that needed no correction should not get one.
+ */
+const LEVELS_STEPS = [
+  { id: 'off', label: 'Off', amount: 0 },
+  { id: 'soft', label: 'Soft', amount: 0.5 },
+  { id: 'full', label: 'Full', amount: 1 }
+] as const;
+
+const LEVELS_HOLDERS = ['v2LevelsRow', 'v2ReviewLevels'];
+
+function storedLevels(): string {
+  try {
+    const saved = localStorage.getItem(LEVELS_STORE_KEY);
+    return LEVELS_STEPS.some((l) => l.id === saved) ? (saved as string) : 'off';
+  } catch {
+    return 'off';
+  }
+}
+
+let levelsStep = 'off';
+
+function levelsAmount(): number {
+  return LEVELS_STEPS.find((l) => l.id === levelsStep)?.amount ?? 0;
+}
+
+/** The stretch for a picture, from THAT picture's census. */
+function levelsExtras(
+  reading: ExposureReading
+): { black: number; white: number; amount: number } | undefined {
+  const amount = levelsAmount();
+  if (amount <= 0) return undefined;
+  return { black: reading.levels[0], white: reading.levels[1], amount };
+}
+
+function setLevelsStep(id: string): void {
+  levelsStep = id;
+  remember(LEVELS_STORE_KEY, id);
+  renderLevels();
+  renderPreview(performance.now());
+  if (held) void refreshReview();
+  else if (importedImage) renderImport();
+}
+
+function buildLevels(): void {
+  for (const holderId of LEVELS_HOLDERS) {
+    const holder = document.getElementById(holderId);
+    if (!holder) continue;
+    for (const step of LEVELS_STEPS) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = step.label;
+      button.dataset.levels = step.id;
+      button.addEventListener('click', () => setLevelsStep(step.id));
+      holder.appendChild(button);
+    }
+  }
+  levelsStep = storedLevels();
+  renderLevels();
+}
+
+/**
+ * The note, and it is where this feature is kept honest.
+ *
+ * Auto-levels does nothing at all in two ordinary situations — a filter that
+ * is not showing the camera's picture, and a picture whose measured span is
+ * already the whole range or too flat to stretch. A control that silently
+ * does nothing is the same failure as one that looks functional and is not,
+ * so both are said out loud with the numbers that decided it.
+ */
+function renderLevels(): void {
+  for (const holderId of LEVELS_HOLDERS) {
+    const holder = document.getElementById(holderId);
+    if (!holder) continue;
+    for (const button of holder.querySelectorAll<HTMLButtonElement>('[data-levels]')) {
+      button.classList.toggle('active', button.dataset.levels === levelsStep);
+    }
+  }
+  const note = document.getElementById('v2LevelsNote');
+  if (!note) return;
+  const filter = filterById(readState().activeFilter);
+  if (!filter?.toneIsFrame) {
+    note.textContent = `${filter?.name ?? 'This filter'} maps the picture to something `
+      + 'else — a palette, a gradient, a ramp — so the camera’s black and white points '
+      + 'do not describe what is on screen and are not applied to it. Auto-levels works on '
+      + 'RGB. A lens does this job with its own low and high fields, on its own numbers.';
+    return;
+  }
+  const [black, white] = exposure.levels;
+  const span = white - black;
+  if (levelsStep === 'off') {
+    note.textContent = 'Off. Stretches this picture’s own black and white points to fill '
+      + `the range — measured now at ${black.toFixed(2)} to ${white.toFixed(2)}. An edit, so `
+      + 'it reaches the saved photo.';
+    return;
+  }
+  note.textContent = span < LEVELS_MIN_SPAN
+    ? `Doing nothing: this picture spans ${span.toFixed(2)}, below the ${LEVELS_MIN_SPAN} floor. `
+      + 'Stretching a frame that flat would not reveal contrast, it would invent it, and what '
+      + 'came up would mostly be amplified noise.'
+    : `Stretching ${black.toFixed(2)}–${white.toFixed(2)} to fill the range`
+      + `${span > 0.92 ? ' — though this picture already fills it, so there is little to do' : ''}`
+      + '. Hue is kept: the whole colour is scaled by what the luma did, rather than each '
+      + 'channel stretched on its own, which would move the colour.';
+}
+
 
 function tierHolders(): HTMLElement[] {
   const holders = [byId('v2StreamTiers')];
@@ -2248,7 +2374,12 @@ function renderImport(): boolean {
   const census = importExposure ?? emptyExposure();
   if (!renderer.uploadStill(image)
     || !renderer.render(activeFilter, size, undefined,
-      { lumaRange: census.range, background: census.mode, clarity: clarityExtras() })) {
+      {
+        lumaRange: census.range,
+        background: census.mode,
+        clarity: clarityExtras(),
+        levels: levelsExtras(census)
+      })) {
     setText('v2ImportNote', 'That picture could not be rendered.');
     return false;
   }
@@ -2507,6 +2638,7 @@ async function openImportReview(): Promise<void> {
     },
     lumaRange: census.range,
     background: census.mode,
+    levels: { black: census.levels[0], white: census.levels[1] },
     // No file yet: openReview asks refreshReview to make the first one, and
     // the note says what it is doing while a large picture encodes.
     still: null,
@@ -2540,7 +2672,8 @@ async function saveImport(): Promise<void> {
     visuallyLossless: readState().visuallyLossless,
     lumaRange: census.range,
     background: census.mode,
-    clarity: clarityExtras()
+    clarity: clarityExtras(),
+    levels: levelsExtras(census)
   });
   if (!still) {
     setText('v2ImportNote', 'The picture rendered but could not be encoded.');
@@ -4026,6 +4159,10 @@ function renderTextPanels(): void {
   renderCameraControls();
   renderAids();
   renderExposure();
+  // The levels note carries LIVE numbers — this picture's measured points —
+  // so it rides the text tick like every other readout rather than only
+  // redrawing when the control is touched.
+  renderLevels();
   // The picker's shortcut names the ACTIVE lens, so it follows the strip.
   renderPickerLensRow();
 }
@@ -4463,6 +4600,13 @@ interface HeldShot {
   lumaRange: [number, number];
   background: number;
   /**
+   * THIS PICTURE'S black and white points, carried with it. The live camera
+   * has moved on by the time the review is open, and its census describes a
+   * different scene — the same mistake, in the same shape, as the import
+   * being measured against the camera before v0.95.0.
+   */
+  levels: { black: number; white: number };
+  /**
    * The current file — replaced whole whenever the capture is re-run, and
    * null while the first one is still being made. An import opens the review
    * before it has been encoded, because encoding a 36 MP picture is not
@@ -4711,7 +4855,11 @@ async function refreshReview(): Promise<void> {
       visuallyLossless: readState().visuallyLossless,
       lumaRange: shot.lumaRange,
       background: shot.background,
-      clarity: clarityExtras()
+      clarity: clarityExtras(),
+      // The HELD picture's own black and white points, carried with it —
+      // the live camera has moved on and its census describes a different
+      // scene entirely.
+      levels: { ...shot.levels, amount: levelsAmount() }
     });
   // A newer change, or a retake, owns the screen now — this answer is stale.
   if (run !== reviewRun || held !== shot) return;
@@ -4780,7 +4928,12 @@ async function takePhoto(): Promise<void> {
     photo: SizedWithReason | null;
     lumaRange: [number, number];
     background: number;
-  } = { negative: null, photo: null, lumaRange: exposure.range, background: exposure.mode };
+    levels: { black: number; white: number };
+  } = {
+    negative: null, photo: null, lumaRange: exposure.range,
+    background: exposure.mode,
+    levels: { black: exposure.levels[0], white: exposure.levels[1] }
+  };
   try {
     const outcome = await captureAtMaxStream(shutterStream(), async (dims, escalation) => {
       const source = frameSize(dims.width, dims.height);
@@ -4792,6 +4945,7 @@ async function takePhoto(): Promise<void> {
       shot.photo = photo;
       shot.lumaRange = exposure.range;
       shot.background = exposure.mode;
+      shot.levels = { black: exposure.levels[0], white: exposure.levels[1] };
       // THE NEGATIVE, AND IT CAN ONLY BE TAKEN HERE. This is the one moment
       // the camera is in its maximum mode; a frame grabbed after the restore
       // would be a different picture at a different size from the file.
@@ -4803,10 +4957,12 @@ async function takePhoto(): Promise<void> {
         // different picture from the one the shutter was pressed on.
         lumaRange: exposure.range,
         background: exposure.mode,
-        // THE EDIT REACHES THE FILE. Unlike the aids, which are forced to zero
-        // here so stripes can never be baked in, a still without clarity would
-        // come out softer than the preview the shutter was pressed on.
-        clarity: clarityExtras()
+        // THE EDITS REACH THE FILE. Unlike the aids, which are forced to zero
+        // here so stripes can never be baked in, a still without these would
+        // come out softer and flatter than the preview the shutter was
+        // pressed on.
+        clarity: clarityExtras(),
+        levels: levelsExtras(exposure)
       });
     }, { now: () => performance.now() });
     const tail = outcome.restoration === 'refused' || outcome.restoration === 'unconfirmed'
@@ -4825,7 +4981,7 @@ async function takePhoto(): Promise<void> {
       && openReview({
         kind: 'shot', name: '',
         negative: shot.negative, photo: shot.photo, lumaRange: shot.lumaRange,
-        background: shot.background, still, tail
+        background: shot.background, levels: shot.levels, still, tail
       });
     if (!reviewing) shot.negative?.close();
     if (still && !reviewing) {
@@ -6068,6 +6224,7 @@ applyStreamTier(storedStreamTier());
 buildFilterStart();
 buildReview();
 buildClarity();
+buildLevels();
 /*
  * PRIMED BEFORE THE STATE MOVES, and that is not a nicety.
  *

@@ -165,6 +165,13 @@ export interface CaptureOptions {
    */
   clarity?: { amount: number; floor: number };
   /**
+   * AUTO-LEVELS, and it must be here for the same reason clarity is: it is
+   * an EDIT, so a still saved without it would come out flatter than the
+   * picture the shutter was pressed on. The renderer still refuses it for
+   * any filter whose output is not the frame's tone.
+   */
+  levels?: { black: number; white: number; amount: number };
+  /**
    * Measure how far this frame compresses before it changes, and save at
    * that quality instead of at 1.00. Off means the old behaviour byte for
    * byte. Never changes the PHOTO GEOMETRY — MAX MEANS MAX is about pixels,
@@ -212,7 +219,8 @@ export async function capturePhoto(
       undefined, {
         lumaRange: options.lumaRange,
         background: options.background,
-        clarity: options.clarity
+        clarity: options.clarity,
+        levels: options.levels
       })) return null;
   }
 

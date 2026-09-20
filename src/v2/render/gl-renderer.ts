@@ -784,6 +784,16 @@ export class GlRenderer {
       /** The frame's modal luma, 0..1 — see uBackground in SHADER_HEADER. */
       background?: number;
       /**
+       * AUTO-LEVELS: the frame's measured black and white points, and how
+       * far to go towards filling the range with them. An EDIT, so every
+       * path passes it and a photograph carries what the viewfinder showed.
+       *
+       * Honoured ONLY for a filter whose output is the frame's tone. The
+       * points describe the CAMERA's picture; applying them to a palette
+       * mapping would be correcting one picture by another's numbers.
+       */
+      levels?: { black: number; white: number; amount: number };
+      /**
        * CLARITY — an unsharp mask, 0..1, with the noise floor it ignores
        * below. Unlike the aids this is an EDIT and every path passes it, so a
        * photograph carries exactly what the viewfinder showed.
@@ -851,6 +861,13 @@ export class GlRenderer {
     gl.uniform2f(gl.getUniformLocation(program, 'uAidTexel'),
       1 / frame.width, 1 / frame.height);
     gl.uniform1f(gl.getUniformLocation(program, 'uBackground'), extras.background ?? 0);
+    // THE GATE, and it lives here so no shader has to remember it. A filter
+    // that does not pass the frame's tone through gets an amount of zero,
+    // whatever the caller asked for.
+    const levels = filter.toneIsFrame ? extras.levels : undefined;
+    gl.uniform2f(gl.getUniformLocation(program, 'uLevels'),
+      levels?.black ?? 0, levels?.white ?? 1);
+    gl.uniform1f(gl.getUniformLocation(program, 'uLevelsAmount'), levels?.amount ?? 0);
     gl.uniform1f(gl.getUniformLocation(program, 'uClarity'), extras.clarity?.amount ?? 0);
     gl.uniform1f(gl.getUniformLocation(program, 'uClarityFloor'), extras.clarity?.floor ?? 0);
     const range = extras.lumaRange ?? [0, 1];

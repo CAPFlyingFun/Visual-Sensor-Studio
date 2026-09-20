@@ -562,7 +562,7 @@
     <h1>Visual Sensor Studio</h1>
     <span>
       <button type="button" class="chip" id="v2ViewerEnter" title="Full screen viewer">&#9974; Full screen</button>
-      <span class="pill" id="v2Badge">v0.96.0</span>
+      <span class="pill" id="v2Badge">v0.97.0</span>
     </span>
   </header>
 
@@ -689,6 +689,7 @@
              an imported picture used to scroll that picture off the screen.
              Same buttons, same tap, built by the same filterButton. -->
         <div class="filters review-filters" id="v2ReviewFilters"></div>
+        <div class="zoom guides" id="v2ReviewLevels" aria-label="Auto-levels"></div>
         <div class="zoom guides" id="v2ReviewClarity" aria-label="Clarity"></div>
         <div class="review-actions">
           <button type="button" class="btn" id="v2ReviewRetake">Retake</button>
@@ -887,6 +888,16 @@
           </div>
           <div class="zoom guides" id="v2ClarityRow" aria-label="Clarity"></div>
           <p class="hint" id="v2ClarityNote"></p>
+          <!-- AUTO-LEVELS. Beside clarity because it is the same kind of
+               thing — an edit that reaches the file, judged by looking —
+               and above it in the pipeline: the stretch decides the tone,
+               clarity works the edges of whatever tone that turned out to
+               be. -->
+          <div class="section-title" style="margin-top:12px">
+            <h2>Auto-levels</h2><span class="hint">an edit &middot; RGB only</span>
+          </div>
+          <div class="zoom guides" id="v2LevelsRow" aria-label="Auto-levels"></div>
+          <p class="hint" id="v2LevelsNote"></p>
           <label class="coach-mute"><input type="checkbox" id="v2ReviewHold" />
           <strong>Hold each shot for review</strong> &mdash; on by default</label>
           <p class="hint">

@@ -15,6 +15,7 @@
  */
 
 import { ironbowColor } from '../../vision/motion-ironbow.js';
+import { LEVELS_MIN_SPAN } from '../vision/exposure.js';
 import type { CustomLens } from '../../vision/lens.js';
 
 export type FilterFamily = 'view' | 'motion' | 'time' | 'night' | 'custom';
@@ -57,6 +58,21 @@ export interface FilterDefinition {
    * shell must supply one — the same census that feeds the histogram.
    */
   needsLumaRange?: boolean;
+  /**
+   * ITS OUTPUT IS THE FRAME'S TONE, so a tone edit measured on the frame
+   * describes what is actually on screen and may be applied to it.
+   *
+   * This gates AUTO-LEVELS, and the gate is the honest part of the feature.
+   * The black and white points are measured on the CAMERA's picture; RGB
+   * shows that picture, so stretching it by those points is exactly right.
+   * Every other filter's output is a mapping — Ironbow's is a palette
+   * choice, Edges' is a gradient magnitude, a lens's is its own ramp — and
+   * stretching one of those by the FRAME's points would be measuring one
+   * picture and correcting another, which is the mistake v0.95.0 was spent
+   * removing from the import path. A lens that wants this has its own low
+   * and high fields per binding, which do the job on the right numbers.
+   */
+  toneIsFrame?: boolean;
   /**
    * What this filter does, in one sentence, for the strip's note.
    *
@@ -215,6 +231,21 @@ uniform vec2 uLumaRange;
  */
 uniform float uBackground;
 /*
+ * AUTO-LEVELS — the picture's own black and white points, stretched to fill
+ * the range. x is black, y is white, and uLevelsAmount 0 is off.
+ *
+ * These are PERCENTILES, not the extremes in uLumaRange above, and the
+ * difference is the whole feature. Relief's note further down measured this
+ * room: absolute min 0.0000, absolute max 1.0000, so a stretch between them
+ * is an identity and the dark room stays dark. The same room's percentile
+ * points are 0.141 and 0.281 — a span of 0.14, which is what the picture
+ * actually occupies, and stretching THAT is a sevenfold expansion.
+ *
+ * An EDIT, not an aid: it reaches the saved file, exactly as clarity does.
+ */
+uniform vec2 uLevels;
+uniform float uLevelsAmount;
+/*
  * CLARITY — an unsharp mask, and the honest name for what it does.
  *
  * Joshua, 2026-09-20, on an article about "enhancing blurry photos without
@@ -284,7 +315,36 @@ uniform vec2 uAidTexel;
  * aids over the top of it, which is also the only order that makes sense:
  * stripes judge the exposure of the picture being saved.
  */
+/**
+ * The stretch. Scaled, never per-channel.
+ *
+ * Stretching R, G and B on their own black and white points is the other
+ * common auto-levels, and it MOVES COLOUR: a warm room comes back neutral,
+ * a blue hour comes back grey. That is a different photograph, not a
+ * corrected one. Scaling the whole colour by what the LUMA did keeps hue and
+ * saturation and changes only the tone.
+ *
+ * Known and stated: where the stretch brightens, a channel already near 1.0
+ * clamps, and a clamped channel does shift hue at the very top. The
+ * alternative is a luma-preserving space this shader cannot afford per pixel.
+ */
+vec3 withLevels(vec3 color) {
+  if (uLevelsAmount <= 0.0) return color;
+  float span = uLevels.y - uLevels.x;
+  // A flat picture is LEFT ALONE. Stretching a grey card or a fogged frame
+  // does not reveal contrast, it invents it, and what comes up is mostly
+  // amplified sensor noise wearing the costume of detail.
+  if (span < ${LEVELS_MIN_SPAN.toFixed(3)}) return color;
+  float y = luma(color);
+  float stretched = clamp((y - uLevels.x) / span, 0.0, 1.0);
+  vec3 lifted = y > 0.0005 ? color * (stretched / y) : vec3(stretched);
+  return mix(color, clamp(lifted, 0.0, 1.0), uLevelsAmount);
+}
+
 vec3 present(vec3 color, vec2 uv) {
+  // LEVELS FIRST, then clarity: the stretch decides the tone and clarity
+  // works the edges of whatever tone that turned out to be.
+  color = withLevels(color);
   color = withClarity(color, uv);
   if (uZebra <= 0.0 && uPeak <= 0.0) return color;
   // Judged on the CAMERA's luminance, not on the filter's output: under a
@@ -720,6 +780,9 @@ export const FILTERS: readonly FilterDefinition[] = [
     temporal: false,
     supportsPhoto: true,
     supportsVideo: true,
+    // The only filter whose output IS the frame, so the only one auto-levels
+    // can honestly correct (see toneIsFrame).
+    toneIsFrame: true,
     fragment: HEADER + `void main() {
   gl_FragColor = vec4(present(texture2D(uFrame, vUv).rgb, vUv), 1.0);
 }`

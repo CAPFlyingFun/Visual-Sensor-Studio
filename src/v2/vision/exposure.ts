@@ -56,6 +56,25 @@ export interface ExposureReading {
    */
   range: [number, number];
   /**
+   * THE BLACK AND WHITE POINTS, and they are NOT `range`.
+   *
+   * range is an absolute minimum and maximum, so one specular highlight or
+   * one crushed pixel pins it. Relief found this the hard way and wrote it
+   * down in the registry: measured in Joshua's own room, min 0.0000 and max
+   * 1.0000, which makes a stretch between them an identity and does nothing
+   * at all. It worked around the measurement with a gamma curve rather than
+   * fixing it.
+   *
+   * These are percentiles — the luma below which LEVELS_TAIL of the picture
+   * sits, and above which the same share sits. Ignoring a half-percent at
+   * each end is what separates "where this picture starts and stops" from
+   * "the two most extreme pixels in it".
+   *
+   * range stays exactly as it was: it is the honest reading of the extremes,
+   * and the exposure instrument and relief both depend on it.
+   */
+  levels: [number, number];
+  /**
    * Share clipped in EACH channel, 0..1. A saturated colour can lose one
    * channel while luminance still reads mid-grey, and only this notices.
    */
@@ -68,10 +87,56 @@ export function emptyExposure(): ExposureReading {
     mean: 0,
     mode: 0,
     range: [0, 1],
+    levels: [0, 1],
     clipped: 0,
     crushed: 0,
     channelClipped: [0, 0, 0]
   };
+}
+
+/**
+ * The share of the picture ignored at EACH end when finding the black and
+ * white points. Half a percent: enough to step over a specular highlight, a
+ * hot pixel or a crushed corner, small enough that it is still the picture's
+ * own extremes and not a guess at them.
+ */
+export const LEVELS_TAIL = 0.005;
+
+/**
+ * Below this measured span, a picture is FLAT and levels leaves it alone.
+ *
+ * A grey card, a fogged frame, a lens cap: stretching those to fill the
+ * range would not reveal contrast, it would invent it, and the result would
+ * be mostly amplified sensor noise presented as detail. 0.06 is about 15
+ * levels out of 255.
+ */
+export const LEVELS_MIN_SPAN = 0.06;
+
+/**
+ * Walk the histogram in from both ends until LEVELS_TAIL of the picture has
+ * been passed. The bin's OUTER edge is taken each time — the low bin's floor
+ * and the high bin's ceiling — so the stretch can only ever clip less than
+ * the tail asked for, never more.
+ */
+function percentileLevels(counts: Uint32Array, pixels: number): [number, number] {
+  const tail = pixels * LEVELS_TAIL;
+  let seen = 0;
+  let lowBin = 0;
+  for (let i = 0; i < EXPOSURE_BINS; i++) {
+    seen += counts[i];
+    if (seen > tail) { lowBin = i; break; }
+  }
+  seen = 0;
+  let highBin = EXPOSURE_BINS - 1;
+  for (let i = EXPOSURE_BINS - 1; i >= 0; i--) {
+    seen += counts[i];
+    if (seen > tail) { highBin = i; break; }
+  }
+  const black = lowBin / EXPOSURE_BINS;
+  const white = (highBin + 1) / EXPOSURE_BINS;
+  // A picture with nothing in it comes back as an identity rather than as a
+  // reversed pair nothing downstream would know what to do with.
+  return white > black ? [black, white] : [0, 1];
 }
 
 export function buildExposure(data: ArrayLike<number>): ExposureReading {
@@ -119,6 +184,7 @@ export function buildExposure(data: ArrayLike<number>): ExposureReading {
     // The middle of the fullest bin, not its edge.
     mode: (peakBin + 0.5) / EXPOSURE_BINS,
     range: [low / 255, high / 255],
+    levels: percentileLevels(counts, pixels),
     clipped: clipped / pixels,
     crushed: crushed / pixels,
     channelClipped: [channels[0] / pixels, channels[1] / pixels, channels[2] / pixels]
