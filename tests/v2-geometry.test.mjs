@@ -2515,6 +2515,106 @@ test('clarity sharpens by the same amount at preview and photo size (fake device
   });
 
 /*
+ * CLARITY MUST NOT SPEND MORE PICTURE THAN IT HAS.
+ *
+ * An unsharp mask overshoots on purpose. What it may not do is drive so far
+ * that a run of pixels all stop at the same wall, because a row of pixels
+ * pinned at 255 is not an edge, it is a white rind around one — the halo
+ * Joshua saw when he sent Off/Low/Medium/High of the same sheet and said the
+ * sharper it gets, the more it needs something to balance it.
+ *
+ * The scene is built to provoke exactly that: fine dark lines on ground that
+ * is already near white, and fine bright lines on ground already near black,
+ * so almost every overshoot asks for room the pixel does not have. Under the
+ * old clamp this scene pins a large share of the frame. What is asserted is
+ * both halves of the bargain — clarity still has to SHARPEN, and it has to do
+ * it without flattening the picture into the rails.
+ */
+test('clarity bends its overshoot into the room left, rather than clamping (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({ viewport: { width: 900, height: 700 } });
+      const page = await context.newPage();
+      const errors = [];
+      page.on('pageerror', (e) => errors.push(String(e)));
+      await page.goto(`${base}/index.html`);
+      await page.waitForTimeout(400);
+
+      const measured = await page.evaluate(async () => {
+        const { GlRenderer } = await import('./app/v2/render/gl-renderer.js');
+        const scene = document.createElement('canvas');
+        scene.width = 960; scene.height = 720;
+        const g = scene.getContext('2d');
+        // Top half: near-white ground with fine dark detail on it.
+        g.fillStyle = '#eceff2'; g.fillRect(0, 0, 960, 360);
+        g.fillStyle = '#3a4048';
+        for (let i = 0; i < 60; i++) g.fillRect(i * 16, 40, 5, 280);
+        // Bottom half: near-black ground with fine bright detail on it.
+        g.fillStyle = '#12151a'; g.fillRect(0, 360, 960, 360);
+        g.fillStyle = '#c8cfd8';
+        for (let i = 0; i < 60; i++) g.fillRect(i * 16 + 8, 400, 5, 280);
+        const image = new Image();
+        image.src = scene.toDataURL();
+        await image.decode();
+
+        const out = document.createElement('canvas');
+        const renderer = new GlRenderer(out);
+        if (renderer.unavailableReason) return { skip: renderer.unavailableReason };
+
+        const read = (clarity) => {
+          out.width = 960; out.height = 720;
+          renderer.uploadStill(image);
+          renderer.render('rgb', { width: 960, height: 720 }, undefined, { clarity });
+          const c = document.createElement('canvas');
+          c.width = 960; c.height = 720;
+          const x = c.getContext('2d');
+          x.drawImage(out, 0, 0);
+          const d = x.getImageData(0, 0, 960, 720).data;
+          let pinned = 0, lost = 0, sum = 0, n = 0;
+          for (let y = 0; y < 720; y++) {
+            for (let i = 0; i < 959; i++) {
+              const k = (y * 960 + i) * 4;
+              if (d[k] >= 255 || d[k + 1] >= 255 || d[k + 2] >= 255
+                || d[k] <= 0 || d[k + 1] <= 0 || d[k + 2] <= 0) pinned++;
+              const a = 0.2126 * d[k] + 0.7152 * d[k + 1] + 0.0722 * d[k + 2];
+              // CLIPPED / CRUSHED, exposure.ts's own thresholds.
+              if (a >= 250 || a <= 5) lost++;
+              const b = 0.2126 * d[k + 4] + 0.7152 * d[k + 5] + 0.0722 * d[k + 6];
+              sum += Math.abs(a - b); n++;
+            }
+          }
+          return { pinned: pinned / n, lost: lost / n, acutance: sum / n };
+        };
+        return { off: read(undefined), high: read({ amount: 1.1, floor: 0.026 }) };
+      });
+
+      assert.deepEqual(errors, [], 'the clarity shader compiles and runs');
+      if (measured.skip) { await page.close(); await context.close(); return; }
+
+      // It still sharpens. A limiter that protected the picture by doing
+      // nothing would pass the half below and be worthless.
+      assert.ok(measured.high.acutance > measured.off.acutance * 1.15,
+        `clarity still sharpens (${measured.off.acutance.toFixed(2)} → ${measured.high.acutance.toFixed(2)})`);
+
+      // And it does not do it by flattening the frame onto the rails. This
+      // scene is the worst case on purpose, and the numbers are the reason
+      // the bound is where it is: the old clamp drove 59.8% of it past
+      // exposure.ts's clipped/crushed thresholds and pinned 55.0% of it at a
+      // rail outright. The limit brings that to 25.8% and 27.6% while
+      // keeping 83% of the acutance the clamp bought (17.48 → 26.57 became
+      // 17.48 → 25.03). 40% is comfortably between the two.
+      const added = measured.high.lost - measured.off.lost;
+      assert.ok(added < 0.40,
+        `clarity keeps the frame off the rails: ${(measured.off.lost * 100).toFixed(1)}% → `
+        + `${(measured.high.lost * 100).toFixed(1)}% clipped or crushed, `
+        + `${(measured.high.pinned * 100).toFixed(1)}% pinned`);
+
+      await page.close();
+      await context.close();
+    });
+  });
+
+/*
  * THE IMPORT EDITOR, driven.
  *
  * A real picture goes through the file input, and what is asserted is the

@@ -277,9 +277,35 @@ uniform float uLevelsAmount;
  * and Cel's ink threshold all are: a fixed texel radius sharpens a 1170-wide
  * preview and a 3024-wide still by different amounts, so the saved picture
  * would not be the one that was framed.
+ *
+ * AND IT MUST NOT SPEND MORE PICTURE THAN IT HAS. An unsharp mask works by
+ * overshooting: it drives the bright side of an edge brighter and the dark
+ * side darker. The first version simply clamped whatever came out, which
+ * means every overshoot that asked for more than the pixel had left arrived
+ * at the wall and stopped there — and a run of pixels all stopped at the same
+ * wall is not an edge any more, it is a flat white or flat black rind around
+ * one. That rind is the halo.
+ *
+ * Joshua sent four versions of the same sheet, Off through High, 2026-09-20:
+ * "all look good, but feel like as it gets sharper, it needs something else
+ * to help balance it". Measured on his Off frame, at High the mask put 14.9%
+ * of the picture at or above 250 and 10.1% at or below 5, against 1.3% and
+ * 1.4% in the source. A fifth of the frame had been pushed off one end.
+ *
+ * So the overshoot is now bent into the room that exists instead of being cut
+ * off by it. Same frame, same High: 5.9% and 3.2%, while the local contrast
+ * on the pixels that were never near a wall keeps 88% of what the clamp got.
+ * Most of what the limit takes away was a halo, not detail.
  */
 uniform float uClarity;
 uniform float uClarityFloor;
+/*
+ * Where the roll-off starts, as a share of the room left. Below it the mask
+ * is untouched, which is most of the picture: measured on Joshua's TMB sheet
+ * at High, three quarters of the frame never came near a wall and reads the
+ * same either way. Above it the overshoot is bent into the space available.
+ */
+const float CLARITY_KNEE = 0.5;
 vec3 withClarity(vec3 color, vec2 uv) {
   if (uClarity <= 0.0) return color;
   vec2 r = frameStep(900.0) * 3.2;
@@ -299,7 +325,26 @@ vec3 withClarity(vec3 color, vec2 uv) {
   float shaped = sign(detail) * max(abs(detail) - uClarityFloor, 0.0);
   // MULTIPLIED, not added: scaling a colour cannot invent a hue, and an
   // additive boost on three channels puts colour fringes on every edge.
-  return clamp(color * (1.0 + uClarity * shaped * 6.0), 0.0, 1.0);
+  float boost = uClarity * shaped * 6.0;
+  // How far the push may still travel before it runs out of picture. Going
+  // UP that is the brightest channel's distance from white, because the
+  // brightest channel reaches the wall first and pins the colour there.
+  // Going DOWN it is the darkest channel, which is the first thing to
+  // disappear into black and takes the colour's separation with it.
+  float up = step(0.0, boost);
+  float bright = max(color.r, max(color.g, color.b));
+  float dark = min(color.r, min(color.g, color.b));
+  float drive = mix(luma(color), bright, up);
+  float room = max(mix(dark, 1.0 - bright, up), 0.0001);
+  // Full strength while the push is using less than CLARITY_KNEE of that
+  // room; past the knee it approaches the wall and never arrives.
+  float want = abs(drive * boost);
+  float knee = CLARITY_KNEE * room;
+  float tail = max(room - knee, 0.0001);
+  float given = want <= knee ? want : knee + tail * (1.0 - exp(-(want - knee) / tail));
+  float scale = drive > 0.0005 ? (drive + sign(boost) * given) / drive : 1.0;
+  // The clamp is now a safety net rather than the mechanism.
+  return clamp(color * scale, 0.0, 1.0);
 }
 uniform float uZebra;
 uniform float uPeak;

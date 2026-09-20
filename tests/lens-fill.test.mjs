@@ -498,8 +498,19 @@ test('clarity is an edit, not an aid — it reaches the file', () => {
   assert.match(clarity, /max\(abs\(detail\) - uClarityFloor, 0\.0\)/);
 
   // MULTIPLIED, not added: scaling a colour cannot invent a hue, where an
-  // additive boost on three channels puts colour fringes on every edge.
-  assert.match(clarity, /color \* \(1\.0 \+ uClarity \* shaped/);
+  // additive boost on three channels puts colour fringes on every edge. The
+  // scale is the only thing that ever reaches the colour.
+  assert.match(clarity, /float boost = uClarity \* shaped \* 6\.0;/);
+  assert.match(clarity, /return clamp\(color \* scale, 0\.0, 1\.0\);/);
+
+  // AND THE OVERSHOOT IS BENT INTO THE ROOM LEFT rather than cut off by it.
+  // A clamped unsharp mask stops every overshoot that asked for more than the
+  // pixel had at the same wall, and a run of pixels stopped at one wall is a
+  // white rind, not an edge. The room is read from the channel that reaches
+  // the wall first: brightest going up, darkest going down.
+  assert.match(clarity, /max\(color\.r, max\(color\.g, color\.b\)\)/);
+  assert.match(clarity, /min\(color\.r, min\(color\.g, color\.b\)\)/);
+  assert.match(clarity, /1\.0 - exp\(-\(want - knee\) \/ tail\)/);
 
   // Costs one uniform comparison when it is off.
   assert.match(clarity.slice(0, 200), /if \(uClarity <= 0\.0\) return color;/);

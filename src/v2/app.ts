@@ -946,8 +946,10 @@ function renderClarity(): void {
     note.textContent = clarityLevel === 'off'
       ? 'Off. Local contrast around edges — it reaches the saved photo, unlike zebra and peaking.'
       : 'Raises contrast either side of edges the lens still resolved, and leaves detail below '
-        + 'its noise floor alone. It does NOT undo blur: what the blur destroyed is gone, and '
-        + 'recovering that needs a known point-spread function this has no way to measure.';
+        + 'its noise floor alone. The overshoot is bent into the brightness each pixel has left, '
+        + 'so a strong setting works the edges rather than laying a white rind along them. '
+        + 'It does NOT undo blur: what the blur destroyed is gone, and recovering that needs a '
+        + 'known point-spread function this has no way to measure.';
   }
 }
 
