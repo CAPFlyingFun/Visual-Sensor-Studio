@@ -298,8 +298,15 @@ let exposure: ExposureReading = emptyExposure();
  * three questions about ONE frame. This takes the sample; the questions are
  * pure functions over it.
  */
-function sampleFrame(): Uint8ClampedArray | null {
-  if (video.videoWidth === 0) return null;
+/**
+ * The census sample, from WHATEVER PICTURE is being measured.
+ *
+ * Split out from sampleFrame because an imported photograph needs its own
+ * census and used to be given the camera's — see importExposure. The census
+ * is only ever as honest as the frame it counted, so the frame it counts has
+ * to be the frame being rendered.
+ */
+function sampleSquare(source: CanvasImageSource): Uint8ClampedArray | null {
   histogramCanvas ??= document.createElement('canvas');
   histogramCanvas.width = HISTOGRAM_SAMPLE;
   histogramCanvas.height = HISTOGRAM_SAMPLE;
@@ -308,12 +315,17 @@ function sampleFrame(): Uint8ClampedArray | null {
   try {
     // Stretched to a square: every census counts SHARES, and a uniform
     // stretch leaves each pixel's weight — and so each share — unchanged.
-    context.drawImage(video, 0, 0, HISTOGRAM_SAMPLE, HISTOGRAM_SAMPLE);
+    context.drawImage(source, 0, 0, HISTOGRAM_SAMPLE, HISTOGRAM_SAMPLE);
     return context.getImageData(0, 0, HISTOGRAM_SAMPLE, HISTOGRAM_SAMPLE).data;
   } catch {
     // A mid-switch video element can refuse a draw; the next pass recovers.
     return null;
   }
+}
+
+function sampleFrame(): Uint8ClampedArray | null {
+  if (video.videoWidth === 0) return null;
+  return sampleSquare(video);
 }
 
 /**
@@ -894,6 +906,11 @@ function setClarityLevel(id: string): void {
   // A held shot is re-captured at the new clarity, not merely re-previewed:
   // the review's whole claim is that the picture on it is the file.
   if (held) void refreshReview();
+  // And so is an imported one. renderImportPanel only redraws on a FILTER
+  // change, so the canvas kept showing the previous level — Save re-renders
+  // before it encodes, so the FILE was always right, but until you pressed it
+  // the picture on screen disagreed with the picture saving would produce.
+  if (importedImage) renderImport();
 }
 
 function buildClarity(): void {
@@ -2112,6 +2129,24 @@ function renderNightLog(): void {
  * says why instead of leaving a dead button.
  */
 let importedImage: HTMLImageElement | null = null;
+/**
+ * THE IMPORTED PICTURE'S OWN CENSUS, and it has to be its own.
+ *
+ * Every lens that measures the frame reads two numbers from here — the luma
+ * RANGE that Relief stretches into, and the modal luma the region fill
+ * measures each patch against. Until now an import was handed the CAMERA's
+ * census, because that is the only one that existed: sampleFrame has always
+ * read the video element. So importing a photograph and putting Blue
+ * Antenna, Survey, Blueprint or the cloud lenses on it measured it against
+ * whatever the camera happened to be looking at — or, with the camera never
+ * started, against the [0, 1] default, which is no picture at all.
+ *
+ * Measured ONCE per file, because unlike a camera frame an imported picture
+ * does not change. Null means it could not be measured, and the fallback is
+ * the empty census rather than the camera's: a neutral default is wrong in a
+ * way you can see, another scene's numbers are wrong in a way you cannot.
+ */
+let importExposure: ExposureReading | null = null;
 let importedClip: HTMLVideoElement | null = null;
 let importedName = '';
 let importedUrl = '';
@@ -2166,6 +2201,7 @@ function clearImport(): void {
   }
   importedClip = null;
   importedImage = null;
+  importExposure = null;
   importedName = '';
   importedFilter = '';
   if (importedUrl) URL.revokeObjectURL(importedUrl);
@@ -2201,9 +2237,11 @@ function renderImport(): boolean {
     setText('v2ImportReading', '');
     return false;
   }
+  // THE PICTURE'S OWN NUMBERS, never the camera's (see importExposure).
+  const census = importExposure ?? emptyExposure();
   if (!renderer.uploadStill(image)
     || !renderer.render(activeFilter, size, undefined,
-      { lumaRange: exposure.range, background: exposure.mode, clarity: clarityExtras() })) {
+      { lumaRange: census.range, background: census.mode, clarity: clarityExtras() })) {
     setText('v2ImportNote', 'That picture could not be rendered.');
     return false;
   }
@@ -2401,6 +2439,10 @@ async function loadImport(file: File): Promise<void> {
     return;
   }
   importedImage = image;
+  // Measured before the first render, so the very first picture shown is
+  // already keyed to itself rather than to the camera.
+  const census = image.naturalWidth > 0 ? sampleSquare(image) : null;
+  importExposure = census ? buildExposure(census) : null;
   importedUrl = url;
   importedName = file.name;
   importedFilter = readState().activeFilter;
@@ -2417,7 +2459,11 @@ async function saveImport(): Promise<void> {
   const image = importedImage;
   if (!image) return;
   const size = frameSize(image.naturalWidth, image.naturalHeight);
+  // renderImport FIRST: it is what leaves the picture on the shared canvas
+  // for preRendered to copy, and it is also what makes the canvas on screen
+  // agree with the file about to be written.
   if (!size || !renderImport()) return;
+  const census = importExposure ?? emptyExposure();
   const still = await capturePhoto(renderer, video, readState().activeFilter, {
     width: size.width,
     height: size.height,
@@ -2427,8 +2473,8 @@ async function saveImport(): Promise<void> {
     preRendered: true,
     label: `import-${readState().activeFilter}`,
     visuallyLossless: readState().visuallyLossless,
-    lumaRange: exposure.range,
-    background: exposure.mode,
+    lumaRange: census.range,
+    background: census.mode,
     clarity: clarityExtras()
   });
   if (!still) {

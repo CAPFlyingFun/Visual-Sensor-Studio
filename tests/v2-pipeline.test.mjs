@@ -1678,13 +1678,18 @@ test('one read of the frame answers every census asked of it', () => {
   // getImageData stalls on the GPU and three censuses each used to do their
   // own draw-and-read — three stalls to ask three questions about ONE frame.
   const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
-  // The rule is about the FRAME path: sampleFrame() is the only thing that
-  // reads the video, and it is read once per frame however many censuses ask.
-  const sampleFn = appTs.slice(appTs.indexOf('function sampleFrame()'),
-    appTs.indexOf('function sampleFrame()') + 900);
-  assert.equal((sampleFn.match(/getImageData\(/g) ?? []).length, 1,
+  // The rule is about the FRAME path: it is read once per frame however many
+  // censuses ask. The DRAW moved into sampleSquare when an imported picture
+  // needed a census of its own, so the count is taken over the pair —
+  // sampleFrame keeps its own name and its own emptiness test and delegates.
+  const sampler = appTs.slice(appTs.indexOf('function sampleSquare('),
+    appTs.indexOf('function sampleFrame()') + 300);
+  assert.equal((sampler.match(/getImageData\(/g) ?? []).length, 1,
     'the frame sample is read in exactly one place');
-  assert.match(sampleFn, /context\.drawImage\(video,/, 'and it is the VIDEO it reads');
+  assert.match(sampler, /context\.drawImage\(source, 0, 0, HISTOGRAM_SAMPLE/,
+    'one draw, whatever the source');
+  assert.match(sampler, /return sampleSquare\(video\);/,
+    'and the FRAME path is the one that reads the VIDEO');
   assert.match(appTs, /function sampleFrame\(\)/);
   // Night's own read is a DIFFERENT surface (the rendered canvas) at a
   // different cadence (once when a four-second capture finishes, never per

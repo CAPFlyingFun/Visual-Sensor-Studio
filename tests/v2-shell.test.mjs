@@ -695,7 +695,12 @@ test('an import cannot disturb the live camera pipeline', () => {
   // carries lumaRange, because without it Grid's stretch fell back to [0,1]
   // and the saved picture differed from the preview — but stateSize stays
   // undefined, which is what keeps the live pipeline undisturbed.
-  assert.match(appTs, /renderer\.render\(activeFilter, size, undefined,\s*\n?\s*\{[^}]*lumaRange: exposure\.range/,
+  // THE THIRD ARGUMENT, and nothing about the extras bag: what keeps the live
+  // pipeline undisturbed is the absent stateSize, and pinning the bag beside
+  // it has broken this test every time a field was added to it. The extras
+  // now carry the IMPORT's own census rather than the camera's, which
+  // tests/import-census.test.mjs is the place that checks.
+  assert.match(appTs, /renderer\.render\(activeFilter, size, undefined,/,
     'an import still passes no stateSize, so no state pass runs');
   // snapshotHistory stays the delivery loop's business alone.
   const importBlock = appTs.slice(appTs.indexOf('function renderImport()'),
