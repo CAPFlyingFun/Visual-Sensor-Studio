@@ -2352,3 +2352,92 @@ test('the region fill fills bodies and refuses texture (fake device)',
       await context.close();
     });
   });
+
+/*
+ * CLARITY AT TWO RENDER SIZES — the guarantee, measured.
+ *
+ * A fixed TEXEL radius sharpens a 1170-wide preview and a 3024-wide still by
+ * different amounts, so the saved photograph would not be the one that was
+ * framed. Grid's line width, Ink's hatch spacing and Cel's ink threshold were
+ * each fixed for exactly this, which is three times too many to take it on
+ * trust a fourth. The ratio of sharpened acutance to unsharpened acutance is
+ * the scale-free form of "how much did it sharpen", and it must be the same
+ * at both sizes.
+ */
+test('clarity sharpens by the same amount at preview and photo size (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const context = await browser.newContext({ viewport: { width: 900, height: 700 } });
+      const page = await context.newPage();
+      const errors = [];
+      page.on('pageerror', (e) => errors.push(String(e)));
+      await page.goto(`${base}/index.html`);
+      await page.waitForTimeout(400);
+
+      const measured = await page.evaluate(async () => {
+        const { GlRenderer } = await import('./app/v2/render/gl-renderer.js');
+        // A scene with detail at several scales, drawn once and rendered at
+        // two sizes off the SAME source texture.
+        const scene = document.createElement('canvas');
+        scene.width = 1200; scene.height = 900;
+        const g = scene.getContext('2d');
+        g.fillStyle = '#20242c'; g.fillRect(0, 0, 1200, 900);
+        for (let i = 0; i < 26; i++) {
+          g.fillStyle = i % 2 ? '#c9d2dd' : '#2c3644';
+          g.fillRect(i * 46, 80, 23, 360);
+        }
+        g.strokeStyle = '#e8eef6'; g.lineWidth = 6;
+        for (let i = 0; i < 9; i++) { g.beginPath(); g.arc(140 + i * 130, 660, 54, 0, 6.283); g.stroke(); }
+        const image = new Image();
+        image.src = scene.toDataURL();
+        await image.decode();
+
+        const out = document.createElement('canvas');
+        const renderer = new GlRenderer(out);
+        if (renderer.unavailableReason) return { skip: renderer.unavailableReason };
+        const acutance = (w, h) => {
+          const c = document.createElement('canvas');
+          c.width = w; c.height = h;
+          const x = c.getContext('2d');
+          x.drawImage(out, 0, 0);
+          const d = x.getImageData(0, 0, w, h).data;
+          let sum = 0, n = 0;
+          for (let y = 0; y < h; y++) for (let i = 0; i < w - 1; i++) {
+            const k = (y * w + i) * 4;
+            const a = 0.2126 * d[k] + 0.7152 * d[k + 1] + 0.0722 * d[k + 2];
+            const b = 0.2126 * d[k + 4] + 0.7152 * d[k + 5] + 0.0722 * d[k + 6];
+            sum += Math.abs(a - b); n++;
+          }
+          return sum / n;
+        };
+        const at = (width, clarity) => {
+          const h = Math.round(900 * width / 1200);
+          out.width = width; out.height = h;
+          renderer.uploadStill(image);
+          renderer.render('rgb', { width, height: h }, undefined, { clarity });
+          return acutance(width, h);
+        };
+        const strong = { amount: 1.1, floor: 0.026 };
+        return {
+          small: { off: at(600, undefined), on: at(600, strong) },
+          large: { off: at(1200, undefined), on: at(1200, strong) }
+        };
+      });
+
+      assert.deepEqual(errors, [], 'the clarity shader compiles and runs');
+      if (measured.skip) { await page.close(); await context.close(); return; }
+
+      // It does something at all.
+      assert.ok(measured.small.on > measured.small.off * 1.1,
+        `clarity raises acutance (${measured.small.off.toFixed(2)} → ${measured.small.on.toFixed(2)})`);
+
+      // AND THE SAME SOMETHING AT BOTH SIZES.
+      const smallRatio = measured.small.on / measured.small.off;
+      const largeRatio = measured.large.on / measured.large.off;
+      assert.ok(Math.abs(smallRatio - largeRatio) < 0.12,
+        `the same amount at both sizes: ${smallRatio.toFixed(3)} vs ${largeRatio.toFixed(3)}`);
+
+      await page.close();
+      await context.close();
+    });
+  });

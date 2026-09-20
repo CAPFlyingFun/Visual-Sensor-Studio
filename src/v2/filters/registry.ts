@@ -189,7 +189,7 @@ uniform vec3 uDominant;
  * VIEWING AIDS — zebra and focus peaking (see render/overlays.ts).
  *
  * They live in the HEADER, and every filter ends by passing its colour
- * through withAids(), because an aid that only some filters honour is worse
+ * through present(), because an aid that only some filters honour is worse
  * than none: you would learn to trust stripes that quietly stop appearing.
  *
  * NEVER CAPTURED. Both uniforms are 0 unless the caller asks for them, and
@@ -214,10 +214,78 @@ uniform vec2 uLumaRange;
  * which is what a background is.
  */
 uniform float uBackground;
+/*
+ * CLARITY — an unsharp mask, and the honest name for what it does.
+ *
+ * Joshua, 2026-09-20, on an article about "enhancing blurry photos without
+ * AI": he wanted to sharpen a photograph after taking it. This is the part of
+ * that article worth having. The part worth leaving is the claim around it —
+ * NOTHING HERE UNBLURS ANYTHING. An unsharp mask raises the contrast on
+ * either side of edges that SURVIVED; it cannot restore detail the blur
+ * destroyed. Recovering that needs deconvolution and a known point-spread
+ * function, and for a shaken hand the PSF is an unknown motion path. The
+ * readout says "clarity", never "sharper" or "deblurred".
+ *
+ * WHY IT LIVES HERE rather than in a filter or a lens. It has to reach RGB —
+ * sharpening an ordinary photograph is the whole request — and RGB is a
+ * built-in filter while the adjustable things are lens fields. One definition
+ * in the header reaches every filter, every lens, preview, photo and clip
+ * alike (Rule 4).
+ *
+ * UNLIKE THE AIDS, IT IS CAPTURED. Zebra and peaking are forced to zero on
+ * every path but the preview, on purpose, so stripes can never be baked into
+ * a file. Clarity is the opposite: it is an edit, so the photo must carry
+ * exactly what the viewfinder showed.
+ *
+ * THE THRESHOLD IS NOT OPTIONAL. In a dim room the strongest high-frequency
+ * content in the frame IS the sensor noise, so an unsharp mask with no floor
+ * amplifies grain before it touches an edge. Detail below the threshold is
+ * left alone entirely.
+ *
+ * THE RADIUS IS FRAME-RELATIVE, for the reason Grid's line width, Ink's hatch
+ * and Cel's ink threshold all are: a fixed texel radius sharpens a 1170-wide
+ * preview and a 3024-wide still by different amounts, so the saved picture
+ * would not be the one that was framed.
+ */
+uniform float uClarity;
+uniform float uClarityFloor;
+vec3 withClarity(vec3 color, vec2 uv) {
+  if (uClarity <= 0.0) return color;
+  vec2 r = frameStep(900.0) * 3.2;
+  // A small ring is the blur; the difference from it is the local detail.
+  float here = luma(texture2D(uFrame, uv).rgb);
+  float around = luma(texture2D(uFrame, uv + vec2( r.x, 0.0)).rgb)
+    + luma(texture2D(uFrame, uv + vec2(-r.x, 0.0)).rgb)
+    + luma(texture2D(uFrame, uv + vec2(0.0,  r.y)).rgb)
+    + luma(texture2D(uFrame, uv + vec2(0.0, -r.y)).rgb);
+  vec2 d = r * 0.70710678;
+  around += luma(texture2D(uFrame, uv + vec2( d.x,  d.y)).rgb)
+    + luma(texture2D(uFrame, uv + vec2( d.x, -d.y)).rgb)
+    + luma(texture2D(uFrame, uv + vec2(-d.x,  d.y)).rgb)
+    + luma(texture2D(uFrame, uv + vec2(-d.x, -d.y)).rgb);
+  float detail = here - around * 0.125;
+  // Below the floor it is grain, and grain is left where it is.
+  float shaped = sign(detail) * max(abs(detail) - uClarityFloor, 0.0);
+  // MULTIPLIED, not added: scaling a colour cannot invent a hue, and an
+  // additive boost on three channels puts colour fringes on every edge.
+  return clamp(color * (1.0 + uClarity * shaped * 6.0), 0.0, 1.0);
+}
 uniform float uZebra;
 uniform float uPeak;
 uniform vec2 uAidTexel;
-vec3 withAids(vec3 color, vec2 uv) {
+/*
+ * THE ONE EXIT every filter takes, and it does two different things in a
+ * deliberate order.
+ *
+ * It was called withAids when the aids were all it did. Clarity is an EDIT
+ * rather than an overlay — it belongs in the file, where an aid must never —
+ * so leaving it under that name would have made the name lie about which of
+ * the two reaches a photograph. present() applies the edit, then draws the
+ * aids over the top of it, which is also the only order that makes sense:
+ * stripes judge the exposure of the picture being saved.
+ */
+vec3 present(vec3 color, vec2 uv) {
+  color = withClarity(color, uv);
   if (uZebra <= 0.0 && uPeak <= 0.0) return color;
   // Judged on the CAMERA's luminance, not on the filter's output: under a
   // false-colour ramp the pixel on screen is a palette choice, and striping
@@ -653,7 +721,7 @@ export const FILTERS: readonly FilterDefinition[] = [
     supportsPhoto: true,
     supportsVideo: true,
     fragment: HEADER + `void main() {
-  gl_FragColor = vec4(withAids(texture2D(uFrame, vUv).rgb, vUv), 1.0);
+  gl_FragColor = vec4(present(texture2D(uFrame, vUv).rgb, vUv), 1.0);
 }`
   },
   {
@@ -669,7 +737,7 @@ export const FILTERS: readonly FilterDefinition[] = [
     // along with the ramp itself.
     fragment: HEADER + `void main() {
   float y = luma(texture2D(uFrame, vUv).rgb);
-  gl_FragColor = vec4(withAids(texture2D(uRamp, vec2(y, 0.5)).rgb, vUv), 1.0);
+  gl_FragColor = vec4(present(texture2D(uRamp, vec2(y, 0.5)).rgb, vUv), 1.0);
 }`
   },
   {
@@ -698,7 +766,7 @@ export const FILTERS: readonly FilterDefinition[] = [
   float now = luma(texture2D(uFrame, vUv).rgb);
   float before = luma(texture2D(uPrevious, vUv).rgb);
   float change = clamp(abs(now - before) * 4.0, 0.0, 1.0);
-  gl_FragColor = vec4(withAids(texture2D(uRamp, vec2(change, 0.5)).rgb, vUv), 1.0);
+  gl_FragColor = vec4(present(texture2D(uRamp, vec2(change, 0.5)).rgb, vUv), 1.0);
 }`
   },
   {
@@ -742,7 +810,7 @@ void main() {
                      base + 0.588 + 0.412 * heat,
                      base + 0.471 + 0.235 * (1.0 - heat));
   vec3 still = vec3(base, base + 0.0157, base + 0.039);
-  gl_FragColor = vec4(withAids(
+  gl_FragColor = vec4(present(
     clamp(mix(still, moving, step(THRESHOLD, smoothed)), 0.0, 1.0), vUv), 1.0);
 }`
   },
@@ -764,7 +832,7 @@ void main() {
     state: SPEED_STATE,
     fragment: HEADER + `void main() {
   float s = texture2D(uState, vUv).r;
-  gl_FragColor = vec4(withAids(texture2D(uRamp, vec2(s, 0.5)).rgb, vUv), 1.0);
+  gl_FragColor = vec4(present(texture2D(uRamp, vec2(s, 0.5)).rgb, vUv), 1.0);
 }`
   },
   {
@@ -789,7 +857,7 @@ void main() {
 }`,
     fragment: HEADER + `void main() {
   float t = texture2D(uState, vUv).r;
-  gl_FragColor = vec4(withAids(texture2D(uRamp, vec2(t, 0.5)).rgb, vUv), 1.0);
+  gl_FragColor = vec4(present(texture2D(uRamp, vec2(t, 0.5)).rgb, vUv), 1.0);
 }`
   },
   {
@@ -805,7 +873,7 @@ void main() {
     // them. See CHRONO_STATE for why three taps and a phase counter fit one
     // RGBA texture, and why the audit's "needs new machinery" was wrong.
     fragment: HEADER + `void main() {
-  gl_FragColor = vec4(withAids(texture2D(uState, vUv).rgb, vUv), 1.0);
+  gl_FragColor = vec4(present(texture2D(uState, vUv).rgb, vUv), 1.0);
 }`
   },
   {
@@ -822,7 +890,7 @@ void main() {
     // hold — roughly 384 of them, about thirteen seconds at 30 fps.
     fragment: HEADER + `void main() {
   float value = texture2D(uState, vUv).r;
-  gl_FragColor = vec4(withAids(vec3(value), vUv), 1.0);
+  gl_FragColor = vec4(present(vec3(value), vUv), 1.0);
 }`
   },
   {
@@ -837,7 +905,7 @@ void main() {
     // renderer from the target geometry — the shader owns no resolution.
     fragment: HEADER + `void main() {
   float g = clamp(sobelLuma(vUv, uTexel), 0.0, 1.0);
-  gl_FragColor = vec4(withAids(vec3(g), vUv), 1.0);
+  gl_FragColor = vec4(present(vec3(g), vUv), 1.0);
 }`
   },
   {
@@ -962,7 +1030,7 @@ void main() {
   // the frame.
   vec3 scene = texture2D(uFrame, vUv).rgb;
   vec3 under = pow(scene, vec3(HEIGHT_GAMMA)) * SCENE_UNDER;
-  gl_FragColor = vec4(withAids(mix(under, ink, line), vUv), 1.0);
+  gl_FragColor = vec4(present(mix(under, ink, line), vUv), 1.0);
 }`
   },
   {
@@ -1059,7 +1127,7 @@ void main() {
              + texture2D(uFrame, clamp(at - vec2(spread.x, 0.0), 0.0, 1.0)).rgb
              + texture2D(uFrame, clamp(at + vec2(0.0, spread.y), 0.0, 1.0)).rgb
              + texture2D(uFrame, clamp(at - vec2(0.0, spread.y), 0.0, 1.0)).rgb;
-  gl_FragColor = vec4(withAids(facet * 0.25, vUv), 1.0);
+  gl_FragColor = vec4(present(facet * 0.25, vUv), 1.0);
 }`
   },
   {
@@ -1111,7 +1179,7 @@ void main() {
   // Ink where the picture has a boundary, softened over the approach so the
   // line has a drawn edge rather than a staircase.
   float ink = smoothstep(INK_FULL * 0.35, INK_FULL, sobelLuma(vUv, frameStep(EDGE_REFERENCE)));
-  gl_FragColor = vec4(withAids(mix(painted, INK, ink), vUv), 1.0);
+  gl_FragColor = vec4(present(mix(painted, INK, ink), vUv), 1.0);
 }`
   },
   {
@@ -1174,7 +1242,7 @@ void main() {
   float grain = hash(floor(vUv / max(uTexel, vec2(1e-6)) * 0.5)) * 0.05;
   vec3 paper = PAPER - grain;
   vec3 drawn = mix(paper, GRAPHITE, max(shade * 0.85, stroke));
-  gl_FragColor = vec4(withAids(drawn, vUv), 1.0);
+  gl_FragColor = vec4(present(drawn, vUv), 1.0);
 }`
   },
   {
@@ -1254,7 +1322,7 @@ void main() {
   float grain = hash(floor(vUv / max(uTexel, vec2(1e-6)) * 0.6));
   float thin = 1.0 - clamp(luma(washed), 0.0, 1.0);
   washed *= 1.0 - PAPER_GRAIN * grain * (0.35 + 0.65 * thin);
-  gl_FragColor = vec4(withAids(clamp(washed, 0.0, 1.0), vUv), 1.0);
+  gl_FragColor = vec4(present(clamp(washed, 0.0, 1.0), vUv), 1.0);
 }`
   },
   {
@@ -1294,7 +1362,7 @@ void main() {
   vec3 scene = texture2D(uFrame, vUv).rgb;
   vec4 held = texture2D(uState, vUv);
   float band = held.r - held.g;
-  gl_FragColor = vec4(withAids(clamp(scene + band * GAIN, 0.0, 1.0), vUv), 1.0);
+  gl_FragColor = vec4(present(clamp(scene + band * GAIN, 0.0, 1.0), vUv), 1.0);
 }`
   },
   {
@@ -1329,7 +1397,7 @@ void main() {
 
 void main() {
   vec2 field = texture2D(uState, vUv).rg;
-  gl_FragColor = vec4(withAids(hueWheel(field.r) * field.g, vUv), 1.0);
+  gl_FragColor = vec4(present(hueWheel(field.r) * field.g, vUv), 1.0);
 }`
   },
   {
@@ -1373,7 +1441,7 @@ void main() {
   // Distance in colour, not just brightness, because a thing can arrive at
   // the same lightness as the wall behind it and still not belong.
   float lit = smoothstep(0.10, 0.38, texture2D(uState, vUv).a);
-  gl_FragColor = vec4(withAids(mix(scene * BELONGS, scene, lit), vUv), 1.0);
+  gl_FragColor = vec4(present(mix(scene * BELONGS, scene, lit), vUv), 1.0);
 }`
   }
 ];

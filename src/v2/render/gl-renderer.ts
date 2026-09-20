@@ -661,6 +661,9 @@ export class GlRenderer {
       // VIEWING aid and must never reach a measurement or a file.
       gl.uniform1f(gl.getUniformLocation(program, 'uZebra'), 0);
       gl.uniform1f(gl.getUniformLocation(program, 'uPeak'), 0);
+      // Night's own passes are an accumulation, not a picture yet; sharpening
+      // a partial stack would sharpen its noise and then average the result.
+      gl.uniform1f(gl.getUniformLocation(program, 'uClarity'), 0);
     }
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     return true;
@@ -755,6 +758,12 @@ export class GlRenderer {
       lumaRange?: [number, number];
       /** The frame's modal luma, 0..1 — see uBackground in SHADER_HEADER. */
       background?: number;
+      /**
+       * CLARITY — an unsharp mask, 0..1, with the noise floor it ignores
+       * below. Unlike the aids this is an EDIT and every path passes it, so a
+       * photograph carries exactly what the viewfinder showed.
+       */
+      clarity?: { amount: number; floor: number };
       /** Frames to average together — see render/frame-average.ts. 1 = none. */
       frames?: number;
       /**
@@ -817,6 +826,8 @@ export class GlRenderer {
     gl.uniform2f(gl.getUniformLocation(program, 'uAidTexel'),
       1 / frame.width, 1 / frame.height);
     gl.uniform1f(gl.getUniformLocation(program, 'uBackground'), extras.background ?? 0);
+    gl.uniform1f(gl.getUniformLocation(program, 'uClarity'), extras.clarity?.amount ?? 0);
+    gl.uniform1f(gl.getUniformLocation(program, 'uClarityFloor'), extras.clarity?.floor ?? 0);
     const range = extras.lumaRange ?? [0, 1];
     gl.uniform2f(gl.getUniformLocation(program, 'uLumaRange'), range[0], range[1]);
     gl.uniform1f(gl.getUniformLocation(program, 'uZebra'), extras.aids?.zebra ?? 0);

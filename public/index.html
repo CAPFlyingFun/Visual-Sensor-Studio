@@ -523,7 +523,7 @@
     <h1>Visual Sensor Studio</h1>
     <span>
       <button type="button" class="chip" id="v2ViewerEnter" title="Full screen viewer">&#9974; Full screen</button>
-      <span class="pill" id="v2Badge">v0.92.0</span>
+      <span class="pill" id="v2Badge">v0.93.0</span>
     </span>
   </header>
 
@@ -809,6 +809,15 @@
           <p class="hint" id="v2ZebraNote"></p>
           <div class="zoom guides" id="v2PeakingRow" aria-label="Focus peaking"></div>
           <p class="hint" id="v2PeakingNote"></p>
+          <!-- CLARITY. It sits with the exposure aids because it is judged the
+               same way — by looking — but it is NOT an aid: zebra and peaking
+               are forced to zero on every path but the preview, and this one
+               deliberately reaches the file. -->
+          <div class="section-title" style="margin-top:12px">
+            <h2>Clarity</h2><span class="hint">an edit · reaches the photo</span>
+          </div>
+          <div class="zoom guides" id="v2ClarityRow" aria-label="Clarity"></div>
+          <p class="hint" id="v2ClarityNote"></p>
           <button type="button" class="btn" id="v2ExposureToggle" aria-expanded="false">▮ Show histogram</button>
           <div id="v2ExposurePanel" hidden>
             <canvas id="v2ExposureGraph" width="256" height="72"

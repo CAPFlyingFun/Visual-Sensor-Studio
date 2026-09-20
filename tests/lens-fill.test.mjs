@@ -448,3 +448,58 @@ test('the app remembers the last lens, and can be told not to open on it', () =>
   // 'last' is the default: no stored answer means nobody has chosen yet.
   assert.match(appTs, /localStorage\.getItem\(FILTER_START_KEY\) !== 'rgb'/);
 });
+
+test('clarity is an edit, not an aid — it reaches the file', () => {
+  const header = readFileSync(new URL('../src/v2/filters/registry.ts', import.meta.url), 'utf8');
+  const photoTs = readFileSync(new URL('../src/v2/capture/photo.ts', import.meta.url), 'utf8');
+  const appTs = readFileSync(new URL('../src/v2/app.ts', import.meta.url), 'utf8');
+  const renderer = readFileSync(new URL('../src/v2/render/gl-renderer.ts', import.meta.url), 'utf8');
+
+  /*
+   * THE DISTINCTION THIS TEST EXISTS FOR. Zebra and peaking are forced to
+   * zero on every path but the preview, deliberately, so stripes can never be
+   * baked into a file. Clarity is the opposite kind of thing — an edit — so a
+   * still saved without it would come out softer than the preview the shutter
+   * was pressed on. Both go through the same exit, in that order.
+   */
+  const exit = header.slice(header.indexOf('vec3 present(vec3 color, vec2 uv)'));
+  assert.match(exit.slice(0, 200), /color = withClarity\(color, uv\);/);
+  assert.ok(exit.indexOf('withClarity') < exit.indexOf('uZebra'),
+    'the edit is applied, then the aids are drawn over it');
+  assert.match(photoTs, /clarity\?: \{ amount: number; floor: number \}/);
+  assert.match(photoTs, /clarity: options\.clarity/, 'the still path carries it');
+  assert.match(appTs, /clarity: clarityExtras\(\)/, 'and the shutter supplies it');
+
+  // Night accumulates rather than showing a picture; sharpening a partial
+  // stack would sharpen its noise and then average the result.
+  const night = renderer.slice(renderer.indexOf("uniform1f(gl.getUniformLocation(program, 'uZebra'), 0)"));
+  assert.match(night.slice(0, 400), /'uClarity'\), 0\)/);
+
+  // FRAME-RELATIVE RADIUS. A radius in texels sharpens a 1170-wide preview
+  // and a 3024-wide still by different amounts, so the saved picture would
+  // not be the one that was framed — the trap Grid's line width, Ink's hatch
+  // and Cel's ink threshold were each fixed for.
+  const clarity = header.slice(header.indexOf('vec3 withClarity'));
+  assert.match(clarity.slice(0, 400), /frameStep\(900\.0\)/);
+  assert.ok(!/uTexel \*/.test(clarity.slice(0, 900)), 'never a radius in texels');
+
+  // A NOISE FLOOR, because in a dim room the strongest fine detail in the
+  // frame IS the sensor noise, and a mask without one finds the grain first.
+  assert.match(clarity, /max\(abs\(detail\) - uClarityFloor, 0\.0\)/);
+
+  // MULTIPLIED, not added: scaling a colour cannot invent a hue, where an
+  // additive boost on three channels puts colour fringes on every edge.
+  assert.match(clarity, /color \* \(1\.0 \+ uClarity \* shaped/);
+
+  // Costs one uniform comparison when it is off.
+  assert.match(clarity.slice(0, 200), /if \(uClarity <= 0\.0\) return color;/);
+
+  // AND IT NEVER CLAIMS TO UNBLUR. An unsharp mask raises the contrast either
+  // side of edges that SURVIVED; recovering what the blur destroyed needs a
+  // known point-spread function, and for a shaken hand that is an unknown
+  // motion path. The readout says so rather than selling the technique.
+  const note = appTs.slice(appTs.indexOf('function renderClarity'));
+  assert.match(note.slice(0, 1200), /does NOT undo blur/);
+  assert.ok(!/\bdeblur|\bsharper\b/i.test(note.slice(0, 1200)),
+    'and it is never called sharper or deblurred');
+});

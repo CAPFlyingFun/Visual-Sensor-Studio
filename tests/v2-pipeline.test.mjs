@@ -1647,14 +1647,14 @@ test('a viewing aid can never reach a photo or a clip', () => {
   // striping — you would learn to trust an aid that is not always on.
   for (const filter of FILTERS) {
     const body = filter.fragment.slice(filter.fragment.indexOf('void main'));
-    assert.match(body, /withAids\(/, `${filter.name} routes its colour through the aids`);
+    assert.match(body, /present\(/, `${filter.name} routes its colour through the one exit`);
   }
   // State passes write DATA, not a picture: an aid drawn into one would be
   // measured on the next frame rather than merely shown.
   for (const filter of FILTERS) {
     if (!filter.state) continue;
     const body = filter.state.slice(filter.state.indexOf('void main'));
-    assert.ok(!body.includes('withAids('), `${filter.name}'s state pass stays clean`);
+    assert.ok(!body.includes('present('), `${filter.name}'s state pass stays clean`);
   }
 });
 
@@ -1662,7 +1662,7 @@ test('the aids judge the CAMERA, not the filter that is running', () => {
   // Under a false-colour ramp the pixel on screen is a palette choice. Zebra
   // striping by that would report the ramp; peaking would find the ramp's own
   // banding as edges. Both read uFrame instead.
-  const aids = SHADER_HEADER.slice(SHADER_HEADER.indexOf('vec3 withAids'));
+  const aids = SHADER_HEADER.slice(SHADER_HEADER.indexOf('vec3 present'));
   assert.match(aids, /vec3 scene = texture2D\(uFrame, uv\)\.rgb;/);
   assert.match(aids, /luma\(scene\) >= uZebra/);
   assert.ok(!aids.includes('uRamp'), 'the aids never read the palette');

@@ -176,6 +176,7 @@ const LOSSLESS_STORE_KEY = 'vss.v2.visuallyLossless.v1';
 const TIER_STORE_KEY = 'vss.v2.streamTier.v1';
 const FILTER_STORE_KEY = 'vss.v2.activeFilter.v1';
 const FILTER_START_KEY = 'vss.v2.filterStart.v1';
+const CLARITY_STORE_KEY = 'vss.v2.clarity.v1';
 
 function storedEnvelopeMeasurement(): EnvelopeMeasurement | null {
   try {
@@ -415,6 +416,7 @@ function renderPreview(now: number): void {
     ...alignmentFor(frames, target),
     lumaRange: exposure.range,
     background: exposure.mode,
+    clarity: clarityExtras(),
     // VIEWING AIDS reach the preview and nothing else. The photo and clip
     // paths below pass none, so stripes can never be baked into a file.
     aids: {
@@ -833,6 +835,79 @@ function renderFilterStart(): void {
     note.textContent = last
       ? 'Opens on the lens you were last using.'
       : 'Always opens on the camera’s own picture, whatever was in use last.';
+  }
+}
+
+/**
+ * CLARITY — an unsharp mask on the picture, and the wording matters.
+ *
+ * Joshua, 2026-09-20, after an article about "enhancing blurry photos without
+ * AI". The technique is worth having; the claim around it is not. This
+ * raises the contrast either side of edges that SURVIVED — it cannot restore
+ * detail the blur destroyed, and nothing here is called "sharper" or
+ * "deblurred" because neither would be true.
+ *
+ * The floor rises with the amount on purpose. In a dim room the strongest
+ * fine detail in the frame IS the sensor noise, so a stronger mask needs a
+ * higher floor or it finds the grain first.
+ */
+const CLARITY_LEVELS = [
+  { id: 'off', label: 'Off', amount: 0, floor: 0 },
+  { id: 'low', label: 'Low', amount: 0.35, floor: 0.012 },
+  { id: 'mid', label: 'Medium', amount: 0.7, floor: 0.018 },
+  { id: 'high', label: 'High', amount: 1.1, floor: 0.026 }
+] as const;
+
+function storedClarity(): string {
+  try {
+    const saved = localStorage.getItem(CLARITY_STORE_KEY);
+    return CLARITY_LEVELS.some((l) => l.id === saved) ? (saved as string) : 'off';
+  } catch {
+    return 'off';
+  }
+}
+
+let clarityLevel = 'off';
+
+/** The amount and floor the renderer is given, from the chosen level. */
+function clarityExtras(): { amount: number; floor: number } | undefined {
+  const level = CLARITY_LEVELS.find((l) => l.id === clarityLevel);
+  return level && level.amount > 0 ? { amount: level.amount, floor: level.floor } : undefined;
+}
+
+function buildClarity(): void {
+  const holder = document.getElementById('v2ClarityRow');
+  if (!holder) return;
+  for (const level of CLARITY_LEVELS) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = level.label;
+    button.dataset.clarity = level.id;
+    button.addEventListener('click', () => {
+      clarityLevel = level.id;
+      remember(CLARITY_STORE_KEY, level.id);
+      renderClarity();
+      renderPreview(performance.now());
+    });
+    holder.appendChild(button);
+  }
+  clarityLevel = storedClarity();
+  renderClarity();
+}
+
+function renderClarity(): void {
+  const holder = document.getElementById('v2ClarityRow');
+  if (!holder) return;
+  for (const button of holder.querySelectorAll<HTMLButtonElement>('[data-clarity]')) {
+    button.classList.toggle('active', button.dataset.clarity === clarityLevel);
+  }
+  const note = document.getElementById('v2ClarityNote');
+  if (note) {
+    note.textContent = clarityLevel === 'off'
+      ? 'Off. Local contrast around edges — it reaches the saved photo, unlike zebra and peaking.'
+      : 'Raises contrast either side of edges the lens still resolved, and leaves detail below '
+        + 'its noise floor alone. It does NOT undo blur: what the blur destroyed is gone, and '
+        + 'recovering that needs a known point-spread function this has no way to measure.';
   }
 }
 
@@ -2108,7 +2183,7 @@ function renderImport(): boolean {
   }
   if (!renderer.uploadStill(image)
     || !renderer.render(activeFilter, size, undefined,
-      { lumaRange: exposure.range, background: exposure.mode })) {
+      { lumaRange: exposure.range, background: exposure.mode, clarity: clarityExtras() })) {
     setText('v2ImportNote', 'That picture could not be rendered.');
     return false;
   }
@@ -2333,7 +2408,8 @@ async function saveImport(): Promise<void> {
     label: `import-${readState().activeFilter}`,
     visuallyLossless: readState().visuallyLossless,
     lumaRange: exposure.range,
-    background: exposure.mode
+    background: exposure.mode,
+    clarity: clarityExtras()
   });
   if (!still) {
     setText('v2ImportNote', 'The picture rendered but could not be encoded.');
@@ -4140,7 +4216,11 @@ async function takePhoto(): Promise<void> {
         // this range; without it the still fell back to [0, 1] and saved a
         // different picture from the one the shutter was pressed on.
         lumaRange: exposure.range,
-        background: exposure.mode
+        background: exposure.mode,
+        // THE EDIT REACHES THE FILE. Unlike the aids, which are forced to zero
+        // here so stripes can never be baked in, a still without clarity would
+        // come out softer than the preview the shutter was pressed on.
+        clarity: clarityExtras()
       });
     }, { now: () => performance.now() });
     if (outcome.still) {
@@ -5402,6 +5482,7 @@ applyStreamTier(storedStreamTier());
  * and fall back to RGB.
  */
 buildFilterStart();
+buildClarity();
 /*
  * PRIMED BEFORE THE STATE MOVES, and that is not a nicety.
  *

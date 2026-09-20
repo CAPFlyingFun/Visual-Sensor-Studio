@@ -158,6 +158,13 @@ export interface CaptureOptions {
    */
   background?: number;
   /**
+   * CLARITY, and it must be here. The aids are forced to zero on this path
+   * so stripes can never be baked into a file; clarity is the opposite kind
+   * of thing — an edit — so a still saved without it would come out softer
+   * than the preview the shutter was pressed on.
+   */
+  clarity?: { amount: number; floor: number };
+  /**
    * Measure how far this frame compresses before it changes, and save at
    * that quality instead of at 1.00. Off means the old behaviour byte for
    * byte. Never changes the PHOTO GEOMETRY — MAX MEANS MAX is about pixels,
@@ -183,9 +190,11 @@ export async function capturePhoto(
   if (!options.preRendered) {
     if (!renderer.uploadFrame(video)) return null;
     if (!renderer.render(filterId, { width: photo.width, height: photo.height },
-      undefined, options.lumaRange !== undefined || options.background !== undefined
-        ? { lumaRange: options.lumaRange, background: options.background }
-        : undefined)) return null;
+      undefined, {
+        lumaRange: options.lumaRange,
+        background: options.background,
+        clarity: options.clarity
+      })) return null;
   }
 
   photoCanvas ??= document.createElement('canvas');

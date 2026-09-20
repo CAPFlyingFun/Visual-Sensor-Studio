@@ -739,7 +739,7 @@ export function compileLens(lens: CustomLens): FilterDefinition {
   float sceneY = luma(scene);
   vec3 base = ${base};
   float raw = ch_${lens.color.channel}(vUv);
-${lens.color.channel === 'speed' ? `  if (raw <= 0.0) { gl_FragColor = vec4(withAids(base, vUv), 1.0); return; }\n` : ''}\
+${lens.color.channel === 'speed' ? `  if (raw <= 0.0) { gl_FragColor = vec4(present(base, vUv), 1.0); return; }\n` : ''}\
   float t = normColour(raw);
   ${paint}
 ${lens.brightness ? `  c *= mix(${glslFloat(floor)}, 1.0, normBright(ch_${lens.brightness.channel}(vUv)));\n` : ''}\
@@ -765,7 +765,7 @@ ${grid ? `  // THE RULING, OVER EVERYTHING. Drawn in the ramp's brightest colour
   // belongs to the same palette, and added rather than blended so it never
   // takes anything away from the picture underneath it.
   c = max(c, texture2D(uRamp, vec2(1.0, 0.5)).rgb * gridRule(vUv) * GRID_STRENGTH);\n` : ''}\
-  gl_FragColor = vec4(withAids(c, vUv), 1.0);
+  gl_FragColor = vec4(present(c, vUv), 1.0);
 }`;
 
   return {
