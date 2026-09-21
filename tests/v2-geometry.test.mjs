@@ -2697,6 +2697,66 @@ test('a fault on the device says what it was, and otherwise stays out of the way
   });
 
 /*
+ * AN UPLOAD THAT FAILED MUST NOT REPORT SUCCESS.
+ *
+ * Joshua, 2026-09-21: "I tried to load like a 4kx8k image my camera did at
+ * 36mp and it failed… it shouldn't as it has loaded that size before."
+ *
+ * A GPU will not carry a texture past MAX_TEXTURE_SIZE, and this is the part
+ * that made it impossible to see: texImage2D does not throw for one. It
+ * raises GL_INVALID_VALUE and leaves the texture undefined, so uploadStill
+ * returned true for a texture that does not exist and every stage after it
+ * worked on nothing — a picture rendered as black rather than a message
+ * saying it could not be rendered at all.
+ *
+ * The limit is whatever the machine running this says it is, so the test asks
+ * the context rather than hard-coding a number, and builds its oversized
+ * source one pixel past it. Deliberately eight pixels tall: this is about the
+ * EDGE limit, and a full-size canvas would be measuring memory instead.
+ */
+test('a texture past the GPU’s limit is refused, not reported as uploaded (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const page = await browser.newPage({ viewport: { width: 430, height: 932 } });
+      await page.goto(base);
+      await page.waitForTimeout(400);
+
+      const measured = await page.evaluate(async () => {
+        const { GlRenderer } = await import('./app/v2/render/gl-renderer.js');
+        const out = document.createElement('canvas');
+        const renderer = new GlRenderer(out);
+        if (renderer.unavailableReason) return { skip: renderer.unavailableReason };
+        const limit = renderer.maxEdge;
+        const strip = (width) => {
+          const canvas = document.createElement('canvas');
+          canvas.width = width; canvas.height = 8;
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#8ab'; ctx.fillRect(0, 0, width, 8);
+          return canvas;
+        };
+        return {
+          limit,
+          atLimit: renderer.uploadStill(strip(limit)),
+          pastLimit: renderer.uploadStill(strip(limit + 1)),
+          ordinary: renderer.uploadStill(strip(64))
+        };
+      });
+      if (measured.skip) { await page.close(); return; }
+
+      assert.ok(measured.limit > 0,
+        'the renderer can say what this GPU carries, which nothing used to ask');
+      assert.equal(measured.ordinary, true, 'an ordinary picture uploads');
+      assert.equal(measured.atLimit, true,
+        `exactly at the limit is still carried (${measured.limit} px)`);
+      assert.equal(measured.pastLimit, false,
+        `one pixel past it is refused rather than silently doing nothing `
+        + `(limit ${measured.limit})`);
+
+      await page.close();
+    });
+  });
+
+/*
  * A BIG PICTURE IS SHOWN ON A SCREEN, NOT AT ITS OWN SIZE.
  *
  * Joshua, 2026-09-21: "I tried to load like a 4kx8k image my camera did at

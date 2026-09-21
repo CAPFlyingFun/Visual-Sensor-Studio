@@ -43,7 +43,16 @@ test('an import is held with ITS OWN census and its own full size', () => {
     'the picture measured against itself, never the camera');
   assert.match(open, /lumaRange: census\.range/);
   assert.match(open, /background: census\.mode/);
-  assert.match(open, /reason: 'an imported picture at its own full size'/);
+  // The phrase moved into importReason() when a picture too big for the GPU
+  // began being brought down to what it carries — because at that point
+  // "at its own full size" is not always true, and a readout that said it
+  // anyway would be describing a file that does not exist.
+  assert.match(open, /reason: importReason\(\)/);
+  const reason = body(app, 'function importReason()');
+  assert.match(reason, /'an imported picture at its own full size'/,
+    'and it still says exactly that when nothing was given up');
+  assert.match(reason, /brought down to what this GPU carries/,
+    'and says so plainly when something was');
   assert.match(open, /still: null/, 'no file yet — refreshReview makes the first one');
   assert.match(open, /createImageBitmap\(image\)/);
 });

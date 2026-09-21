@@ -225,6 +225,25 @@ export class GlRenderer {
   }
 
   /**
+   * THE LARGEST EDGE THIS GPU WILL CARRY, measured from the context.
+   *
+   * A texture wider or taller than MAX_TEXTURE_SIZE is not an error anyone
+   * notices: texImage2D does not throw for it, it raises GL_INVALID_VALUE and
+   * leaves the texture undefined. So an upload that had already failed used to
+   * report success, and everything downstream rendered against nothing —
+   * which is not a picture, but is also not a message.
+   *
+   * Reported here so the shell can keep a picture inside it rather than find
+   * out afterwards. 0 means there is no context to ask.
+   */
+  get maxEdge(): number {
+    const gl = this.gl;
+    if (!gl || gl.isContextLost()) return 0;
+    const limit = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
+    return Number.isFinite(limit) && limit > 0 ? limit : 0;
+  }
+
+  /**
    * The frame every pass reads: the camera's, or the running average of the
    * last few. ONE accessor, so the display pass, the state pass and the
    * history copy can never disagree about which picture this frame is —
@@ -713,14 +732,22 @@ export class GlRenderer {
    * Everything downstream is identical: the same texture, so the same one
    * program per filter draws it (Rule 4). There is no import-only filter path.
    */
-  uploadStill(image: HTMLImageElement): boolean {
+  uploadStill(image: HTMLImageElement | HTMLCanvasElement): boolean {
     const gl = this.gl;
-    if (!gl || gl.isContextLost() || image.naturalWidth === 0) return false;
+    if (!gl || gl.isContextLost()) return false;
+    const width = image instanceof HTMLCanvasElement ? image.width : image.naturalWidth;
+    const height = image instanceof HTMLCanvasElement ? image.height : image.naturalHeight;
+    if (width === 0 || height === 0) return false;
+    // REFUSED RATHER THAN REPORTED AS DONE. Past MAX_TEXTURE_SIZE the upload
+    // silently does nothing, so saying so is the whole difference between a
+    // picture that cannot be shown and a picture that is shown as black.
+    const limit = this.maxEdge;
+    if (limit > 0 && (width > limit || height > limit)) return false;
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.frameTexture);
     try {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
-      this.frameSize = { width: image.naturalWidth, height: image.naturalHeight };
+      this.frameSize = { width, height };
     } catch {
       return false;
     }

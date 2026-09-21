@@ -669,7 +669,13 @@ test('an imported photo goes through the SAME filters and saves as a new file', 
   // ACTIVE filter, never a second import-only implementation (Rule 4).
   assert.match(appTs, /renderer\.uploadStill\(image\)\s*\n\s*\|\| !renderer\.render\(activeFilter, size, undefined,/);
   // At the picture's OWN size — an import is not quietly downscaled.
-  assert.match(appTs, /const size = frameSize\(image\.naturalWidth, image\.naturalHeight\);/);
+  // The size comes from the PICTURE, never from the camera or the display.
+  // It reads through importSize now, because an import may be an image or the
+  // canvas it was brought down into when the GPU could not carry it whole.
+  assert.match(appTs, /const \{ width: iw, height: ih \} = importSize\(image\);\s*\n\s*const size = frameSize\(iw, ih\);/);
+  const sizeOf = appTs.slice(appTs.indexOf('function importSize('));
+  assert.match(sizeOf.slice(0, sizeOf.indexOf('\n}\n')), /naturalWidth/,
+    'and an ordinary image still reports its own natural size');
   // And saved through the one save path, not a second encoder.
   assert.match(appTs, /label: `import-\$\{readState\(\)\.activeFilter\}`/);
 

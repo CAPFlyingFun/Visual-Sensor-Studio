@@ -2364,7 +2364,43 @@ function renderNightLog(): void {
  * metadata (Rule 10) rather than by a hand-kept list of names, and the note
  * says why instead of leaving a dead button.
  */
-let importedImage: HTMLImageElement | null = null;
+/**
+ * WHAT AN OPENED PICTURE IS, and why it is not always the file's own pixels.
+ *
+ * Joshua, 2026-09-21, with the photograph that would not open: "I tried to
+ * load like a 4kx8k image my camera did at 36mp and it failed."
+ *
+ * A GPU will not carry a texture past MAX_TEXTURE_SIZE, and a 36 MP frame is
+ * over that on plenty of devices. texImage2D does not complain about it — it
+ * raises GL_INVALID_VALUE and leaves the texture undefined — so the upload
+ * reported success and every stage after it worked on nothing.
+ *
+ * A picture too big for the GPU is therefore brought down to the largest size
+ * it WILL carry, once, at the door, and kept as a canvas. Everything after
+ * this point is inside the limit by construction: the census, the render, the
+ * negative, the file. The readout says it happened and by how much, because a
+ * picture quietly saved smaller than it was opened would be the worst kind of
+ * silence in an app whose whole claim is that it keeps what the sensor saw.
+ */
+type ImportSource = HTMLImageElement | HTMLCanvasElement;
+
+function importSize(source: ImportSource): { width: number; height: number } {
+  return source instanceof HTMLCanvasElement
+    ? { width: source.width, height: source.height }
+    : { width: source.naturalWidth, height: source.naturalHeight };
+}
+
+/** Empty unless the picture had to come down to be carried at all. */
+let importedReduction = '';
+
+/** What the file's own readout calls the size it was rendered at. */
+function importReason(): string {
+  return importedReduction
+    ? 'an imported picture, brought down to what this GPU carries'
+    : 'an imported picture at its own full size';
+}
+
+let importedImage: ImportSource | null = null;
 /**
  * THE IMPORTED PICTURE'S OWN CENSUS, and it has to be its own.
  *
@@ -2444,6 +2480,7 @@ function clearImport(): void {
   }
   importedClip = null;
   importedImage = null;
+  importedReduction = '';
   importExposure = null;
   importedName = '';
   importedFilter = '';
@@ -2465,7 +2502,8 @@ function clearImport(): void {
 function renderImport(): boolean {
   const image = importedImage;
   if (!image) return false;
-  const size = frameSize(image.naturalWidth, image.naturalHeight);
+  const { width: iw, height: ih } = importSize(image);
+  const size = frameSize(iw, ih);
   if (!size) return false;
   const { activeFilter } = readState();
   const refusal = importRefusal(activeFilter);
@@ -2490,7 +2528,13 @@ function renderImport(): boolean {
         clarity: clarityExtras(),
         levels: levelsExtras(census)
       })) {
-    setText('v2ImportNote', 'That picture could not be rendered.');
+    // NAMED, not just refused. Joshua tests on a device with no console, so
+    // "could not be rendered" was a dead end every time — these are the two
+    // numbers that decide it, and the second one is a property of his phone
+    // that nothing else in the app would ever tell him.
+    setText('v2ImportNote', `${importedName} could not be rendered: `
+      + `${size.width}×${size.height}, and this GPU carries at most `
+      + `${renderer.maxEdge || 'an unknown number of'} px on an edge.`);
     return false;
   }
   // DISPLAY ONLY, so it is capped like the review's. saveImport re-renders
@@ -2505,8 +2549,9 @@ function renderImport(): boolean {
   canvas.hidden = false;
   byId('v2ImportSave').hidden = false;
   setText('v2ImportNote', `${importedName} · through ${filterById(activeFilter)?.name ?? activeFilter}`);
-  setText('v2ImportReading', `${size.width}×${size.height} · the picture's own full size, `
-    + `not a downscale${shownLine(size.width, size.height)} · `
+  setText('v2ImportReading', `${size.width}×${size.height} · `
+    + `${importedReduction ? 'the largest this GPU carries' : "the picture's own full size, not a downscale"}`
+    + `${shownLine(size.width, size.height)}${importedReduction} · `
     + 'the original file is never written to');
   return true;
 }
@@ -2674,6 +2719,29 @@ async function loadClip(file: File): Promise<void> {
   startImportPlayback();
 }
 
+/**
+ * The picture the GPU can actually take, which is usually the one handed in.
+ *
+ * Returns the SAME object when it fits, so the ordinary case costs a
+ * comparison and allocates nothing. When it does not fit, the copy is drawn
+ * once into a canvas at the largest size that will upload — and that canvas
+ * is also far smaller in memory, which is the second half of why a 36 MP
+ * import could not be opened.
+ */
+function carriable(image: HTMLImageElement): ImportSource {
+  const limit = renderer.maxEdge;
+  const { naturalWidth: width, naturalHeight: height } = image;
+  if (limit <= 0 || (width <= limit && height <= limit)) return image;
+  const scale = limit / Math.max(width, height);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.floor(width * scale));
+  canvas.height = Math.max(1, Math.floor(height * scale));
+  const context = canvas.getContext('2d');
+  if (!context) return image;
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
 async function loadImport(file: File): Promise<void> {
   clearImport();
   setText('v2ImportNote', `Opening ${file.name}…`);
@@ -2691,10 +2759,16 @@ async function loadImport(file: File): Promise<void> {
     setText('v2ImportNote', `${file.name} could not be opened as a picture.`);
     return;
   }
-  importedImage = image;
+  importedImage = carriable(image);
+  importedReduction = importedImage === image ? '' : (() => {
+    const was = `${image.naturalWidth}×${image.naturalHeight}`;
+    const now = importSize(importedImage as ImportSource);
+    return ` · opened at ${now.width}×${now.height} from ${was}, `
+      + `the largest this GPU carries (${renderer.maxEdge} px an edge)`;
+  })();
   // Measured before the first render, so the very first picture shown is
   // already keyed to itself rather than to the camera.
-  const census = image.naturalWidth > 0 ? sampleSquare(image) : null;
+  const census = importSize(image).width > 0 ? sampleSquare(image) : null;
   importExposure = census ? buildExposure(census) : null;
   importedUrl = url;
   importedName = file.name;
@@ -2727,7 +2801,8 @@ async function loadImport(file: File): Promise<void> {
 async function openImportReview(): Promise<void> {
   const image = importedImage;
   if (!image || typeof createImageBitmap !== 'function') return;
-  const size = frameSize(image.naturalWidth, image.naturalHeight);
+  const { width: iw, height: ih } = importSize(image);
+  const size = frameSize(iw, ih);
   if (!size) return;
   let negative: ImageBitmap;
   try {
@@ -2749,7 +2824,7 @@ async function openImportReview(): Promise<void> {
       width: size.width,
       height: size.height,
       aspect: size.width / size.height,
-      reason: 'an imported picture at its own full size'
+      reason: importReason()
     },
     lumaRange: census.range,
     background: census.mode,
@@ -2770,7 +2845,8 @@ async function openImportReview(): Promise<void> {
 async function saveImport(): Promise<void> {
   const image = importedImage;
   if (!image) return;
-  const size = frameSize(image.naturalWidth, image.naturalHeight);
+  const { width: iw, height: ih } = importSize(image);
+  const size = frameSize(iw, ih);
   // renderImport FIRST: it is what leaves the picture on the shared canvas
   // for preRendered to copy, and it is also what makes the canvas on screen
   // agree with the file about to be written.
@@ -2780,7 +2856,7 @@ async function saveImport(): Promise<void> {
     width: size.width,
     height: size.height,
     aspect: size.width / size.height,
-    reason: 'an imported picture at its own full size'
+    reason: importReason()
   }, {
     preRendered: true,
     label: `import-${readState().activeFilter}`,
