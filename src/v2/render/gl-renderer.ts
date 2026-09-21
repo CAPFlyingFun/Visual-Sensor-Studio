@@ -765,14 +765,23 @@ export class GlRenderer {
    * shot is let go — so this is the one source that can go empty UNDER the
    * caller rather than before it.
    */
-  uploadHeld(frame: ImageBitmap): boolean {
+  /**
+   * A frame the shell is holding: the bitmap a shutter kept, or — for an
+   * import — the opened picture itself, which it already has and which there
+   * is no reason to duplicate. All three are texImage2D sources.
+   */
+  uploadHeld(frame: ImageBitmap | HTMLImageElement | HTMLCanvasElement): boolean {
     const gl = this.gl;
-    if (!gl || gl.isContextLost() || frame.width === 0) return false;
+    const width = frame instanceof HTMLImageElement ? frame.naturalWidth : frame.width;
+    const height = frame instanceof HTMLImageElement ? frame.naturalHeight : frame.height;
+    if (!gl || gl.isContextLost() || width === 0) return false;
+    const limit = this.maxEdge;
+    if (limit > 0 && (width > limit || height > limit)) return false;
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.frameTexture);
     try {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame);
-      this.frameSize = { width: frame.width, height: frame.height };
+      this.frameSize = { width, height };
     } catch {
       return false;
     }

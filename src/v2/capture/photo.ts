@@ -190,7 +190,8 @@ export interface CaptureOptions {
  * and still be looking at the capture path rather than a second one that
  * would drift from it (Rule 4).
  */
-export type StillSource = HTMLVideoElement | ImageBitmap;
+export type StillSource =
+  HTMLVideoElement | ImageBitmap | HTMLImageElement | HTMLCanvasElement;
 
 /**
  * THE RENDER HALF OF A CAPTURE, on its own.

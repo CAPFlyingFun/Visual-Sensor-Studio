@@ -54,7 +54,14 @@ test('an import is held with ITS OWN census and its own full size', () => {
   assert.match(reason, /brought down to what this GPU carries/,
     'and says so plainly when something was');
   assert.match(open, /still: null/, 'no file yet — refreshReview makes the first one');
-  assert.match(open, /createImageBitmap\(image\)/);
+  // THE PICTURE ITSELF, not a decode of it. Decoding a second copy cost
+  // another 128 MB on a 36 MP photograph, standing beside the GL canvas, the
+  // encoder's copy-out and the picture, at the moment the encoder wanted
+  // room — and unlike a camera frame there is nothing to preserve, because
+  // an opened picture does not move on the way a live stream does.
+  assert.match(open, /negative: image/);
+  assert.ok(!/createImageBitmap\(image\)/.test(open),
+    'the opened picture is not decoded a second time');
 });
 
 test('the import editor declines rather than half-works', () => {
@@ -64,10 +71,15 @@ test('the import editor declines rather than half-works', () => {
   // still saveable, so the editor is a better road, never the only one.
   assert.match(open, /typeof createImageBitmap !== 'function'\) return/);
   assert.match(open, /if \(!size\) return/);
-  assert.match(open, /if \(!opened\) negative\.close\(\)/,
-    'a bitmap nothing took is released, not leaked');
-  assert.match(open, /if \(importedImage !== image\) \{/,
-    'a picture cleared or replaced mid-decode does not overwrite the new one');
+  // NOTHING IS RELEASED HERE ANY MORE, and that is the correct shape rather
+  // than a leak: the frame handed to the review IS the opened picture, which
+  // the import owns and clearImport lets go. Closing it here would take the
+  // panel's picture away along with the review.
+  assert.ok(!/negative\.close\(\)/.test(open),
+    'an import does not close a frame it does not own');
+  const release = body(app, 'function releaseHeld()');
+  assert.match(release, /frame instanceof ImageBitmap/,
+    'and only a capture\'s own bitmap is ever closed');
 });
 
 test('a held frame is ONE frame, so a sequence filter is refused', () => {

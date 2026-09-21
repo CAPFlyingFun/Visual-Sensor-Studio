@@ -25,7 +25,10 @@ test('a still can be rendered from a held frame as well as a live one', () => {
   // ONE capture path, two sources. A separate "re-render for review" routine
   // would be a second definition of what saving a photo means, and the two
   // would disagree the first time either was edited (Rule 4).
-  assert.match(photo, /export type StillSource = HTMLVideoElement \| ImageBitmap/);
+  // Widened when an import stopped decoding a second copy of itself: the
+  // held frame may now be the opened picture, an image or the canvas it was
+  // brought down into. All of them are texImage2D sources.
+  assert.match(photo, /export type StillSource =\s*\n?\s*HTMLVideoElement \| ImageBitmap \| HTMLImageElement \| HTMLCanvasElement;/);
   assert.match(photo, /uploadFrame\(source\)/, 'a live frame still goes through uploadFrame');
   assert.match(photo, /uploadHeld\(source\)/, 'a held frame goes through uploadHeld');
   assert.ok(!/capturePhoto\([^)]*video: HTMLVideoElement/s.test(photo),
@@ -39,10 +42,12 @@ test('a still can be rendered from a held frame as well as a live one', () => {
 
 test('the held upload refuses a closed frame instead of drawing nothing', () => {
   const held = renderer.slice(renderer.indexOf('uploadHeld('));
-  assert.match(held.slice(0, 400), /frame\.width === 0/,
+  assert.match(held.slice(0, 700), /width === 0/,
     'a bitmap the review has already closed reports width 0, and must be refused');
-  assert.match(held.slice(0, 600), /frameSize = \{ width: frame\.width, height: frame\.height \}/,
-    'the frame size comes from the bitmap, never from a video property it lacks');
+  assert.match(held.slice(0, 700), /frame instanceof HTMLImageElement \? frame\.naturalWidth : frame\.width/,
+    'the frame size comes from the frame, never from a video property it lacks');
+  assert.match(held.slice(0, 900), /width > limit \|\| height > limit/,
+    'and one the GPU cannot carry is refused rather than silently ignored');
 });
 
 test('the negative is grabbed inside the escalated-stream window', () => {

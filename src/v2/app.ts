@@ -2804,22 +2804,12 @@ async function openImportReview(): Promise<void> {
   const { width: iw, height: ih } = importSize(image);
   const size = frameSize(iw, ih);
   if (!size) return;
-  let negative: ImageBitmap;
-  try {
-    negative = await createImageBitmap(image);
-  } catch {
-    return;
-  }
-  // The picture may have been cleared or replaced while that decoded.
-  if (importedImage !== image) {
-    negative.close();
-    return;
-  }
   const census = importExposure ?? emptyExposure();
   const opened = openReview({
     kind: 'import',
     name: importedName,
-    negative,
+    // THE PICTURE ITSELF, not a decode of it. See HeldShot.negative.
+    negative: image,
     photo: {
       width: size.width,
       height: size.height,
@@ -2834,7 +2824,9 @@ async function openImportReview(): Promise<void> {
     still: null,
     tail: ''
   });
-  if (!opened) negative.close();
+  // Nothing to release on this path: the picture belongs to the import and
+  // clearImport is what lets it go.
+  void opened;
 }
 
 /**
@@ -4786,7 +4778,18 @@ interface HeldShot {
   kind: 'shot' | 'import';
   /** The source file's name, for an import. Empty for a capture. */
   name: string;
-  negative: ImageBitmap;
+  /**
+   * THE FRAME EVERY RE-RENDER READS.
+   *
+   * A capture keeps a bitmap of the moment the shutter fired, because the
+   * camera has moved on. An IMPORT does not need one: the opened picture is
+   * already in hand and is not going anywhere, and decoding a second copy of
+   * it cost another 128 MB on Joshua's 36 MP photograph — standing beside the
+   * GL canvas, the copy-out the encoder reads and the picture itself, at the
+   * exact moment the encoder wanted room. So an import carries the picture,
+   * and only a capture's bitmap is ever closed.
+   */
+  negative: ImageBitmap | HTMLImageElement | HTMLCanvasElement;
   photo: SizedWithReason;
   lumaRange: [number, number];
   background: number;
@@ -5005,7 +5008,11 @@ function releaseHeld(): void {
   // A pending encode outlives the shot it was queued for otherwise, and wakes
   // up to render a negative that has already been closed.
   cancelEncode();
-  held?.negative.close();
+  // ONLY A CAPTURE'S BITMAP IS OURS TO CLOSE. An import's frame is the opened
+  // picture, which the import owns and clearImport releases — closing it here
+  // would take the panel's picture away with the review.
+  const frame = held?.negative;
+  if (frame instanceof ImageBitmap) frame.close();
   held = null;
   reviewRun++;
 }
