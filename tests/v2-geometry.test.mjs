@@ -2601,6 +2601,123 @@ test('a review setting previews at once and encodes only after the tapping stops
   });
 
 /*
+ * THE PICTURE MOVES, THE CONTROLS DO NOT.
+ *
+ * Joshua, 2026-09-21: "the image should be separate from the UI, which the
+ * image can allow pan and zoom, but the UI is fixed, like the full screen
+ * camera." The maths lives in ui/pan-zoom.ts and is checked without a browser
+ * in pan-zoom.test.mjs; what needs a real page is the wiring — that the
+ * gesture reaches the canvas, that the chrome does not move with it, and, the
+ * one that matters most for the work he is actually doing, that the view
+ * SURVIVES a setting change. Being zoomed in on one edge and tapping Sharpen
+ * on and off is the only way to see what it did.
+ */
+test('the review picture pans and zooms while its controls stay put (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const page = await browser.newPage({ viewport: { width: 430, height: 932 } });
+      await page.goto(base);
+      await page.waitForSelector('#v2ImportPick');
+
+      const png = await page.evaluate(async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 240; canvas.height = 160;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#101418'; ctx.fillRect(0, 0, 240, 160);
+        ctx.fillStyle = '#e8f0f6';
+        for (let i = 0; i < 12; i++) ctx.fillRect(i * 20, 20, 8, 120);
+        const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+        return Array.from(new Uint8Array(await blob.arrayBuffer()));
+      });
+      await page.setInputFiles('#v2ImportFile', {
+        name: 'bars.png', mimeType: 'image/png', buffer: Buffer.from(png)
+      });
+      await page.waitForSelector('#v2Review:not([hidden])', { timeout: 10000 });
+      await page.waitForFunction(() =>
+        (document.getElementById('v2ReviewNote')?.textContent ?? '').startsWith('Held — '),
+        null, { timeout: 30000 });
+
+      // The browser re-serialises style.transform its own way — a scale of 1
+      // reads back as "scale(1)", not "scale(1.0000)" — so the NUMBER is what
+      // is asserted, never the spelling.
+      const look = () => page.evaluate(() => {
+        const actions = document.querySelector('.review-actions').getBoundingClientRect();
+        const strip = document.getElementById('v2ReviewFilters').getBoundingClientRect();
+        const transform = document.getElementById('v2ReviewCanvas').style.transform;
+        return {
+          transform,
+          scale: Number(/scale\(([\d.]+)\)/.exec(transform)?.[1] ?? '0'),
+          actions: [Math.round(actions.x), Math.round(actions.y)],
+          strip: [Math.round(strip.x), Math.round(strip.y)]
+        };
+      });
+
+      // IT OPENS AT THE FIT, which is the identity rather than some computed
+      // number — nothing here had to know the picture's pixel size.
+      const opened = await look();
+      assert.equal(opened.scale, 1,
+        `the review opens on the fitted picture, got "${opened.transform}"`);
+
+      // THE PICTURE FILLS THE SCREEN AND THE CHROME SITS OVER IT. The stage
+      // is the whole layer, not a box between the note and the buttons.
+      const stage = await page.evaluate(() => {
+        const box = document.getElementById('v2ReviewStage').getBoundingClientRect();
+        return { width: Math.round(box.width), height: Math.round(box.height) };
+      });
+      assert.deepEqual([stage.width, stage.height], [430, 932],
+        'the stage is the whole screen, the way the viewfinder is');
+
+      // A WHEEL ZOOMS IT. (Headless has no fingers; the pointer path and this
+      // one run through the same zoomAbout.)
+      await page.mouse.move(215, 400);
+      await page.mouse.wheel(0, -600);
+      await page.waitForFunction(() => {
+        const t = document.getElementById('v2ReviewCanvas').style.transform;
+        return Number(/scale\(([\d.]+)\)/.exec(t)?.[1] ?? '1') > 1.2;
+      }, null, { timeout: 3000 });
+      const zoomed = await look();
+      assert.ok(zoomed.scale > 1.2, `the picture zoomed in, got ${zoomed.scale}`);
+
+      // AND THE CONTROLS DID NOT MOVE WITH IT.
+      assert.deepEqual(zoomed.actions, opened.actions,
+        'the buttons are fixed furniture, not part of the picture');
+      assert.deepEqual(zoomed.strip, opened.strip);
+
+      // A DRAG PANS IT, now that there is something off-screen to bring in.
+      await page.mouse.move(215, 400);
+      await page.mouse.down();
+      await page.mouse.move(275, 400, { steps: 6 });
+      await page.mouse.up();
+      const panned = await look();
+      assert.notEqual(panned.transform, zoomed.transform,
+        `the drag moved the picture, got "${panned.transform}"`);
+      assert.deepEqual(panned.actions, opened.actions, 'and still not the buttons');
+
+      // THE VIEW SURVIVES A SETTING CHANGE. This is the whole reason to be
+      // zoomed in: an A/B you cannot hold still is not a comparison.
+      await page.click('#v2ReviewSharpen [data-sharpen]');
+      await page.waitForFunction(() => {
+        const note = document.getElementById('v2ReviewNote')?.textContent ?? '';
+        return note.startsWith('Held — ')
+          && !document.getElementById('v2Review').classList.contains('busy');
+      }, null, { timeout: 30000 });
+      const after = await look();
+      assert.equal(after.transform, panned.transform,
+        'Sharpen changed the picture, not where you were looking at it');
+
+      // A DOUBLE TAP PUTS IT BACK.
+      await page.mouse.click(215, 400);
+      await page.mouse.click(215, 400, { delay: 20 });
+      await page.waitForFunction(() => {
+        const t = document.getElementById('v2ReviewCanvas').style.transform;
+        return Number(/scale\(([\d.]+)\)/.exec(t)?.[1] ?? '0') === 1;
+      }, null, { timeout: 3000 });
+
+      await page.close();
+    });
+  });
+
+/*
  * SHARPEN IS THE TWO SETTINGS, NOT A THIRD ONE.
  *
  * Joshua found the pair by testing them: "doing Full & High helps with the

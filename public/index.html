@@ -472,21 +472,44 @@
     body[data-review="on"] .dock, body[data-review="on"] .quickbar { display: none; }
     .review {
       position: fixed; inset: 0; z-index: 80;
-      display: flex; flex-direction: column; gap: 8px;
       background: #000;
-      padding: calc(var(--safe-top) + 8px) 12px calc(var(--safe-bottom) + 10px);
     }
     .review[hidden] { display: none; }
-    .review-note { margin: 0; font-size: 11px; line-height: 1.45; color: #c7d5e2; }
-    .review-note strong { color: #ffd34d; font-weight: 700; }
-    /* min-height: 0 or the flex item refuses to shrink and the picture pushes
-       the actions off the bottom of the screen — where Save is not a button. */
-    .review-frame { flex: 1 1 auto; min-height: 0; display: grid; place-items: center; }
-    .review-frame canvas {
-      max-width: 100%; max-height: 100%; width: auto; height: auto;
-      display: block; border-radius: 8px;
+    /* THE PICTURE OWNS THE WHOLE SCREEN, and the controls float over it the
+       way the dock floats over the viewfinder. Joshua, 2026-09-21: "the image
+       should be separate from the UI, which the image can allow pan and zoom,
+       but the UI is fixed, like the full screen camera."
+       touch-action: none because the gestures are ours — without it iOS takes
+       a two-finger pinch for the page and a drag for a scroll. */
+    .review-stage {
+      position: absolute; inset: 0;
+      display: grid; place-items: center;
+      overflow: hidden;
+      touch-action: none;
     }
-    .review-bottom { display: grid; gap: 8px; }
+    .review-stage canvas {
+      max-width: 100%; max-height: 100%; width: auto; height: auto;
+      display: block;
+      transform-origin: center center;
+      will-change: transform;
+    }
+    /* Over the picture, and NOT in the way of it: the scrims fade out so the
+       photograph runs edge to edge, and the note lets a drag through rather
+       than swallowing one that starts near the top. */
+    .review-note {
+      position: absolute; top: 0; left: 0; right: 0; margin: 0;
+      padding: calc(var(--safe-top) + 8px) 12px 18px;
+      font-size: 11px; line-height: 1.45; color: #c7d5e2;
+      background: linear-gradient(180deg, rgba(0,0,0,.88), rgba(0,0,0,.72) 55%, rgba(0,0,0,0));
+      pointer-events: none;
+    }
+    .review-note strong { color: #ffd34d; font-weight: 700; }
+    .review-bottom {
+      position: absolute; left: 0; right: 0; bottom: 0;
+      display: grid; gap: 8px;
+      padding: 22px 12px calc(var(--safe-bottom) + 10px);
+      background: linear-gradient(180deg, rgba(0,0,0,0), rgba(0,0,0,.78) 26%, rgba(0,0,0,.92));
+    }
     /* Shorter than the page's strip: on the review the PICTURE is the point,
        and the controls get what is left rather than the other way round. */
     .review-filters { padding-bottom: 2px; flex: 0 0 auto; }
@@ -496,7 +519,7 @@
     .review-actions { display: flex; align-items: center; gap: 8px; }
     .review-actions .btn { flex: 0 0 auto; margin: 0; }
     .review-actions .share-save { flex: 1 1 auto; margin: 0; }
-    .review.busy .review-frame canvas { opacity: .45; }
+    .review.busy .review-stage canvas { opacity: .45; }
 
     /* Only the stage's own toast may outrank the sheets. */
     body.viewer .toast { z-index: 70; bottom: calc(var(--safe-bottom) + 200px); }
@@ -562,7 +585,7 @@
     <h1>Visual Sensor Studio</h1>
     <span>
       <button type="button" class="chip" id="v2ViewerEnter" title="Full screen viewer">&#9974; Full screen</button>
-      <span class="pill" id="v2Badge">v0.100.0</span>
+      <span class="pill" id="v2Badge">v0.101.0</span>
     </span>
   </header>
 
@@ -681,8 +704,9 @@
          carries — and the dock, at 50, would have painted straight over a
          review sitting at 80 inside a wrap at 20. -->
     <div class="review" id="v2Review" hidden>
+      <!-- The stage is first so the chrome paints over it. -->
+      <div class="review-stage" id="v2ReviewStage"><canvas id="v2ReviewCanvas"></canvas></div>
       <p class="review-note" id="v2ReviewNote"></p>
-      <div class="review-frame"><canvas id="v2ReviewCanvas"></canvas></div>
       <div class="review-bottom">
         <!-- The filter strip, SECOND copy and deliberately so: the one on the
              page lives at the top of the Camera tab, and choosing a lens for

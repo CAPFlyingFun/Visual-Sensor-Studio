@@ -93,6 +93,9 @@ import { GlRenderer, type NightRecovery } from './render/gl-renderer.js';
 import {
   capturePhoto, renderStill, type CaptureOptions, type PhotoResult
 } from './capture/photo.js';
+import {
+  FIT, panBy, toggleZoom, transformOf, zoomAbout, type Size, type View
+} from './ui/pan-zoom.js';
 import { describeFileSize, describeQuality } from './capture/visually-lossless.js';
 import {
   NIGHT_COUNTDOWN_MS, NIGHT_TARGET_FRAMES, NIGHT_TARGET_MS, NIGHT_TICK_MS,
@@ -4841,6 +4844,174 @@ async function showHeld(still: PhotoResult, run: number): Promise<void> {
     'v2ReviewNote', () => closeReview(true));
 }
 
+/* --- THE REVIEW'S PICTURE MOVES; ITS CONTROLS DO NOT ------------------- */
+
+/**
+ * Joshua, 2026-09-21: "the image should be separate from the UI, which the
+ * image can allow pan and zoom, but the UI is fixed, like the full screen
+ * camera."
+ *
+ * The stage fills the screen and the chrome floats over it, so this is only
+ * the pointer half: every decision about where the picture may end up is made
+ * in ui/pan-zoom.ts, which is pure and tested without a browser.
+ *
+ * THE VIEW SURVIVES A SETTING CHANGE, and that is the point rather than an
+ * oversight. Being zoomed in on one edge and tapping Sharpen on and off is
+ * the only way to actually see what it did; a view that snapped back to the
+ * fit on every tap would make the comparison impossible. It resets when a
+ * DIFFERENT picture opens, in openReview.
+ */
+let reviewView: View = { ...FIT };
+/**
+ * Live pointers on the stage, by id. Two of them is a pinch.
+ *
+ * Each carries BOTH its latest position, which a move reads to get a delta,
+ * and where it first went down, which is the only thing that can say whether
+ * a release was a tap or the end of a drag. Reading the latest position for
+ * that would measure the last few pixels of a long drag and call it a tap.
+ */
+const reviewPointers = new Map<number, {
+  x: number; y: number; downX: number; downY: number;
+}>();
+let pinchSpread = 0;
+/** Where and when the last single tap went down, for the double tap. */
+let tapAt = { x: 0, y: 0, time: 0 };
+
+/** The stage's box and the picture's UNTRANSFORMED one. */
+function reviewSizes(): { frame: Size; fitted: Size } | null {
+  const stage = reviewEl('v2ReviewStage');
+  const canvas = reviewEl<HTMLCanvasElement>('v2ReviewCanvas');
+  // offsetWidth, not getBoundingClientRect: the rect is the TRANSFORMED box,
+  // so feeding it back in would compound the scale on every move.
+  if (!stage || !canvas || canvas.offsetWidth === 0) return null;
+  return {
+    frame: { width: stage.clientWidth, height: stage.clientHeight },
+    fitted: { width: canvas.offsetWidth, height: canvas.offsetHeight }
+  };
+}
+
+function applyReviewView(): void {
+  const canvas = reviewEl<HTMLCanvasElement>('v2ReviewCanvas');
+  if (canvas) canvas.style.transform = transformOf(reviewView);
+}
+
+function resetReviewView(): void {
+  reviewView = { ...FIT };
+  reviewPointers.clear();
+  pinchSpread = 0;
+  applyReviewView();
+}
+
+/**
+ * A point relative to the stage's CENTRE, which is the transform's origin.
+ *
+ * THE SECOND AND LAST SANCTIONED DISPLAY READ IN V2. The rule that
+ * measureViewfinder is the only one exists so no second module can grow an
+ * opinion about what SIZE anything is captured at — the geometry authority
+ * owns that, and a stray layout read is how a competing answer gets in.
+ *
+ * This is not that kind of read. It asks where a finger is relative to a box
+ * on the screen, its answer reaches nothing but a CSS transform, and no
+ * number it produces can affect a stream, a photo or a file. Held to one
+ * function, and named in the test beside measureViewfinder, so the guard
+ * stays a guard rather than being turned off.
+ */
+function fromCentre(x: number, y: number): { x: number; y: number } {
+  const stage = reviewEl('v2ReviewStage');
+  if (!stage) return { x: 0, y: 0 };
+  const box = stage.getBoundingClientRect();
+  return { x: x - (box.left + box.width / 2), y: y - (box.top + box.height / 2) };
+}
+
+function pinchState(): { spread: number; mid: { x: number; y: number } } {
+  const [a, b] = [...reviewPointers.values()];
+  if (!a || !b) return { spread: 0, mid: { x: 0, y: 0 } };
+  return {
+    spread: Math.hypot(a.x - b.x, a.y - b.y),
+    mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
+  };
+}
+
+/** Within this, a tap is a tap rather than a very short drag. */
+const TAP_SLOP = 10;
+const DOUBLE_TAP_MS = 320;
+
+function buildReviewGestures(): void {
+  const stage = reviewEl('v2ReviewStage');
+  if (!stage) return;
+
+  stage.addEventListener('pointerdown', (event) => {
+    stage.setPointerCapture(event.pointerId);
+    reviewPointers.set(event.pointerId, {
+      x: event.clientX, y: event.clientY, downX: event.clientX, downY: event.clientY
+    });
+    if (reviewPointers.size === 2) pinchSpread = pinchState().spread;
+  });
+
+  stage.addEventListener('pointermove', (event) => {
+    const previous = reviewPointers.get(event.pointerId);
+    if (!previous) return;
+    reviewPointers.set(event.pointerId, {
+      x: event.clientX, y: event.clientY, downX: previous.downX, downY: previous.downY
+    });
+    const sizes = reviewSizes();
+    if (!sizes) return;
+    if (reviewPointers.size === 1) {
+      reviewView = panBy(reviewView, event.clientX - previous.x, event.clientY - previous.y,
+        sizes.frame, sizes.fitted);
+    } else if (reviewPointers.size === 2) {
+      const now = pinchState();
+      if (pinchSpread > 0 && now.spread > 0) {
+        reviewView = zoomAbout(reviewView, now.spread / pinchSpread,
+          fromCentre(now.mid.x, now.mid.y), sizes.frame, sizes.fitted);
+      }
+      pinchSpread = now.spread;
+    }
+    applyReviewView();
+  });
+
+  const letGo = (event: PointerEvent): void => {
+    reviewPointers.delete(event.pointerId);
+    if (reviewPointers.size < 2) pinchSpread = 0;
+  };
+
+  stage.addEventListener('pointerup', (event) => {
+    const down = reviewPointers.get(event.pointerId);
+    const single = reviewPointers.size === 1;
+    letGo(event);
+    if (!single || !down) return;
+    // A tap, not a drag: the pointer barely moved from where it went down.
+    const moved = Math.hypot(event.clientX - down.downX, event.clientY - down.downY);
+    const at = performance.now();
+    if (moved > TAP_SLOP) { tapAt = { x: 0, y: 0, time: 0 }; return; }
+    const doubled = at - tapAt.time < DOUBLE_TAP_MS
+      && Math.hypot(event.clientX - tapAt.x, event.clientY - tapAt.y) < TAP_SLOP * 4;
+    if (doubled) {
+      const sizes = reviewSizes();
+      if (sizes) {
+        reviewView = toggleZoom(reviewView, fromCentre(event.clientX, event.clientY),
+          sizes.frame, sizes.fitted);
+        applyReviewView();
+      }
+      tapAt = { x: 0, y: 0, time: 0 };
+      return;
+    }
+    tapAt = { x: event.clientX, y: event.clientY, time: at };
+  });
+
+  stage.addEventListener('pointercancel', letGo);
+
+  // A wheel or trackpad pinch, so the same view is reachable without touch.
+  stage.addEventListener('wheel', (event) => {
+    const sizes = reviewSizes();
+    if (!sizes) return;
+    event.preventDefault();
+    reviewView = zoomAbout(reviewView, Math.exp(-event.deltaY / 240),
+      fromCentre(event.clientX, event.clientY), sizes.frame, sizes.fitted);
+    applyReviewView();
+  }, { passive: false });
+}
+
 /** Open the review on a shot. False means it could not be shown at all. */
 function openReview(shot: HeldShot): boolean {
   const layer = reviewEl('v2Review');
@@ -4852,6 +5023,9 @@ function openReview(shot: HeldShot): boolean {
   held = shot;
   layer.hidden = false;
   layer.classList.remove('busy');
+  // A DIFFERENT picture, so the view starts at the fit. A setting change on
+  // the SAME picture deliberately does not come through here.
+  resetReviewView();
   document.body.dataset.review = 'on';
   syncReviewStrip();
   const words = REVIEW_WORDS[shot.kind];
@@ -5121,6 +5295,7 @@ async function keepReview(): Promise<void> {
 }
 
 function buildReview(): void {
+  buildReviewGestures();
   reviewEl('v2ReviewRetake')?.addEventListener('click', () => closeReview(false));
   reviewEl('v2ReviewKeep')?.addEventListener('click', () => void keepReview());
   const toggle = reviewEl<HTMLInputElement>('v2ReviewHold');
