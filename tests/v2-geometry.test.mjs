@@ -2601,6 +2601,81 @@ test('a review setting previews at once and encodes only after the tapping stops
   });
 
 /*
+ * A DEVICE THAT CANNOT SHOW AN ERROR CANNOT REPORT ONE.
+ *
+ * Joshua tests on a real installed iPhone PWA, where there is no console. So
+ * when something breaks there the whole report available is "it's failing" —
+ * which is how v0.101.0 came to be debugged by guessing while every headless
+ * test kept passing.
+ *
+ * The banner is inline in the page rather than part of the app, and that is
+ * the point: it has to be listening before any module loads, so it can report
+ * a module that failed to parse or import. The app's own code cannot do that,
+ * because by then it is the thing that did not load.
+ */
+test('a fault on the device says what it was, and otherwise stays out of the way (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const page = await browser.newPage({ viewport: { width: 430, height: 932 } });
+      await page.goto(base);
+      await page.waitForSelector('#v2ImportPick');
+
+      // A CLEAN BOOT SAYS NOTHING. A banner that cried wolf would be worse
+      // than no banner: it would be dismissed without being read.
+      assert.equal(await page.evaluate(() =>
+        document.getElementById('v2Fault').hidden), true,
+      'nothing is wrong, so nothing is claimed');
+
+      // A THROWN ERROR REACHES IT, with the file and line.
+      await page.evaluate(() => {
+        window.dispatchEvent(new ErrorEvent('error', {
+          message: 'ReferenceError: held is not defined',
+          filename: 'http://example/app/v2/app.js',
+          lineno: 4242
+        }));
+      });
+      const shown = await page.evaluate(() => ({
+        hidden: document.getElementById('v2Fault').hidden,
+        text: document.getElementById('v2FaultText').textContent
+      }));
+      assert.equal(shown.hidden, false, 'a real fault is not silent');
+      assert.match(shown.text, /held is not defined/);
+      assert.match(shown.text, /app\.js:4242/, 'and it says where');
+
+      // REPEATS DO NOT PILE UP. A broken frame loop throws every frame, and a
+      // banner that grows without bound is its own problem.
+      await page.evaluate(() => {
+        for (let i = 0; i < 5; i++) {
+          window.dispatchEvent(new ErrorEvent('error', {
+            message: 'ReferenceError: held is not defined',
+            filename: 'http://example/app/v2/app.js',
+            lineno: 4242
+          }));
+        }
+      });
+      assert.equal(await page.evaluate(() =>
+        document.getElementById('v2FaultText').textContent.split('\n\n').length), 1,
+      'the same fault is reported once');
+
+      // A REJECTED PROMISE COUNTS TOO — most of this app is async, so a
+      // handler that only caught throws would miss the common case.
+      await page.evaluate(() => {
+        window.dispatchEvent(Object.assign(
+          new Event('unhandledrejection'), { reason: new Error('decode failed') }));
+      });
+      assert.match(await page.evaluate(() =>
+        document.getElementById('v2FaultText').textContent), /decode failed/);
+
+      // AND IT CAN BE PUT AWAY.
+      await page.click('#v2FaultClose');
+      assert.equal(await page.evaluate(() =>
+        document.getElementById('v2Fault').hidden), true);
+
+      await page.close();
+    });
+  });
+
+/*
  * THE PICTURE MOVES, THE CONTROLS DO NOT.
  *
  * Joshua, 2026-09-21: "the image should be separate from the UI, which the

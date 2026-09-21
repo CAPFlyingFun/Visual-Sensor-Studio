@@ -4941,7 +4941,12 @@ function buildReviewGestures(): void {
   if (!stage) return;
 
   stage.addEventListener('pointerdown', (event) => {
-    stage.setPointerCapture(event.pointerId);
+    // WebKit throws NotFoundError here if the pointer has already gone — a
+    // fast tap, or one interrupted by the system — and an exception out of a
+    // pointerdown listener would take the gesture down with it. Capture is an
+    // improvement, not a requirement: without it a drag that leaves the stage
+    // simply stops, which is the old behaviour rather than a broken one.
+    try { stage.setPointerCapture(event.pointerId); } catch { /* not fatal */ }
     reviewPointers.set(event.pointerId, {
       x: event.clientX, y: event.clientY, downX: event.clientX, downY: event.clientY
     });
