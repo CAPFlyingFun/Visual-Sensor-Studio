@@ -395,8 +395,22 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
         `the Captures card says where the photo actually is, got "${line}"`);
       assert.equal(review.mainShareHidden, true,
         'one photo, one Share button — the card does not offer a second one');
-      assert.deepEqual([review.width, review.height], [savedW, savedH],
-        'the review canvas is the FILE, drawn back at the saved size');
+      // THE REVIEW SHOWS THIS FILE, at the size a screen can use. It used to
+      // be sized to the file itself, which on a 36 MP frame is 128 MB of
+      // canvas for a 430-point screen — and enough of those at once is what
+      // killed the web process on the device. What has to hold is that it is
+      // still THIS picture: capped on its longest edge, and the same shape.
+      const cap = 2048;
+      const longest = Math.max(savedW, savedH);
+      const expected = longest <= cap
+        ? [savedW, savedH]
+        : [Math.round(savedW * cap / longest), Math.round(savedH * cap / longest)];
+      assert.deepEqual([review.width, review.height], expected,
+        `the review canvas is this file, fitted to a screen, got ${review.width}×${review.height}`);
+      assert.ok(Math.abs(review.width / review.height - savedW / savedH) < 0.01,
+        'and the same shape as it, so it is not some other crop of the frame');
+      assert.ok(Math.max(review.width, review.height) <= cap,
+        'never larger than a screen can use, whatever the camera produced');
       assert.match(review.note, /^Held — /,
         `the review never says "Saved" for a file nothing has written, got "${review.note}"`);
       assert.match(review.note, /nothing has been written yet/);
@@ -425,8 +439,14 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
         settingsActive: document.querySelector('#v2ClarityRow .active')?.dataset.clarity ?? '',
         reviewActive: document.querySelector('#v2ReviewClarity .active')?.dataset.clarity ?? ''
       }));
-      assert.deepEqual([reshot.width, reshot.height], [savedW, savedH],
+      // THE GEOMETRY THE SHUTTER HELD, which is what this measures — the
+      // re-run must not re-resolve against the live stream that has since
+      // been restored to something smaller. The FILE's size is on the line;
+      // the canvas is the same screen fit as before.
+      assert.match(reshot.note, new RegExp(`^Held — ${savedW}×${savedH} · `),
         `the re-capture keeps the held photo geometry, got "${reshot.note}"`);
+      assert.deepEqual([reshot.width, reshot.height], expected,
+        'and is shown at the same screen fit');
       assert.equal(reshot.reviewActive, 'high');
       assert.equal(reshot.settingsActive, 'high',
         'two rows of clarity buttons, one idea of which level is on');
@@ -2671,6 +2691,82 @@ test('a fault on the device says what it was, and otherwise stays out of the way
       await page.click('#v2FaultClose');
       assert.equal(await page.evaluate(() =>
         document.getElementById('v2Fault')), null);
+
+      await page.close();
+    });
+  });
+
+/*
+ * A BIG PICTURE IS SHOWN ON A SCREEN, NOT AT ITS OWN SIZE.
+ *
+ * Joshua, 2026-09-21: "I tried to load like a 4kx8k image my camera did at
+ * 36mp and it failed… it shouldn't as it has loaded that size before."
+ *
+ * A canvas costs four bytes a pixel whatever it is showing, so a 4000 × 8000
+ * picture is 128 MB per canvas — and opening one in the review used to make
+ * two more of them at full size, the one on screen and the bitmap the file
+ * was decoded back into, on top of the GL canvas, the copy-out the encoder
+ * reads, the held negative and the source image. iOS kills the web process
+ * for that rather than refusing it.
+ *
+ * What is asserted is the split: the canvas being LOOKED AT is capped to
+ * something a phone screen can use, and the FILE is still the picture's own
+ * full size. Those two must not be allowed to drift into each other — the
+ * whole point of this app is that what it saves is what the sensor saw.
+ */
+test('a 36-megapixel import is shown small and saved full size (fake device)',
+  { skip: runnable ? false : 'no browser available' }, async () => {
+    await withBrowser(async (browser, base) => {
+      const page = await browser.newPage({ viewport: { width: 430, height: 932 } });
+      const errors = [];
+      page.on('pageerror', (e) => errors.push(String(e)));
+      await page.goto(base);
+      await page.waitForSelector('#v2ImportPick');
+
+      // 4000 × 8000, which is the shape he named: a tall 32 MP frame.
+      const jpg = await page.evaluate(async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 4000; canvas.height = 8000;
+        const ctx = canvas.getContext('2d');
+        const grad = ctx.createLinearGradient(0, 0, 4000, 8000);
+        grad.addColorStop(0, '#101820'); grad.addColorStop(1, '#e6eef6');
+        ctx.fillStyle = grad; ctx.fillRect(0, 0, 4000, 8000);
+        ctx.fillStyle = '#ffffff';
+        for (let i = 0; i < 40; i++) ctx.fillRect(i * 100, 1000, 30, 6000);
+        const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.9));
+        return Array.from(new Uint8Array(await blob.arrayBuffer()));
+      });
+      await page.setInputFiles('#v2ImportFile', {
+        name: 'big.jpg', mimeType: 'image/jpeg', buffer: Buffer.from(jpg)
+      });
+      await page.waitForSelector('#v2Review:not([hidden])', { timeout: 20000 });
+      await page.waitForFunction(() =>
+        (document.getElementById('v2ReviewNote')?.textContent ?? '').startsWith('Held — '),
+        null, { timeout: 120000 });
+
+      const shown = await page.evaluate(() => ({
+        note: document.getElementById('v2ReviewNote')?.textContent ?? '',
+        width: document.getElementById('v2ReviewCanvas').width,
+        height: document.getElementById('v2ReviewCanvas').height,
+        importWidth: document.getElementById('v2ImportCanvas').width,
+        importHeight: document.getElementById('v2ImportCanvas').height
+      }));
+      assert.deepEqual(errors, [], 'a picture this size is not an error');
+
+      // THE CANVAS IS A SCREEN COPY. 2048 on the longest edge, aspect kept.
+      assert.deepEqual([shown.width, shown.height], [1024, 2048],
+        `the review shows a screen copy, got ${shown.width}×${shown.height}`);
+      assert.deepEqual([shown.importWidth, shown.importHeight], [1024, 2048],
+        'and so does the import panel, which is display-only for the same reason');
+
+      // THE FILE IS NOT. Everything saved and measured is the full frame.
+      assert.match(shown.note, /^Held — 4000×8000 · /,
+        `the file is still the picture's own size, got "${shown.note}"`);
+      // AND THE READOUT SAYS THE TWO DIFFER, rather than letting the size on
+      // the line be read as the size on the screen.
+      assert.match(shown.note, /shown at 1024×2048/,
+        `the difference is stated, got "${shown.note}"`);
+
 
       await page.close();
     });

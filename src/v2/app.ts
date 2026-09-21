@@ -2493,16 +2493,21 @@ function renderImport(): boolean {
     setText('v2ImportNote', 'That picture could not be rendered.');
     return false;
   }
-  canvas.width = size.width;
-  canvas.height = size.height;
+  // DISPLAY ONLY, so it is capped like the review's. saveImport re-renders
+  // and copies from the GL canvas through preRendered — it never reads this
+  // one — so the file is unaffected by what size it is shown at.
+  const shown = shownSize(size.width, size.height);
+  canvas.width = shown.width;
+  canvas.height = shown.height;
   const context = canvas.getContext('2d');
   if (!context) return false;
-  context.drawImage(renderer.targetCanvas, 0, 0);
+  context.drawImage(renderer.targetCanvas, 0, 0, shown.width, shown.height);
   canvas.hidden = false;
   byId('v2ImportSave').hidden = false;
   setText('v2ImportNote', `${importedName} · through ${filterById(activeFilter)?.name ?? activeFilter}`);
   setText('v2ImportReading', `${size.width}×${size.height} · the picture's own full size, `
-    + 'not a downscale · the original file is never written to');
+    + `not a downscale${shownLine(size.width, size.height)} · `
+    + 'the original file is never written to');
   return true;
 }
 
@@ -4764,10 +4769,13 @@ function reviewText(id: string, text: string): void {
  * nothing has been written yet.
  */
 function stillLine(verb: string, still: PhotoResult, tail = ''): string {
+  // The shown size is appended wherever the two differ, because the picture
+  // above the line is then a screen copy and not the file's own pixels — and
+  // a readout that let those be confused would be describing the wrong thing.
   return `${verb} ${still.width}×${still.height} · `
     + `${describeFileSize(still.bytes)} JPEG · `
     + `${describeQuality(still.choice)} · `
-    + `${still.reason}${tail}`;
+    + `${still.reason}${shownLine(still.width, still.height)}${tail}`;
 }
 
 /** The fired-on frame, kept as a texture the GPU can be handed again. */
@@ -4789,14 +4797,62 @@ async function grabNegative(source: HTMLVideoElement): Promise<ImageBitmap | nul
  * leaving the previous shot up under a note describing this one is exactly
  * the readout-fabricates-a-measurement failure, in pictures.
  */
+/**
+ * THE LONGEST EDGE A PICTURE IS EVER SHOWN AT.
+ *
+ * Joshua, 2026-09-21: "I tried to load like a 4kx8k image my camera did at
+ * 36mp and it failed… it shouldn't as it has loaded that size before."
+ *
+ * It should not have, and the reason it did before is that fewer copies of it
+ * existed at once. A canvas costs four bytes a pixel whatever it is showing,
+ * so a 4000 × 8000 picture is 128 MB PER CANVAS — and opening one in the
+ * review made several at the same moment: the GL canvas it is rendered on,
+ * the copy-out the encoder reads, the bitmap the file is decoded back into,
+ * the held negative, the source image itself, and this one. Six of those is
+ * three quarters of a gigabyte, and iOS does not refuse it politely; it kills
+ * the web process, which is the "a problem repeatedly occurred" notice.
+ *
+ * None of that was needed for THIS canvas. It is a picture on a 430-point
+ * screen. 2048 on its longest edge is still about 1.6 times the pixels that
+ * screen can show, so nothing visible is given up — and it takes the 128 MB
+ * to 8 MB.
+ *
+ * THE FILE IS NOT TOUCHED. Everything saved, shared and measured is still
+ * rendered and encoded at the picture's own full size; this is the size of
+ * the copy being looked at, and the readout says so whenever the two differ.
+ */
+const SHOWN_MAX_EDGE = 2048;
+
+function shownSize(width: number, height: number): { width: number; height: number } {
+  const longest = Math.max(width, height);
+  if (longest <= SHOWN_MAX_EDGE || longest <= 0) return { width, height };
+  const scale = SHOWN_MAX_EDGE / longest;
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale))
+  };
+}
+
+/** What to append when the copy on screen is smaller than the file. */
+function shownLine(width: number, height: number): string {
+  const shown = shownSize(width, height);
+  return shown.width === width ? '' : ` · shown at ${shown.width}×${shown.height}`;
+}
+
 async function drawHeld(still: PhotoResult): Promise<boolean> {
   const canvas = reviewEl<HTMLCanvasElement>('v2ReviewCanvas');
   if (!canvas) return false;
   const context = canvas.getContext('2d');
+  const shown = shownSize(still.width, still.height);
   let bitmap: ImageBitmap | null = null;
   if (typeof createImageBitmap === 'function') {
     try {
-      bitmap = await createImageBitmap(still.blob);
+      // ASKED FOR AT THE SIZE IT WILL BE DRAWN. Where the browser honours it,
+      // the full-size bitmap never exists at all — which on a 36 MP file is
+      // 128 MB that is never allocated rather than 128 MB freed afterwards.
+      bitmap = await createImageBitmap(still.blob, {
+        resizeWidth: shown.width, resizeHeight: shown.height, resizeQuality: 'high'
+      });
     } catch {
       bitmap = null;
     }
@@ -4808,9 +4864,12 @@ async function drawHeld(still: PhotoResult): Promise<boolean> {
     return false;
   }
   try {
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
-    context.drawImage(bitmap, 0, 0);
+    // And the canvas is capped WHATEVER came back, because a browser that
+    // ignores the resize hints still hands over a full-size bitmap, and
+    // sizing the canvas to it would put the 128 MB straight back.
+    canvas.width = shown.width;
+    canvas.height = shown.height;
+    context.drawImage(bitmap, 0, 0, shown.width, shown.height);
   } finally {
     bitmap.close();
   }
@@ -4981,9 +5040,10 @@ function drawRender(): boolean {
   if (!canvas || source.width === 0 || source.height === 0) return false;
   const context = canvas.getContext('2d');
   if (!context) return false;
-  canvas.width = source.width;
-  canvas.height = source.height;
-  context.drawImage(source, 0, 0);
+  const shown = shownSize(source.width, source.height);
+  canvas.width = shown.width;
+  canvas.height = shown.height;
+  context.drawImage(source, 0, 0, shown.width, shown.height);
   return true;
 }
 
@@ -5028,7 +5088,8 @@ function startEncode(shot: HeldShot, run: number): Promise<void> {
 /** The preview's line. No file exists yet, so it cannot claim a file's size. */
 function previewLine(shot: HeldShot): string {
   const from = shot.name ? ` · from ${shot.name}` : '';
-  return `Preview ${shot.photo.width}×${shot.photo.height} · ${shot.photo.reason}${from}`;
+  return `Preview ${shot.photo.width}×${shot.photo.height} · ${shot.photo.reason}`
+    + `${shownLine(shot.photo.width, shot.photo.height)}${from}`;
 }
 
 /**
