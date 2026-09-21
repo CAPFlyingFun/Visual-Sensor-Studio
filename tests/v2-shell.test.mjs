@@ -136,18 +136,9 @@ test('the state store is the one owner, and flow is one-directional', () => {
   const fn = code.match(/function measureViewfinder\(\)[^]*?\n\}/);
   assert.ok(fn, 'the one display read lives in measureViewfinder()');
   assert.match(fn[0], /getBoundingClientRect/);
-  // AND ONE MORE, NAMED HERE RATHER THAN WAIVED. fromCentre asks where a
-  // finger is relative to the review stage so a pinch can anchor under it.
-  // Its answer reaches a CSS transform and nothing else — it cannot reach a
-  // stream, a photo or a file — so it is not a second size opinion, which is
-  // what this rule exists to prevent. Two functions, both listed, and the
-  // sweep below still catches a third.
-  const gesture = code.match(/function fromCentre\([^]*?\n\}/);
-  assert.ok(gesture, 'the review gesture read lives in fromCentre()');
-  assert.match(gesture[0], /getBoundingClientRect/);
-  const outside = code.replace(fn[0], '').replace(gesture[0], '');
+  const outside = code.replace(fn[0], '');
   assert.ok(!/getBoundingClientRect|innerWidth|innerHeight|devicePixelRatio/.test(outside),
-    'measureViewfinder() and fromCentre() are the only places V2 reads the display');
+    'measureViewfinder() is the only place V2 may read the display');
   assert.match(appTs, /previewBoxShortSide: measureViewfinder\(\)\.shortSide/,
     'and it feeds the geometry authority, through the one inputs helper');
   const streamReads = appTs.match(/frameSize\(d\.videoWidth, d\.videoHeight\)/g) ?? [];

@@ -470,75 +470,23 @@
     /* The review is modal: the page's own furniture goes away under it, the
        same way it does for the viewer. */
     body[data-review="on"] .dock, body[data-review="on"] .quickbar { display: none; }
-    /* Above everything, including the review: a fault the app cannot report
-       is the one worth reading most. */
-    #v2Fault {
-      position: fixed; z-index: 999;
-      top: calc(var(--safe-top) + 6px); left: 8px; right: 8px;
-      max-height: 45vh; overflow: auto;
-      background: #3a0d0d; border: 1px solid #a33; border-radius: 10px;
-      padding: 10px 34px 10px 12px;
-      box-shadow: 0 10px 30px rgba(0,0,0,.6);
-    }
-    #v2Fault[hidden] { display: none; }
-    #v2FaultText {
-      margin: 0; white-space: pre-wrap; word-break: break-word;
-      font: 11px/1.45 ui-monospace, Menlo, monospace; color: #ffd9d9;
-    }
-    #v2FaultClose {
-      position: absolute; top: 4px; right: 6px;
-      background: none; border: 0; color: #ffd9d9; font-size: 20px; line-height: 1;
-      padding: 2px 6px; cursor: pointer;
-    }
     .review {
       position: fixed; inset: 0; z-index: 80;
+      display: flex; flex-direction: column; gap: 8px;
       background: #000;
+      padding: calc(var(--safe-top) + 8px) 12px calc(var(--safe-bottom) + 10px);
     }
     .review[hidden] { display: none; }
-    /* THE PICTURE OWNS THE WHOLE SCREEN, and the controls float over it the
-       way the dock floats over the viewfinder. Joshua, 2026-09-21: "the image
-       should be separate from the UI, which the image can allow pan and zoom,
-       but the UI is fixed, like the full screen camera."
-       touch-action: none because the gestures are ours — without it iOS takes
-       a two-finger pinch for the page and a drag for a scroll. */
-    .review-stage {
-      position: absolute; inset: 0;
-      display: grid; place-items: center;
-      overflow: hidden;
-      touch-action: none;
-    }
-    .review-stage canvas {
-      max-width: 100%; max-height: 100%; width: auto; height: auto;
-      display: block;
-      transform-origin: center center;
-    }
-    /* NO will-change HERE, and it is not an omission. This canvas carries the
-       photograph at its FULL size — 3024 × 4032 is 48 MB of backing store —
-       and will-change: transform promotes it to a permanent compositing layer
-       with its own copy of that. iOS holds a hard ceiling on total canvas and
-       layer memory, and a PWA that crosses it does not throw: the surface goes
-       blank or the view reloads. v0.102.0 added the hint and import stopped
-       working on the device while every headless test kept passing, which is
-       the shape of a memory ceiling rather than a logic error. The transform
-       composites while it is being animated regardless; the hint only decides
-       whether the cost is paid all the time. */
-    /* Over the picture, and NOT in the way of it: the scrims fade out so the
-       photograph runs edge to edge, and the note lets a drag through rather
-       than swallowing one that starts near the top. */
-    .review-note {
-      position: absolute; top: 0; left: 0; right: 0; margin: 0;
-      padding: calc(var(--safe-top) + 8px) 12px 18px;
-      font-size: 11px; line-height: 1.45; color: #c7d5e2;
-      background: linear-gradient(180deg, rgba(0,0,0,.88), rgba(0,0,0,.72) 55%, rgba(0,0,0,0));
-      pointer-events: none;
-    }
+    .review-note { margin: 0; font-size: 11px; line-height: 1.45; color: #c7d5e2; }
     .review-note strong { color: #ffd34d; font-weight: 700; }
-    .review-bottom {
-      position: absolute; left: 0; right: 0; bottom: 0;
-      display: grid; gap: 8px;
-      padding: 22px 12px calc(var(--safe-bottom) + 10px);
-      background: linear-gradient(180deg, rgba(0,0,0,0), rgba(0,0,0,.78) 26%, rgba(0,0,0,.92));
+    /* min-height: 0 or the flex item refuses to shrink and the picture pushes
+       the actions off the bottom of the screen — where Save is not a button. */
+    .review-frame { flex: 1 1 auto; min-height: 0; display: grid; place-items: center; }
+    .review-frame canvas {
+      max-width: 100%; max-height: 100%; width: auto; height: auto;
+      display: block; border-radius: 8px;
     }
+    .review-bottom { display: grid; gap: 8px; }
     /* Shorter than the page's strip: on the review the PICTURE is the point,
        and the controls get what is left rather than the other way round. */
     .review-filters { padding-bottom: 2px; flex: 0 0 auto; }
@@ -548,7 +496,7 @@
     .review-actions { display: flex; align-items: center; gap: 8px; }
     .review-actions .btn { flex: 0 0 auto; margin: 0; }
     .review-actions .share-save { flex: 1 1 auto; margin: 0; }
-    .review.busy .review-stage canvas { opacity: .45; }
+    .review.busy .review-frame canvas { opacity: .45; }
 
     /* Only the stage's own toast may outrank the sheets. */
     body.viewer .toast { z-index: 70; bottom: calc(var(--safe-bottom) + 200px); }
@@ -607,65 +555,96 @@
       .content { min-width: 0; }
     }
   </style>
+  <style>
+    /* Above everything, including the review: a fault the app cannot report
+       is the one worth reading most. */
+    #v2Fault {
+      position: fixed; z-index: 999;
+      top: 8px; left: 8px; right: 8px;
+      max-height: 45vh; overflow: auto;
+      background: #3a0d0d; border: 1px solid #a33; border-radius: 10px;
+      padding: 10px 34px 10px 12px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.6);
+    }
+    #v2FaultText {
+      margin: 0; white-space: pre-wrap; word-break: break-word;
+      font: 11px/1.45 ui-monospace, Menlo, monospace; color: #ffd9d9;
+    }
+    #v2FaultClose {
+      position: absolute; top: 4px; right: 6px;
+      background: none; border: 0; color: #ffd9d9; font-size: 20px; line-height: 1;
+      padding: 2px 6px;
+    }
+  </style>
+  <script>
+    /*
+     * THE FAULT REPORTER, and why it is inline and builds its own element.
+     *
+     * Joshua tests on a real installed iPhone PWA and there is no console on
+     * it, so when something breaks there the whole report available is "it's
+     * failing". v0.101.0 and v0.102.0 were both debugged by guessing for
+     * exactly that reason, and the second one guessed wrong.
+     *
+     * Inline, and in the head, so it is listening before any module loads —
+     * it can therefore report a module that failed to parse or import, which
+     * the app's own code cannot do, since by then it is the thing that did
+     * not load.
+     *
+     * NO STATIC MARKUP. It adds nothing to the document until it has
+     * something to say, so it cannot be the reason a layout misbehaves. That
+     * is not paranoia: the version that shipped this with a div in the body
+     * is the one that came back with a crashed web process, and a diagnostic
+     * that might itself be a suspect is worth nothing.
+     */
+    (function () {
+      var seen = [];
+      function show(line) {
+        // Repeats are common — a broken frame loop throws every frame — and a
+        // banner that grows without bound is its own problem.
+        if (seen.indexOf(line) !== -1) return;
+        seen.push(line);
+        var box = document.getElementById('v2Fault');
+        if (!box) {
+          if (!document.body) return;
+          box = document.createElement('div');
+          box.id = 'v2Fault';
+          var close = document.createElement('button');
+          close.type = 'button';
+          close.id = 'v2FaultClose';
+          close.textContent = '\u00d7';
+          close.setAttribute('aria-label', 'Dismiss');
+          close.addEventListener('click', function () { box.remove(); });
+          var pre = document.createElement('pre');
+          pre.id = 'v2FaultText';
+          box.appendChild(close);
+          box.appendChild(pre);
+          document.body.appendChild(box);
+        }
+        document.getElementById('v2FaultText').textContent = seen.join('\n\n');
+      }
+      window.addEventListener('error', function (event) {
+        if (event.message) {
+          show(event.message + '\n' + (event.filename || '?') + ':' + (event.lineno || 0));
+        } else if (event.target && event.target.src) {
+          // A failed script or module load fires an error EVENT on the element
+          // with no message at all, which is the case that leaves a blank app.
+          show('failed to load\n' + event.target.src);
+        }
+      }, true);
+      window.addEventListener('unhandledrejection', function (event) {
+        var reason = event.reason;
+        show('unhandled rejection\n' + (reason && reason.stack ? reason.stack : String(reason)));
+      });
+    })();
+  </script>
 </head>
 <body>
-<!--
-  THE FAULT BANNER, and why it is inline rather than part of the app.
-
-  Joshua tests on a real installed iPhone PWA and there is no console on it.
-  When something breaks there the whole report available is "it's failing",
-  and v0.102.0 was debugged by guessing because of exactly that: import
-  stopped working on the device while every headless test kept passing, and
-  nothing on screen said why.
-
-  This listens before any module loads, so it catches a module that fails to
-  parse or import as well as anything thrown later — which the app's own code
-  cannot do, since by then it is the thing that did not load. It says what
-  happened and where, and it is dismissible; it never swallows the error,
-  which still reaches the console for anyone who has one.
--->
-<div id="v2Fault" hidden><button type="button" id="v2FaultClose" aria-label="Dismiss">&times;</button><pre id="v2FaultText"></pre></div>
-<script>
-  (function () {
-    var seen = [];
-    function show(line) {
-      // Repeats are common — a broken frame loop throws every frame — and a
-      // banner that grows without bound is its own problem.
-      if (seen.indexOf(line) !== -1) return;
-      seen.push(line);
-      var box = document.getElementById('v2Fault');
-      var text = document.getElementById('v2FaultText');
-      if (!box || !text) return;
-      text.textContent = seen.join('\n\n');
-      box.hidden = false;
-    }
-    window.addEventListener('error', function (event) {
-      if (event.message) {
-        show(event.message + '\n' + (event.filename || '?') + ':' + (event.lineno || 0));
-      } else if (event.target && event.target.src) {
-        // A failed script or module load fires an error EVENT on the element
-        // with no message at all, which is the case that leaves a blank app.
-        show('failed to load\n' + event.target.src);
-      }
-    }, true);
-    window.addEventListener('unhandledrejection', function (event) {
-      var reason = event.reason;
-      show('unhandled rejection\n' + (reason && reason.stack ? reason.stack : String(reason)));
-    });
-    document.addEventListener('DOMContentLoaded', function () {
-      var close = document.getElementById('v2FaultClose');
-      if (close) close.addEventListener('click', function () {
-        document.getElementById('v2Fault').hidden = true;
-      });
-    });
-  })();
-</script>
 <div class="app">
   <header class="topbar">
     <h1>Visual Sensor Studio</h1>
     <span>
       <button type="button" class="chip" id="v2ViewerEnter" title="Full screen viewer">&#9974; Full screen</button>
-      <span class="pill" id="v2Badge">v0.102.0</span>
+      <span class="pill" id="v2Badge">v0.103.0</span>
     </span>
   </header>
 
@@ -784,9 +763,8 @@
          carries — and the dock, at 50, would have painted straight over a
          review sitting at 80 inside a wrap at 20. -->
     <div class="review" id="v2Review" hidden>
-      <!-- The stage is first so the chrome paints over it. -->
-      <div class="review-stage" id="v2ReviewStage"><canvas id="v2ReviewCanvas"></canvas></div>
       <p class="review-note" id="v2ReviewNote"></p>
+      <div class="review-frame"><canvas id="v2ReviewCanvas"></canvas></div>
       <div class="review-bottom">
         <!-- The filter strip, SECOND copy and deliberately so: the one on the
              page lives at the top of the Camera tab, and choosing a lens for
