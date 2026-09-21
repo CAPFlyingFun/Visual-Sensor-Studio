@@ -296,6 +296,38 @@ uniform float uLevelsAmount;
  * off by it. Same frame, same High: 5.9% and 3.2%, while the local contrast
  * on the pixels that were never near a wall keeps 88% of what the clamp got.
  * Most of what the limit takes away was a halo, not detail.
+ *
+ * AND HEADROOM ALONE WAS NOT ENOUGH. Joshua ran the same sheet again through
+ * that version: "a little better, but still need a little work". Measured on
+ * his own result, 7.4% of the frame was still sitting at pure white — the
+ * rind was narrower and still a rind.
+ *
+ * The reason is that headroom is the wrong question for a halo. It asks how
+ * much brighter this pixel COULD get; what makes a rind is a pixel getting
+ * brighter than everything around it. So the push is now also held inside the
+ * local band — the darkest and brightest luma of the nine samples the mask
+ * already reads — with a small allowance either side for the bite that makes
+ * an edge read as sharp. A pixel may become as bright as the brightest thing
+ * near it and a little more, and no brighter. Same sheet: 6.6% at a wall
+ * against 13.6%, and the rind around the label text is visibly narrower
+ * rather than merely dimmer.
+ *
+ * IT IS MEASURED IN THE FRAME'S OWN SPACE, and that is not a detail. The ring
+ * is sampled from uFrame, while the colour has already been through the filter
+ * and through auto-levels. With a Full stretch those two are in wildly
+ * different ranges — a room measuring 0.14 to 0.28 becomes 0 to 1 — so
+ * clamping the stretched colour against the unstretched band would crush the
+ * whole picture into the shadows. The target is formed and limited entirely
+ * in frame space, and only the RATIO crosses over to the colour, exactly as
+ * the multiply always did.
+ *
+ * THE AMOUNTS WENT UP WITH IT, and had to. The band limit takes strength out
+ * of every level, so leaving the old numbers would have quietly made High
+ * mean less than it did when Joshua judged it. It also makes them safe to
+ * raise: past a point a larger amount only moves more pixels to the local
+ * extremes it is already held between — measured at 1.1, 1.8, 2.6 and 3.6 on
+ * the same frame, the share at a wall moved 6.61%, 6.69%, 6.73%, 6.76%. The
+ * artefact no longer grows with the dial.
  */
 uniform float uClarity;
 uniform float uClarityFloor;
@@ -306,26 +338,49 @@ uniform float uClarityFloor;
  * same either way. Above it the overshoot is bent into the space available.
  */
 const float CLARITY_KNEE = 0.5;
+/*
+ * How far past the local band the push may go, as a share of that band.
+ *
+ * Zero is a mask that can never put a pixel outside the range of its own
+ * neighbourhood — no rind at all, and measurably flat: 1.6% of Joshua's sheet
+ * at a wall against the source's 0.8%, but it also gives up more than half
+ * the local contrast, and an edge with no bite at all reads as soft. 0.15
+ * keeps most of the bite and still cuts the pinned share from 13.6% to 6.6%.
+ */
+const float CLARITY_OVERSHOOT = 0.15;
 vec3 withClarity(vec3 color, vec2 uv) {
   if (uClarity <= 0.0) return color;
   vec2 r = frameStep(900.0) * 3.2;
-  // A small ring is the blur; the difference from it is the local detail.
-  float here = luma(texture2D(uFrame, uv).rgb);
-  float around = luma(texture2D(uFrame, uv + vec2( r.x, 0.0)).rgb)
-    + luma(texture2D(uFrame, uv + vec2(-r.x, 0.0)).rgb)
-    + luma(texture2D(uFrame, uv + vec2(0.0,  r.y)).rgb)
-    + luma(texture2D(uFrame, uv + vec2(0.0, -r.y)).rgb);
   vec2 d = r * 0.70710678;
-  around += luma(texture2D(uFrame, uv + vec2( d.x,  d.y)).rgb)
-    + luma(texture2D(uFrame, uv + vec2( d.x, -d.y)).rgb)
-    + luma(texture2D(uFrame, uv + vec2(-d.x,  d.y)).rgb)
-    + luma(texture2D(uFrame, uv + vec2(-d.x, -d.y)).rgb);
+  // A small ring is the blur; the difference from it is the local detail.
+  // The samples are kept rather than summed away, because their smallest and
+  // largest are what the overshoot is held between.
+  float here = luma(texture2D(uFrame, uv).rgb);
+  float n0 = luma(texture2D(uFrame, uv + vec2( r.x, 0.0)).rgb);
+  float n1 = luma(texture2D(uFrame, uv + vec2(-r.x, 0.0)).rgb);
+  float n2 = luma(texture2D(uFrame, uv + vec2(0.0,  r.y)).rgb);
+  float n3 = luma(texture2D(uFrame, uv + vec2(0.0, -r.y)).rgb);
+  float n4 = luma(texture2D(uFrame, uv + vec2( d.x,  d.y)).rgb);
+  float n5 = luma(texture2D(uFrame, uv + vec2( d.x, -d.y)).rgb);
+  float n6 = luma(texture2D(uFrame, uv + vec2(-d.x,  d.y)).rgb);
+  float n7 = luma(texture2D(uFrame, uv + vec2(-d.x, -d.y)).rgb);
+  float around = n0 + n1 + n2 + n3 + n4 + n5 + n6 + n7;
+  float lo = min(here, min(min(min(n0, n1), min(n2, n3)), min(min(n4, n5), min(n6, n7))));
+  float hi = max(here, max(max(max(n0, n1), max(n2, n3)), max(max(n4, n5), max(n6, n7))));
   float detail = here - around * 0.125;
   // Below the floor it is grain, and grain is left where it is.
   float shaped = sign(detail) * max(abs(detail) - uClarityFloor, 0.0);
+  // THE TARGET, AND THE BAND IT IS HELD IN, both in the frame's own space.
+  // A pixel may become as bright as the brightest thing near it, plus a
+  // little for bite, and no brighter — which is the whole of what stops a
+  // rind forming along an edge.
+  float band = hi - lo;
+  float target = clamp(here * (1.0 + uClarity * shaped * 6.0),
+    lo - CLARITY_OVERSHOOT * band, hi + CLARITY_OVERSHOOT * band);
   // MULTIPLIED, not added: scaling a colour cannot invent a hue, and an
-  // additive boost on three channels puts colour fringes on every edge.
-  float boost = uClarity * shaped * 6.0;
+  // additive boost on three channels puts colour fringes on every edge. Only
+  // this ratio crosses out of frame space onto the filter's own colour.
+  float boost = here > 0.0005 ? target / here - 1.0 : 0.0;
   // How far the push may still travel before it runs out of picture. Going
   // UP that is the brightest channel's distance from white, because the
   // brightest channel reaches the wall first and pins the colour there.

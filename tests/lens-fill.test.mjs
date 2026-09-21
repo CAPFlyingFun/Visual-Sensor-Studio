@@ -500,8 +500,26 @@ test('clarity is an edit, not an aid — it reaches the file', () => {
   // MULTIPLIED, not added: scaling a colour cannot invent a hue, where an
   // additive boost on three channels puts colour fringes on every edge. The
   // scale is the only thing that ever reaches the colour.
-  assert.match(clarity, /float boost = uClarity \* shaped \* 6\.0;/);
+  assert.match(clarity, /uClarity \* shaped \* 6\.0/);
   assert.match(clarity, /return clamp\(color \* scale, 0\.0, 1\.0\);/);
+
+  // THE PUSH IS HELD INSIDE THE LOCAL BAND, which is what stops a rind: a
+  // pixel may become as bright as the brightest thing near it and a little
+  // more, and no brighter. The band comes from the nine samples the mask is
+  // already reading, so it costs no extra fetch.
+  assert.match(clarity, /float lo = min\(here, /);
+  assert.match(clarity, /float hi = max\(here, /);
+  assert.match(clarity,
+    /clamp\(here \* \(1\.0 \+ uClarity \* shaped \* 6\.0\),\s*\n?\s*lo - CLARITY_OVERSHOOT \* band, hi \+ CLARITY_OVERSHOOT \* band\)/,
+    'the target is formed and limited in one place');
+
+  // AND IT IS DONE IN THE FRAME'S OWN SPACE. The ring is sampled from uFrame
+  // while the colour has been through the filter and through auto-levels — a
+  // Full stretch puts those two in different ranges entirely, so clamping the
+  // stretched colour against the unstretched band would crush the picture.
+  // Only the RATIO crosses over.
+  assert.match(clarity, /float boost = here > 0\.0005 \? target \/ here - 1\.0 : 0\.0;/,
+    'the band limit never touches the colour directly');
 
   // AND THE OVERSHOOT IS BENT INTO THE ROOM LEFT rather than cut off by it.
   // A clamped unsharp mask stops every overshoot that asked for more than the

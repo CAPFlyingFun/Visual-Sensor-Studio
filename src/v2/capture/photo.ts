@@ -273,14 +273,26 @@ export async function capturePhoto(
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const fileName = `visual-sensor-v2-${options.label ?? filterId}-${photo.width}x${photo.height}-${stamp}.jpg`;
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = fileName;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+  // A CAPTURE WRITES NOTHING. It returns the bytes and the name for them; the
+  // shell decides whether that ever becomes a file, and the only way it does
+  // is a Share tap.
+  //
+  // This used to end with an <a download> and a synthetic click on every
+  // single capture. On a desktop browser that is a silent download nobody
+  // asked for. In an installed iOS PWA there is no download — Safari opens a
+  // file viewer over the app, a JPG icon with the file's name and size and
+  // "Open in Preview", and the only way out is the ✕.
+  //
+  // Joshua, 2026-09-21, with a screenshot of exactly that: "it still pop-ups
+  // with show preview or save when it shouldn't". It fired on import because
+  // opening a picture in the review encodes it — and once the review began
+  // re-encoding after every setting, it fired again on every adjustment.
+  //
+  // The line beside offerShare that said "nothing has been written to disk"
+  // was therefore false for the whole of this path, which is the part worth
+  // keeping in mind: the readout was honest about the intent and the code
+  // was doing something else.
 
   return {
     width: photo.width,

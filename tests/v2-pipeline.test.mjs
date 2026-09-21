@@ -2952,3 +2952,47 @@ test('an armed picker keeps the whole frame above the sheet', () => {
     assert.match(rule.slice(0, 260), /border-radius: 18px 18px 0 0/, `${cls} reads as a sheet`);
   }
 });
+
+/*
+ * A CAPTURE WRITES NOTHING BY ITSELF.
+ *
+ * Both v2 capture modules used to end with an <a download> and a synthetic
+ * click on every single product. On a desktop browser that is a silent
+ * download nobody asked for. In an installed iOS PWA there is no download at
+ * all — Safari throws a file viewer over the app, a JPG icon with the name
+ * and size and "Open in Preview", and the only way out is the ✕.
+ *
+ * Joshua hit it on import, 2026-09-21, with a screenshot: opening a picture
+ * in the review encodes it, and once the review began re-encoding after
+ * every setting it fired again on every adjustment.
+ *
+ * The line beside offerShare already SAID nothing was written to disk. It
+ * was false for the whole of this path, which is why this test reads the
+ * modules rather than trusting the sentence: the readout was honest about
+ * the intent and the code was doing something else.
+ */
+test('the v2 capture modules hand back bytes and never write a file', () => {
+  const here = fileURLToPath(new URL('.', import.meta.url));
+  for (const name of ['photo.ts', 'record.ts']) {
+    const source = readFileSync(join(here, '..', 'src', 'v2', 'capture', name), 'utf8');
+    // Comments explain why the download is gone, so only the CODE is read.
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    assert.ok(!/\.download\s*=/.test(code),
+      `${name} does not name a file for the browser to save on its own`);
+    assert.ok(!/anchor\.click\(\)/.test(code),
+      `${name} does not click a link nobody tapped`);
+    assert.ok(!/document\.createElement\('a'\)/.test(code),
+      `${name} does not build a download link at all`);
+  }
+
+  // AND THE SHELL'S ONLY WAY OUT IS A TAP. offerShare arms a button; it never
+  // shares by itself, and the app has exactly one deliberate download left,
+  // which belongs to the lens export and runs from its own button.
+  const appTs = readFileSync(join(here, '..', 'src', 'v2', 'app.ts'), 'utf8');
+  const anchors = appTs.match(/anchor\.download\s*=/g) ?? [];
+  assert.equal(anchors.length, 1,
+    `one deliberate download in the v2 shell, the lens export, got ${anchors.length}`);
+  const exporter = appTs.slice(appTs.indexOf('function exportLensDraft()'));
+  assert.match(exporter.slice(0, exporter.indexOf('\n}\n')), /anchor\.download\s*=/,
+    'and that one is the lens export');
+});

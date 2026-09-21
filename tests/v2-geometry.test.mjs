@@ -2689,14 +2689,30 @@ test('clarity bends its overshoot into the room left, rather than clamping (fake
         const scene = document.createElement('canvas');
         scene.width = 960; scene.height = 720;
         const g = scene.getContext('2d');
-        // Top half: near-white ground with fine dark detail on it.
-        g.fillStyle = '#eceff2'; g.fillRect(0, 0, 960, 360);
+        // Top third: near-white ground with fine dark detail on it, so almost
+        // every overshoot asks for room the pixel does not have.
+        g.fillStyle = '#eceff2'; g.fillRect(0, 0, 960, 240);
         g.fillStyle = '#3a4048';
-        for (let i = 0; i < 60; i++) g.fillRect(i * 16, 40, 5, 280);
-        // Bottom half: near-black ground with fine bright detail on it.
-        g.fillStyle = '#12151a'; g.fillRect(0, 360, 960, 360);
+        for (let i = 0; i < 60; i++) g.fillRect(i * 16, 30, 5, 180);
+        // Middle third: near-black ground with fine bright detail, the same
+        // problem against the other wall.
+        g.fillStyle = '#12151a'; g.fillRect(0, 240, 960, 240);
         g.fillStyle = '#c8cfd8';
-        for (let i = 0; i < 60; i++) g.fillRect(i * 16 + 8, 400, 5, 280);
+        for (let i = 0; i < 60; i++) g.fillRect(i * 16 + 8, 270, 5, 180);
+        // Bottom third: a LOW-CONTRAST field, and the band limit is the only
+        // thing standing between it and a white wall. Nothing here is near a
+        // rail, so headroom has no opinion — but a strong mask multiplying a
+        // six-level ripple is exactly how a smooth surface blows out.
+        const field = g.createImageData(960, 240);
+        for (let y = 0; y < 240; y++) {
+          for (let x = 0; x < 960; x++) {
+            const v = 190 + Math.round(18 * Math.sin(x / 3) * Math.cos(y / 4));
+            const k = (y * 960 + x) * 4;
+            field.data[k] = v; field.data[k + 1] = v + 2;
+            field.data[k + 2] = v + 5; field.data[k + 3] = 255;
+          }
+        }
+        g.putImageData(field, 0, 480);
         const image = new Image();
         image.src = scene.toDataURL();
         await image.decode();
@@ -2714,7 +2730,7 @@ test('clarity bends its overshoot into the room left, rather than clamping (fake
           const x = c.getContext('2d');
           x.drawImage(out, 0, 0);
           const d = x.getImageData(0, 0, 960, 720).data;
-          let pinned = 0, lost = 0, sum = 0, n = 0;
+          let pinned = 0, lost = 0, sum = 0, n = 0, fieldHigh = 0, fieldLow = 255;
           for (let y = 0; y < 720; y++) {
             for (let i = 0; i < 959; i++) {
               const k = (y * 960 + i) * 4;
@@ -2723,13 +2739,27 @@ test('clarity bends its overshoot into the room left, rather than clamping (fake
               const a = 0.2126 * d[k] + 0.7152 * d[k + 1] + 0.0722 * d[k + 2];
               // CLIPPED / CRUSHED, exposure.ts's own thresholds.
               if (a >= 250 || a <= 5) lost++;
+              // The low-contrast field's own extremes, away from its seams.
+              if (y > 500 && y < 700) {
+                if (a > fieldHigh) fieldHigh = a;
+                if (a < fieldLow) fieldLow = a;
+              }
               const b = 0.2126 * d[k + 4] + 0.7152 * d[k + 5] + 0.0722 * d[k + 6];
               sum += Math.abs(a - b); n++;
             }
           }
-          return { pinned: pinned / n, lost: lost / n, acutance: sum / n };
+          return {
+            pinned: pinned / n, lost: lost / n, acutance: sum / n,
+            fieldHigh, fieldLow
+          };
         };
-        return { off: read(undefined), high: read({ amount: 1.1, floor: 0.026 }) };
+        return {
+          off: read(undefined),
+          high: read({ amount: 2, floor: 0.026 }),
+          // FAR past any level the app offers. The band limit's distinctive
+          // property is that the artefact stops growing with the dial.
+          wild: read({ amount: 8, floor: 0.026 })
+        };
       });
 
       assert.deepEqual(errors, [], 'the clarity shader compiles and runs');
@@ -2747,6 +2777,24 @@ test('clarity bends its overshoot into the room left, rather than clamping (fake
       // rail outright. The limit brings that to 25.8% and 27.6% while
       // keeping 83% of the acutance the clamp bought (17.48 → 26.57 became
       // 17.48 → 25.03). 40% is comfortably between the two.
+      // THE LOW-CONTRAST FIELD IS WHERE THE BAND LIMIT IS THE ONLY LIMIT.
+      // It sits around 190 with an 18-level ripple, so it is nowhere near a
+      // rail and headroom has no opinion about it at all — a mask that only
+      // watched the rails would multiply that ripple until the surface went
+      // white, which is what a strong setting did to a blurred background.
+      // Held inside its own range, the field can only ever reach its local
+      // extremes and a little past them.
+      assert.ok(measured.high.fieldHigh < 235,
+        `a smooth surface is not blown out by a strong mask, got `
+        + `${measured.high.fieldHigh.toFixed(0)} from a field that peaks at 213`);
+      assert.ok(measured.high.fieldLow > 145,
+        `nor crushed, got ${measured.high.fieldLow.toFixed(0)} from a floor of 167`);
+      // And four times the amount cannot push it further: there is nowhere
+      // further to go inside the neighbourhood's own range.
+      assert.ok(measured.wild.fieldHigh <= measured.high.fieldHigh + 2,
+        `four times the amount is not four times the artefact: field peaks at `
+        + `${measured.high.fieldHigh.toFixed(0)} and ${measured.wild.fieldHigh.toFixed(0)}`);
+
       const added = measured.high.lost - measured.off.lost;
       assert.ok(added < 0.40,
         `clarity keeps the frame off the rails: ${(measured.off.lost * 100).toFixed(1)}% → `

@@ -184,17 +184,6 @@ function measureEncodedSize(blob: Blob): Promise<{ width: number; height: number
   });
 }
 
-function saveBlob(blob: Blob, fileName: string): void {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = fileName;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
 export class ClipRecorder {
   private recorder: MediaRecorder | null = null;
   private chunks: Blob[] = [];
@@ -203,8 +192,6 @@ export class ClipRecorder {
   private bitrate = 0;
   private label = 'clip';
   private diedReason: string | null = null;
-  /** False for instruments (the encoder probe) that measure and discard. */
-  private save = true;
 
   get active(): boolean {
     return this.recorder !== null;
@@ -225,11 +212,9 @@ export class ClipRecorder {
     stream: MediaStream,
     recordInput: { width: number; height: number },
     measuredFps: number,
-    label: string,
-    options: { save?: boolean } = {}
+    label: string
   ): { ok: boolean; reason?: string } {
     if (this.recorder) return { ok: false, reason: 'already recording' };
-    this.save = options.save ?? true;
     if (typeof MediaRecorder === 'undefined') {
       return { ok: false, reason: 'MediaRecorder is unavailable in this browser' };
     }
@@ -356,7 +341,10 @@ export class ClipRecorder {
       counted = null;
     }
     const fileName = clipFileName(`v2-${this.label}`, new Date(), extensionForMime(type || blob.type));
-    if (this.save) saveBlob(blob, fileName);
+    // NAMED, NOT WRITTEN — the same rule the still capture follows, and for
+    // the same reason: an <a download> in an installed iOS PWA is not a
+    // download, it is a file viewer thrown over the app. The clip goes to the
+    // share sheet on a tap, or nowhere.
     return {
       seconds,
       bytes: blob.size,

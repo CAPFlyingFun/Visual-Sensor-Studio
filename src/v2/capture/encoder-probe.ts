@@ -169,7 +169,7 @@ async function runTrial(trial: ProbeTrial): Promise<ProbeRow> {
   const stream = capture.captureStream();
   const recorder = new ClipRecorder();
   const started = recorder.start(stream, { width: trial.width, height: trial.height }, trial.fps,
-    `probe-${trial.width}x${trial.height}`, { save: false });
+    `probe-${trial.width}x${trial.height}`);
   if (!started.ok) {
     stream.getTracks().forEach((track) => track.stop());
     return { ...base, error: started.reason ?? 'recorder refused' };

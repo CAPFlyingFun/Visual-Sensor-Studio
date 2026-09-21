@@ -869,12 +869,21 @@ function renderFilterStart(): void {
  * The floor rises with the amount on purpose. In a dim room the strongest
  * fine detail in the frame IS the sensor noise, so a stronger mask needs a
  * higher floor or it finds the grain first.
+ *
+ * THE AMOUNTS ROSE when the shader began holding the push inside the local
+ * band. That limit takes strength out of every level, so the old numbers
+ * would have quietly made High mean less than it did when Joshua judged it —
+ * these restore roughly the contrast he was looking at, without the rind the
+ * band limit removes. They are also no longer dangerous to raise: measured
+ * on his sheet at 1.1, 1.8, 2.6 and 3.6, the share of the frame driven to a
+ * wall moved 6.61%, 6.69%, 6.73%, 6.76%. The dial no longer grows the
+ * artefact, only the number of pixels taken to the local extremes.
  */
 const CLARITY_LEVELS = [
   { id: 'off', label: 'Off', amount: 0, floor: 0 },
-  { id: 'low', label: 'Low', amount: 0.35, floor: 0.012 },
-  { id: 'mid', label: 'Medium', amount: 0.7, floor: 0.018 },
-  { id: 'high', label: 'High', amount: 1.1, floor: 0.026 }
+  { id: 'low', label: 'Low', amount: 0.6, floor: 0.012 },
+  { id: 'mid', label: 'Medium', amount: 1.25, floor: 0.018 },
+  { id: 'high', label: 'High', amount: 2, floor: 0.026 }
 ] as const;
 
 function storedClarity(): string {
