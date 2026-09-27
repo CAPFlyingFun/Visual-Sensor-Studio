@@ -199,7 +199,7 @@
     @media (min-width: 780px) {
       .app { width:min(100%,1100px); }
       body:not(.viewer) #v2CameraRoute { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-items:start; }
-      body:not(.viewer) #v2CameraRoute > .control-hub, body:not(.viewer) #v2CameraRoute > .card { grid-column:1 / -1; }
+      body:not(.viewer) #v2CameraRoute > .card { grid-column:1 / -1; }
       body:not(.viewer) #v2CameraRoute > .section { height:max-content; }
       .viewfinder { height:clamp(300px,52dvh,620px); }
     }
@@ -727,6 +727,9 @@
         <div class="zoom tiers compact" id="v2StreamTiersTop" aria-label="Stream size"></div>
         </div>
       </div>
+      <nav class="control-hub" id="v2ControlHub" aria-label="Camera tool shortcuts">
+          <button type="button" data-jump="filters">🎨 Filters</button><button type="button" data-jump="perspective">📐 Perspective</button><button type="button" data-jump="camera">📷 Camera</button><button type="button" data-jump="exposure">☀️ Exposure</button><button type="button" data-jump="motion">🧭 Motion</button><button type="button" data-jump="night">🌙 Night</button><button type="button" data-jump="import">📥 Import</button>
+        </nav>
 
       <!-- THE VIEWER. Every slot below starts EMPTY: it is filled at runtime
            with the controls that already exist elsewhere on this page, moved
@@ -820,9 +823,7 @@
 
     <main class="content">
       <div id="v2CameraRoute">
-        <nav class="control-hub" id="v2ControlHub" aria-label="Camera tool shortcuts">
-          <button type="button" data-jump="filters">🎨 Filters</button><button type="button" data-jump="perspective">📐 Perspective</button><button type="button" data-jump="camera">📷 Camera</button><button type="button" data-jump="exposure">☀️ Exposure</button><button type="button" data-jump="motion">🧭 Motion</button><button type="button" data-jump="night">🌙 Night</button><button type="button" data-jump="import">📥 Import</button>
-        </nav>
+
         <!-- FILTERS SIT DIRECTLY UNDER THE VIEWFINDER (Joshua, 2026-09-03:
              "move the filters just under the view, so you don't have to
              scroll down all the way near the bottom to activate them"). They

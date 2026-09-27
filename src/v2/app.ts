@@ -1477,10 +1477,26 @@ function findPerspectiveRectangle(): NormalPoint[] | null {
 function buildPerspectiveAssist(): void {
   for (const button of byId('v2PerspectiveModes').querySelectorAll<HTMLButtonElement>('[data-perspective]')) button.addEventListener('click',()=>void(async()=>{
     const next=button.dataset.perspective as PerspectiveMode;
-    if(next!=='off' && !await ensureMotion()){setText('v2PerspectiveNote','Motion permission is needed for live pitch/roll. Manual Rectify still works after permission is granted.');return;}
-    perspectiveMode=next;
+    // Rectify is image geometry, not a motion feature. It must work even when
+    // iOS motion permission is denied or unsupported.
+    if (next === 'rectify') {
+      perspectiveMode = next;
+      setText('v2PerspectiveNote', 'Drag the four blue corners around the flat object, or try Find rectangle.');
+    } else if (next === 'off') {
+      perspectiveMode = next;
+      setText('v2PerspectiveNote', 'Perspective Assist is off.');
+      if (!readState().align && !readState().autoShot) stopMotion('off');
+    } else {
+      if (!await ensureMotion()) {
+        setText('v2PerspectiveNote', 'iPhone motion permission is needed for Level and automatic Straighten. Rectify works without motion.');
+        return;
+      }
+      perspectiveMode = next;
+      setText('v2PerspectiveNote', next === 'level'
+        ? 'Live pitch and roll are shown over the viewfinder.'
+        : 'Automatic roll correction is armed for the next photo.');
+    }
     for(const b of byId('v2PerspectiveModes').querySelectorAll<HTMLButtonElement>('[data-perspective]')) b.classList.toggle('active',b.dataset.perspective===next);
-    if(next==='off' && !readState().align && !readState().autoShot) stopMotion('off');
     renderPerspectiveOverlay();
   }));
   byId('v2PerspectiveReset').addEventListener('click',()=>{perspectiveQuad=DEFAULT_QUAD.map(p=>({...p}));renderPerspectiveOverlay();});
