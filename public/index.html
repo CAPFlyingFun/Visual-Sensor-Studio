@@ -177,6 +177,33 @@
     .capture button { flex: 0 0 auto; width: 43px; height: 43px; border-radius: 50%; border: 1px solid #6b7b89; background: #0b141c; font-size: 15px; }
     .capture button[disabled] { opacity: .4; }
 
+    /* Perspective Assist: deliberately drawn over the picture, while its controls
+       live in one compact tool card instead of joining the old control parade. */
+    #v2PerspectiveOverlay { position:absolute; inset:0; z-index:6; pointer-events:none; }
+    #v2PerspectiveOverlay .level-line { position:absolute; left:8%; right:8%; top:50%; height:1px; background:rgba(125,220,255,.92); transform-origin:center; box-shadow:0 0 8px rgba(67,141,255,.8); }
+    #v2PerspectiveOverlay .plumb-line { position:absolute; top:12%; bottom:12%; left:50%; width:1px; background:rgba(125,220,255,.55); transform-origin:center; }
+    #v2PerspectiveReadout { position:absolute; top:9px; left:50%; transform:translateX(-50%); padding:5px 9px; border-radius:999px; background:rgba(2,7,12,.72); border:1px solid rgba(125,180,255,.55); font:600 11px ui-monospace,SFMono-Regular,Menlo,monospace; white-space:nowrap; }
+    #v2PerspectiveQuad { position:absolute; inset:0; width:100%; height:100%; overflow:visible; }
+    #v2PerspectiveQuad polygon { fill:rgba(67,141,255,.08); stroke:#7db4ff; stroke-width:.45; vector-effect:non-scaling-stroke; }
+    .perspective-handle { position:absolute; width:28px; height:28px; margin:-14px 0 0 -14px; border-radius:50%; border:2px solid #fff; background:rgba(67,141,255,.8); box-shadow:0 2px 8px #000; pointer-events:auto; touch-action:none; }
+    .perspective-modes { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:6px; }
+    .perspective-modes button { min-width:0; min-height:42px; padding:4px; border:1px solid var(--line2); border-radius:11px; background:#0d1a26; font-size:11px; }
+    .perspective-modes button.active { border-color:var(--blue); background:#10203a; color:#fff; }
+
+    /* CONTROL HUB. The old app grew vertically one feature at a time. Keep all
+       existing controls, but give thumbs a map and make each group read as a card. */
+    .control-hub { position:sticky; top:0; z-index:18; display:flex; gap:7px; overflow-x:auto; padding:8px 10px; background:rgba(5,11,18,.96); border-bottom:1px solid var(--line); scrollbar-width:none; }
+    .control-hub::-webkit-scrollbar{display:none}.control-hub button{flex:0 0 auto;min-height:38px;padding:0 12px;border:1px solid var(--line2);border-radius:12px;background:#0d1a26;font-size:11px}.control-hub button:active{border-color:var(--blue)}
+    #v2CameraRoute > .section { margin:10px 10px 0; padding:12px; border:1px solid var(--line); border-radius:15px; background:linear-gradient(180deg,#0d1823,#09131c); }
+    #v2CameraRoute > .section .section-title:first-child h2 { font-size:14px; }
+    @media (min-width: 780px) {
+      .app { width:min(100%,1100px); }
+      body:not(.viewer) #v2CameraRoute { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-items:start; }
+      body:not(.viewer) #v2CameraRoute > .control-hub, body:not(.viewer) #v2CameraRoute > .card { grid-column:1 / -1; }
+      body:not(.viewer) #v2CameraRoute > .section { height:max-content; }
+      .viewfinder { height:clamp(300px,52dvh,620px); }
+    }
+
     .section { padding: 12px 11px 0; }
     .section-title { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
     .section-title h2 { font-size: 13px; margin: 0; }
@@ -644,7 +671,7 @@
     <h1>Visual Sensor Studio</h1>
     <span>
       <button type="button" class="chip" id="v2ViewerEnter" title="Full screen viewer">&#9974; Full screen</button>
-      <span class="pill" id="v2Badge">v0.106.0</span>
+      <span class="pill" id="v2Badge">v0.107.0</span>
     </span>
   </header>
 
@@ -657,6 +684,12 @@
              they need no display read. Purely an overlay — nothing captured
              is changed by them. -->
         <svg id="v2Guides" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"></svg>
+        <div id="v2PerspectiveOverlay" hidden>
+          <div class="level-line" id="v2PerspectiveLevel"></div><div class="plumb-line" id="v2PerspectivePlumb"></div>
+          <svg id="v2PerspectiveQuad" viewBox="0 0 100 100" preserveAspectRatio="none" hidden><polygon id="v2PerspectivePolygon" points="12,14 88,14 88,86 12,86"></polygon></svg>
+          <div id="v2PerspectiveReadout">Pitch — · Roll —</div>
+          <button class="perspective-handle" data-corner="0" type="button" hidden></button><button class="perspective-handle" data-corner="1" type="button" hidden></button><button class="perspective-handle" data-corner="2" type="button" hidden></button><button class="perspective-handle" data-corner="3" type="button" hidden></button>
+        </div>
         <!-- The reticle: an outer aiming frame, and inside it a ring that is
              the TRUE size of the colour picker's patch. -->
         <div id="v2Reticle" aria-hidden="true" hidden><i id="v2PatchRing"></i></div>
@@ -787,6 +820,9 @@
 
     <main class="content">
       <div id="v2CameraRoute">
+        <nav class="control-hub" id="v2ControlHub" aria-label="Camera tool shortcuts">
+          <button type="button" data-jump="filters">🎨 Filters</button><button type="button" data-jump="perspective">📐 Perspective</button><button type="button" data-jump="camera">📷 Camera</button><button type="button" data-jump="exposure">☀️ Exposure</button><button type="button" data-jump="motion">🧭 Motion</button><button type="button" data-jump="night">🌙 Night</button><button type="button" data-jump="import">📥 Import</button>
+        </nav>
         <!-- FILTERS SIT DIRECTLY UNDER THE VIEWFINDER (Joshua, 2026-09-03:
              "move the filters just under the view, so you don't have to
              scroll down all the way near the bottom to activate them"). They
@@ -798,7 +834,7 @@
              behind would have put a button at the top of the page and the
              panel it reveals near the bottom — a worse scroll than the one
              this move removes. -->
-        <section class="section">
+        <section class="section" id="v2ToolsFilters">
           <div class="section-title"><h2>Filters &amp; Lenses</h2><span class="hint">Swipe &rarr; · one shader for preview and photo</span></div>
           <div class="filters" id="v2FilterStrip"></div>
           <p class="hint" id="v2FilterNote"></p>
@@ -924,7 +960,16 @@
         </div>
 
 
-        <section class="section">
+        <section class="section" id="v2ToolsPerspective">
+          <div class="section-title"><h2>📐 Perspective Assist</h2><span class="hint">level · straighten · four-corner rectify</span></div>
+          <div class="perspective-modes" id="v2PerspectiveModes">
+            <button type="button" data-perspective="off" class="active">Off</button><button type="button" data-perspective="level">Level</button><button type="button" data-perspective="straighten">Straighten</button><button type="button" data-perspective="rectify">Rectify</button>
+          </div>
+          <div class="button-row"><button type="button" class="btn" id="v2PerspectiveFind">⌗ Find rectangle</button><button type="button" class="btn" id="v2PerspectiveReset">Reset corners</button></div>
+          <p class="hint" id="v2PerspectiveNote">Level shows pitch/roll. Straighten records the roll correction. Rectify lets you drag four corners around a flat object; the saved JPEG keeps the selected PHOTO dimensions.</p>
+        </section>
+
+        <section class="section" id="v2ToolsCamera">
           <div class="section-title"><h2>Camera Stream</h2><span class="hint">a bigger stream costs delivered fps</span></div>
           <div class="zoom tiers" id="v2StreamTiers" aria-label="Stream tiers"></div>
           <div class="toast" id="v2Toast" hidden></div>
@@ -959,7 +1004,7 @@
              they change the preview and never reach a photo or a clip. The
              exposure readout gates its own census, so it costs nothing while
              it is closed. -->
-        <section class="section">
+        <section class="section" id="v2ToolsExposure">
           <div class="section-title"><h2>Exposure &amp; focus</h2><span class="hint">viewing aids · never captured</span></div>
           <div class="zoom guides" id="v2ZebraRow" aria-label="Zebra"></div>
           <p class="hint" id="v2ZebraNote"></p>
@@ -1015,7 +1060,7 @@
              filter measures the picture. Sensor noise is re-rolled every
              frame and averages away; a still scene does not. Stills never
              use it — they already get one good frame. -->
-        <section class="section">
+        <section class="section" id="v2ToolsMotion">
           <div class="section-title"><h2>Frame averaging</h2><span class="hint">preview &amp; video · steadies the hue lenses</span></div>
           <div class="zoom guides" id="v2AverageRow" aria-label="Frame averaging"></div>
           <p class="hint" id="v2AverageNote"></p>
@@ -1043,7 +1088,7 @@
              lens, and it saves NOTHING: showing a photo/save affordance for a
              result knowingly below MAX is exactly the exception Joshua ruled
              out. This is a diagnostic view of the accumulator, not a photo. -->
-        <section class="section">
+        <section class="section" id="v2ToolsNight">
           <div class="section-title"><h2>🌙 Night — Test</h2><span class="hint">Milestone 1 · stack only · nothing is saved</span></div>
           <button type="button" class="btn" id="v2NightTestToggle" aria-pressed="false">🌙 Night — Test</button>
           <p class="hint" id="v2NightTestNote"></p>
@@ -1066,7 +1111,7 @@
              filter the camera uses and saved as a NEW file — the original is
              never written to. It renders at the picture's own full size, so
              an import is not quietly downscaled any more than a capture is. -->
-        <section class="section">
+        <section class="section" id="v2ToolsImport">
           <div class="section-title"><h2>Import</h2><span class="hint">photo or video · same filters · saved as a new file</span></div>
           <div class="button-row">
             <button type="button" class="btn" id="v2ImportPick">🖼️ Choose a photo or video</button>
