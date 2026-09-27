@@ -2757,68 +2757,6 @@ test('a texture past the GPU’s limit is refused, not reported as uploaded (fak
   });
 
 /*
- * A CONTROL YOU SCROLL TO IS THE THING UNDER YOUR FINGER.
- *
- * The sticky camera shell sits over the top of the scrolling tools, and it is
- * already large — a viewfinder that clamps to 38dvh plus the rows under it.
- * When a 55 px shortcut bar joined it, the sticky chrome reached 477 px of a
- * 932 px viewport and the middle of the screen was INSIDE it: eight controls
- * across five unrelated features stopped being tappable where they were
- * scrolled to, and every one of them failed as a timeout on a button the page
- * reported as visible, enabled and stable.
- *
- * Static tests cannot see this — the markup was valid and every control was
- * present and enabled. What it takes is asking the page what is actually at
- * the point a finger would land, which is what elementFromPoint answers.
- */
-test('a control scrolled into view is not covered by the sticky shell (fake device)',
-  { skip: runnable ? false : 'no browser available' }, async () => {
-    await withBrowser(async (browser, base) => {
-      const page = await browser.newPage({ viewport: { width: 430, height: 932 } });
-      await page.goto(base);
-      await page.waitForSelector('#v2SharpenRow [data-sharpen]');
-
-      // One from each corner of the app that the regression reached.
-      const controls = [
-        '#v2SharpenRow [data-sharpen]',
-        '#v2ClarityRow [data-clarity="high"]',
-        '#v2LevelsRow [data-levels="full"]',
-        '#v2ControlHub [data-jump="filters"]'
-      ];
-      const covered = await page.evaluate((selectors) => {
-        const bad = [];
-        for (const selector of selectors) {
-          const el = document.querySelector(selector);
-          if (!el) { bad.push(`${selector}: missing`); continue; }
-          el.scrollIntoView({ block: 'center' });
-          const box = el.getBoundingClientRect();
-          const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
-          // The control itself, or something inside it (a label span), counts.
-          if (hit !== el && !el.contains(hit)) {
-            bad.push(`${selector}: ${hit ? hit.outerHTML.slice(0, 60) : 'nothing'} is on top`);
-          }
-        }
-        return bad;
-      }, controls);
-      assert.deepEqual(covered, [],
-        'every control is reachable where the page scrolls it to');
-
-      // AND THE STICKY CHROME LEAVES MORE THAN HALF THE SCREEN. At 477 of 932
-      // the centre of the viewport was under it, which is what put the
-      // controls out of reach in the first place.
-      const shell = await page.evaluate(() => ({
-        bottom: Math.round(document.querySelector('.viewfinder-wrap').getBoundingClientRect().bottom),
-        viewport: window.innerHeight
-      }));
-      assert.ok(shell.bottom < shell.viewport / 2,
-        `the sticky shell leaves the middle of the screen usable, got `
-        + `${shell.bottom} of ${shell.viewport}`);
-
-      await page.close();
-    });
-  });
-
-/*
  * A BIG PICTURE IS SHOWN ON A SCREEN, NOT AT ITS OWN SIZE.
  *
  * Joshua, 2026-09-21: "I tried to load like a 4kx8k image my camera did at

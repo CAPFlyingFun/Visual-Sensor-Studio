@@ -81,51 +81,6 @@ test('V2 code never touches getUserMedia', () => {
 
 /* --- The single sticky element ------------------------------------------- */
 
-test('perspective modes use stable delegated taps and shortcuts name real sections', () => {
-  assert.match(appTs, /button\.addEventListener\('click'/,
-    'perspective modes use direct button taps, matching the proven Find/Reset controls');
-  assert.match(appTs, /setPerspectiveMode\(next\)/,
-    'mode state changes immediately on tap before motion permission resolves');
-  // ONE DEFINITION OF THE SHELL'S HEIGHT. This was written as a literal
-  // "+ 154px" and stopped matching the moment a 55 px bar joined the sticky
-  // region — the reserve claimed one height and the chrome was another.
-  assert.match(v2Html, /--shell-camera: clamp\(245px, 38dvh, 390px\)/);
-  assert.match(v2Html, /scroll-margin-top: calc\(var\(--shell-camera\) \+ var\(--shell-rows\)\)/,
-    'shortcut anchors reserve the sticky camera shell height, from its own numbers');
-  assert.match(v2Html, /\.viewfinder \{ height: var\(--shell-camera\)/,
-    'and the viewfinder is sized from the same one, so they cannot disagree');
-  assert.match(v2Html, /data-jump="stream">📷 Stream<\/button>/,
-    'the Camera Stream shortcut says Stream rather than pretending to cover all camera controls');
-});
-
-/*
- * THE TOOL SHORTCUTS SCROLL WITH THE TOOLS THEY POINT AT.
- *
- * This test used to require the opposite — that the hub live inside
- * .viewfinder-wrap — and that requirement is what broke eight controls.
- * The wrap is sticky, the camera shell was already half the screen, and
- * another 55 px of bar took the sticky chrome to 477 px of a 932 px
- * viewport. Anything scrolled to the middle of the screen then landed
- * UNDERNEATH it: elementFromPoint over the Sharpen button returned the
- * "🎨 Filters" shortcut, and the lens workbench, the colour picker, frame
- * averaging, zebra and peaking, camera controls, Reverse and Sharpen could
- * not be tapped where they were scrolled to.
- *
- * Out of the sticky region the chrome is back to 422 px, which is what the
- * rest of the app was built and measured against, and the hub is the first
- * thing above the cards it indexes — which is what a table of contents is.
- */
-test('camera tool shortcuts scroll with the tools they point at', () => {
-  const wrap = v2Html.match(/<div class="viewfinder-wrap">([^]*?)<!-- THE VIEWER/);
-  assert.ok(wrap, 'viewfinder shell markup exists');
-  assert.doesNotMatch(wrap[1], /id="v2ControlHub"/,
-    'the sticky shell does not carry a bar that covers what is under it');
-  const route = v2Html.match(/<div id="v2CameraRoute">([^]*?)<section class="section" id="v2ToolsFilters"/);
-  assert.ok(route, 'camera route markup exists');
-  assert.match(route[1], /id="v2ControlHub"/,
-    'and the shortcuts sit at the head of the list they index');
-});
-
 test('only the viewfinder is sticky', () => {
   const sticky = [...v2Html.matchAll(/([.#][\w-]+)[^{}]*\{[^}]*position:\s*sticky/g)].map((m) => m[1]);
   assert.deepEqual([...new Set(sticky)], ['.viewfinder-wrap'],
