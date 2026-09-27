@@ -1,3 +1,4 @@
+import { PERSPECTIVE_FRAGMENT } from '../filters/registry.js';
 /** Perspective-assist math and JPEG rectification. No camera ownership lives here. */
 export type PerspectiveMode = 'off' | 'level' | 'straighten' | 'rectify';
 export interface NormalPoint { x: number; y: number; }
@@ -92,7 +93,7 @@ export async function rectifyJpeg(blob: Blob, width: number, height: number,
     const gl = canvas.getContext('webgl', { preserveDrawingBuffer: true });
     if (!gl) throw new Error('WebGL is unavailable for perspective correction.');
     const vs = `attribute vec2 p; varying vec2 uv; void main(){uv=(p+1.0)*0.5;gl_Position=vec4(p,0,1);}`;
-    const fs = `precision highp float; varying vec2 uv; uniform sampler2D image; uniform mat3 H; void main(){vec3 q=H*vec3(uv,1.0);vec2 s=q.xy/q.z;gl_FragColor=texture2D(image,vec2(s.x,1.0-s.y));}`;
+    const fs = PERSPECTIVE_FRAGMENT;
     const shader=(type:number,src:string)=>{const s=gl.createShader(type)!;gl.shaderSource(s,src);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(s)||'Perspective shader failed');return s;};
     const program=gl.createProgram()!; gl.attachShader(program,shader(gl.VERTEX_SHADER,vs));gl.attachShader(program,shader(gl.FRAGMENT_SHADER,fs));gl.linkProgram(program);
     if(!gl.getProgramParameter(program,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program)||'Perspective program failed');
