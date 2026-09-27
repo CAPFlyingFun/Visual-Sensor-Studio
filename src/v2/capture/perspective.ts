@@ -9,11 +9,25 @@ export const DEFAULT_QUAD: readonly NormalPoint[] = [
 ];
 
 export function screenPitchRoll(beta: number, gamma: number, screenAngle: number): PerspectiveReading {
+  // DeviceOrientation beta/gamma are Euler rotations, not independent camera
+  // pitch/roll axes. Using gamma directly as roll becomes wildly exaggerated
+  // when the phone is pitched steeply. Project gravity into the screen plane
+  // instead, then rotate that vector into the current screen orientation.
+  const br = beta * Math.PI / 180;
+  const gr = gamma * Math.PI / 180;
+  const ar = screenAngle * Math.PI / 180;
+  const gx = -Math.cos(br) * Math.sin(gr);
+  const gy = Math.sin(br);
+  const sx = gx * Math.cos(ar) - gy * Math.sin(ar);
+  const sy = gx * Math.sin(ar) + gy * Math.cos(ar);
+  const roll = Math.atan2(sx, sy) * 180 / Math.PI;
+
+  // Keep the already device-verified pitch convention while correcting roll.
   const a = ((screenAngle % 360) + 360) % 360;
-  if (a === 90) return { pitch: -gamma, roll: beta };
-  if (a === 270) return { pitch: gamma, roll: -beta };
-  if (a === 180) return { pitch: -beta, roll: -gamma };
-  return { pitch: beta, roll: gamma };
+  if (a === 90) return { pitch: -gamma, roll };
+  if (a === 270) return { pitch: gamma, roll };
+  if (a === 180) return { pitch: -beta, roll };
+  return { pitch: beta, roll };
 }
 
 /** Source quad for a roll correction, cropped just enough to avoid empty corners. */
