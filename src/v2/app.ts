@@ -93,6 +93,7 @@ import { GlRenderer, type NightRecovery } from './render/gl-renderer.js';
 import {
   capturePhoto, renderStill, type CaptureOptions, type PhotoResult
 } from './capture/photo.js';
+import { DEFAULT_QUAD, clampPoint, rectifyJpeg, screenPitchRoll, straightenQuad, type NormalPoint, type PerspectiveMode } from './capture/perspective.js';
 import { describeFileSize, describeQuality } from './capture/visually-lossless.js';
 import {
   NIGHT_COUNTDOWN_MS, NIGHT_TARGET_FRAMES, NIGHT_TARGET_MS, NIGHT_TICK_MS,
@@ -1351,6 +1352,12 @@ const steadyShutter = new SteadyShutter();
 let latestOrientation: QuaternionLike | null = null;
 let alignedFrame: AlignedFrame | null = null;
 
+/* Perspective Assist is a consumer of the SAME motion stream. It owns only UI
+   intent and four normalised image points, never a second sensor lifecycle. */
+let perspectiveMode: PerspectiveMode = 'off';
+let perspectiveReading = { pitch: 0, roll: 0 };
+let perspectiveQuad: NormalPoint[] = DEFAULT_QUAD.map((p) => ({ ...p }));
+
 /**
  * THE ROTATION RATE, smoothed — how fast the phone is turning right now.
  *
@@ -1365,6 +1372,7 @@ let previousOrientation: QuaternionLike | null = null;
 let turnRate = 0;
 
 function stopMotion(status: V2State['motionStatus']): void {
+  if (perspectiveMode !== 'off') return;
   motion.stop();
   aligner.reset();
   steadyShutter.disarm();
@@ -1408,6 +1416,8 @@ async function ensureMotion(): Promise<boolean> {
     // a ninety-degree swing and throws the accumulation away for nothing
     // (measured: one spurious restart at every start).
     if (sample.alpha === null && sample.beta === null && sample.gamma === null) return;
+    perspectiveReading = screenPitchRoll(sample.beta ?? 0, sample.gamma ?? 0, sample.screenAngle);
+    renderPerspectiveOverlay();
     // The quaternion arrives already corrected for the screen angle, so its
     // axes line up with the frame the camera is delivering.
     latestOrientation = sample.quaternion;
@@ -1425,6 +1435,77 @@ async function ensureMotion(): Promise<boolean> {
   });
   updateState({ motionStatus: 'on' });
   return true;
+}
+
+function renderPerspectiveOverlay(): void {
+  const overlay = document.getElementById('v2PerspectiveOverlay');
+  if (!overlay) return;
+  const active = perspectiveMode !== 'off';
+  overlay.hidden = !active;
+  if (!active) return;
+  const roll = perspectiveReading.roll;
+  byId('v2PerspectiveLevel').style.transform = `rotate(${-roll.toFixed(2)}deg)`;
+  byId('v2PerspectivePlumb').style.transform = `rotate(${-roll.toFixed(2)}deg)`;
+  setText('v2PerspectiveReadout', `Pitch ${perspectiveReading.pitch.toFixed(1)}° · Roll ${roll.toFixed(1)}°`);
+  const rectifying = perspectiveMode === 'rectify';
+  const quadSvg = document.getElementById('v2PerspectiveQuad');
+  if (rectifying) quadSvg?.removeAttribute('hidden'); else quadSvg?.setAttribute('hidden', '');
+  (document.getElementById('v2PerspectivePolygon') as unknown as SVGPolygonElement).setAttribute('points', perspectiveQuad.map((p) => `${p.x*100},${p.y*100}`).join(' '));
+  for (const handle of overlay.querySelectorAll<HTMLButtonElement>('[data-corner]')) {
+    const i = Number(handle.dataset.corner); handle.hidden = !rectifying;
+    handle.style.left = `${perspectiveQuad[i].x*100}%`; handle.style.top = `${perspectiveQuad[i].y*100}%`;
+  }
+}
+
+/** Conservative fast rectangle suggestion. Strong outer vertical/horizontal edges win;
+ * a side-on trapezoid is intentionally left for the four draggable corners. */
+function findPerspectiveRectangle(): NormalPoint[] | null {
+  if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) return null;
+  const w=160,h=Math.max(90,Math.round(160*video.videoHeight/video.videoWidth));
+  const c=document.createElement('canvas');c.width=w;c.height=h;const x=c.getContext('2d',{willReadFrequently:true});if(!x)return null;
+  x.drawImage(video,0,0,w,h);const d=x.getImageData(0,0,w,h).data;const lum=new Float32Array(w*h);
+  for(let i=0;i<w*h;i++) lum[i]=.2126*d[i*4]+.7152*d[i*4+1]+.0722*d[i*4+2];
+  const xs=new Float32Array(w),ys=new Float32Array(h);
+  for(let y=1;y<h-1;y++)for(let xx=1;xx<w-1;xx++){const i=y*w+xx;xs[xx]+=Math.abs(lum[i+1]-lum[i-1]);ys[y]+=Math.abs(lum[i+w]-lum[i-w]);}
+  const best=(arr:Float32Array,a:number,b:number)=>{let k=a,v=-1;for(let i=a;i<b;i++)if(arr[i]>v){v=arr[i];k=i;}return {k,v};};
+  const l=best(xs,5,Math.floor(w*.45)),r=best(xs,Math.ceil(w*.55),w-5),t=best(ys,5,Math.floor(h*.45)),b=best(ys,Math.ceil(h*.55),h-5);
+  const mean=(Array.from(xs).reduce((a,b)=>a+b,0)/w + Array.from(ys).reduce((a,b)=>a+b,0)/h)/2;
+  if(Math.min(l.v,r.v,t.v,b.v)<mean*.8 || r.k-l.k<w*.2 || b.k-t.k<h*.2) return null;
+  return [{x:l.k/w,y:t.k/h},{x:r.k/w,y:t.k/h},{x:r.k/w,y:b.k/h},{x:l.k/w,y:b.k/h}];
+}
+
+function buildPerspectiveAssist(): void {
+  for (const button of byId('v2PerspectiveModes').querySelectorAll<HTMLButtonElement>('[data-perspective]')) button.addEventListener('click',()=>void(async()=>{
+    const next=button.dataset.perspective as PerspectiveMode;
+    if(next!=='off' && !await ensureMotion()){setText('v2PerspectiveNote','Motion permission is needed for live pitch/roll. Manual Rectify still works after permission is granted.');return;}
+    perspectiveMode=next;
+    for(const b of byId('v2PerspectiveModes').querySelectorAll<HTMLButtonElement>('[data-perspective]')) b.classList.toggle('active',b.dataset.perspective===next);
+    if(next==='off' && !readState().align && !readState().autoShot) stopMotion('off');
+    renderPerspectiveOverlay();
+  }));
+  byId('v2PerspectiveReset').addEventListener('click',()=>{perspectiveQuad=DEFAULT_QUAD.map(p=>({...p}));renderPerspectiveOverlay();});
+  byId('v2PerspectiveFind').addEventListener('click',()=>{const q=findPerspectiveRectangle();if(q){perspectiveQuad=q;perspectiveMode='rectify';for(const b of byId('v2PerspectiveModes').querySelectorAll<HTMLButtonElement>('[data-perspective]')) b.classList.toggle('active',b.dataset.perspective==='rectify');setText('v2PerspectiveNote','Rectangle suggested from strong edges. Drag any corner before shooting if it chose the wrong plane.');renderPerspectiveOverlay();}else setText('v2PerspectiveNote','No confident rectangle found. Drag the four blue corners around the object instead.');});
+  const overlay=byId('v2PerspectiveOverlay');
+  for(const handle of overlay.querySelectorAll<HTMLButtonElement>('[data-corner]')) handle.addEventListener('pointerdown',(event)=>{
+    const i=Number(handle.dataset.corner);handle.setPointerCapture(event.pointerId);
+    const move=(e:PointerEvent)=>{const box=byId('v2Viewfinder').getBoundingClientRect();perspectiveQuad[i]=clampPoint({x:(e.clientX-box.left)/box.width,y:(e.clientY-box.top)/box.height});renderPerspectiveOverlay();};
+    const up=()=>{handle.removeEventListener('pointermove',move);handle.removeEventListener('pointerup',up);};handle.addEventListener('pointermove',move);handle.addEventListener('pointerup',up);
+  });
+  for(const button of byId('v2ControlHub').querySelectorAll<HTMLButtonElement>('[data-jump]')) button.addEventListener('click',()=>{
+    const ids:Record<string,string>={filters:'v2ToolsFilters',perspective:'v2ToolsPerspective',camera:'v2ToolsCamera',exposure:'v2ToolsExposure',motion:'v2ToolsMotion',night:'v2ToolsNight',import:'v2ToolsImport'};
+    document.getElementById(ids[button.dataset.jump||''])?.scrollIntoView({behavior:'smooth',block:'start'});
+  });
+}
+
+async function applyPerspectiveToStill(still: PhotoResult): Promise<PhotoResult> {
+  if (perspectiveMode !== 'rectify' && perspectiveMode !== 'straighten') return still;
+  const quad = perspectiveMode === 'rectify' ? perspectiveQuad : straightenQuad(perspectiveReading.roll, still.width/still.height);
+  try {
+    const started=performance.now(); const blob=await rectifyJpeg(still.blob,still.width,still.height,quad,still.quality);
+    return {...still,blob,bytes:blob.size,fileName:still.fileName.replace(/\.jpg$/i,'-perspective.jpg'),reason:`${still.reason}; ${perspectiveMode} correction`,timing:{...still.timing,renderMs:still.timing.renderMs+(performance.now()-started)}};
+  } catch (error) {
+    setText('v2PerspectiveNote',`Correction was not applied: ${error instanceof Error?error.message:'unknown error'}`); return still;
+  }
 }
 
 function buildAlignment(): void {
@@ -5344,7 +5425,8 @@ async function takePhoto(): Promise<void> {
     const tail = outcome.restoration === 'refused' || outcome.restoration === 'unconfirmed'
       ? ` · live stream not confirmed back (${outcome.restoration})`
       : '';
-    const still = outcome.still;
+    let still = outcome.still;
+    if (still) still = await applyPerspectiveToStill(still);
     if (still) {
       updateState({
         lastPhoto: { width: still.width, height: still.height, bytes: still.bytes }
@@ -5353,7 +5435,8 @@ async function takePhoto(): Promise<void> {
     // The review takes the shot INSTEAD of the Captures card, not as well as
     // it: two live Share buttons on one photo, one of them behind a layer, is
     // two answers to "where is my picture".
-    const reviewing = still !== null && shot.negative !== null && shot.photo !== null
+    const reviewing = perspectiveMode !== 'rectify' && perspectiveMode !== 'straighten'
+      && still !== null && shot.negative !== null && shot.photo !== null
       && openReview({
         kind: 'shot', name: '',
         negative: shot.negative, photo: shot.photo, lumaRange: shot.lumaRange,
@@ -6556,6 +6639,7 @@ setText('v2Badge', `v${APP_VERSION}${isStandalone() ? ' · PWA' : ''}`);
 
 buildGuides();
 buildFrameAverage();
+buildPerspectiveAssist();
 buildAlignment();
 buildSteadyShutter();
 buildNightTest();
