@@ -1488,7 +1488,7 @@ function buildPerspectiveAssist(): void {
   const overlay=byId('v2PerspectiveOverlay');
   for(const handle of overlay.querySelectorAll<HTMLButtonElement>('[data-corner]')) handle.addEventListener('pointerdown',(event)=>{
     const i=Number(handle.dataset.corner);handle.setPointerCapture(event.pointerId);
-    const move=(e:PointerEvent)=>{const box=byId('v2Viewfinder').getBoundingClientRect();perspectiveQuad[i]=clampPoint({x:(e.clientX-box.left)/box.width,y:(e.clientY-box.top)/box.height});renderPerspectiveOverlay();};
+    const move=(e:PointerEvent)=>{const view=measureViewfinder();perspectiveQuad[i]=clampPoint({x:(e.clientX-view.left)/view.width,y:(e.clientY-view.top)/view.height});renderPerspectiveOverlay();};
     const up=()=>{handle.removeEventListener('pointermove',move);handle.removeEventListener('pointerup',up);};handle.addEventListener('pointermove',move);handle.addEventListener('pointerup',up);
   });
   for(const button of byId('v2ControlHub').querySelectorAll<HTMLButtonElement>('[data-jump]')) button.addEventListener('click',()=>{
