@@ -82,12 +82,12 @@ test('V2 code never touches getUserMedia', () => {
 /* --- The single sticky element ------------------------------------------- */
 
 test('perspective modes use stable delegated taps and shortcuts name real sections', () => {
-  assert.match(appTs, /v2PerspectiveModes'\)\.addEventListener\('click'/,
-    'perspective modes are delegated from their stable group');
+  assert.match(appTs, /button\.addEventListener\('click'/,
+    'perspective modes use direct button taps, matching the proven Find/Reset controls');
   assert.match(appTs, /setPerspectiveMode\(next\)/,
     'mode state changes immediately on tap before motion permission resolves');
-  assert.match(appTs, /block:'center'/,
-    'shortcut targets are centred so the sticky camera shell cannot cover them');
+  assert.match(v2Html, /scroll-margin-top:\s*calc\(clamp\(245px, 38dvh, 390px\) \+ 154px\)/,
+    'shortcut anchors reserve the sticky camera shell height');
   assert.match(v2Html, /data-jump="stream">📷 Stream<\/button>/,
     'the Camera Stream shortcut says Stream rather than pretending to cover all camera controls');
 });
