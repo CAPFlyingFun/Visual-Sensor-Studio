@@ -1474,33 +1474,56 @@ function findPerspectiveRectangle(): NormalPoint[] | null {
   return [{x:l.k/w,y:t.k/h},{x:r.k/w,y:t.k/h},{x:r.k/w,y:b.k/h},{x:l.k/w,y:b.k/h}];
 }
 
+function setPerspectiveMode(next: PerspectiveMode): void {
+  perspectiveMode = next;
+  for (const b of byId('v2PerspectiveModes').querySelectorAll<HTMLButtonElement>('[data-perspective]')) {
+    const active = b.dataset.perspective === next;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-pressed', String(active));
+  }
+  renderPerspectiveOverlay();
+}
+
 function buildPerspectiveAssist(): void {
-  for (const button of byId('v2PerspectiveModes').querySelectorAll<HTMLButtonElement>('[data-perspective]')) button.addEventListener('click',()=>void(async()=>{
-    const next=button.dataset.perspective as PerspectiveMode;
-    // Rectify is image geometry, not a motion feature. It must work even when
-    // iOS motion permission is denied or unsupported.
-    if (next === 'rectify') {
-      perspectiveMode = next;
-      setText('v2PerspectiveNote', 'Drag the four blue corners around the flat object, or try Find rectangle.');
-    } else if (next === 'off') {
-      perspectiveMode = next;
+  // Delegate from the stable group instead of wiring four individual buttons.
+  // This survives any future button repaint/reordering and makes the visual
+  // mode change synchronous with the tap.
+  byId('v2PerspectiveModes').addEventListener('click', (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-perspective]');
+    if (!button) return;
+    const next = button.dataset.perspective as PerspectiveMode;
+
+    if (next === 'off') {
+      setPerspectiveMode('off');
       setText('v2PerspectiveNote', 'Perspective Assist is off.');
       if (!readState().align && !readState().autoShot) stopMotion('off');
-    } else {
-      if (!await ensureMotion()) {
-        setText('v2PerspectiveNote', 'iPhone motion permission is needed for Level and automatic Straighten. Rectify works without motion.');
+      return;
+    }
+
+    if (next === 'rectify') {
+      setPerspectiveMode('rectify');
+      setText('v2PerspectiveNote', 'Drag the four blue corners around the flat object, or try Find rectangle.');
+      return;
+    }
+
+    // Show the selected mode immediately. iOS permission can take a moment,
+    // and a tap must never look dead while that prompt resolves.
+    setPerspectiveMode(next);
+    setText('v2PerspectiveNote', 'Requesting iPhone motion access…');
+    void ensureMotion().then((granted) => {
+      if (!granted) {
+        setPerspectiveMode('off');
+        setText('v2PerspectiveNote', 'Motion access is needed for Level and automatic Straighten. Rectify works without motion.');
         return;
       }
-      perspectiveMode = next;
       setText('v2PerspectiveNote', next === 'level'
         ? 'Live pitch and roll are shown over the viewfinder.'
         : 'Automatic roll correction is armed for the next photo.');
-    }
-    for(const b of byId('v2PerspectiveModes').querySelectorAll<HTMLButtonElement>('[data-perspective]')) b.classList.toggle('active',b.dataset.perspective===next);
-    renderPerspectiveOverlay();
-  }));
+    });
+  });
+
   byId('v2PerspectiveReset').addEventListener('click',()=>{perspectiveQuad=DEFAULT_QUAD.map(p=>({...p}));renderPerspectiveOverlay();});
-  byId('v2PerspectiveFind').addEventListener('click',()=>{const q=findPerspectiveRectangle();if(q){perspectiveQuad=q;perspectiveMode='rectify';for(const b of byId('v2PerspectiveModes').querySelectorAll<HTMLButtonElement>('[data-perspective]')) b.classList.toggle('active',b.dataset.perspective==='rectify');setText('v2PerspectiveNote','Rectangle suggested from strong edges. Drag any corner before shooting if it chose the wrong plane.');renderPerspectiveOverlay();}else setText('v2PerspectiveNote','No confident rectangle found. Drag the four blue corners around the object instead.');});
+  byId('v2PerspectiveFind').addEventListener('click',()=>{const q=findPerspectiveRectangle();if(q){perspectiveQuad=q;setPerspectiveMode('rectify');setText('v2PerspectiveNote','Rectangle suggested from strong edges. Drag any corner before shooting if it chose the wrong plane.');renderPerspectiveOverlay();}else setText('v2PerspectiveNote','No confident rectangle found. Drag the four blue corners around the object instead.');});
   const overlay=byId('v2PerspectiveOverlay');
   for(const handle of overlay.querySelectorAll<HTMLButtonElement>('[data-corner]')) handle.addEventListener('pointerdown',(event)=>{
     const i=Number(handle.dataset.corner);handle.setPointerCapture(event.pointerId);
@@ -1508,8 +1531,9 @@ function buildPerspectiveAssist(): void {
     const up=()=>{handle.removeEventListener('pointermove',move);handle.removeEventListener('pointerup',up);};handle.addEventListener('pointermove',move);handle.addEventListener('pointerup',up);
   });
   for(const button of byId('v2ControlHub').querySelectorAll<HTMLButtonElement>('[data-jump]')) button.addEventListener('click',()=>{
-    const ids:Record<string,string>={filters:'v2ToolsFilters',perspective:'v2ToolsPerspective',camera:'v2ToolsCamera',exposure:'v2ToolsExposure',motion:'v2ToolsMotion',night:'v2ToolsNight',import:'v2ToolsImport'};
-    document.getElementById(ids[button.dataset.jump||''])?.scrollIntoView({behavior:'smooth',block:'start'});
+    const ids:Record<string,string>={filters:'v2ToolsFilters',perspective:'v2ToolsPerspective',stream:'v2ToolsCamera',exposure:'v2ToolsExposure',motion:'v2ToolsMotion',night:'v2ToolsNight',import:'v2ToolsImport'};
+    const target = document.getElementById(ids[button.dataset.jump||'']);
+    target?.scrollIntoView({behavior:'smooth',block:'center'});
   });
 }
 
