@@ -20,7 +20,7 @@ export function screenPitchRoll(beta: number, gamma: number, screenAngle: number
   const gy = Math.sin(br);
   const sx = gx * Math.cos(ar) - gy * Math.sin(ar);
   const sy = gx * Math.sin(ar) + gy * Math.cos(ar);
-  const roll = Math.atan2(sx, sy) * 180 / Math.PI;
+  const roll = -Math.atan2(sx, sy) * 180 / Math.PI;
 
   // Keep the already device-verified pitch convention while correcting roll.
   const a = ((screenAngle % 360) + 360) % 360;
