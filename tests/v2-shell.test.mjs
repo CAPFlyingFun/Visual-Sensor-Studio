@@ -1264,3 +1264,63 @@ test('the quickbar is two rows, and its round buttons stay round', () => {
   assert.match(v2Html, /\.qrow > \.zoom \{ flex: 0 1 auto; \}/);
   assert.ok(!/\.zoomstick \{ width: 100%/.test(v2Html));
 });
+
+/*
+ * THE TWO EDITS DO NOT TOUCH THE LIVE CAMERA.
+ *
+ * Joshua found this one himself, 2026-09-27, after a run of saved pictures
+ * that looked worse than the camera's own: "it had sharpening and smoothing
+ * on the Live Photo which doesn't really need it as it will be as sharp as
+ * possible from the camera."
+ *
+ * He is right, and it is worse than merely unnecessary. The frame the sensor
+ * hands over is already the sharpest version of that scene in existence. An
+ * unsharp mask cannot add to it — it raises contrast either side of edges
+ * that are already sharp, which on that frame is pure artefact: rinds on the
+ * edges, amplified grain in the flat areas, a stretch applied to a tone curve
+ * that was right to begin with. Then the encoder spends its bits on all of it.
+ *
+ * So clarity and auto-levels are EDITS and live where an edit belongs: on a
+ * picture that has already been taken, where it can be seen, switched off and
+ * compared. Nothing failed when this changed — not one test in 1029 was
+ * holding it — which is exactly why it is written down here.
+ */
+test('clarity and auto-levels reach an edit, never the live camera', () => {
+  const region = (name) => {
+    const at = appTs.indexOf(name);
+    assert.ok(at > -1, `${name} exists`);
+    const rest = appTs.slice(at);
+    return rest.slice(0, rest.indexOf('\n}\n'));
+  };
+  // Comments discuss the edits at length in both places; only CODE counts.
+  const code = (text) =>
+    text.replace(/\/\*[^]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  // THE LIVE PATHS. The preview the camera is drawn into, and the capture the
+  // shutter makes from it.
+  for (const name of ['function renderPreview(', 'async function takePhoto(']) {
+    const body = code(region(name));
+    assert.ok(!/clarity:\s*clarityExtras\(\)/.test(body),
+      `${name} does not sharpen the camera's own frame`);
+    assert.ok(!/levels:\s*levelsExtras\(/.test(body),
+      `${name} does not stretch the camera's own tone`);
+  }
+
+  // THE EDIT PATHS. A held shot in the review, and an imported picture —
+  // both on screen, both undoable, neither of them the live camera.
+  const held = code(region('function heldOptions('));
+  assert.match(held, /clarity: clarityExtras\(\)/,
+    'the review applies clarity to the shot it is holding');
+  assert.match(held, /levels: \{ \.\.\.shot\.levels, amount: levelsAmount\(\) \}/,
+    'and auto-levels from that picture’s own black and white points');
+  for (const name of ['function renderImport(', 'async function saveImport(']) {
+    const body = code(region(name));
+    assert.match(body, /clarity: clarityExtras\(\)/, `${name} still edits an import`);
+    assert.match(body, /levels: levelsExtras\(census\)/, `${name} still stretches an import`);
+  }
+
+  // AND THE CONTROLS SAY SO, because a row that looks like it is doing
+  // something to the viewfinder is the thing that cost him the pictures.
+  assert.match(appTs, /never to the live camera/);
+  assert.match(v2Html, /after the shutter, not live/);
+});

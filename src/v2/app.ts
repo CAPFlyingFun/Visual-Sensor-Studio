@@ -434,8 +434,24 @@ function renderPreview(now: number): void {
     ...alignmentFor(frames, target),
     lumaRange: exposure.range,
     background: exposure.mode,
-    clarity: clarityExtras(),
-    levels: levelsExtras(exposure),
+    // NO CLARITY AND NO AUTO-LEVELS ON THE LIVE CAMERA, and this is the
+    // second thing in this file to learn the same lesson.
+    //
+    // Joshua, 2026-09-27, having found it himself: "it had sharpening and
+    // smoothing on the Live Photo which doesn't really need it as it will be
+    // as sharp as possible from the camera."
+    //
+    // He is right, and it is worse than unnecessary. What the sensor hands
+    // over is already the sharpest version of that scene that exists. An
+    // unsharp mask cannot add to it — it can only raise contrast either side
+    // of edges that are already there, and on a frame with no softness to
+    // correct that is pure artefact: rinds on the edges, amplified grain in
+    // the flat areas, and a stretch applied to a tone curve that was right to
+    // begin with. Then the JPEG encoder spends its bits on all of it.
+    //
+    // They are EDITS, so they belong where an edit belongs: on a picture that
+    // has already been taken, where it can be looked at, turned off, and
+    // compared. See heldOptions and the import paths.
     // VIEWING AIDS reach the preview and nothing else. The photo and clip
     // paths below pass none, so stripes can never be baked into a file.
     aids: {
@@ -989,8 +1005,11 @@ function renderClarity(): void {
   const note = document.getElementById('v2ClarityNote');
   if (note) {
     note.textContent = clarityLevel === 'off'
-      ? 'Off. Local contrast around edges — it reaches the saved photo, unlike zebra and peaking.'
-      : 'Raises contrast either side of edges the lens still resolved, and leaves detail below '
+      ? 'Off. Local contrast around edges, applied in the review after a shot and to imports — '
+        + 'never to the live camera, which is already as sharp as that scene gets.'
+      : 'Applies in the review and to imports, NOT to the live camera: what the sensor hands over '
+        + 'is already the sharpest version of the scene, so a mask there can only add artefact. '
+        + 'Raises contrast either side of edges the lens still resolved, and leaves detail below '
         + 'its noise floor alone. The overshoot is bent into the brightness each pixel has left, '
         + 'so a strong setting works the edges rather than laying a white rind along them. '
         + 'It does NOT undo blur: what the blur destroyed is gone, and recovering that needs a '
@@ -1114,9 +1133,10 @@ function renderSharpen(): void {
   const note = document.getElementById('v2SharpenNote');
   if (!note) return;
   note.textContent = on
-    ? 'On — auto-levels Full and clarity High, the two rows below. Tap again to '
-      + 'put both back to Off.'
-    : 'Auto-levels Full and clarity High in one tap. It suits some pictures and '
+    ? 'On — auto-levels Full and clarity High, the two rows below, applied in the review '
+      + 'and to imports. Tap again to put both back to Off.'
+    : 'Auto-levels Full and clarity High in one tap, in the review after a shot and on '
+      + 'imports — the live camera is left alone. It suits some pictures and '
       + 'not others: the mask raises whatever fine detail is there, and it cannot '
       + 'tell a spider’s web from grime on a fence rail. Look at it before you save it.';
 }
@@ -1168,9 +1188,10 @@ function renderLevels(): void {
   const [black, white] = exposure.levels;
   const span = white - black;
   if (levelsStep === 'off') {
-    note.textContent = 'Off. Stretches this picture’s own black and white points to fill '
-      + `the range — measured now at ${black.toFixed(2)} to ${white.toFixed(2)}. An edit, so `
-      + 'it reaches the saved photo.';
+    note.textContent = 'Off. Stretches a picture’s own black and white points to fill '
+      + `the range — the camera reads ${black.toFixed(2)} to ${white.toFixed(2)} right now. `
+      + 'An edit, so it applies in the review after a shot and to imports, never to the live '
+      + 'camera.';
     return;
   }
   note.textContent = span < LEVELS_MIN_SPAN
@@ -5332,13 +5353,16 @@ async function takePhoto(): Promise<void> {
         // this range; without it the still fell back to [0, 1] and saved a
         // different picture from the one the shutter was pressed on.
         lumaRange: exposure.range,
-        background: exposure.mode,
-        // THE EDITS REACH THE FILE. Unlike the aids, which are forced to zero
-        // here so stripes can never be baked in, a still without these would
-        // come out softer and flatter than the preview the shutter was
-        // pressed on.
-        clarity: clarityExtras(),
-        levels: levelsExtras(exposure)
+        background: exposure.mode
+        // AND NO EDITS HERE EITHER. This used to pass clarity and auto-levels
+        // so the file would match a preview that had them — and that reasoning
+        // still holds, which is exactly why they leave together: the preview
+        // above no longer applies them, so a still without them IS the picture
+        // the shutter was pressed on.
+        //
+        // What the shutter keeps is the camera's own frame, at its own
+        // sharpness. Anything done to it afterwards is done in the review,
+        // where it can be seen before it is kept.
       });
     }, { now: () => performance.now() });
     const tail = outcome.restoration === 'refused' || outcome.restoration === 'unconfirmed'
