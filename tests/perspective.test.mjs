@@ -11,3 +11,16 @@ test('square-to-quad maps all four corners',()=>{
 test('points are clamped to image bounds',()=>assert.deepEqual(clampPoint({x:-.2,y:1.3}),{x:0,y:1}));
 
 test('straighten quad stays inside the source at a diagonal roll',()=>{for(const p of straightenQuad(18,4/3)){assert.ok(p.x>=-1e-9&&p.x<=1+1e-9);assert.ok(p.y>=-1e-9&&p.y<=1+1e-9);}});
+
+
+test('steep portrait pitch does not exaggerate camera roll', () => {
+  const reading = screenPitchRoll(108, -49.1, 0);
+  assert.equal(Math.round(reading.pitch), 108);
+  assert.ok(Math.abs(reading.roll) < 20, `expected visual roll below 20°, got ${reading.roll}`);
+  assert.ok(Math.abs(reading.roll) > 8, `expected a real visible tilt, got ${reading.roll}`);
+});
+
+test('level portrait phone reports essentially zero roll', () => {
+  const reading = screenPitchRoll(90, 0, 0);
+  assert.ok(Math.abs(reading.roll) < 0.001);
+});
