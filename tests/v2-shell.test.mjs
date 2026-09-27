@@ -81,6 +81,15 @@ test('V2 code never touches getUserMedia', () => {
 
 /* --- The single sticky element ------------------------------------------- */
 
+test('camera tool shortcuts live inside the sticky viewfinder shell', () => {
+  const wrap = v2Html.match(/<div class="viewfinder-wrap">([^]*?)<!-- THE VIEWER/);
+  assert.ok(wrap, 'viewfinder shell markup exists');
+  assert.match(wrap[1], /id="v2ControlHub"/, 'tool shortcuts stay with the camera shell');
+  const route = v2Html.match(/<div id="v2CameraRoute">([^]*?)<section class="section" id="v2ToolsFilters"/);
+  assert.ok(route, 'camera route markup exists');
+  assert.doesNotMatch(route[1], /id="v2ControlHub"/, 'tool shortcuts are not buried in scrolling content');
+});
+
 test('only the viewfinder is sticky', () => {
   const sticky = [...v2Html.matchAll(/([.#][\w-]+)[^{}]*\{[^}]*position:\s*sticky/g)].map((m) => m[1]);
   assert.deepEqual([...new Set(sticky)], ['.viewfinder-wrap'],
