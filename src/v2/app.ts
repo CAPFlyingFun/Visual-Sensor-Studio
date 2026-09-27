@@ -124,12 +124,12 @@ if (renderer.unavailableReason) setText('v2Stage', renderer.unavailableReason);
  * from layout, and the only layout read in V2 (docs/camera_rule.md). It feeds
  * PREVIEW only; the authority is what guarantees it can never touch PHOTO.
  */
-function measureViewfinder(): { width: number; height: number; shortSide: number } {
+function measureViewfinder(): { width: number; height: number; shortSide: number; left: number; top: number; cssWidth: number; cssHeight: number } {
   const box = byId('v2Viewfinder').getBoundingClientRect();
   const ratio = Math.min(Math.max(window.devicePixelRatio || 1, 1), 4);
   const width = Math.round(box.width * ratio);
   const height = Math.round(box.height * ratio);
-  return { width, height, shortSide: Math.min(width, height) };
+  return { width, height, shortSide: Math.min(width, height), left: box.left, top: box.top, cssWidth: box.width, cssHeight: box.height };
 }
 
 /**
@@ -1488,7 +1488,7 @@ function buildPerspectiveAssist(): void {
   const overlay=byId('v2PerspectiveOverlay');
   for(const handle of overlay.querySelectorAll<HTMLButtonElement>('[data-corner]')) handle.addEventListener('pointerdown',(event)=>{
     const i=Number(handle.dataset.corner);handle.setPointerCapture(event.pointerId);
-    const move=(e:PointerEvent)=>{const view=measureViewfinder();perspectiveQuad[i]=clampPoint({x:(e.clientX-view.left)/view.width,y:(e.clientY-view.top)/view.height});renderPerspectiveOverlay();};
+    const move=(e:PointerEvent)=>{const view=measureViewfinder();perspectiveQuad[i]=clampPoint({x:(e.clientX-view.left)/view.cssWidth,y:(e.clientY-view.top)/view.cssHeight});renderPerspectiveOverlay();};
     const up=()=>{handle.removeEventListener('pointermove',move);handle.removeEventListener('pointerup',up);};handle.addEventListener('pointermove',move);handle.addEventListener('pointerup',up);
   });
   for(const button of byId('v2ControlHub').querySelectorAll<HTMLButtonElement>('[data-jump]')) button.addEventListener('click',()=>{
