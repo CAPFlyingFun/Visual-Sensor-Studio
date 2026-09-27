@@ -85,6 +85,16 @@ export interface FilterDefinition {
   note?: string;
 }
 
+export const PERSPECTIVE_FRAGMENT = `precision highp float;
+varying vec2 uv;
+uniform sampler2D image;
+uniform mat3 H;
+void main() {
+  vec3 q = H * vec3(uv, 1.0);
+  vec2 s = q.xy / q.z;
+  gl_FragColor = texture2D(image, vec2(s.x, 1.0 - s.y));
+}`;
+
 export const SHADER_HEADER = `precision mediump float;
 /*
  * HIGHP WHERE THE HARDWARE HAS IT, for the hash below and nothing else.
