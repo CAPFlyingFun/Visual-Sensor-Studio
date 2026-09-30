@@ -218,15 +218,8 @@ export interface V2State {
    * failure that announces itself anyway is the worse trade.
    */
   forceMaxRecord: boolean;
-  /**
-   * Measure how far a saved still compresses before it visibly changes, and
-   * encode at that quality rather than at a flat 1.00.
-   *
-   * DEFAULT TRUE. Joshua, 2026-09-04, on a 3.69 MB save: "with a photo
-   * compression app, I got that same image and resolution at 288KB... at no
-   * visual quality loss." Quality 1.00 spends most of its bits reproducing
-   * sensor noise exactly; the resolution is untouched either way, so this
-   * costs nothing MAX MEANS MAX is about.
+  /** Optional sampled JPEG compression. False means Maximum quality (1.00).
+   * The comparison is an estimate; it never guarantees lossless output.
    */
   visuallyLossless: boolean;
 }
@@ -274,7 +267,7 @@ const state: V2State = {
   forceMaxRecord: true,
   // ON: the alternative is a flat 1.00 that knows nothing about the picture
   // in front of it — see measureQuality in capture/photo.ts.
-  visuallyLossless: true
+  visuallyLossless: false
 };
 
 const listeners = new Set<Listener>();

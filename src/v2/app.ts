@@ -1,3 +1,4 @@
+import { ENHANCEMENT_PRESETS, normaliseEnhancement, type Enhancement } from './render/enhancement.js';
 /**
  * V2 entry — Milestone A: the trustworthy camera shell.
  *
@@ -176,7 +177,7 @@ window.addEventListener('resize', refreshGeometry);
 
 const ENVELOPE_STORE_KEY = 'vss.v2.encoderEnvelope.v1';
 const FORCE_MAX_STORE_KEY = 'vss.v2.forceMaxRecord.v1';
-const LOSSLESS_STORE_KEY = 'vss.v2.visuallyLossless.v1';
+const LOSSLESS_STORE_KEY = 'vss.v2.visuallyLossless.v2';
 const TIER_STORE_KEY = 'vss.v2.streamTier.v1';
 const FILTER_STORE_KEY = 'vss.v2.activeFilter.v1';
 const FILTER_START_KEY = 'vss.v2.filterStart.v1';
@@ -237,14 +238,14 @@ updateState({ forceMaxRecord: storedForceMaxRecord() });
 /**
  * The compression choice is remembered for the same reason: it is a decision
  * about how this person wants their pictures saved, not a per-session
- * experiment. DEFAULT ON — a measured quality is strictly better informed
- * than the flat 1.00 it replaces, and only an explicit 'no' goes back.
+ * experiment. Maximum JPEG quality is the default. The v2 preference key
+ * deliberately retires the old automatic-compression default on upgrade.
  */
 function storedVisuallyLossless(): boolean {
   try {
-    return localStorage.getItem(LOSSLESS_STORE_KEY) !== 'no';
+    return localStorage.getItem(LOSSLESS_STORE_KEY) === 'yes';
   } catch {
-    return true;
+    return false;
   }
 }
 updateState({ visuallyLossless: storedVisuallyLossless() });
@@ -946,6 +947,7 @@ function afterEdit(): void {
   renderClarity();
   renderLevels();
   renderSharpen();
+  renderEnhancement();
   renderPreview(performance.now());
   if (held) void refreshReview();
   else if (importedImage) renderImport();
@@ -974,6 +976,7 @@ function applyEdits(levels: string, clarity: string): void {
 }
 
 function setClarityLevel(id: string): void {
+  clearEnhancement();
   applyEdits(levelsStep, id);
 }
 
@@ -1015,6 +1018,107 @@ function renderClarity(): void {
         + 'It does NOT undo blur: what the blur destroyed is gone, and recovering that needs a '
         + 'known point-spread function this has no way to measure.';
   }
+}
+
+/* Photo enhancement: one set of values shared by review and import controls. */
+const ENHANCEMENT_STORE_KEY = 'vss.v2.enhancement.v1';
+let enhancement: Enhancement = { ...ENHANCEMENT_PRESETS[0] };
+try {
+  const saved = JSON.parse(localStorage.getItem(ENHANCEMENT_STORE_KEY) ?? 'null');
+  if (saved && typeof saved === 'object') enhancement = normaliseEnhancement(saved);
+} catch { /* Off is the safe default for a malformed or unavailable preference. */ }
+
+function enhancementExtras(): Enhancement | undefined {
+  return enhancement.smoothing > 0 || enhancement.sharpness > 0 ? enhancement : undefined;
+}
+function clearEnhancement(): void {
+  enhancement = { ...ENHANCEMENT_PRESETS[0] };
+  remember(ENHANCEMENT_STORE_KEY, JSON.stringify(enhancement));
+}
+function setEnhancement(value: Enhancement): void {
+  enhancement = normaliseEnhancement(value);
+  // These are two ways to sharpen, never two stacked masks.
+  remember(ENHANCEMENT_STORE_KEY, JSON.stringify(enhancement));
+  applyEdits(levelsStep, 'off');
+}
+const ENHANCEMENT_HOLDERS = ['v2EnhancementRow', 'v2ReviewEnhancement'];
+function buildEnhancement(): void {
+  const fields = [
+    { key: 'smoothing', label: 'Smoothing', max: 100 },
+    { key: 'sharpness', label: 'Sharpness', max: 200 },
+    { key: 'detail', label: 'Keep detail', max: 100 }
+  ] as const;
+  for (const id of ENHANCEMENT_HOLDERS) {
+    const holder = document.getElementById(id);
+    if (!holder) continue;
+    const row = document.createElement('div');
+    row.className = 'zoom enhancement-presets';
+    for (const preset of ENHANCEMENT_PRESETS) {
+      const button = document.createElement('button');
+      button.type = 'button'; button.textContent = preset.label;
+      button.dataset.enhancement = preset.id;
+      button.addEventListener('click', () => setEnhancement(preset));
+      row.appendChild(button);
+    }
+    holder.appendChild(row);
+    for (const field of fields) {
+      const label = document.createElement('label'); label.className = 'edit-field';
+      const text = document.createElement('span'); text.textContent = field.label;
+      const input = document.createElement('input');
+      input.type = 'range'; input.min = '0'; input.max = String(field.max); input.step = '1';
+      input.id = `${id}-${field.key}`; input.dataset.edit = field.key;
+      const output = document.createElement('output'); output.htmlFor = input.id;
+      input.addEventListener('input', () => setEnhancement({ ...enhancement, [field.key]: Number(input.value) / 100 }));
+      label.append(text, input, output); holder.appendChild(label);
+    }
+  }
+  renderEnhancement();
+}
+function renderEnhancement(): void {
+  for (const id of ENHANCEMENT_HOLDERS) {
+    const holder = document.getElementById(id);
+    if (!holder) continue;
+    for (const button of holder.querySelectorAll<HTMLButtonElement>('[data-enhancement]')) {
+      const preset = ENHANCEMENT_PRESETS.find(p => p.id === button.dataset.enhancement);
+      const active = !!preset && ['smoothing', 'sharpness', 'detail'].every(key =>
+        preset[key as keyof Enhancement] === enhancement[key as keyof Enhancement]);
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    }
+    for (const input of holder.querySelectorAll<HTMLInputElement>('[data-edit]')) {
+      const value = Math.round(enhancement[input.dataset.edit as keyof Enhancement] * 100);
+      input.value = String(value);
+      const output = input.parentElement?.querySelector('output');
+      if (output) output.textContent = `${value}%`;
+    }
+  }
+}
+
+/** Compare on a screen-sized overlay. Never changes render settings or export bytes. */
+function showOriginal(show: boolean): void {
+  const canvas = reviewEl<HTMLCanvasElement>('v2ReviewOriginal');
+  if (!canvas) return;
+  canvas.hidden = !show || !held;
+  const button = reviewEl<HTMLButtonElement>('v2CompareOriginal');
+  button?.setAttribute('aria-pressed', String(!canvas.hidden));
+  if (canvas.hidden || !held) { canvas.width = 1; canvas.height = 1; return; }
+  const size = shownSize(held.photo.width, held.photo.height);
+  canvas.width = size.width; canvas.height = size.height;
+  canvas.getContext('2d')?.drawImage(held.negative, 0, 0, size.width, size.height);
+}
+function buildCompare(): void {
+  const button = reviewEl<HTMLButtonElement>('v2CompareOriginal');
+  if (!button) return;
+  button.addEventListener('pointerdown', event => {
+    button.setPointerCapture(event.pointerId); showOriginal(true);
+  });
+  for (const event of ['pointerup', 'pointercancel', 'lostpointercapture', 'blur']) {
+    button.addEventListener(event, () => showOriginal(false));
+  }
+  button.addEventListener('keydown', event => {
+    if (event.key === ' ' || event.key === 'Enter') { event.preventDefault(); showOriginal(true); }
+  });
+  button.addEventListener('keyup', () => showOriginal(false));
 }
 
 /* --- AUTO-LEVELS: the picture's own black and white points --------------- */
@@ -1102,6 +1206,7 @@ function sharpenOn(): boolean {
 }
 
 function toggleSharpen(): void {
+  clearEnhancement();
   const on = sharpenOn();
   applyEdits(on ? 'off' : SHARPEN_LEVELS, on ? 'off' : SHARPEN_CLARITY);
 }
@@ -2547,6 +2652,7 @@ function renderImport(): boolean {
         lumaRange: census.range,
         background: census.mode,
         clarity: clarityExtras(),
+        enhancement: enhancementExtras(),
         levels: levelsExtras(census)
       })) {
     // NAMED, not just refused. Joshua tests on a device with no console, so
@@ -2877,6 +2983,7 @@ async function saveImport(): Promise<void> {
     lumaRange: census.range,
     background: census.mode,
     clarity: clarityExtras(),
+    enhancement: enhancementExtras(),
     levels: levelsExtras(census)
   });
   if (!still) {
@@ -5020,12 +5127,15 @@ function openReview(shot: HeldShot): boolean {
   if (keep) keep.textContent = words.keep;
   // An import arrives with no file yet — refreshReview is what makes the
   // first one, and it says so while it works.
-  if (shot.still) void showHeld(shot.still, reviewRun);
+  if (shot.still && !enhancementExtras() && !clarityExtras() && levelsAmount() === 0) {
+    void showHeld(shot.still, reviewRun);
+  }
   else void refreshReview();
   return true;
 }
 
 function releaseHeld(): void {
+  showOriginal(false);
   // A pending encode outlives the shot it was queued for otherwise, and wakes
   // up to render a negative that has already been closed.
   cancelEncode();
@@ -5127,6 +5237,7 @@ function heldOptions(shot: HeldShot): CaptureOptions {
     lumaRange: shot.lumaRange,
     background: shot.background,
     clarity: clarityExtras(),
+    enhancement: enhancementExtras(),
     levels: { ...shot.levels, amount: levelsAmount() }
   };
 }
@@ -6477,19 +6588,26 @@ if (forceMaxToggle instanceof HTMLInputElement) {
  * The compression choice. getElementById for the same reason as the one
  * above: a missing checkbox must cost only the checkbox.
  */
-const losslessToggle = document.getElementById('v2VisuallyLossless');
-if (losslessToggle instanceof HTMLInputElement) {
-  losslessToggle.checked = readState().visuallyLossless;
-  losslessToggle.addEventListener('change', () => {
-    const visuallyLossless = losslessToggle.checked;
-    try {
-      localStorage.setItem(LOSSLESS_STORE_KEY, visuallyLossless ? 'yes' : 'no');
-    } catch {
-      // Storage is optional; the session still honours the choice.
+function renderPhotoQuality(): void {
+  for (const id of ['v2PhotoQuality', 'v2ReviewPhotoQuality']) {
+    const select = document.getElementById(id);
+    if (select instanceof HTMLSelectElement) {
+      select.value = readState().visuallyLossless ? 'compressed' : 'maximum';
     }
+  }
+}
+for (const id of ['v2PhotoQuality', 'v2ReviewPhotoQuality']) {
+  const select = document.getElementById(id);
+  if (!(select instanceof HTMLSelectElement)) continue;
+  select.addEventListener('change', () => {
+    const visuallyLossless = select.value === 'compressed';
+    remember(LOSSLESS_STORE_KEY, visuallyLossless ? 'yes' : 'no');
     updateState({ visuallyLossless });
+    renderPhotoQuality();
+    if (held) void refreshReview();
   });
 }
+renderPhotoQuality();
 
 let probing = false;
 byId('v2EncoderProbe').addEventListener('click', () => {
@@ -6628,6 +6746,8 @@ buildLevels();
 // AFTER both: the Sharpen button's state is read from the two settings those
 // restore, so building it first would draw it against defaults.
 buildSharpen();
+buildEnhancement();
+buildCompare();
 /*
  * PRIMED BEFORE THE STATE MOVES, and that is not a nicety.
  *

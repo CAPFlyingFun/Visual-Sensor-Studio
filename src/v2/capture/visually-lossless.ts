@@ -1,36 +1,7 @@
-/**
- * HOW SMALL CAN THIS PICTURE GET BEFORE IT CHANGES? — measured, not guessed.
- *
- * Joshua, 2026-09-04, on a still this app saved at 3024×4032 and 3.69 MB:
- * "with a photo compression app, I got that same image and resolution at
- * 288KB. That's an awesome savings at no visual quality loss."
- *
- * He is right, and the reason is specific rather than magic. The still path
- * encodes at JPEG quality 1.00, which is the most expensive point on the
- * curve and very nearly the least useful: at 1.00 the quantisation tables are
- * flat, so the encoder spends bits reproducing SENSOR NOISE exactly —
- * grain it took the night stack real effort to average away. The last few
- * percent of nominal quality routinely costs several times the file for a
- * difference no eye can find. (Most encoders, Safari's included, also switch
- * chroma subsampling around the top of the range, which is a second multiple
- * on the same invisible ground.)
- *
- * THE TRAP is that "no visual quality loss" is exactly the kind of claim this
- * project does not accept on assertion. A fixed quality number would be a
- * guess applied to every picture — too high for a smooth dark room, too low
- * for a page of text — and MAX MEANS MAX has already been broken once by a
- * limit that seemed sensible in the abstract.
- *
- * So this measures. The picture is encoded at candidate qualities and the
- * result compared against the untouched original with SSIM, and the smallest
- * file whose measured similarity still clears the floor is the one saved.
- * The comparison is done on the BUSIEST TILE of the frame at full
- * resolution — the part that suffers first — so the number reported is a
- * worst case for the picture rather than an average that fine detail hides
- * inside.
- *
- * Everything here is pure: pixels and an injected encoder in, numbers out.
- * The DOM work (encoding, decoding, cropping) lives in photo.ts.
+/** Optional JPEG compression, bounded to quality 0.90–1.00.
+ * Decisions use full-resolution brightness and RGB comparisons across nine
+ * sampled regions. The metric is an estimate, not a promise of lossless output.
+ * Maximum quality bypasses this search and always uses the 1.00 encoder setting.
  */
 
 /**
@@ -44,37 +15,33 @@ const L = 255;
 const C1 = (0.01 * L) ** 2;
 const C2 = (0.03 * L) ** 2;
 
-/**
- * THE ONE CHOSEN NUMBER. Structural similarity at or above this counts as
- * visually lossless.
- *
- * 0.99 is the low end of what the literature treats as indistinguishable,
- * and it is used here in a deliberately conservative way: it is required of
- * the WORST tile in the frame, not of the frame's average, so the typical
- * region lands well above it. Raising it toward 1 does not buy visible
- * fidelity, it just walks back up the part of the curve where bits buy noise.
- */
+/** Required similarity for every sampled region and channel. */
 export const VISUALLY_LOSSLESS_SSIM = 0.99;
 
-/**
- * Candidate qualities, descending. Index 0 must be 1.00: it is the reference
- * the others are measured against, so it is similar to itself by definition
- * and is what the search falls back to when nothing else clears the floor.
- *
- * The rungs crowd together at the top because that is where the size curve
- * is steep, and stop at 0.60 because that is where it stops being a curve.
- * Measured on one of Joshua's own 3024×4032 frames, full size, real encoder:
- *
- *   q1.00  2139 KB      q0.60  345 KB      q0.40  296 KB      q0.20  249 KB
- *
- * Six-fold by 0.60, and then almost nothing: another whole third off the
- * quality number buys 14% of the file. There is no reason to go looking for
- * bytes down there, so the ladder does not — the bottom rung is where the
- * saving ends, not an opinion about where quality does.
+/** Conservative opt-in JPEG ladder. Maximum quality bypasses it entirely. */
+export const QUALITY_LADDER: readonly number[] = [1.00, 0.98, 0.95, 0.92, 0.90];
+
+/** Full-resolution SSIM, worst of brightness and all three color channels.
+ * No downsampling: the export check must not forgive lost fine detail.
+ * Sampling is still an estimate, never a guarantee that a JPEG is lossless.
  */
-export const QUALITY_LADDER: readonly number[] = [
-  1.00, 0.95, 0.92, 0.90, 0.85, 0.80, 0.75, 0.70, 0.65, 0.60
-];
+export function rgbaSimilarity(
+  reference: Uint8ClampedArray, decoded: Uint8ClampedArray, width: number, height: number
+): number {
+  const count = width * height;
+  if (reference.length !== count * 4 || decoded.length !== count * 4) return 0;
+  let score = meanSsim(lumaFromRgba(reference, count), lumaFromRgba(decoded, count), width, height);
+  for (let channel = 0; channel < 3; channel += 1) {
+    const a = new Float32Array(count);
+    const b = new Float32Array(count);
+    for (let i = 0; i < count; i += 1) {
+      a[i] = reference[i * 4 + channel];
+      b[i] = decoded[i * 4 + channel];
+    }
+    score = Math.min(score, meanSsim(a, b, width, height));
+  }
+  return score;
+}
 
 /**
  * Half the width and half the height, by 2×2 box average.
@@ -321,8 +288,7 @@ export interface QualityChoice {
  * the third decimal, so the returned ssim is always one that was actually
  * measured at the returned quality rather than interpolated from a neighbour.
  *
- * Four probes cover a ten-rung ladder. Each is a tile-sized encode, which is
- * a rounding error beside the twelve-megapixel one it is choosing for.
+ * A small atlas encode per probe avoids encoding the full image repeatedly.
  */
 export async function chooseQuality(
   measure: (quality: number) => Promise<number>,
@@ -330,7 +296,7 @@ export async function chooseQuality(
   ladder: readonly number[] = QUALITY_LADDER
 ): Promise<QualityChoice> {
   if (ladder.length === 0) return { quality: 1, ssim: 1, probes: 0 };
-  // Index 0 is the reference and needs no measurement: it is the original.
+  // 1.00 is the maximum-quality fallback, not a measured similarity claim.
   let best = 0;
   let bestSsim = 1;
   let low = 1;
@@ -366,7 +332,7 @@ export function describeFileSize(bytes: number): string {
 
 /** The choice in the words of the readout. */
 export function describeQuality(choice: QualityChoice | null): string {
-  if (!choice) return 'quality 1.00 (uncompared)';
-  if (choice.quality >= 1) return 'quality 1.00 — nothing lower measured as lossless';
-  return `quality ${choice.quality.toFixed(2)} · SSIM ${choice.ssim.toFixed(4)} on the busiest tile`;
+  if (!choice) return 'Maximum quality · JPEG 1.00';
+  if (choice.quality >= 1) return 'Maximum quality · lower settings failed the check';
+  return `quality ${choice.quality.toFixed(2)} · SSIM ${choice.ssim.toFixed(4)} on sampled brightness and color`;
 }

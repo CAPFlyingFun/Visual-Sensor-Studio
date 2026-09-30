@@ -1735,3 +1735,63 @@ export function ironbowLut(): Uint8Array {
   }
   return lut;
 }
+
+/** Photo output edits, owned here alongside every other fragment shader. */
+const ENHANCEMENT_HEADER = `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+varying vec2 vUv;
+uniform sampler2D uImage;
+uniform vec2 uStep;
+uniform float uAmount;
+uniform float uDetail;
+float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+`;
+/** Small bilateral kernel: RGB distance preserves even equal-brightness color edges. */
+export const SMOOTH_FRAGMENT = ENHANCEMENT_HEADER + `
+void main() {
+  vec3 here = texture2D(uImage, vUv).rgb;
+  float sigma = 0.012 + uAmount * 0.08;
+  vec3 sum = vec3(0.0);
+  float weights = 0.0;
+  for (int y = -2; y <= 2; y++) {
+    for (int x = -2; x <= 2; x++) {
+      vec2 offset = vec2(float(x), float(y));
+      vec3 neighbour = texture2D(uImage, vUv + uStep * offset).rgb;
+      vec3 delta = neighbour - here;
+      float weight = exp(-dot(offset, offset) / 3.0 - dot(delta, delta) / (2.0 * sigma * sigma));
+      sum += neighbour * weight;
+      weights += weight;
+    }
+  }
+  vec3 cleaned = sum / max(weights, 0.0001);
+  gl_FragColor = vec4(mix(here, cleaned, uAmount * (1.0 - uDetail)), 1.0);
+}`;
+/** Fine Gaussian unsharp mask, constrained to the local luminance range.
+ * Runs AFTER smoothing and samples its result, never the unfiltered source.
+ */
+export const SHARP_FRAGMENT = ENHANCEMENT_HEADER + `
+void main() {
+  vec3 color = texture2D(uImage, vUv).rgb;
+  float here = luma(color);
+  float sum = 0.0;
+  float lo = here, hi = here;
+  for (int y = -1; y <= 1; y++) {
+    for (int x = -1; x <= 1; x++) {
+      float value = luma(texture2D(uImage, vUv + uStep * vec2(float(x), float(y))).rgb);
+      float weight = (x == 0 ? 2.0 : 1.0) * (y == 0 ? 2.0 : 1.0);
+      sum += value * weight;
+      lo = min(lo, value); hi = max(hi, value);
+    }
+  }
+  float detail = here - sum / 16.0;
+  float push = sign(detail) * max(abs(detail) - 0.004, 0.0) * uAmount;
+  float target = clamp(here + push, lo, hi);
+  float scale = here > 0.0001 ? target / here : 1.0;
+  float bright = max(color.r, max(color.g, color.b));
+  scale = min(scale, 1.0 / max(bright, 0.0001));
+  gl_FragColor = vec4(clamp(color * scale, 0.0, 1.0), 1.0);
+}`;

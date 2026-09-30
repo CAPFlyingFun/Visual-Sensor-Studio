@@ -204,10 +204,10 @@ test('the search returns the smallest file that still measures as identical', as
   const asked = [];
   const measure = async (quality) => {
     asked.push(quality);
-    return quality >= 0.85 ? 0.995 : 0.97;
+    return quality >= 0.95 ? 0.995 : 0.97;
   };
   const choice = await chooseQuality(measure, VISUALLY_LOSSLESS_SSIM, QUALITY_LADDER);
-  assert.equal(choice.quality, 0.85, 'the lowest rung above the floor');
+  assert.equal(choice.quality, 0.95, 'the lowest rung above the floor');
   assert.equal(choice.ssim, 0.995, 'reported at the quality actually chosen');
   assert.ok(choice.probes <= 4, `a ten-rung ladder in four probes, not ${choice.probes}`);
   assert.ok(!asked.includes(1.00), 'the reference is never re-measured against itself');
@@ -217,7 +217,7 @@ test('nothing below the floor is ever chosen, however bad the picture', async ()
   const choice = await chooseQuality(async () => 0.5, VISUALLY_LOSSLESS_SSIM);
   assert.equal(choice.quality, 1.00, 'it falls back to the original quality');
   assert.equal(choice.ssim, 1, 'which is identical to itself by definition');
-  assert.equal(describeQuality(choice), 'quality 1.00 — nothing lower measured as lossless');
+  assert.equal(describeQuality(choice), 'Maximum quality · lower settings failed the check');
 });
 
 test('an encoder that fails every probe cannot talk the search downward', async () => {
@@ -249,34 +249,14 @@ test('the still path measures quality rather than assuming it', () => {
   assert.match(photoTs, /photoCanvas\.width = photo\.width;/);
   assert.match(photoTs, /photoCanvas\.height = photo\.height;/);
 
-  // The measurement is on the FULL-RESOLUTION frame, not a proxy of it: a
-  // downscale averages away the high-frequency detail that decides the answer.
-  assert.match(photoTs, /const SAMPLE_TILE = 256;/);
-  assert.match(photoTs, /tileAt\(cell\.col, cell\.row, SAMPLE_CELLS,\s*\n\s*source\.width, source\.height, SAMPLE_TILE\)/,
-    'the tile is cut at full resolution');
-
-  // ONE readback decides where to look. Cropping every candidate at full
-  // resolution is what made the shutter nine seconds slower.
-  assert.match(photoTs, /mapContext\.drawImage\(source, 0, 0, DETAIL_MAP, DETAIL_MAP\);/);
-  assert.match(photoTs, /busiestCell\(map, DETAIL_MAP, DETAIL_MAP, SAMPLE_CELLS\)/);
-  assert.equal((photoTs.match(/getImageData/g) ?? []).length, 2,
-    'exactly two read paths: the coarse map, and the shared halvedLuma');
+  assert.match(photoTs, /tileGrid\(source.width, source.height, SAMPLE_TILE, SAMPLE_CELLS\)/);
+  assert.match(photoTs, /rgbaSimilarity\(reference/);
 
   // A FAILED MEASUREMENT COSTS FILE SIZE, NEVER FIDELITY.
   assert.match(photoTs, /if \(typeof createImageBitmap !== 'function'\) return null;/);
   assert.match(photoTs, /\} catch \{\s*\n\s*return null;/);
   assert.match(photoTs, /const quality = choice\?\.quality \?\? MAX_STILL_QUALITY;/);
   assert.match(photoTs, /const MAX_STILL_QUALITY = 1\.0;/);
-
-  // THE COMPARISON IS AT VIEWING SCALE, on both sides. Reference and decoded
-  // tile must be halved the same way or the SSIM is measured between two
-  // different pictures.
-  assert.match(photoTs, /const reference = halvedLuma\(context, tile\.width, tile\.height\);/,
-    'the reference tile is halved');
-  assert.match(photoTs, /return halvedLuma\(context, width, height\);/,
-    'and so is every decoded candidate, through the same function');
-  assert.match(photoTs, /meanSsim\(reference, luma, tile\.width >> 1, tile\.height >> 1\)/,
-    'and it is measured at the halved size');
 
   // Off is the old behaviour exactly — no search, no cost.
   assert.match(photoTs, /options\.visuallyLossless \? await measureQuality\(photoCanvas\) : null/);

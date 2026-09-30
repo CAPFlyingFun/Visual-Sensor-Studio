@@ -8,10 +8,11 @@
  * WebGL context serves preview and photo, at different target sizes.
  */
 
+import type { Enhancement } from '../render/enhancement.js';
 import type { GlRenderer } from '../render/gl-renderer.js';
 import type { SizedWithReason } from '../camera/geometry.js';
 import {
-  busiestCell, chooseQuality, halveLuma, lumaFromRgba, meanSsim, tileAt,
+  chooseQuality, rgbaSimilarity, tileGrid,
   type QualityChoice
 } from './visually-lossless.js';
 
@@ -39,93 +40,49 @@ export interface PhotoResult {
  */
 const MAX_STILL_QUALITY = 1.0;
 
-/**
- * The sample tile, in source pixels, and the grid it is chosen from.
- *
- * 256 square at FULL RESOLUTION — not a downscaled proxy, which would average
- * away the very artefacts the measurement is looking for. WHERE that tile
- * comes from is decided on a small map of the whole frame instead: cropping
- * nine candidates at full resolution cost nine GPU readbacks and nine seconds
- * of a 3840×2160 shutter, to answer a question a 96 px thumbnail answers.
+/** Nine distributed full-resolution crops, packed into one small probe atlas.
+ * Includes quiet and colorful regions rather than only the busiest patch.
+ * One atlas encode per quality candidate; no full-frame candidate encodes.
  */
-const SAMPLE_TILE = 256;
+const SAMPLE_TILE = 128;
 const SAMPLE_CELLS = 3;
-const DETAIL_MAP = 96;
-
-/** Scratch canvases; sized once per capture and reused across captures. */
-let mapCanvas: HTMLCanvasElement | null = null;
 let tileCanvas: HTMLCanvasElement | null = null;
 let decodeCanvas: HTMLCanvasElement | null = null;
 
-/** Luma of a canvas region, at the half scale every comparison here uses. */
-function halvedLuma(
-  context: CanvasRenderingContext2D, width: number, height: number
-): Float32Array {
-  return halveLuma(
-    lumaFromRgba(context.getImageData(0, 0, width, height).data, width * height),
-    width, height);
-}
-
-/** Decode an encoded tile back to luma, so it can be compared with its source. */
-async function decodeTileLuma(blob: Blob, width: number, height: number): Promise<Float32Array | null> {
-  const bitmap = await createImageBitmap(blob);
-  try {
-    decodeCanvas ??= document.createElement('canvas');
-    decodeCanvas.width = width;
-    decodeCanvas.height = height;
-    const context = decodeCanvas.getContext('2d', { willReadFrequently: true });
-    if (!context) return null;
-    context.drawImage(bitmap, 0, 0);
-    return halvedLuma(context, width, height);
-  } finally {
-    bitmap.close();
-  }
-}
-
-/**
- * Measure how far this frame can be compressed before it changes.
- *
- * Returns null rather than a guess whenever it cannot answer — no
- * createImageBitmap, no 2D context, an encoder that refuses — and the caller
- * then saves at 1.00 exactly as it always did. A failed measurement must
- * cost file size, never fidelity.
- */
 async function measureQuality(source: HTMLCanvasElement): Promise<QualityChoice | null> {
   if (typeof createImageBitmap !== 'function') return null;
   try {
-    mapCanvas ??= document.createElement('canvas');
+    const tiles = tileGrid(source.width, source.height, SAMPLE_TILE, SAMPLE_CELLS);
+    if (!tiles.length) return null;
+    const width = tiles[0].width;
+    const height = tiles[0].height;
+    if (width < 8 || height < 8) return null;
     tileCanvas ??= document.createElement('canvas');
-    const mapContext = mapCanvas.getContext('2d', { willReadFrequently: true });
-    const context = tileCanvas.getContext('2d', { willReadFrequently: true });
-    if (!mapContext || !context) return null;
-
-    // ONE readback of the whole frame, small, to decide where to look.
-    mapCanvas.width = DETAIL_MAP;
-    mapCanvas.height = DETAIL_MAP;
-    mapContext.drawImage(source, 0, 0, DETAIL_MAP, DETAIL_MAP);
-    const map = lumaFromRgba(
-      mapContext.getImageData(0, 0, DETAIL_MAP, DETAIL_MAP).data, DETAIL_MAP * DETAIL_MAP);
-    const cell = busiestCell(map, DETAIL_MAP, DETAIL_MAP, SAMPLE_CELLS);
-
-    // THE BUSIEST CELL, at full resolution: the answer is decided by the part
-    // of the picture that suffers first, so measuring anywhere else would
-    // report a similarity the rest of the frame does not enjoy.
-    const tile = tileAt(cell.col, cell.row, SAMPLE_CELLS,
-      source.width, source.height, SAMPLE_TILE);
-    if (!tile) return null;
-    tileCanvas.width = tile.width;
-    tileCanvas.height = tile.height;
-    context.drawImage(source, tile.x, tile.y, tile.width, tile.height,
-      0, 0, tile.width, tile.height);
-    const reference = halvedLuma(context, tile.width, tile.height);
-
     const canvas = tileCanvas;
+    canvas.width = width * tiles.length;
+    canvas.height = height;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) return null;
+    const references = tiles.map((tile, index) => {
+      context.drawImage(source, tile.x, tile.y, width, height, index * width, 0, width, height);
+      return context.getImageData(index * width, 0, width, height).data;
+    });
     return await chooseQuality(async (quality) => {
-      const blob = await new Promise<Blob | null>((resolve) =>
-        canvas.toBlob(resolve, 'image/jpeg', quality));
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
       if (!blob) return 0;
-      const luma = await decodeTileLuma(blob, tile.width, tile.height);
-      return luma ? meanSsim(reference, luma, tile.width >> 1, tile.height >> 1) : 0;
+      const bitmap = await createImageBitmap(blob);
+      try {
+        decodeCanvas ??= document.createElement('canvas');
+        decodeCanvas.width = canvas.width;
+        decodeCanvas.height = height;
+        const decoded = decodeCanvas.getContext('2d', { willReadFrequently: true });
+        if (!decoded) return 0;
+        decoded.drawImage(bitmap, 0, 0);
+        return Math.min(...references.map((reference, index) => rgbaSimilarity(reference,
+          decoded.getImageData(index * width, 0, width, height).data, width, height)));
+      } finally {
+        bitmap.close();
+      }
     });
   } catch {
     return null;
@@ -164,6 +121,7 @@ export interface CaptureOptions {
    * than the preview the shutter was pressed on.
    */
   clarity?: { amount: number; floor: number };
+  enhancement?: Enhancement;
   /**
    * AUTO-LEVELS, and it must be here for the same reason clarity is: it is
    * an EDIT, so a still saved without it would come out flatter than the
@@ -227,6 +185,7 @@ export function renderStill(
       lumaRange: options.lumaRange,
       background: options.background,
       clarity: options.clarity,
+      enhancement: options.enhancement,
       levels: options.levels
     });
 }
@@ -258,12 +217,8 @@ export async function capturePhoto(
   context.drawImage(renderer.targetCanvas, 0, 0);
   const renderDone = performance.now();
 
-  // QUALITY IS MEASURED, NOT ASSUMED. It was 0.92 once — a sensible default
-  // for a web image and the wrong one for this app, which exists to preserve
-  // what the sensor saw — and then 1.00, which preserves the sensor's NOISE
-  // at several times the file. Neither number knew anything about the picture
-  // in front of it. This one is chosen by comparing real encodes of the real
-  // frame, and falls back to 1.00 whenever it cannot be.
+  // Maximum quality bypasses probing. Opt-in compression is a sampled estimate
+  // with a conservative lower bound; failed checks keep the 1.00 setting.
   const choice = options.visuallyLossless ? await measureQuality(photoCanvas) : null;
   const searchDone = performance.now();
   const quality = choice?.quality ?? MAX_STILL_QUALITY;

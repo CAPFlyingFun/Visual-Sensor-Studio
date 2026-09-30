@@ -554,6 +554,55 @@
       .viewfinder { height: calc(100dvh - 130px); }
       .content { min-width: 0; }
     }
+
+    /* Photo editor: usable touch targets and a bounded, independently scrolling toolbox. */
+    button, input, select { font: inherit; color: inherit; }
+    button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--blue2); outline-offset: 3px; }
+    select { min-width: 0; width: 100%; min-height: 44px; border: 1px solid var(--line2); border-radius: 10px; padding: 8px; background: #0b151f; }
+    .quality-field { display: grid; gap: 6px; font-size: 12px; min-width: 0; }
+    .photo-enhancement { display: grid; gap: 5px; min-width: 0; }
+    .enhancement-presets { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: visible; }
+    .enhancement-presets button { min-width: 0; min-height: 44px; height: auto; padding: 6px 2px; }
+    .edit-field { display: grid; grid-template-columns: 80px minmax(0, 1fr) 38px; align-items: center; gap: 8px; font-size: 12px; min-height: 44px; }
+    .edit-field input { width: 100%; min-width: 0; height: 36px; margin: 0; accent-color: var(--blue); }
+    .edit-field output { text-align: right; color: var(--blue2); font-variant-numeric: tabular-nums; }
+    .review { padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
+    .review-note { max-height: 12dvh; overflow: auto; overflow-wrap: anywhere; flex: 0 0 auto; }
+    .review-frame { overflow: hidden; }
+    .review-frame canvas { grid-area: 1 / 1; object-fit: contain; min-width: 0; min-height: 0; }
+    #v2ReviewOriginal { z-index: 1; opacity: 1; }
+    .review-bottom { flex: 0 1 auto; max-height: 48dvh; min-height: 0; overflow: hidden; grid-template-rows: minmax(0, 1fr) auto; padding: 4px 2px; }
+    .review-tools { display: grid; gap: 8px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 2px; scrollbar-width: thin; }
+    .review-actions { background: #071019; padding: 8px 0; flex-wrap: wrap; z-index: 2; }
+    .review-actions button { min-height: 44px; }
+    .legacy-edits { font-size: 12px; border: 1px solid var(--line); border-radius: 10px; padding: 0 8px; }
+    .legacy-edits summary { padding: 12px 0; cursor: pointer; }
+    .legacy-edits .zoom { margin-bottom: 8px; }
+    .compare-original { touch-action: none; user-select: none; -webkit-user-select: none; }
+    .compare-original[aria-pressed="true"] { border-color: var(--blue); background: #10203a; }
+    .section-title { gap: 8px; flex-wrap: wrap; }
+    @media (max-width: 360px) and (orientation: portrait) {
+      .topbar { grid-template-columns: minmax(0, 1fr); }
+      .topbar > span { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .viewfinder { height: clamp(180px, 32dvh, 245px); }
+      .quickbar { gap: 4px; padding: 6px 8px; }
+      .qrow { gap: 6px; }
+    }
+    @media (orientation: landscape) {
+      .review { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 34%); grid-template-rows: auto minmax(0, 1fr); }
+      .review-note { grid-column: 1 / -1; max-height: 16dvh; }
+      .review-frame { grid-column: 1; grid-row: 2; }
+      .review-bottom { grid-column: 2; grid-row: 2; max-height: none; height: 100%; }
+      .review-actions { gap: 6px; }
+      .review-actions .btn { flex: 1 1 auto; padding: 0 8px; }
+      .review-actions .share-save { flex-basis: 100%; }
+    }
+    @media (orientation: landscape) {
+      .app { width: 100%; max-width: none; padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
+      .camera-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 42%); align-items: start; }
+      .content { min-width: 0; }
+      .viewfinder { height: max(80px, calc(100dvh - 235px)); }
+    }
   </style>
   <style>
     /* Above everything, including the review: a fault the app cannot report
@@ -644,7 +693,7 @@
     <h1>Visual Sensor Studio</h1>
     <span>
       <button type="button" class="chip" id="v2ViewerEnter" title="Full screen viewer">&#9974; Full screen</button>
-      <span class="pill" id="v2Badge">v0.109.0</span>
+      <span class="pill" id="v2Badge">v0.110.0</span>
     </span>
   </header>
 
@@ -764,8 +813,9 @@
          review sitting at 80 inside a wrap at 20. -->
     <div class="review" id="v2Review" hidden>
       <p class="review-note" id="v2ReviewNote"></p>
-      <div class="review-frame"><canvas id="v2ReviewCanvas"></canvas></div>
+      <div class="review-frame"><canvas id="v2ReviewCanvas"></canvas><canvas id="v2ReviewOriginal" aria-label="Original source image" hidden></canvas></div>
       <div class="review-bottom">
+        <div class="review-tools">
         <!-- The filter strip, SECOND copy and deliberately so: the one on the
              page lives at the top of the Camera tab, and choosing a lens for
              an imported picture used to scroll that picture off the screen.
@@ -774,9 +824,18 @@
         <!-- SHARPEN sits above the two rows it sets, because that is what it
              is: auto-levels Full and clarity High together, with both rows
              left visible so what it did is never a mystery. -->
+        <div class="photo-enhancement" id="v2ReviewEnhancement" aria-label="Photo enhancement"></div>
+        <button type="button" class="btn compare-original" id="v2CompareOriginal" aria-pressed="false">Hold to compare original</button>
+        <details class="legacy-edits"><summary>Clarity &amp; auto-levels</summary>
         <div class="zoom guides" id="v2ReviewSharpen" aria-label="Sharpen"></div>
         <div class="zoom guides" id="v2ReviewLevels" aria-label="Auto-levels"></div>
         <div class="zoom guides" id="v2ReviewClarity" aria-label="Clarity"></div>
+        </details>
+        <label class="quality-field">Photo quality <select id="v2ReviewPhotoQuality">
+          <option value="maximum">Maximum quality · JPEG 1.00</option>
+          <option value="compressed">Smaller file · checked compression</option>
+        </select></label>
+        </div>
         <div class="review-actions">
           <button type="button" class="btn" id="v2ReviewRetake">Retake</button>
           <button type="button" class="btn" id="v2ReviewKeep">Keep</button>
@@ -972,6 +1031,9 @@
           <div class="section-title" style="margin-top:12px">
             <h2>Sharpen</h2><span class="hint">auto-levels Full + clarity High &middot; after the shutter</span>
           </div>
+          <div class="section-title"><h2>Photo enhancement</h2><span class="hint">review &amp; imports</span></div>
+          <div class="photo-enhancement" id="v2EnhancementRow" aria-label="Photo enhancement"></div>
+          <p class="hint">Smooth grain while preserving strong edges, then sharpen fine edges. Keep detail blends original texture back in. Strong smoothing can flatten small textures. Presets leave auto-levels unchanged; Clarity and enhancement sharpening are alternatives.</p>
           <div class="zoom guides" id="v2SharpenRow" aria-label="Sharpen"></div>
           <p class="hint" id="v2SharpenNote"></p>
           <!-- CLARITY. It sits with the exposure aids because it is judged the
@@ -1118,31 +1180,16 @@
             what the camera actually granted &mdash; never the request, never upscaled.
           </p>
           <p class="stage-note timing" id="v2PhotoTiming"></p>
-          <p>
-            <label class="coach-mute"><input type="checkbox" id="v2VisuallyLossless" />
-            <strong>Compress to the measured limit</strong> &mdash; on by default</label>
-            The saved JPEG's quality is <em>measured</em> rather than assumed. At quality
-            1.00 the encoder reproduces sensor noise exactly, which is where most of a
-            large file goes; the last few percent of nominal quality routinely costs
-            several times the bytes for a difference no eye can find. So the busiest
-            256&nbsp;px tile of the frame is encoded at candidate qualities, each decoded
-            and compared with the original by SSIM, and the smallest file still measuring
-            as identical is the one saved. Four small encodes decide it, against one
-            twelve-megapixel one.
-          </p>
-          <p class="hint">
-            The comparison is made at <em>half scale</em>, and that is the load-bearing
-            choice. Measured at 1:1, SSIM punishes the encoder for cleaning grain up
-            &mdash; a flat noisy patch quantising to a flat clean one scores 0.92 &mdash;
-            so a grainy frame would pin at 1.00 and save nothing, which is backwards,
-            since grain is most of what a big file is. Halving forgives that
-            (0.916&nbsp;&rarr;&nbsp;0.978) while a softened edge gets <em>worse</em>
-            (0.942&nbsp;&rarr;&nbsp;0.915): noise forgiven, structure still caught. It is
-            also finer than this screen shows a 3024-wide photo in the first place. The
-            <em>resolution never changes</em> &mdash; MAX still means MAX &mdash; and the
-            readout names the quality and the score it was chosen on. Untick to go back
-            to a flat 1.00.
-          </p>
+          <label class="quality-field">Photo quality
+            <select id="v2PhotoQuality">
+              <option value="maximum">Maximum quality · JPEG 1.00 (default)</option>
+              <option value="compressed">Smaller file · checked compression</option>
+            </select>
+          </label>
+          <p class="hint">Maximum quality skips automatic compression selection and saves at JPEG 1.00.
+            JPEG is still a lossy format. Smaller file checks nine distributed image regions at full
+            resolution, including brightness and color, and never searches below quality 0.90.
+            This is a sampled comparison, not a guarantee of lossless output. Dimensions stay unchanged.</p>
         </div>
 
         <div class="card">

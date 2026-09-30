@@ -14,10 +14,11 @@
  */
 
 import {
-  AVERAGE_FRAGMENT, FILTERS, NIGHT_RECOVERY_FRAGMENT, filterById, ironbowLut,
+  AVERAGE_FRAGMENT, FILTERS, NIGHT_RECOVERY_FRAGMENT, SMOOTH_FRAGMENT, SHARP_FRAGMENT, filterById, ironbowLut,
   type FilterDefinition
 } from '../filters/registry.js';
 import { frameAverageWeight as emaWeight } from './frame-average.js';
+import { normaliseEnhancement, type Enhancement } from './enhancement.js';
 
 const VERTEX = `attribute vec2 aPosition;
 varying vec2 vUv;
@@ -136,6 +137,8 @@ export class GlRenderer {
   /** Which program key each filter id currently owns, so an edited lens frees its old program. */
   private programKeys = new Map<string, string>();
   private failure = '';
+  private smoothProgram: WebGLProgram | null = null;
+  private sharpProgram: WebGLProgram | null = null;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     // A GPU context CAN be taken away — measured on device: a 12 MP filtered
@@ -158,6 +161,8 @@ export class GlRenderer {
   /** First-time setup AND post-loss recovery: one path, so they cannot drift. */
   private initialize(): void {
     this.programs.clear();
+    this.smoothProgram = null;
+    this.sharpProgram = null;
     const gl = this.canvas.getContext('webgl', {
       // The preview canvas is also read back for photo/record products, and a
       // cleared buffer reads as black without this.
@@ -698,7 +703,7 @@ export class GlRenderer {
       gl.shaderSource(shader, source);
       gl.compileShader(shader);
       if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        this.failure = 'The frame-average shader failed to compile: '
+        this.failure = 'The render-pass shader failed to compile: '
           + (gl.getShaderInfoLog(shader) ?? 'no reason given');
         return null;
       }
@@ -714,7 +719,7 @@ export class GlRenderer {
     gl.bindAttribLocation(program, 0, 'aPosition');
     gl.linkProgram(program);
     if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      this.failure = 'The frame-average shader failed to link: '
+      this.failure = 'The render-pass shader failed to link: '
         + (gl.getProgramInfoLog(program) ?? 'no reason given');
       return null;
     }
@@ -835,6 +840,8 @@ export class GlRenderer {
        * photograph carries exactly what the viewfinder showed.
        */
       clarity?: { amount: number; floor: number };
+      /** Optional still edit on the completed filter output. */
+      enhancement?: Enhancement;
       /** Frames to average together — see render/frame-average.ts. 1 = none. */
       frames?: number;
       /**
@@ -904,7 +911,7 @@ export class GlRenderer {
     gl.uniform2f(gl.getUniformLocation(program, 'uLevels'),
       levels?.black ?? 0, levels?.white ?? 1);
     gl.uniform1f(gl.getUniformLocation(program, 'uLevelsAmount'), levels?.amount ?? 0);
-    gl.uniform1f(gl.getUniformLocation(program, 'uClarity'), extras.clarity?.amount ?? 0);
+    gl.uniform1f(gl.getUniformLocation(program, 'uClarity'), extras.enhancement ? 0 : extras.clarity?.amount ?? 0);
     gl.uniform1f(gl.getUniformLocation(program, 'uClarityFloor'), extras.clarity?.floor ?? 0);
     const range = extras.lumaRange ?? [0, 1];
     gl.uniform2f(gl.getUniformLocation(program, 'uLumaRange'), range[0], range[1]);
@@ -922,7 +929,60 @@ export class GlRenderer {
       this.dominant[0], this.dominant[1], this.dominant[2]);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
-    return true;
+    return extras.enhancement ? this.enhanceOutput(extras.enhancement, target) : true;
+  }
+
+  /** One temporary RGB texture, reused by both passes and released immediately.
+   * copyTexImage reads the current framebuffer, so edits follow ANY filter.
+   * Off creates neither a texture nor a GPU pass. Programs survive between edits.
+   */
+  private enhanceOutput(value: Enhancement, target: RenderTargetSize): boolean {
+    const gl = this.gl;
+    if (!gl || gl.isContextLost()) return false;
+    const edit = normaliseEnhancement(value);
+    const smoothing = edit.smoothing > 0 && edit.detail < 1;
+    if (!smoothing && edit.sharpness <= 0) return true;
+    if (smoothing) this.smoothProgram ??= this.buildProgram(VERTEX_OFFSCREEN, SMOOTH_FRAGMENT);
+    if (edit.sharpness > 0) this.sharpProgram ??= this.buildProgram(VERTEX_OFFSCREEN, SHARP_FRAGMENT);
+    if ((smoothing && !this.smoothProgram) || (edit.sharpness > 0 && !this.sharpProgram)) return false;
+    gl.activeTexture(gl.TEXTURE0);
+    let texture: WebGLTexture | null = null;
+    try {
+      texture = this.makeTexture(gl);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      let copied = false;
+      const pass = (program: WebGLProgram, amount: number, reference: number): boolean => {
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        if (!copied) {
+          gl.copyTexImage2D(gl.TEXTURE_2D, 0, gl.RGB, 0, 0, target.width, target.height, 0);
+          copied = true;
+        } else {
+          gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, target.width, target.height);
+        }
+        if (gl.getError() !== gl.NO_ERROR) {
+          this.failure = 'Photo enhancement could not allocate its full-size GPU texture. Try Off.';
+          return false;
+        }
+        gl.useProgram(program);
+        gl.uniform1i(gl.getUniformLocation(program, 'uImage'), 0);
+        const frame = this.frameSize.width > 0 ? this.frameSize : target;
+        const radius = Math.max(1, frame.width / reference);
+        gl.uniform2f(gl.getUniformLocation(program, 'uStep'), radius / frame.width, radius / frame.height);
+        gl.uniform1f(gl.getUniformLocation(program, 'uAmount'), amount);
+        gl.uniform1f(gl.getUniformLocation(program, 'uDetail'), edit.detail);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        return !gl.isContextLost();
+      };
+      if (smoothing && !pass(this.smoothProgram!, edit.smoothing, 1800)) return false;
+      if (edit.sharpness > 0 && !pass(this.sharpProgram!, edit.sharpness, 2400)) return false;
+      return true;
+    } catch {
+      this.failure = 'Photo enhancement could not allocate its full-size GPU texture. Try Off.';
+      return false;
+    } finally {
+      if (texture) gl.deleteTexture(texture);
+    }
   }
 
   /**

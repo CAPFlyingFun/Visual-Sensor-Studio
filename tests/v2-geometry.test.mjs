@@ -378,6 +378,10 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
       // screen first, and the card says so instead of offering a Share button
       // for a picture the review is still able to change.
       await page.waitForSelector('#v2Review:not([hidden])', { timeout: 5000 });
+      // Maximum-quality export can finish before the asynchronous review decode.
+      await page.waitForFunction(() =>
+        document.getElementById('v2ReviewNote')?.textContent.startsWith('Held — '),
+        null, { timeout: 30000 });
       // HEADLESS CHROMIUM CANNOT SHARE AT ALL, so the Save button is hidden
       // here and a sentence takes its place. That is the honest branch, not a
       // broken one — iOS, where the app is used, always has a share sheet —
@@ -424,6 +428,7 @@ test('Milestone B: the GPU pipeline renders truthfully (fake device)',
       // A CHANGED SETTING RE-RUNS THE CAPTURE. What this measures is the
       // geometry: the re-run must use the size the shutter HELD, not re-resolve
       // from the live stream that has since been restored to something smaller.
+      await page.click('.legacy-edits summary');
       await page.click('#v2ReviewClarity [data-clarity="high"]');
       // 'busy' is the re-capture's own signal, and the only one that works on
       // a platform where the Save button never appears.
@@ -3229,6 +3234,7 @@ test('auto-levels expands a flat picture, and is refused by a palette (fake devi
       });
 
       const before = await spread();
+      await page.click('.legacy-edits summary');
       await page.click('#v2ReviewLevels [data-levels="full"]');
       await page.waitForFunction(() => {
         const note = document.getElementById('v2ReviewNote')?.textContent ?? '';
