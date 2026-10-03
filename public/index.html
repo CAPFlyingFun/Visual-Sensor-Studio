@@ -568,8 +568,8 @@
     .edit-field output { text-align: right; color: var(--blue2); font-variant-numeric: tabular-nums; }
     .review { padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
     .review-note { max-height: 12dvh; overflow: auto; overflow-wrap: anywhere; flex: 0 0 auto; }
-    .review-frame { overflow: hidden; }
-    .review-frame canvas { grid-area: 1 / 1; object-fit: contain; min-width: 0; min-height: 0; }
+    .review-frame { overflow: hidden; position: relative; touch-action: none; overscroll-behavior: contain; user-select: none; -webkit-user-select: none; }
+    .review-frame canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; min-width: 0; min-height: 0; transform-origin: center; pointer-events: none; border-radius: 0; }
     #v2ReviewOriginal { z-index: 1; opacity: 1; }
     .review-bottom { flex: 0 1 auto; max-height: 48dvh; min-height: 0; overflow: hidden; grid-template-rows: minmax(0, 1fr) auto; padding: 4px 2px; }
     .review-tools { display: grid; gap: 8px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 2px; scrollbar-width: thin; }
@@ -693,7 +693,7 @@
     <h1>Visual Sensor Studio</h1>
     <span>
       <button type="button" class="chip" id="v2ViewerEnter" title="Full screen viewer">&#9974; Full screen</button>
-      <span class="pill" id="v2Badge">v0.110.0</span>
+      <span class="pill" id="v2Badge">v0.111.0</span>
     </span>
   </header>
 
@@ -816,6 +816,8 @@
       <div class="review-frame"><canvas id="v2ReviewCanvas"></canvas><canvas id="v2ReviewOriginal" aria-label="Original source image" hidden></canvas></div>
       <div class="review-bottom">
         <div class="review-tools">
+        <button type="button" class="btn" id="v2ReviewFit">Fit image</button>
+        <p class="hint">Pinch to zoom · drag to pan · double tap to zoom or fit</p>
         <!-- The filter strip, SECOND copy and deliberately so: the one on the
              page lives at the top of the Camera tab, and choosing a lens for
              an imported picture used to scroll that picture off the screen.

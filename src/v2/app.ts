@@ -1,3 +1,4 @@
+import { attachPhotoView } from './ui/photo-view.js';
 import { ENHANCEMENT_PRESETS, normaliseEnhancement, type Enhancement } from './render/enhancement.js';
 /**
  * V2 entry — Milestone A: the trustworthy camera shell.
@@ -5108,6 +5109,8 @@ async function showHeld(still: PhotoResult, run: number): Promise<void> {
 }
 
 /** Open the review on a shot. False means it could not be shown at all. */
+let resetPhotoView = () => {};
+
 function openReview(shot: HeldShot): boolean {
   const layer = reviewEl('v2Review');
   if (!layer) return false;
@@ -5117,6 +5120,7 @@ function openReview(shot: HeldShot): boolean {
   releaseHeld();
   held = shot;
   layer.hidden = false;
+  resetPhotoView();
   layer.classList.remove('busy');
   document.body.dataset.review = 'on';
   syncReviewStrip();
@@ -6748,6 +6752,13 @@ buildLevels();
 buildSharpen();
 buildEnhancement();
 buildCompare();
+const photoFrame = document.querySelector<HTMLElement>('.review-frame');
+const photoCanvas = reviewEl<HTMLCanvasElement>('v2ReviewCanvas');
+const photoOriginal = reviewEl<HTMLCanvasElement>('v2ReviewOriginal');
+const photoFit = reviewEl<HTMLButtonElement>('v2ReviewFit');
+if (photoFrame && photoCanvas && photoOriginal && photoFit) {
+  resetPhotoView = attachPhotoView(photoFrame, photoCanvas, photoOriginal, photoFit);
+}
 /*
  * PRIMED BEFORE THE STATE MOVES, and that is not a nicety.
  *

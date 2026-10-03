@@ -200,3 +200,66 @@ for(const [width,height] of [[568,320],[667,375],[932,430]]) test(`landscape cam
     assert.equal(layout.overflow,false);
   });
 });
+
+for (const [width,height] of [[430,932],[932,430]]) {
+  test(`photo pinch and pan leave the toolbox fixed at ${width}x${height}`, options, async () => {
+    await browserTest(async page => {
+      await page.setViewportSize({width,height});
+      await page.evaluate(() => {
+        document.body.dataset.review='on';document.getElementById('v2Review').hidden=false;
+        const c=document.getElementById('v2ReviewCanvas');c.width=600;c.height=800;
+      });
+      const result=await page.evaluate(() => {
+        const frame=document.querySelector('.review-frame'), c=document.getElementById('v2ReviewCanvas');
+        const tools=document.querySelector('.review-bottom'), before=tools.getBoundingClientRect().toJSON();
+        const r=frame.getBoundingClientRect(), x=r.x+r.width/2,y=r.y+r.height/2;
+        const fire=(type,id,px,py)=>frame.dispatchEvent(new PointerEvent(type,{pointerId:id,pointerType:'touch',clientX:px,clientY:py,bubbles:true,cancelable:true}));
+        fire('pointerdown',1,x-40,y);fire('pointerdown',2,x+40,y);
+        fire('pointermove',1,x-80,y);fire('pointermove',2,x+80,y);
+        const zoom=c.style.transform;
+        fire('pointerup',2,x+80,y);fire('pointermove',1,x-60,y+20);
+        const pan=c.style.transform;
+        fire('pointercancel',1,x-60,y+20);
+        const original=document.getElementById('v2ReviewOriginal').style.transform;
+        document.getElementById('v2ReviewFit')?.click();
+        return {zoom,pan,original,fit:c.style.transform,before,after:tools.getBoundingClientRect().toJSON(),touch:getComputedStyle(frame).touchAction};
+      });
+      assert.match(result.zoom,/scale\(2\)/);
+      assert.notEqual(result.pan,result.zoom,'one remaining finger can pan');
+      assert.equal(result.original,result.pan,'comparison follows the same view');
+      assert.equal(result.fit,'translate(0px, 0px) scale(1)');
+      assert.deepEqual(result.after,result.before,'toolbox never moves or scales');
+      assert.equal(result.touch,'none','photo gestures do not trigger page zoom');
+    });
+  });
+}
+
+test('touch double tap zooms, then fits without browser page zoom', options, async () => {
+  await browserTest(async page => {
+    const scales=await page.evaluate(() => {
+      const frame=document.querySelector('.review-frame');document.getElementById('v2Review').hidden=false;
+      const c=document.getElementById('v2ReviewCanvas');c.width=600;c.height=800;
+      const r=frame.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;
+      const tap=()=>{for(const type of ['pointerdown','pointerup'])frame.dispatchEvent(new PointerEvent(type,{pointerId:1,pointerType:'touch',clientX:x,clientY:y,bubbles:true,cancelable:true}));};
+      tap();tap();const zoom=frame.dataset.zoom;tap();tap();return {zoom,fit:frame.dataset.zoom};
+    });
+    assert.equal(scales.zoom,'3.00');assert.equal(scales.fit,'1.00');
+  });
+});
+
+test('native touch pinch zooms the photo without zooming the browser viewport', options, async () => {
+  await browserTest(async page => {
+    await page.setViewportSize({width:430,height:932});
+    await page.evaluate(()=>{document.getElementById('v2Review').hidden=false;const c=document.getElementById('v2ReviewCanvas');c.width=600;c.height=800;});
+    const frame=await page.locator('.review-frame').boundingBox();
+    const cdp=await page.context().newCDPSession(page);
+    await cdp.send('Emulation.setTouchEmulationEnabled',{enabled:true,maxTouchPoints:2});
+    const x=frame.x+frame.width/2,y=frame.y+frame.height/2;
+    const points=d=>[{x:x-d,y,id:1},{x:x+d,y,id:2}];
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:points(40)});
+    for(const d of [50,60,70,80])await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:points(d)});
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    const result=await page.evaluate(()=>({zoom:Number(document.querySelector('.review-frame').dataset.zoom),viewport:visualViewport.scale}));
+    assert.ok(result.zoom>1.8,JSON.stringify(result));assert.equal(result.viewport,1);
+  });
+});
